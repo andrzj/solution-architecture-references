@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LLM Architecture – System Design Practices</title>
+  <link rel="stylesheet" href="../assets/css/main.css" />
+</head>
+<body>
+  <header class="topnav">
+    <div class="topnav__inner">
+      <a href="../index.html" class="topnav__logo">System Design Practices</a>
+      <nav class="topnav__links">
+        <a href="../index.html">Home</a>
+        <a href="../foundations/index.html">Foundations</a>
+        <a href="../architecture-styles/index.html">Styles</a>
+        <a href="../decision-guides/index.html">Guides</a>
+      </nav>
+      <button class="topnav__theme-toggle" aria-label="Toggle theme">🌙</button>
+      <button class="topnav__hamburger" aria-label="Open menu">☰</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <nav class="sidebar__nav">
+        <div class="sidebar__group">
+          <span class="sidebar__group-label">Architecture</span>
+          <a href="../foundations/index.html" class="sidebar__link">Foundations</a>
+          <a href="../architecture-styles/index.html" class="sidebar__link">Architecture Styles</a>
+          <a href="../distributed-systems/index.html" class="sidebar__link">Distributed Systems</a>
+        </div>
+        <div class="sidebar__group">
+          <span class="sidebar__group-label">Communication &amp; Data</span>
+          <a href="../communication-patterns/index.html" class="sidebar__link">Communication Patterns</a>
+          <a href="../integration/index.html" class="sidebar__link">Integration Patterns</a>
+          <a href="../data-architecture/index.html" class="sidebar__link">Data Architecture</a>
+          <a href="../search/index.html" class="sidebar__link">Search &amp; Retrieval</a>
+        </div>
+        <div class="sidebar__group">
+          <span class="sidebar__group-label">Reliability &amp; Scale</span>
+          <a href="../reliability/index.html" class="sidebar__link">Reliability</a>
+          <a href="../scalability/index.html" class="sidebar__link">Scalability</a>
+        </div>
+        <div class="sidebar__group">
+          <span class="sidebar__group-label">Interfaces &amp; APIs</span>
+          <a href="../api-design/index.html" class="sidebar__link">API Design</a>
+        </div>
+        <div class="sidebar__group">
+          <span class="sidebar__group-label">Security &amp; Ops</span>
+          <a href="../security/index.html" class="sidebar__link">Security</a>
+          <a href="../observability/index.html" class="sidebar__link">Observability</a>
+          <a href="../deployment/index.html" class="sidebar__link">Deployment</a>
+        </div>
+        <div class="sidebar__group">
+          <span class="sidebar__group-label">Cloud &amp; Platform</span>
+          <a href="../cloud/index.html" class="sidebar__link">Cloud Architecture</a>
+          <a href="../platform-engineering/index.html" class="sidebar__link">Platform Engineering</a>
+        </div>
+        <div class="sidebar__group">
+          <span class="sidebar__group-label">Domain-Specific</span>
+          <a href="../software-engineering/index.html" class="sidebar__link">Software Engineering</a>
+          <a href="../mobile/index.html" class="sidebar__link">Mobile Architecture</a>
+          <a href="../iot-edge/index.html" class="sidebar__link">IoT &amp; Edge</a>
+          <a href="../big-data/index.html" class="sidebar__link">Big Data</a>
+          <a href="../ai-ml/index.html" class="sidebar__link active">AI &amp; ML Systems</a>
+        </div>
+        <div class="sidebar__group">
+          <span class="sidebar__group-label">Governance</span>
+          <a href="../governance/index.html" class="sidebar__link">Governance</a>
+          <a href="../anti-patterns/index.html" class="sidebar__link">Anti-Patterns</a>
+        </div>
+        <div class="sidebar__group">
+          <span class="sidebar__group-label">Guides &amp; Resources</span>
+          <a href="../decision-guides/index.html" class="sidebar__link">Decision Guides</a>
+          <a href="../templates/index.html" class="sidebar__link">Templates</a>
+          <a href="../diagrams/index.html" class="sidebar__link">Diagrams</a>
+          <a href="../glossary/index.html" class="sidebar__link">Glossary</a>
+        </div>
+      </nav>
+    </aside>
+
+    <main class="main-content">
+      <nav class="breadcrumb">
+        <a href="../index.html">Home</a> &rsaquo;
+        <a href="index.html">AI &amp; ML Systems</a> &rsaquo;
+        <span>LLM Architecture</span>
+      </nav>
+
+      <div class="article-layout">
+        <article class="article-body">
+          <h1>LLM Architecture</h1>
+          <p class="article-meta">Last updated: <time datetime="2025-01">January 2025</time></p>
+
+          <h2 id="what-it-is">What it is</h2>
+          <p>LLM (Large Language Model) architecture refers to the system design required to deploy transformer-based language models at scale for production inference. While training a large language model involves massive distributed GPU clusters, LLM serving architecture focuses specifically on the infrastructure needed to efficiently process inference requests — converting user prompts into generated tokens — at throughputs and latencies acceptable for real-world applications.</p>
+          <p>The core challenge is that LLM inference is fundamentally different from traditional neural network inference. LLMs generate tokens auto-regressively: each new token requires a forward pass through the entire model, and the computation for each forward pass depends on the key-value (KV) cache accumulated from all previous tokens in the context. This means inference is memory-bandwidth bound rather than compute bound, and the cost per request scales with the sequence length. The KV cache can consume tens of gigabytes of GPU memory for long contexts, severely limiting how many concurrent requests a single GPU instance can handle.</p>
+          <p>Key architectural techniques address these constraints. <strong>Continuous batching</strong> (also called dynamic batching or iteration-level scheduling) interleaves requests at the token generation level so that finished requests immediately free their KV cache slot for new requests, dramatically improving GPU utilization. <strong>Paged attention</strong> (introduced in vLLM) manages the KV cache in fixed-size pages analogous to virtual memory, eliminating internal and external fragmentation. <strong>Quantization</strong> reduces model weights from 16-bit to 8-bit or 4-bit, halving or quartering memory requirements at the cost of some accuracy. <strong>Tensor parallelism</strong> and <strong>pipeline parallelism</strong> distribute the model across multiple GPUs to serve models that exceed a single GPU's memory.</p>
+
+          <h2 id="why-it-exists">Why it exists</h2>
+          <p>Large language models present serving challenges that existing ML serving infrastructure was not designed to handle. A 70-billion parameter model requires roughly 140GB of GPU memory in FP16, which exceeds the capacity of a single GPU (even an H100 with 80GB HBM3). Even models that fit on a single GPU face the challenge that each inference request holds a growing KV cache that occupies an unpredictable and increasing share of GPU memory throughout the generation process. Naive serving approaches that allocate the maximum possible KV cache per request upfront waste enormous amounts of memory on unused reserved space.</p>
+          <p>Throughput requirements for LLM serving differ qualitatively from classification models. A classification model produces one output per input; an LLM produces hundreds of tokens sequentially, with each step dependent on the previous. This temporal dependency means traditional request-response batching — wait for N requests, process them together, return all results — is inefficient because requests have different lengths and complete at different times, causing short requests to wait for long ones. Continuous batching solves this by treating generation at the token level, not the request level.</p>
+          <p>Dedicated LLM serving infrastructure has emerged (vLLM, TensorRT-LLM, SGLang, Ollama) to address these challenges with purpose-built memory management, scheduling algorithms, and model execution backends. Without such infrastructure, organizations deploying LLMs would either severely under-utilize expensive GPU hardware or fail to meet latency SLAs under any meaningful load.</p>
+
+          <h2 id="when-to-use">When to use</h2>
+          <ul>
+            <li>Deploying transformer language models with more than a few billion parameters where memory management and batching significantly affect throughput and cost.</li>
+            <li>Applications with concurrent user requests where naive request-by-request inference would leave GPU utilization below 20%.</li>
+            <li>Long-context applications (RAG, document analysis, multi-turn chat) where KV cache management is critical to serving capacity.</li>
+            <li>Cost-sensitive deployments where efficient GPU utilization directly impacts the cost per 1,000 tokens served.</li>
+            <li>Organizations deploying open-weight models (Llama, Mistral, Mixtral) that need to build their own serving infrastructure rather than using a managed API.</li>
+          </ul>
+
+          <h2 id="when-not-to-use">When NOT to use</h2>
+          <ul>
+            <li>Applications using managed LLM APIs (OpenAI, Anthropic, Google) where the serving infrastructure is entirely abstracted — focus on prompt engineering and application logic instead.</li>
+            <li>Very low-traffic applications (&lt;10 requests/hour) where a simple inference loop is sufficient and batching provides no benefit.</li>
+            <li>Small models (under 1B parameters) that fit trivially in GPU memory and don't require advanced KV cache management or multi-GPU parallelism.</li>
+          </ul>
+
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <pre><code>
+ ┌────────────────────────────────────────────────────────────┐
+ │                    CLIENT / APPLICATION                     │
+ │  Chat UI · API consumer · RAG pipeline · Agent framework   │
+ └───────────────────────────┬────────────────────────────────┘
+                             │  HTTP / WebSocket / SSE
+                             ▼
+ ┌────────────────────────────────────────────────────────────┐
+ │                   LLM GATEWAY / PROXY                       │
+ │  Rate limiting · Auth · Prompt logging · Cost tracking      │
+ │  Request routing (model selection, tenant isolation)        │
+ └────────────────┬────────────────────────────────┬──────────┘
+                  │ Prefill req                     │ Generation req
+                  ▼                                 ▼
+ ┌─────────────────────────┐     ┌──────────────────────────┐
+ │   PREFILL WORKER        │     │   DECODE WORKER(S)        │
+ │   (compute-intensive)   │     │   (memory-BW intensive)   │
+ │   Tokenize prompt       │     │   Autoregressive decode   │
+ │   Compute KV cache      │     │   Continuous batching     │
+ │   [GPU: high FLOPs]     │     │   Paged KV cache          │
+ └──────────┬──────────────┘     │   [GPU: high HBM BW]     │
+            │  KV cache transfer │                           │
+            └────────────────────┘
+                  │
+                  ▼
+ ┌────────────────────────────────────────────────────────────┐
+ │              KV CACHE MANAGER (PagedAttention)              │
+ │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐  │
+ │  │ Page │ │ Page │ │ Page │ │ Page │ │ Page │ │ Page │  │
+ │  │  0   │ │  1   │ │  2   │ │  3   │ │  4   │ │  5   │  │
+ │  │[req A│ │[req A│ │[req B│ │[req B│ │ FREE │ │ FREE │  │
+ │  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘  │
+ └────────────────────────────────────────────────────────────┘
+                  │  token stream
+                  ▼
+ ┌────────────────────────────────────────────────────────────┐
+ │                 RESPONSE STREAMING                          │
+ │  Server-Sent Events (SSE) · Streamed token-by-token         │
+ └────────────────────────────────────────────────────────────┘
+
+ TENSOR PARALLEL (multi-GPU):
+ ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+ │  GPU 0   │  │  GPU 1   │  │  GPU 2   │  │  GPU 3   │
+ │ Attn H0  │  │ Attn H1  │  │ Attn H2  │  │ Attn H3  │
+ │ MLP shard│  │ MLP shard│  │ MLP shard│  │ MLP shard│
+ └──────────┘  └──────────┘  └──────────┘  └──────────┘
+     └─────────────────────────────────────┘
+              NVLink / InfiniBand AllReduce
+</code></pre>
+
+          <h2 id="pros-and-cons">Pros and cons</h2>
+          <div class="pros-cons">
+            <div class="pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Continuous batching and paged attention dramatically improve GPU utilization compared to naive serving, reducing the cost per token by 10–20x in high-concurrency scenarios.</li>
+                <li>Prefill-decode disaggregation allows matching hardware to the distinct characteristics of each phase, further optimizing resource utilization.</li>
+                <li>Quantization (INT8, INT4) reduces memory requirements and increases throughput with manageable accuracy trade-offs for most applications.</li>
+                <li>Self-hosted LLM serving provides data privacy guarantees that managed API providers cannot offer for sensitive enterprise data.</li>
+              </ul>
+            </div>
+            <div class="cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Infrastructure complexity is very high — managing GPU clusters, KV cache, batching schedulers, and multi-node parallelism requires specialized expertise.</li>
+                <li>GPU hardware costs are substantial; even a single A100 80GB instance costs thousands of dollars per month, making self-hosting expensive at low volumes compared to API pricing.</li>
+                <li>Model updates require zero-downtime serving migration strategies more complex than traditional software deployments.</li>
+                <li>Long-tail latency spikes caused by long-context requests can degrade average tail latency for all concurrent requests on shared infrastructure.</li>
+              </ul>
+            </div>
+          </div>
+
+          <h2 id="implementation-notes">Implementation notes</h2>
+          <p>Choose the right parallelism strategy for your model size and hardware topology. Tensor parallelism (splitting individual layers across GPUs) is best for reducing single-request latency on large models but requires fast inter-GPU interconnects (NVLink or InfiniBand) — it performs poorly across nodes with slow networking. Pipeline parallelism (assigning different layers to different GPUs or nodes) achieves better throughput on distributed clusters but introduces pipeline bubbles and increases latency. For models that fit on a single node with NVLink, tensor parallelism is preferred; for models requiring multiple nodes, combine both strategies.</p>
+          <p>Calibrate your quantization strategy carefully. INT8 weight quantization with activation quantization (using GPTQ, AWQ, or SmoothQuant) typically achieves 95-99% of FP16 quality at half the memory footprint. INT4 quantization pushes further but introduces more significant quality degradation, especially for reasoning tasks. Profile your specific use case: for customer service chatbots, INT4 may be entirely acceptable; for code generation or mathematical reasoning, INT8 or FP16 may be necessary. Always benchmark quantized models on your specific task distribution before deployment.</p>
+          <p>Design your context window management strategy before building the serving system. Applications with long contexts (multi-document analysis, long conversations) consume KV cache memory proportionally to context length, limiting concurrent request capacity. Techniques for managing this include prompt caching (reusing the KV cache for repeated system prompts), sliding window attention, and context compression. Define the maximum context length your application requires and size your GPU memory accordingly, accounting for the worst-case KV cache consumption multiplied by your desired concurrent request count.</p>
+
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>KV cache exhaustion:</strong> Under high load with long-context requests, the KV cache fills completely, causing new requests to be rejected or queued indefinitely. Mitigate with queue depth limits, context length limits per request, and preemption policies that swap low-priority requests to CPU memory.</li>
+            <li><strong>GPU memory OOM on model loading:</strong> Attempting to load a model larger than available GPU HBM fails catastrophically. Plan GPU memory allocation accounting for model weights, KV cache working set, and PyTorch/CUDA framework overhead, which typically adds 2-3GB per GPU.</li>
+            <li><strong>Head-of-line blocking by long requests:</strong> A single very long generation request occupies KV cache memory and decode compute for minutes, degrading throughput for all shorter concurrent requests. Implement maximum generation length limits and priority-based scheduling.</li>
+            <li><strong>Tensor parallel communication bottleneck:</strong> Placing tensor-parallel shards across nodes connected by Ethernet (rather than InfiniBand or NVLink) causes AllReduce communication to dominate latency. Always use high-bandwidth interconnects for tensor-parallel deployments.</li>
+          </ul>
+
+          <h2 id="decision-checklist">Decision checklist</h2>
+          <ul class="checklist">
+            <li>What is the model size in parameters, and how much GPU memory is required in FP16, INT8, and INT4?</li>
+            <li>What are the latency requirements (time-to-first-token and tokens-per-second) for your application?</li>
+            <li>What is the expected maximum context length, and how does it constrain concurrent request capacity?</li>
+            <li>Is tensor parallelism feasible — do your GPUs have NVLink or InfiniBand interconnects for efficient AllReduce?</li>
+            <li>Have you evaluated quantization quality on your specific task and validated that accuracy degradation is acceptable?</li>
+            <li>Is prefill-decode disaggregation warranted given your traffic pattern (high prefill cost vs. high generation length)?</li>
+          </ul>
+
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>Enterprise internal chatbot:</strong> A 13B parameter Llama model served on two A100 80GB GPUs with tensor parallelism; INT8 quantized to fit within memory budget; vLLM handles continuous batching for 50 concurrent employee users; system prompts are prefix-cached to reduce per-request cost.</li>
+            <li><strong>Code completion service:</strong> A 34B coding model deployed across four GPUs with pipeline parallelism; requests are prioritized by interactive vs. batch use; response streaming via SSE reduces perceived latency for IDE integrations.</li>
+            <li><strong>Document analysis API:</strong> A 70B model deployed across eight H100s for long-context (128k token) document analysis; prefill is disaggregated to a high-FLOPs node while decode workers handle token generation; sliding window KV cache manages memory for very long documents.</li>
+          </ul>
+
+          <h2 id="related-patterns">Related patterns</h2>
+          <ul>
+            <li><a href="rag-architecture.html">RAG Architecture</a></li>
+            <li><a href="model-serving.html">Model Serving</a></li>
+            <li><a href="vector-databases.html">Vector Databases</a></li>
+            <li><a href="mlops.html">MLOps</a></li>
+          </ul>
+
+          <h2 id="further-reading">Further reading</h2>
+          <ul>
+            <li><a href="https://vllm.readthedocs.io/en/latest/" rel="noopener noreferrer" target="_blank">vLLM Documentation – Efficient LLM Serving</a></li>
+            <li><a href="https://arxiv.org/abs/2309.06180" rel="noopener noreferrer" target="_blank">Efficient Memory Management for Large Language Model Serving (PagedAttention) – Kwon et al. 2023</a></li>
+            <li><a href="https://developer.nvidia.com/blog/mastering-llm-techniques-inference-optimization/" rel="noopener noreferrer" target="_blank">Mastering LLM Techniques: Inference Optimization – NVIDIA Developer Blog</a></li>
+            <li><a href="https://docs.nvidia.com/tensorrt-llm/latest/index.html" rel="noopener noreferrer" target="_blank">TensorRT-LLM Documentation – NVIDIA</a></li>
+          </ul>
+        </article>
+
+        <aside class="article-aside">
+          <div class="toc">
+            <h3 class="toc__title">On this page</h3>
+            <ul class="toc__list">
+              <li><a href="#what-it-is">What it is</a></li>
+              <li><a href="#why-it-exists">Why it exists</a></li>
+              <li><a href="#when-to-use">When to use</a></li>
+              <li><a href="#when-not-to-use">When NOT to use</a></li>
+              <li><a href="#typical-architecture">Typical architecture</a></li>
+              <li><a href="#pros-and-cons">Pros and cons</a></li>
+              <li><a href="#implementation-notes">Implementation notes</a></li>
+              <li><a href="#common-failure-modes">Common failure modes</a></li>
+              <li><a href="#decision-checklist">Decision checklist</a></li>
+              <li><a href="#example-use-cases">Example use cases</a></li>
+              <li><a href="#related-patterns">Related patterns</a></li>
+              <li><a href="#further-reading">Further reading</a></li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+
+      <nav class="article-nav">
+        <a href="training-pipelines.html" class="article-nav__prev">&larr; Training Pipelines</a>
+        <a href="rag-architecture.html" class="article-nav__next">RAG Architecture &rarr;</a>
+      </nav>
+    </main>
+  </div>
+
+  <footer class="footer">
+    <div class="footer__inner">
+      <p>&copy; 2025 System Design Practices. Built for engineers, by engineers.</p>
+    </div>
+  </footer>
+
+  <script src="../assets/js/main.js"></script>
+</body>
+</html>

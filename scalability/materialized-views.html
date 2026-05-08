@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Materialized Views — SA References</title>
+  <meta name="description" content="Pre-computed query results; refresh strategies (on-commit, scheduled, incremental), PostgreSQL MATERIALIZED VIEW, query performance vs staleness tradeoff, CQRS read model as materialized view.">
+  <link rel="stylesheet" href="../assets/css/main.css">
+  <script>
+    (function() {
+      const t = localStorage.getItem('sa-refs-theme') ||
+        (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+</head>
+<body class="site-wrapper">
+<div class="reading-progress" id="readingProgress"></div>
+<nav class="topnav" role="navigation" aria-label="Main navigation">
+  <div class="topnav__inner">
+    <button class="hamburger" id="hamburger" aria-label="Toggle menu" aria-expanded="false" aria-controls="sidebar"><span></span><span></span><span></span></button>
+    <a href="../index.html" class="topnav__logo"><div class="logo-icon" aria-hidden="true">SA</div><span>SA References</span></a>
+    <div class="topnav__search" role="search">
+      <svg class="search-icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m14 14 3 3"/></svg>
+      <input type="search" id="topSearch" placeholder="Search articles…" autocomplete="off" aria-label="Search articles">
+      <div class="search-results" id="topSearchResults" role="listbox"></div>
+    </div>
+    <div class="topnav__actions">
+      <button class="theme-toggle" id="themeToggle" aria-label="Toggle color theme">
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+<div class="sidebar-overlay" id="sidebarOverlay" aria-hidden="true"></div>
+<div class="page-layout">
+  <aside class="sidebar" id="sidebar" aria-label="Section navigation">
+    <div class="sidebar__section"><div class="sidebar__heading">Library</div><a href="../index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--primary)"></span> Home</a></div>
+    <div class="sidebar__section"><div class="sidebar__heading">Architecture</div>
+      <a href="../foundations/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-foundations)"></span> Foundations</a>
+      <a href="../architecture-styles/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-arch-styles)"></span> Architecture Styles</a>
+      <a href="../distributed-systems/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-distributed)"></span> Distributed Systems</a>
+    </div>
+    <div class="sidebar__section"><div class="sidebar__heading">Communication &amp; Data</div>
+      <a href="../communication-patterns/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-communication)"></span> Communication Patterns</a>
+      <a href="../integration/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-integration)"></span> Integration</a>
+      <a href="../data-architecture/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-data)"></span> Data Architecture</a>
+      <a href="../search/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-search)"></span> Search &amp; Retrieval</a>
+    </div>
+    <div class="sidebar__section"><div class="sidebar__heading">Reliability &amp; Scale</div>
+      <a href="../reliability/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-reliability)"></span> Reliability &amp; Resilience</a>
+      <a href="../scalability/index.html" class="sidebar__link active"><span class="sidebar__dot" style="background:var(--cat-scalability)"></span> Scalability &amp; Performance</a>
+    </div>
+    <div class="sidebar__section"><div class="sidebar__heading">Interfaces &amp; APIs</div><a href="../api-design/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-api)"></span> API Design</a></div>
+    <div class="sidebar__section"><div class="sidebar__heading">Security &amp; Ops</div>
+      <a href="../security/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-security)"></span> Security Architecture</a>
+      <a href="../observability/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-observability)"></span> Observability &amp; Operations</a>
+      <a href="../deployment/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-deployment)"></span> Deployment &amp; Delivery</a>
+    </div>
+    <div class="sidebar__section"><div class="sidebar__heading">Cloud &amp; Platform</div>
+      <a href="../cloud/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-cloud)"></span> Cloud Architecture</a>
+      <a href="../platform-engineering/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-platform)"></span> Platform Engineering</a>
+    </div>
+    <div class="sidebar__section"><div class="sidebar__heading">Domain-Specific</div>
+      <a href="../software-engineering/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-platform)"></span> Software Engineering</a>
+      <a href="../mobile/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-aiml)"></span> Mobile Architecture</a>
+      <a href="../iot-edge/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-communication)"></span> IoT &amp; Edge</a>
+      <a href="../big-data/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-data)"></span> Big Data &amp; Analytics</a>
+      <a href="../ai-ml/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-aiml)"></span> AI &amp; ML Systems</a>
+    </div>
+    <div class="sidebar__section"><div class="sidebar__heading">Governance</div>
+      <a href="../governance/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-decisions)"></span> Governance &amp; Standards</a>
+      <a href="../anti-patterns/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-antipatterns)"></span> Anti-Patterns</a>
+    </div>
+    <div class="sidebar__section"><div class="sidebar__heading">Guides &amp; Resources</div>
+      <a href="../decision-guides/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-decisions)"></span> Decision Guides</a>
+      <a href="../templates/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--primary)"></span> Templates</a>
+      <a href="../diagrams/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--accent)"></span> Diagram Library</a>
+      <a href="../glossary/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--text-faint)"></span> Glossary</a>
+    </div>
+  </aside>
+  <main class="main-content">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="../index.html">Home</a>
+      <span class="breadcrumb__sep" aria-hidden="true">›</span>
+      <a href="index.html">Scalability &amp; Performance</a>
+      <span class="breadcrumb__sep" aria-hidden="true">›</span>
+      <span class="breadcrumb__current">Materialized Views</span>
+    </nav>
+    <div class="article-layout">
+      <div class="article-body">
+        <div class="article-header">
+          <div class="article-header__tags">
+            <span class="badge badge--primary">Scalability &amp; Performance</span>
+            <span class="badge badge--muted">Scalability</span>
+          </div>
+          <h1 class="article-header__title">Materialized Views</h1>
+          <p class="article-header__desc">Pre-computed query results; refresh strategies (on-commit, scheduled, incremental), PostgreSQL MATERIALIZED VIEW, query performance vs staleness tradeoff, and CQRS read model as materialized view.</p>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
+        </div>
+        <div class="article-content">
+          <h2 id="what-it-is">What it is</h2>
+          <p>A materialized view is a database object that stores the result of a query as a physical table. Unlike a regular (virtual) view, which re-executes the underlying query every time it is accessed, a materialized view computes and persists the result set. Subsequent reads against the materialized view execute a simple table scan (or index lookup) against the pre-computed data instead of re-executing the potentially expensive aggregation, join, or computation. The tradeoff is staleness: the materialized view reflects the state of the base tables at the time of its last refresh, not the current state.</p>
+          <p>Materialized views are a fundamental technique in read-heavy analytical and reporting systems. The concept extends beyond relational databases: a Redis sorted set of top-100 users by score is a materialized view; a pre-aggregated reporting table updated nightly by an ETL job is a materialized view; the read model in a CQRS architecture is a materialized view built from an event stream. Any time you pre-compute a derived representation of data to serve reads efficiently, you are implementing the materialized view pattern.</p>
+
+          <h2 id="why-it-exists">Why it exists</h2>
+          <p>Complex analytical queries — multi-table joins, aggregations across millions of rows, window functions — can take seconds to minutes to execute on large datasets. If this query is needed on every API request or dashboard refresh, it becomes a performance bottleneck that cannot be solved by indexing alone. Materialized views solve this by paying the computation cost once (or periodically) during the refresh, and serving all subsequent reads from the pre-computed result at millisecond latency.</p>
+          <p>The staleness tradeoff is often acceptable for analytical use cases. A sales dashboard showing "revenue by region, last 30 days" can tolerate 15-minute-old data — users do not expect it to reflect a transaction from 30 seconds ago. The cost of recomputing this query on every page load (a 10-second aggregation across 50 million rows) vastly exceeds the benefit of sub-second staleness. Materialized views codify this tradeoff explicitly: define the acceptable staleness in the refresh schedule, and serve all reads from the fast pre-computed result.</p>
+
+          <h2 id="when-to-use">When to use</h2>
+          <ul>
+            <li>Expensive queries (aggregations, multi-table joins, window functions) are executed frequently and the results change infrequently relative to the query execution time.</li>
+            <li>Reporting and analytics dashboards where users tolerate some staleness in exchange for sub-second response times.</li>
+            <li>CQRS read models: the query side of a CQRS architecture maintains materialized views updated by domain events from the write side.</li>
+            <li>Cross-database or cross-service denormalization: pre-joining data from multiple microservices into a single queryable structure for the read path.</li>
+            <li>Search indexes are essentially materialized views — the index is a pre-computed, optimized representation of the source data for fast query execution.</li>
+          </ul>
+
+          <h2 id="when-not-to-use">When not to use</h2>
+          <ul>
+            <li>Data must be real-time accurate — materialized views are stale by definition; for live financial balances or inventory counts, query the source of truth.</li>
+            <li>The underlying data changes so frequently that the refresh cost approaches the original query cost — the view is perpetually stale and provides no benefit.</li>
+            <li>The query is cheap and fast — the overhead of maintaining a materialized view exceeds the benefit for simple, well-indexed queries.</li>
+            <li>Storage is severely constrained — materialized views duplicate data from base tables, potentially significantly increasing storage requirements.</li>
+          </ul>
+
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <pre><code>
+  PostgreSQL MATERIALIZED VIEW:
+
+  -- Create a materialized view for sales summary
+  CREATE MATERIALIZED VIEW monthly_sales_summary AS
+  SELECT
+    date_trunc('month', order_date) AS month,
+    region,
+    SUM(amount)                     AS total_revenue,
+    COUNT(*)                        AS order_count,
+    AVG(amount)                     AS avg_order_value
+  FROM orders
+  JOIN regions USING (region_id)
+  WHERE order_date >= NOW() - INTERVAL '12 months'
+  GROUP BY 1, 2
+  WITH DATA;  -- populate immediately
+
+  -- Index on the materialized view for fast queries
+  CREATE INDEX ON monthly_sales_summary (month, region);
+
+  -- Refresh options:
+  REFRESH MATERIALIZED VIEW monthly_sales_summary;          -- full refresh (blocks reads)
+  REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales_summary; -- non-blocking (needs UNIQUE index)
+
+  -- Schedule refresh (pg_cron extension):
+  SELECT cron.schedule('*/15 * * * *',           -- every 15 minutes
+    $$REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales_summary$$);
+
+  Refresh Strategies:
+  On-commit (triggers):    Refresh on every write → strong consistency, high write cost
+  Scheduled (cron):        Refresh periodically   → predictable staleness, low overhead
+  Incremental:             Apply only changes      → low refresh cost, complex implementation
+  On-demand:               Manual or API-triggered → controlled staleness
+
+  CQRS Read Model as Materialized View:
+  Command side → writes events to event store
+                  │
+                  ▼ event bus
+  Read model projector → receives OrderPlaced, OrderShipped events
+                         → maintains order_summary table (denormalized, fast reads)
+  Query side → reads from order_summary (simple SELECT, no joins)
+
+  vs complex OLTP query:
+  SELECT o.*, c.name, c.email, SUM(i.price) ...
+  FROM orders o JOIN customers c ... JOIN items i ... JOIN shipments s ...
+  → replaced by:
+  SELECT * FROM order_summary WHERE order_id = ?   -- 1ms, no joins
+          </code></pre>
+
+          <h2 id="pros-and-cons">Pros and cons</h2>
+          <div class="pros-cons">
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Transforms expensive multi-second queries into millisecond table scans, dramatically improving read performance.</li>
+                <li>Reduces database CPU and I/O load: the expensive computation runs once per refresh, not once per read.</li>
+                <li>Decouples read and write performance: complex analytical queries no longer compete with OLTP writes for resources.</li>
+                <li>CQRS read models enable highly optimized, denormalized read schemas without compromising write-side normalization.</li>
+                <li>Can be indexed just like regular tables, enabling fast filtering and sorting on pre-aggregated data.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Data is stale by definition — the view reflects the state at last refresh time, not the current state.</li>
+                <li>Refresh operations consume database resources; full refresh of a large view can temporarily increase CPU and I/O load.</li>
+                <li>PostgreSQL's CONCURRENT refresh requires a UNIQUE index and is slower than full refresh; without it, the view is locked during refresh (readers blocked).</li>
+                <li>Maintaining consistency between base tables and materialized views across failures is complex — a failed refresh leaves views stale indefinitely without retry logic.</li>
+                <li>Incremental refresh (applying only changes) requires careful implementation; most databases provide full refresh only, making large view refresh expensive.</li>
+              </ul>
+            </div>
+          </div>
+
+          <h2 id="implementation-notes">Implementation notes</h2>
+          <p><strong>Refresh strategies in PostgreSQL:</strong> <code>REFRESH MATERIALIZED VIEW</code> performs a full recompute and requires an exclusive lock, blocking all reads during the refresh. For production systems with high-traffic views, always use <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code>, which computes the new result set, then atomically swaps it in using a diff-based approach. CONCURRENT requires a unique index on the materialized view. Schedule refreshes during low-traffic periods or use pg_cron for automated periodic refresh. Monitor refresh duration — a view that takes 5 minutes to refresh but is scheduled every minute will cause overlapping refreshes and increasing database load.</p>
+          <p><strong>Application-level materialized views:</strong> For cross-service or cross-database scenarios where database-native materialized views cannot span service boundaries, implement application-level materialized views: a dedicated process subscribes to change events (Kafka, CDC, database triggers) and maintains a denormalized read table in a read-optimized store (PostgreSQL read replica, Redis, Elasticsearch). This is the CQRS read model pattern. The key principle is that the read store is rebuilt entirely from the event stream — it is derived data, not a source of truth. This enables rebuilding the read model from scratch by replaying the event stream whenever the schema needs to change.</p>
+
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Stale data served after refresh failure:</strong> A scheduled refresh fails silently (pg_cron job dies, projector crashes). The view continues serving increasingly stale data without any alert. Monitor the last_refresh timestamp of materialized views; alert when staleness exceeds the maximum acceptable window.</li>
+            <li><strong>Refresh lock blocking reads:</strong> A non-concurrent refresh of a large materialized view takes 60 seconds, blocking all reads for a minute. Always use CONCURRENT refresh for large views; always set statement_timeout on refresh jobs to prevent runaway refreshes.</li>
+            <li><strong>Read model divergence from event stream:</strong> A bug in the CQRS projector causes incorrect state in the read model that is not detected. Design read models to be fully rebuildable from the event stream; implement periodic consistency checks comparing read model values against authoritative source queries.</li>
+            <li><strong>Storage explosion:</strong> A materialized view pre-joining fact and dimension tables creates a result set larger than the source tables combined due to denormalization. Pre-estimate output size before creating large materialized views.</li>
+          </ul>
+
+          <h2 id="decision-checklist">Decision checklist</h2>
+          <ul class="checklist">
+            <li>Acceptable staleness for the use case has been defined and the refresh schedule matches it.</li>
+            <li>CONCURRENT refresh is used in production; a unique index exists on the materialized view.</li>
+            <li>Refresh duration has been measured and the refresh interval is comfortably longer than the refresh duration.</li>
+            <li>Last-refresh timestamp monitoring and alerting is in place to detect stale views from failed refreshes.</li>
+            <li>Storage impact of the materialized view has been estimated and is acceptable.</li>
+            <li>For CQRS read models: the read model is fully rebuildable from the event stream by replaying events from the beginning.</li>
+          </ul>
+
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>E-commerce analytics dashboard:</strong> A reporting dashboard shows daily revenue by category, cohort retention, and top-selling products. These queries join orders, products, and customer tables across 200 million rows, taking 30–90 seconds each. Materialized views pre-aggregate these results every 15 minutes; dashboard queries return in under 50ms with no change to the reporting query logic.</li>
+            <li><strong>CQRS order management system:</strong> An order service writes events (OrderPlaced, PaymentReceived, Shipped) to an event store. A separate read projector consumes these events and maintains an order_summary table with the latest denormalized state per order. API reads against order_summary are a single-row lookup; the complex multi-table join is replaced by event-driven incremental updates to the read model.</li>
+            <li><strong>Product search index:</strong> A product catalog maintained in a normalized relational database is projected nightly into an Elasticsearch index. The index is a materialized view of the product data in a search-optimized denormalized form, enabling full-text search and faceted filtering that would be impractical with SQL. Nightly refresh tolerates product data being up to 24 hours stale in search results.</li>
+          </ul>
+
+          <h2 id="related-patterns">Related patterns</h2>
+          <ul>
+            <li><a href="../architecture-styles/cqrs.html">CQRS</a> — CQRS read models are application-level materialized views maintained from domain events.</li>
+            <li><a href="caching-strategies.html">Caching Strategies</a> — caching and materialized views both trade staleness for read performance; caching is memory-based and ephemeral, materialized views are durable and database-native.</li>
+            <li><a href="lazy-loading.html">Lazy Loading</a> — the opposite tradeoff: compute on demand rather than pre-compute eagerly.</li>
+          </ul>
+
+          <h2 id="further-reading">Further reading</h2>
+          <ul>
+            <li><a href="https://www.postgresql.org/docs/current/rules-materializedviews.html" target="_blank" rel="noopener noreferrer">PostgreSQL Documentation — Materialized Views</a></li>
+            <li><a href="https://martinfowler.com/bliki/CQRS.html" target="_blank" rel="noopener noreferrer">Martin Fowler — CQRS (read models as materialized views)</a></li>
+            <li><a href="https://docs.databricks.com/en/delta/delta-streaming.html" target="_blank" rel="noopener noreferrer">Databricks — Incremental Materialized Views with Delta Live Tables</a></li>
+          </ul>
+        </div>
+        <nav class="article-nav" aria-label="Article navigation">
+          <a href="lazy-loading.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Lazy Loading</span></a>
+          <a href="index.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Scalability &amp; Performance</span></a>
+        </nav>
+      </div>
+      <aside class="article-aside">
+        <nav class="toc" aria-label="Table of contents">
+          <div class="toc__title">On this page</div>
+          <ul class="toc__list">
+            <li><a href="#what-it-is" class="toc__link">What it is</a></li>
+            <li><a href="#why-it-exists" class="toc__link">Why it exists</a></li>
+            <li><a href="#when-to-use" class="toc__link">When to use</a></li>
+            <li><a href="#when-not-to-use" class="toc__link">When not to use</a></li>
+            <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
+            <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
+            <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
+            <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
+            <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
+            <li><a href="#further-reading" class="toc__link">Further reading</a></li>
+          </ul>
+        </nav>
+      </aside>
+    </div>
+  </main>
+</div>
+<footer>
+  <div class="footer__inner">
+    <div class="footer__brand"><div class="logo-icon" style="width:28px;height:28px;font-size:0.8rem;" aria-hidden="true">SA</div><span class="footer__tagline">Solution Architect References</span></div>
+    <div class="footer__links"><a href="../glossary/index.html">Glossary</a><a href="../templates/index.html">Templates</a><a href="../decision-guides/index.html">Decision Guides</a></div>
+  </div>
+  <div class="container" style="padding:0 1.5rem;"><div class="footer__copy">A community-maintained reference library for solution architects and engineering teams.</div></div>
+</footer>
+<script src="../assets/js/main.js"></script>
+</body>
+</html>
