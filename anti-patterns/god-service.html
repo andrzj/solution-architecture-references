@@ -104,27 +104,28 @@
         </div>
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
-          <p>A <strong>god service</strong> is a microservice that owns far more domain logic, data, and integrations than one team can release independently. It often started small and grew because new features kept landing in “the service that already has the database.” The API surface spans unrelated capabilities—identity, billing, search, reporting—while one schema and one deployment schedule control them all.</p>
-          <p>At the service level this mirrors the <em>god object</em> anti-pattern in code: extremely high fan-in coupling (most features call it) and high fan-out coupling (it touches every datastore and legacy system). Incident response, scaling, and security reviews all route through this single bottleneck.</p>
+          <p>A <strong>god service</strong> is a deployable that owns more business capabilities than one team can evolve on its own schedule. It usually began as the “service that already has the database,” then absorbed every adjacent feature until identity, billing, dispatch rules, and reporting share one schema and one release train. At the service level it is the same hub pattern as a <a href="god-object.html">god object</a>, but with network fan-in and fan-out across the whole logistics platform.</p>
+          <p>A common pattern is a <strong>DispatchService</strong> microservice that still hosts driver roster CRUD, route optimization calls, SLA timers, partner webhooks, fuel surcharge tables, mobile sync, and finance export hooks left over from an earlier monolith split. Consoles, mobile apps, and batch jobs all call it, so incident response, scaling, and security reviews route through one bottleneck.</p>
 
           <h2 id="why-it-exists">Why it emerges</h2>
-          <p>God services appear when decomposition follows technical convenience instead of domain boundaries. Shared entities (“User”, “Order”, “Account”) become gravitational centers—every adjacent feature is added to the same service because the entity already lives there. Organizational pressure reinforces this: routing work through the owning team is easier than standing up a new service, runbook, and on-call rotation.</p>
-          <p>Without explicit scope governance, platform or “core” teams absorb requirements from product teams. Each addition is locally rational; the global structure becomes an unbounded monolith with network latency.</p>
+          <p>Teams often decompose by deployable artifact, not by bounded context. “Dispatch” was the label on the repository that already talked to the shipments schema, so every logistics feature landed on DispatchService instead of new services with their own data and runbooks.</p>
+          <p>Organizational gravity reinforces the pattern. Standing up the first dispatch service is painful enough that product teams prefer new endpoints on the existing API over arguing for a notification or billing service with separate on-call. Martin Fowler’s microservices writing stresses that service boundaries should follow business capability; entity convenience wins when deadlines are tight.</p>
+          <p>Without scope freezes, the platform team became the default owner for cross-cutting requirements. Each endpoint was locally rational; the global shape is a monolith with HTTP headers.</p>
 
           <h2 id="when-to-use">How it manifests</h2>
           <ul>
-            <li>One service exposes dozens of REST or gRPC endpoints across unrelated business capabilities.</li>
-            <li>Most production incidents either start in or propagate through this service’s call graph.</li>
-            <li>Schema migrations require sign-off from multiple product teams because they share tables.</li>
-            <li>Autoscaling cannot match workload shape—CPU-heavy batch jobs share pools with latency-sensitive reads.</li>
-            <li>Release trains block on this service even when changes are unrelated to other teams’ work.</li>
+            <li>DispatchService exposes REST and gRPC endpoints for roster management, routing, SLA evaluation, billing hooks, and reporting feeds, and new capabilities still land there by default.</li>
+            <li>Most production incidents start in or propagate through the hub service because dispatcher screens and mobile sync share its call graph.</li>
+            <li>Schema migrations on shared dispatch tables require sign-off from finance and partner integrations because multiple capabilities write the same rows.</li>
+            <li>Autoscaling cannot separate CPU-heavy route recalculation from lightweight mobile poll endpoints because they share one deployment and thread pool configuration.</li>
+            <li>Weekly release trains wait on DispatchService even when the only change is an unrelated mobile notification tweak bundled in the same artifact.</li>
           </ul>
 
           <h2 id="when-not-to-use">How to recognize it early</h2>
           <ul>
-            <li>Track public endpoint count and afferent coupling (who imports this client). Sustained growth each quarter signals scope creep.</li>
-            <li>If more than two teams regularly open PRs against the same service repo, ownership boundaries are wrong.</li>
-            <li>A legitimate BFF that aggregates reads is thin and mostly stateless—if the service owns authoritative writes for many domains, it is a god service.</li>
+            <li>Track public endpoint growth and client import counts on the hub service; steady increases each quarter signal scope creep before on-call pain spikes.</li>
+            <li>When finance, mobile, and partner teams all open pull requests in the same service repository each sprint, ownership boundaries are already wrong.</li>
+            <li>A thin BFF that aggregates reads is acceptable; DispatchService instead owns authoritative writes for roster, SLA, and billing adjacency, which marks a god service rather than a facade.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical manifestation</h2>
@@ -155,7 +156,7 @@
      └─────────────┘
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">A microservice that absorbs unrelated responsibilities—becoming a distributed monolith in a single deployable unit.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">One deployable absorbs dispatch, billing hooks, and reporting—monolith coupling with a separate container image.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Consequences and remediation</h2>
@@ -163,45 +164,45 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Consequences</h3>
               <ul>
-                <li>System-wide blast radius for failures, deployments, and performance regressions.</li>
-                <li>Team autonomy collapses—Conway’s Law in reverse: one service serializes many teams.</li>
-                <li>Testing and security reviews scale with the entire product surface area.</li>
+                <li>DispatchService outages degrade dispatcher consoles, driver mobile apps, and finance exports simultaneously because those journeys share one deployment and datastore.</li>
+                <li>Conway’s Law runs in reverse: one service serializes finance, mobile, and partner squads that should ship on independent calendars.</li>
+                <li>Security and performance reviews must treat the entire logistics surface on every change because authorization and export paths live beside sub-second mobile reads.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Remediation strategies</h3>
               <ul>
-                <li>Freeze new domain logic in the god service; route features to new bounded-context services.</li>
-                <li>Extract one context at a time using strangler routing and database-per-service.</li>
-                <li>Publish domain events for cross-context reads; eliminate shared-table writes.</li>
-                <li>Align service boundaries with <a href="../foundations/bounded-contexts.html">bounded contexts</a> and team topologies.</li>
+                <li>Freeze new domain logic in the hub service and route greenfield partner APIs to new repositories aligned to <a href="../foundations/bounded-contexts.html">bounded contexts</a>.</li>
+                <li>Extraction uses strangler routing at the API gateway plus <a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">database per service</a> so roster, SLA, and billing tables gain single write owners.</li>
+                <li>Cross-context reads move to domain events—<code>RouteAssigned</code>, <code>SlaBreached</code>—instead of shared-table joins from other services.</li>
+                <li>Team topologies pair each new service with one on-call rotation so organizational boundaries match deployable boundaries.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Detailed analysis</h2>
-          <p>Remediation starts with change-history analysis: which endpoints co-change for the same business reasons? Those clusters are extraction candidates. Introduce facades so consumers depend on narrow interfaces while you peel off implementations. Never split only the HTTP layer while retaining one database—that recreates a <a href="distributed-monolith.html">distributed monolith</a>.</p>
-          <p>Measure progress by release independence: can Checkout deploy Friday without Billing coordinating? Can Search scale on object storage without touching transactional tables? Each “yes” indicates a successful extraction.</p>
+          <p>Remediation starts with change-history clustering on the hub service: endpoints that co-change for the same business reason become extraction units. Introduce narrow client SDKs so mobile and finance depend on small interfaces while implementations peel out behind those ports.</p>
+          <p>Splitting only the HTTP layer while keeping one shared OLTP schema recreates a <a href="distributed-monolith.html">distributed monolith</a>; Chris Richardson’s microservices patterns treat separate persistence per service as non-negotiable for independence.</p>
+          <p>Progress shows up as release independence: roster deploys without finance export coordination, and route optimization scales out without resizing mobile poll tiers. Simon Brown’s C4 containers help narrate target services to leadership before data migration funding arrives.</p>
 
           <h2 id="common-failure-modes">Escalation patterns</h2>
           <ul>
-            <li><strong>Shared library rebound:</strong> Extracted services import the god service’s domain package, preserving build-time coupling.</li>
-            <li><strong>Partial strangler:</strong> New UI calls a new service while writes still hit the monolithic schema—dual-write bugs follow.</li>
-            <li><strong>Ossified interface:</strong> So many consumers depend on the sprawling API that breaking changes become impossible; innovation slows.</li>
+            <li><strong>Shared library rebound:</strong> “Extracted” services import DispatchService’s domain NuGet package, which preserves compile-time coupling and forces lockstep releases.</li>
+            <li><strong>Partial strangler:</strong> A new notification microservice reads events but SLA writes still mutate shared tables, which produces dual-write and ordering bugs during hub failures.</li>
+            <li><strong>Ossified interface:</strong> So many clients embed the sprawling OpenAPI document that breaking changes stall, and teams add optional fields forever instead of carving new services.</li>
           </ul>
 
           <h2 id="decision-checklist">Diagnostic checklist</h2>
           <ul class="checklist">
-            <li>Can you describe this service’s responsibility in one sentence without “and”?</li>
-            <li>Does exactly one team own production changes without multi-team release committees?</li>
-            <li>Can the service fail without taking down unrelated customer journeys?</li>
-            <li>Are datastore writes exclusive to this context (no cross-service table access)?</li>
+            <li>Can you describe the hub service’s responsibility in one sentence without joining unrelated capabilities?</li>
+            <li>Does one team own production deploys without a multi-squad release committee?</li>
+            <li>Can mobile driver sync fail degraded while finance batch export continues from a separate service?</li>
+            <li>Does each table have a single write owner that is not “whoever hits DispatchService first”?</li>
           </ul>
 
           <h2 id="example-use-cases">Real-world examples</h2>
           <ul>
-            <li><strong>SaaS “AccountService”:</strong> Owned SSO, billing, entitlements, audit, and notifications—P0 incidents in email delivery blocked login for all customers until contexts were split.</li>
-            <li><strong>Retail “OrderService”:</strong> Absorbed cart, payments, tax, shipping labels, and loyalty points; extracted Checkout and Fulfillment over 18 months with event-driven inventory reservations.</li>
+            <li><strong>Illustrative scenario — Northwind DispatchService:</strong> A fuel-surcharge adjustment required a schema change on tables shared with SLA evaluation; finance and mobile squads had to coordinate a single deploy window, and a delayed rollout left drivers seeing stale ETAs while billing already applied the new rate until SLA evaluation was split into its own service with event-sourced breach records.</li>
           </ul>
 
           <h2 id="related-patterns">Related anti-patterns</h2>
@@ -213,9 +214,10 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://samnewman.io/books/building_microservices/" target="_blank" rel="noopener noreferrer">Building Microservices — Sam Newman</a></li>
-            <li><a href="https://martinfowler.com/articles/microservices.html" target="_blank" rel="noopener noreferrer">Microservices — Martin Fowler</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/microservices" target="_blank" rel="noopener noreferrer">Microservices architecture style — Azure Architecture Center</a></li>
+            <li><a href="https://martinfowler.com/articles/microservices.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Microservices</a></li>
+            <li><a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">Chris Richardson — Database per service (microservices.io)</a></li>
+            <li><a href="https://samnewman.io/books/building_microservices/" target="_blank" rel="noopener noreferrer">Sam Newman — Building Microservices</a></li>
+            <li><a href="https://c4model.com/" target="_blank" rel="noopener noreferrer">Simon Brown — The C4 model</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

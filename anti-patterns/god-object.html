@@ -99,31 +99,30 @@
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
           
-          <p>It knows the internal details of other modules. It holds state that logically belongs to other components. Modifying it is dangerous, testing it is painful, and understanding it in full is often impossible.</p>
-          <p>In microservices architectures, the same pattern emerges at the service level as a God Service: a single service that handles user management, authentication, authorization, preferences, notifications, audit logging, and anything else that involves the concept of a "user." Teams justify this because these concerns are related — they all touch the User entity. But cohesion around a data entity is not the same as cohesion around a business capability. The User entity may be a data pivot point, but authentication, profile management, and notification preferences are distinct business capabilities with different change rates, different scaling requirements, and different team ownership.</p>
-          <p>Arthur Riel, in his book <em>Object-Oriented Design Heuristics</em>, identified the God Class as one of the most damaging object-oriented design mistakes. The defining symptoms are: the class has an excessively large interface (many public methods), it manipulates data that other classes manage, and it is involved in many features that seem unrelated to each other. In systems terms: high afferent coupling (many things depend on it) combined with high efferent coupling (it depends on many things) is the signature of a God component.</p>
+          <p>A <strong>god object</strong> (or god class) is a type that knows too much and does too much: its public surface spans unrelated capabilities, it reaches into other modules’ data, and most features route through it. The smell is a class that attracts responsibilities because it already sits at the center of the dependency graph—Martin Fowler discusses related design risks in his writing on application boundaries and refactoring.</p>
+          <p>A familiar shape is a checkout <code>OrderFacade</code> in a modular monolith. What began as “load order, apply totals” grows into tax, promotions, inventory holds, payment capture, shipment labels, loyalty accrual, fraud scoring hooks, and audit exports. Checkout controllers, background jobs, and admin tools all call the same class, so the order story collapses into one type with dozens of reasons to change.</p>
+          <p>Arthur Riel’s <em>Object-Oriented Design Heuristics</em> lists the symptoms: an oversized public interface, manipulation of data owned elsewhere, and involvement in features that only share a noun (“order”). In coupling terms, high fan-in (everything imports <code>OrderFacade</code>) plus high fan-out (it imports payment, catalog, and warehouse clients) marks a god object at class scope—the same hub pattern as a <a href="god-service.html">god service</a> at deployable scope.</p>
 
           <h2 id="why-it-exists">Why it emerges</h2>
-          <p>God Objects emerge through accretion: the gradual accumulation of responsibility over time, one small addition at a time. A class starts with a clear, focused purpose. Then a feature request comes in that is slightly adjacent to the class's responsibility, and it is easier to add a method here than to create a new class. Then another.</p>
-          <p>Then someone discovers the class already has helper methods that a new feature needs, so the new feature's logic goes there too. Each individual addition is defensible. The cumulative result is not. This is the gravitational pull of existing code: a class that already exists, already has the dependencies you need, and already has the relevant data is the path of least resistance.</p>
-          <p>Organizational dynamics amplify the problem. If a single team or individual owns a component that touches a widely-shared domain concept (users, accounts, products), other teams will route their requirements through that team rather than managing the complexity of owning a new component. "Can you add this to UserService?" is an easier ask than "we need to design a new service, agree on its API, deploy and operate it." The UserService team may resist scope creep but eventually yield to organizational pressure, especially when the feature appears "logically related" to existing functionality.</p>
-          <p>Insufficient upfront design also plays a role. When a system is grown without a deliberate decomposition strategy — without Domain-Driven Design or an equivalent discipline for identifying bounded contexts — responsibilities naturally aggregate around the entities that happen to be central to the domain. In an e-commerce system, Order is a central concept that touches inventory, payment, shipping, notifications, and reporting. Without explicit boundaries, all of this logic ends up in an OrderService that is really an orchestration layer for the entire business domain, not a focused service for order management.</p>
+          <p><code>OrderFacade</code> accreted one method per launch. Gift-wrap pricing landed next to line totals because the facade already had the cart graph in memory. Canada tax rules followed because tax needed line context, and creating a <code>TaxService</code> would have missed a release date.</p>
+          <p>Org structure reinforces the pull. Checkout, payments, and marketplace squads file work against “order,” and the checkout team owns the facade, so adjacent logic parks there rather than in new types with explicit contracts.</p>
+          <p>Decomposition by entity instead of capability drove the rest. “Order” touches inventory, payments, and shipping, so without <a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank" rel="noopener noreferrer">bounded contexts</a>, every cross-cutting requirement became another method on the same class. Each edit was locally reasonable; the global shape was not.</p>
 
           <h2 id="when-to-use">How it manifests</h2>
           <ul>
-            <li>The class or service has more than a few dozen public methods, and the methods span concerns that seem only loosely related (e.g., authentication, profile management, and audit logging all in one place).</li>
-            <li>A dependency graph shows that the component is imported or called by the majority of other components in the system — it is a hub with high fan-in coupling.</li>
-            <li>Any production incident in the system has a high probability of involving this component because it is in the call path of nearly every operation.</li>
-            <li>The component cannot be independently scaled because it has accumulated responsibilities with conflicting scaling requirements (some endpoints are I/O-bound, others are CPU-bound).</li>
-            <li>Code changes to this component require the most extensive regression testing of any component in the system because the blast radius of any change is system-wide.</li>
+            <li><code>OrderFacade</code> exposes a wide public API spanning pricing, tax, payments, shipments, and loyalty, and new endpoints keep appearing on the class instead of on focused collaborators.</li>
+            <li>Static analysis shows most storefront and admin assemblies referencing <code>OrderFacade</code>, which makes it the default integration point for any feature that mentions an order id.</li>
+            <li>Production incidents on checkout, refunds, or marketplace settlements frequently implicate the facade because it sits on every critical path.</li>
+            <li>Performance tuning conflicts inside one class: synchronous payment capture blocks threads while label generation and reporting-style exports compete for the same pool.</li>
+            <li>Pull requests touching <code>OrderFacade</code> trigger the broadest regression suites in the monolith because any behavior change can ripple to unrelated journeys.</li>
           </ul>
 
           <h2 id="when-not-to-use">How to recognize it early</h2>
           <ul>
-            <li><strong>Method count growth rate:</strong> Track the number of public methods on significant classes or API endpoints on significant services over time. A component whose interface grows consistently quarter over quarter is accumulating responsibility and will eventually become a god component.</li>
-            <li><strong>Fan-in coupling metric:</strong> Static analysis tools can measure the number of other components that depend on each component (afferent coupling, or Ca). A component with unusually high Ca relative to others in the system is a candidate for decomposition.</li>
-            <li><strong>Change frequency analysis:</strong> In a healthy design, components change at different rates reflecting their different change drivers. A component that is modified in nearly every sprint, regardless of which business domain is being developed, is coupled to too many different concerns.</li>
-            <li><strong>Team ownership ambiguity:</strong> If multiple teams feel they have a stake in how a component evolves, and changes require multi-team coordination, the component spans too many concerns. Clear, focused components have clear, focused ownership.</li>
+            <li><strong>Method count growth rate:</strong> Public methods on the facade grow quarter over quarter, which means responsibility is accumulating faster than extraction.</li>
+            <li><strong>Fan-in coupling metric:</strong> Afferent coupling reports for the checkout module show rising import counts from catalog, marketplace, and admin packages into the facade namespace.</li>
+            <li><strong>Change frequency analysis:</strong> Git history shows <code>OrderFacade</code> edited in most sprints even when the stated theme was search or returns, which signals attachment to too many change drivers.</li>
+            <li><strong>Team ownership ambiguity:</strong> Payments and marketplace teams both expect review rights on facade pull requests, which indicates the class spans contexts that should have separate owners.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical manifestation</h2>
@@ -203,7 +202,7 @@
   └──────────┘ └──────────────┘
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">God service at deployable scope; a monolithic <code>OrderFacade</code> is the same hub pattern at class scope.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Consequences and remediation</h2>
@@ -211,54 +210,50 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Consequences</h3>
               <ul>
-                <li><strong>Single point of failure:</strong> Because every other component depends on the god component, any failure, degradation, or deployment of that component affects the entire system. High fan-in coupling converts a component failure into a system-wide outage.</li>
-                <li><strong>Scaling bottleneck:</strong> The god component accumulates responsibilities with different scaling characteristics. Authentication requires low latency and high throughput. Report generation is CPU-intensive. User preference retrieval is I/O-bound. These cannot be scaled independently when they share a single deployment unit.</li>
-                <li><strong>Testing intractability:</strong> Unit testing a god class or service requires mocking dozens of dependencies. Integration testing requires a complete environment. Test suites become slow, complex, and fragile. Confidence in test coverage declines, leading to reduced testing discipline.</li>
-                <li><strong>Team autonomy collapse:</strong> Teams that need to modify or extend the god component must coordinate with all other teams that depend on it. The component becomes a synchronization point that serializes team throughput, creating a bottleneck for the entire engineering organization.</li>
+                <li><strong>Single point of failure:</strong> A defect or performance regression in <code>OrderFacade</code> degrades checkout, refunds, and marketplace settlement because every journey shares the same class instance and deployment artifact.</li>
+                <li><strong>Scaling bottleneck:</strong> Payment capture cannot be tuned separately from loyalty accrual when both live in one type, so thread pools and timeouts become compromise settings that satisfy nobody.</li>
+                <li><strong>Testing intractability:</strong> Unit tests for the facade require extensive mocking of payment, catalog, and warehouse clients, so teams lean on slow end-to-end suites that discourage small refactors.</li>
+                <li><strong>Team autonomy collapse:</strong> Marketplace and payments squads queue behind checkout for facade changes, which serializes releases that should be independent product bets.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Remediation strategies</h3>
               <ul>
-                <li><strong>Identify cohesive subsets using change history:</strong> Analyze the component's git history and identify which methods tend to change together. Groups of methods that change together for the same reasons are cohesive and belong in the same component. Methods that change independently are candidates for extraction.</li>
-                <li><strong>Extract by bounded context:</strong> Apply DDD bounded context analysis. Identify the distinct sub-domains within the god component (identity, profile management, notification) and extract each into a focused component with a clear, minimal interface.</li>
-                <li><strong>Introduce an anti-corruption layer first:</strong> Before extraction, wrap the god component in a facade that exposes only the subset of functionality each consuming component needs. This breaks the direct dependency and allows extraction to proceed incrementally without changing consumers.</li>
-                <li><strong>Apply the Boy Scout Rule organizationally:</strong> Establish a practice of reducing god component scope with each feature change. Every time a developer touches the god component, they extract one small piece into a more appropriate home. This distributes the remediation effort across the normal flow of work.</li>
+                <li><strong>Identify cohesive subsets using change history:</strong> Cluster git commits on the facade: tax and promotions often co-change, while label generation co-changes with warehouse events—those clusters become extraction candidates.</li>
+                <li><strong>Extract by bounded context:</strong> Checkout, pricing, payments, and fulfillment contexts each get a narrow collaborator type with a minimal surface, aligned to Fowler’s bounded-context idea rather than to the <code>Order</code> entity alone.</li>
+                <li><strong>Introduce an anti-corruption layer first:</strong> New code calls thin ports (<code>PlaceOrderCommand</code>, <code>CapturePaymentPort</code>) so consumers stop depending on the god class directly while implementations move behind adapters.</li>
+                <li><strong>Apply the Boy Scout Rule organizationally:</strong> Every feature touching the facade must extract or delegate one method to a better home, which spreads remediation across ordinary delivery work.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Detailed analysis</h2>
-          <p>The God Object pattern is a direct violation of the Single Responsibility Principle, but understanding <em>why</em> the SRP matters is more useful than simply invoking it. A class or service should have one reason to change — meaning it should be accountable to one actor or stakeholder group. If AuthenticationTeam, ProfileTeam, NotificationTeam, and AuditTeam all have requirements that flow through UserService, UserService has four different reasons to change. Each of those reasons may generate changes that conflict with, or inadvertently break, the other reasons' requirements.</p>
-          <p>The responsibility separation is not about code organization aesthetics; it is about managing change independently.</p>
-          <p>In distributed systems, the God Service pattern is particularly damaging because it creates availability coupling across independent business capabilities. If UserService goes down, authentication fails, which means no user can log in. But it also means profile updates fail, notification preferences cannot be read, audit events cannot be logged, and permission checks return errors. What should be a partial degradation — "users cannot update their profile" — becomes a total outage because all of these capabilities share a deployment boundary.</p>
-          <p>Correctly decomposed services fail independently: AuthService going down affects authentication, but ProfileService continues serving profile data, NotificationService continues delivering notifications, and so on.</p>
-          <p>The most effective decomposition strategy combines two complementary techniques: cohesion analysis and stakeholder analysis. Cohesion analysis asks "which methods change together and for the same reasons?" — methods that change together should stay together. Stakeholder analysis asks "who requests changes to this component?" — if different stakeholder groups drive different parts of the component's evolution, those parts belong in different components. These two lenses will typically converge on the same decomposition, providing high confidence in the proposed boundaries.</p>
-          <p>DDD's bounded context concept formalizes this: a bounded context is a region of the domain model where a particular ubiquitous language applies consistently, and service boundaries should align with bounded context boundaries.</p>
+          <p>The Single Responsibility Principle is not a mantra about small files; it is about one reason to change per module. <code>OrderFacade</code> changes when promotions marketing asks for new rules, when payments changes card networks, when marketplace adds seller fees, and when compliance changes audit exports—four stakeholders, one class.</p>
+          <p>Separating those reasons lets marketplace fees ship without re-running the entire checkout regression grid. Bounded contexts make the split legible: pricing language and invariants differ from payment capture language even when both mention “order.”</p>
+          <p>At deployable scope the same shape becomes a <a href="god-service.html">god service</a>. Containing the problem inside the monolith delays pain but does not remove it; extraction to microservices without splitting the facade first only distributes the god object behind HTTP.</p>
+          <p>Cohesion analysis (what changes together) and stakeholder analysis (who requests changes) usually point to the same seams. Simon Brown’s C4 component diagrams document target collaborators before moving code, so reviews discuss structure instead of debating another thousand-line diff.</p>
 
           <h2 id="common-failure-modes">Escalation patterns</h2>
           <ul>
-            <li><strong>Dependency gravity increases:</strong> As more components depend on the god component, the cost of changing its interface increases. Teams are increasingly reluctant to make even obviously correct refactorings because the blast radius of interface changes is too large. The component's interface ossifies, preventing evolution even as the domain requirements change.</li>
-            <li><strong>Performance tuning conflict:</strong> Different callers of the god component have conflicting performance requirements. The authentication path needs sub-100ms response times. The report generation path takes seconds and blocks threads. Tuning the component for one use case degrades performance for another. Teams resort to hacks (thread pools sized differently per endpoint, per-caller timeouts) that add complexity without solving the fundamental problem.</li>
-            <li><strong>Ownership becomes diffuse:</strong> No single team owns the god component because every team has a stake in it. Changes require approval from multiple teams, creating a consensus bottleneck. The component evolves toward the lowest common denominator — changes that nobody objects to rather than changes that are architecturally correct.</li>
-            <li><strong>Security surface expansion:</strong> A god service with a large API surface has a correspondingly large attack surface. A vulnerability in any part of the service exposes the entire service's credentials and data scope. Least-privilege access control is impossible to implement meaningfully when all capabilities share a single service identity.</li>
+            <li><strong>Dependency gravity increases:</strong> Each new consumer imports <code>OrderFacade</code> directly, so renaming or splitting a method becomes a monolith-wide effort and the public surface stops evolving.</li>
+            <li><strong>Performance tuning conflict:</strong> Holiday checkout tuning that lowers payment timeouts breaks marketplace batch settlements that reuse the same synchronous path inside the facade.</li>
+            <li><strong>Ownership becomes diffuse:</strong> Architecture review boards mediate facade disputes because no single team can approve changes that touch payments, tax, and catalog simultaneously.</li>
+            <li><strong>Security surface expansion:</strong> Admin-only audit export methods share a type with customer-facing checkout entry points, which widens the attack and authorization review surface for every change.</li>
           </ul>
 
           <h2 id="decision-checklist">Diagnostic checklist</h2>
           <ul class="checklist">
-            <li>Does this component have a single, clearly articulable responsibility that can be stated in one sentence without using "and"?</li>
-            <li>Is there a single team that owns this component and makes decisions about its evolution without requiring multi-team consensus?</li>
-            <li>Can this component be deployed, scaled, and failed without affecting components outside its bounded context?</li>
-            <li>Does the component's public interface have fewer than a dozen distinct methods or endpoints?</li>
-            <li>When you look at the component's git history, do changes cluster around a single concern or do they cover multiple unrelated features?</li>
-            <li>Can the component's behavior be fully tested with unit tests that mock only a small number of well-defined dependencies?</li>
+            <li>Can you describe the facade’s responsibility in one sentence without joining unrelated capabilities with “and”?</li>
+            <li>Does exactly one team own facade evolution without standing multi-team release committees?</li>
+            <li>Can checkout fail a deploy while marketplace settlement code paths that should be separate stay healthy in the same process?</li>
+            <li>Is the facade’s public surface shrinking or only growing?</li>
+            <li>Do commits cluster around one concern, or does every sprint mix tax, payments, and shipping edits in the same file?</li>
+            <li>Can unit tests cover a pricing rule change with a handful of mocks instead of the entire commerce graph?</li>
           </ul>
 
           <h2 id="example-use-cases">Real-world examples</h2>
           <ul>
-            <li><strong>UserService in a SaaS platform:</strong> A project management SaaS platform had a UserService responsible for authentication, RBAC authorization, user profile CRUD, email notifications, in-app notifications, password management, SSO integration, and API key management. The service had 127 endpoints and was the direct dependency of 34 other services. A P0 incident in the notification subsystem took down authentication for 90 minutes because they shared a deployment unit.</li>
-            <li><strong>ESB as organizational god service:</strong> An enterprise used a centralized ESB (Enterprise Service Bus) as the integration hub for all inter-system communication. Over ten years, teams routed all transformations, validations, routing logic, and business rules through the ESB. It became a god service that no single team fully understood. Adding a new integration required weeks of regression testing across all existing integrations.</li>
-            <li><strong>God class in a financial application:</strong> A brokerage's <code>TradeProcessor</code> class was responsible for trade validation, risk checking, order routing, position updating, settlement scheduling, regulatory reporting, and fee calculation — over 4,000 lines of code with 89 public methods. Every new regulatory requirement, every new product type, and every performance optimization required modifying this class, which required full system regression testing for each change.</li>
+            <li><strong>Illustrative scenario — Meridian <code>OrderFacade</code>:</strong> A marketplace seller-fee change required editing the facade method that also performed card capture; the deploy slipped while payments and marketplace argued over review ownership, and a hotfix to gift-wrap pricing reintroduced a double-capture bug because tests could not isolate payment behavior from promotion logic until checkout extracted a dedicated <code>PaymentCapture</code> collaborator.</li>
           </ul>
 
           <h2 id="related-patterns">Related anti-patterns</h2>
@@ -270,9 +265,10 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://refactoring.guru/antipatterns/god-object" target="_blank" rel="noopener">Refactoring Guru – God Object Anti-Pattern</a></li>
-            <li><a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank" rel="noopener">Martin Fowler – Bounded Context</a></li>
-            <li><a href="https://www.amazon.com/Object-Oriented-Design-Heuristics-Arthur-Riel/dp/020163385X" target="_blank" rel="noopener">Arthur Riel – Object-Oriented Design Heuristics</a></li>
+            <li><a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Bounded Context</a></li>
+            <li><a href="https://martinfowler.com/articles/microservices.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Microservices (component boundaries)</a></li>
+            <li><a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">Chris Richardson — Database per service (microservices.io)</a></li>
+            <li><a href="https://c4model.com/" target="_blank" rel="noopener noreferrer">Simon Brown — The C4 model</a></li>
           </ul>
         </div>
         </div>

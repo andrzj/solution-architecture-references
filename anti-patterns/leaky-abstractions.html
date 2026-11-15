@@ -104,15 +104,33 @@
         </div>
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
-          <p>A <strong>leaky abstraction</strong> presents a simple interface while secretly delegating to complex behavior that callers must understand to avoid bugs. Joel Spolsky’s classic example is TCP’s reliable stream hiding packet loss—until it doesn’t, and you need to understand retransmits. In distributed systems, ORMs, RPC clients, and “serverless” wrappers often leak partitions, timeouts, and consistency models.</p>
+          <p>A <strong>leaky abstraction</strong> sells a simple surface while hiding mechanics callers must still understand to stay correct. Joel Spolsky’s formulation — TCP’s reliable byte stream until packet loss forces retransmit awareness — applies directly to distributed data layers. See <a href="https://www.joelonsoftware.com/2002/11/11/the-law-of-leaky-abstractions/" target="_blank" rel="noopener noreferrer">The Law of Leaky Abstractions</a>.</p>
+          <p>In a multi-region product, mobile and back-office teams often treat a shared ORM as “just call <code>save()</code> on the aggregate.” Behind that API, entities may span a primary writer and distant read replicas. Lazy-loaded associations issue round trips the application code never names. Under surge load, operators and workers pay cross-region latency the object graph obscures — a concrete instance of <a href="chatty-io.html">Chatty I/O</a> wrapped in convenience APIs.</p>
+          <p>Leaky abstractions are not malicious; they trade initial speed for production surprises when partitions, replication lag, or N+1 fetches reappear through error messages and p99 graphs.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Abstractions are built to boost productivity by hiding detail—until edge cases force that detail back through the API (session stickiness, idempotency keys, shard keys). When documentation omits these seams, every consumer rediscovers them in production incidents.</p>
+          <p>ORMs and managed SDKs optimize for single-region developer laptops. Integration tests that mock a database on one host rarely surface cross-region RTT or replica staleness in CI.</p>
+          <p>Product pressure rewards demo velocity. Shipping features behind a repository interface feels faster than documenting consistency per aggregate, shard keys, and idempotency tokens at the boundary.</p>
+          <p>Documentation often stops at happy-path tutorials. When the only path to correctness is reading framework source or DBA runbooks, every new squad rediscovers the same incident — as Azure’s <a href="https://learn.microsoft.com/en-us/azure/architecture/antipatterns/" target="_blank" rel="noopener noreferrer">architecture anti-patterns</a> catalog warns for thick middleware.</p>
+
           <h2 id="when-to-use">How it manifests</h2>
-          <ul><li>Callers must read framework source to explain production behavior.</li><li>Error messages reference internal classes, shard IDs, or broker partitions.</li><li>Performance tuning requires knowledge of underlying storage layout.</li><li>Retries and timeouts cannot be configured safely without knowing internals.</li></ul>
+          <ul>
+            <li>Dispatch engineers grep stack traces for provider-specific SQL or shard hints to explain Rider-facing timeouts.</li>
+            <li>Listing open trips triggers one query per lazy association across the Atlantic, although a single join or batched <code>IN</code> clause would suffice.</li>
+            <li>Retries at the controller layer duplicate trip state changes because the ORM hid non-idempotent flush semantics on the replica path.</li>
+            <li>Tuning “ORM performance” means reading Hibernate or EF Core internals instead of fixing access patterns — see <a href="../foundations/pacelc-theorem.html">PACELC</a> for why teams split hot read models from consensus-backed ledgers.</li>
+          </ul>
+
           <h2 id="when-not-to-use">How to recognize it early</h2>
-          <ul><li>Explicitly documented advanced options for expert users are not leaks—undocumented requirements are.</li></ul>
+          <ul>
+            <li><strong>Expert-only APIs:</strong> If junior developers cannot predict query count or consistency from the public repository methods, the abstraction is leaking.</li>
+            <li><strong>Error dialect:</strong> Production exceptions cite broker partitions, replica lag, or lock wait IDs absent from the domain model.</li>
+            <li><strong>Undocumented consistency:</strong> Methods named <code>save</code> without <code>saveEventually</code> or documented read-your-writes behavior hide replication seams.</li>
+          </ul>
+
           <h2 id="typical-architecture">Typical manifestation</h2>
-          <p>Simple surface; hazardous depth.</p>
+          <p>Application code that assumes a single homogeneous database behind <code>save()</code> often leaks shard placement and cross-region fetch behavior, as sketched in the diagram.</p>
+          
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     application_code_just_ca["Application code         │  #quot;just call save()#quot;         ▼   ..."]
@@ -135,24 +153,53 @@
           </figure>
           <h2 id="pros-and-cons">Consequences and remediation</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Consequences</h3><ul><li>Misuse causes data loss or duplicate writes.</li><li>Framework swaps require sweeping application changes.</li><li>Onboarding cost spikes.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Remediation</h3><ul><li>Document failure and consistency models in the API.</li><li>Expose operational knobs explicitly (timeouts, idempotency).</li><li>Add integration tests that simulate failures.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Consequences</h3>
+              <ul>
+                <li>Duplicate trip updates and stale driver assignments when callers misunderstood replica lag.</li>
+                <li>Framework swaps (ORM upgrade, region move) forced wide refactors because leaks soaked into controllers.</li>
+                <li>Onboarding slowed: every engineer learned the production network map via outages.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Remediation</h3>
+              <ul>
+                <li>Document delivery and consistency at the repository port; link to ADRs on multi-region posture.</li>
+                <li>Expose operational knobs — timeouts, idempotency keys, read regions — in typed APIs, not XML config alone.</li>
+                <li>Add integration tests that inject latency between regions and assert query budgets per request.</li>
+                <li>Where leaks are inevitable, name them: <code>findTripStrong</code> versus <code>findTripAvailable</code>.</li>
+              </ul>
+            </div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Model abstractions with ADRs stating what is guaranteed vs best-effort. Prefer thin domain APIs backed by well-named infrastructure adapters. Use contract tests including partition and timeout faults. When leaking is unavoidable, name it: <code>saveEventually</code>, <code>enqueueAtLeastOnce</code>.</p>
-          
+          <p>Split hot read models deliberately: map tiles or catalog views may use an eventually consistent store; payout or inventory accrual may use a consensus-backed ledger — the same PA/EL versus PC/EC split documented under <a href="../foundations/pacelc-theorem.html">PACELC</a>. The ORM should not pretend those stores are one homogeneous <code>DbContext</code>.</p>
+          <p>Thin domain services depend on explicit ports (<code>TripCommandPort</code>, <code>TripQueryPort</code>) implemented by adapters that translate to SQL, DynamoDB, or gRPC. Application code never opens lazy navigations on entities that might hydrate across a region boundary.</p>
+          <p>Contract tests fail CI when a repository method exceeds an agreed query count or touches a forbidden region for a strong-consistency use case.</p>
+
           <h2 id="common-failure-modes">Escalation patterns</h2>
-          <ul><li><strong>ORM N+1:</strong> Collections lazy-load across network boundaries.</li><li><strong>Serverless cold starts:</strong> Latency SLOs violated without provisioned concurrency.</li></ul>
+          <ul>
+            <li><strong>ORM N+1:</strong> Support dashboards list hundreds of active trips; each row lazy-loads rider and driver profiles cross-region until connection pools exhaust.</li>
+            <li><strong>Serverless cold starts:</strong> A “simple” Lambda behind API Gateway violates dispatch latency SLOs until provisioned concurrency is added — another leak through the “just deploy” abstraction.</li>
+            <li><strong>Cache-as-band-aid:</strong> Teams bolt Redis in front of the ORM without fixing graph fetch patterns; invalidation bugs reintroduce staleness at a new layer.</li>
+          </ul>
           <h2 id="decision-checklist">Diagnostic checklist</h2>
-          <ul class="checklist"><li>Can a new developer use this API without reading implementation code?</li><li>Are delivery and consistency guarantees documented at the boundary?</li><li>Do tests fail when underlying assumptions change?</li></ul>
+          <ul class="checklist">
+            <li>Can a new developer use this API without reading ORM source or infra runbooks?</li>
+            <li>Are consistency guarantees and acceptable staleness documented on each repository method?</li>
+            <li>Do tests fail when simulated cross-region latency or partition faults are injected?</li>
+            <li>Is query count per HTTP request observable and alerted in production?</li>
+          </ul>
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul><li><strong>Managed queue SDK:</strong> Default pull timeout caused duplicate processing until teams learned visibility timeout math.</li></ul>
+          <ul>
+            <li><strong>Illustrative scenario — RideRelay ORM hides cross-region latency:</strong> At <strong>RideRelay</strong>, a multi-region ride-hailing product, matching workers loaded <code>Trip</code> aggregates with lazy <code>Driver</code> and <code>Rider</code> entities stored behind EU replicas. Stadium events drove p99 matching latency up until teams replaced graph navigation with eager fetches and region-aware query ports — leaks surfaced only under real geography, not in single-region CI.</li>
+          </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="../software-engineering/design-patterns.html">Design Patterns</a></li><li><a href="../foundations/eventual-consistency.html">Eventual Consistency</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://www.joelonsoftware.com/2002/11/11/the-law-of-leaky-abstractions/" target="_blank" rel="noopener noreferrer">The Law of Leaky Abstractions</a></li>
-            <li><a href="https://martinfowler.com/ieeeSoftware/whenUseAndWhenNot.pdf" target="_blank" rel="noopener noreferrer">When to use and not use patterns — Martin Fowler</a></li>
+            <li><a href="https://martinfowler.com/bliki/DesignStaminaHypothesis.html" target="_blank" rel="noopener noreferrer">Design stamina hypothesis — Martin Fowler</a></li>
             <li><a href="https://learn.microsoft.com/en-us/azure/architecture/antipatterns/" target="_blank" rel="noopener noreferrer">Azure architecture antipatterns</a></li>
           </ul>
         </div>
