@@ -101,11 +101,12 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Streaming integration is the continuous, real-time movement and transformation of data records as they are produced, with millisecond-to-second latency rather than the minutes-to-hours latency of batch integration. A stream processor subscribes to one or more event streams (Kafka topics, Kinesis shards, Pub/Sub subscriptions), processes each event or micro-window of events as they arrive, and immediately produces output to downstream topics, databases, or APIs.</p>
+          
           <p>The major frameworks are <strong>Kafka Streams</strong> (a lightweight Java library that runs embedded in application JVMs — no separate cluster required — for Kafka-to-Kafka transformation), <strong>Apache Flink</strong> (a full stateful stream processing engine with advanced windowing, exactly-once guarantees, and unified batch/stream API), <strong>Apache Spark Structured Streaming</strong> (extends Spark's batch DataFrame API to streaming with micro-batch or continuous processing modes), <strong>Amazon Kinesis Data Analytics</strong> (managed Flink on AWS), and <strong>Google Dataflow</strong> (managed Apache Beam runner). The choice depends on whether you need a simple Kafka-to-Kafka transformation (Kafka Streams), complex stateful event processing (Flink), or tight cloud ecosystem integration.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Many business requirements simply cannot be satisfied by batch processing. Fraud detection must evaluate a transaction within milliseconds of it occurring, not during the next nightly batch run. Real-time recommendation systems must update a user's personalized feed seconds after they interact with content. Infrastructure monitoring must detect and alert on anomalies within seconds, not minutes. These latency requirements drive the adoption of streaming integration even though it introduces significant additional complexity compared to batch.</p>
+          <p>Many business requirements simply cannot be satisfied by batch processing. Fraud detection must evaluate a transaction within milliseconds of it occurring, not during the next nightly batch run. Real-time recommendation systems must update a user's personalized feed seconds after they interact with content. Infrastructure monitoring must detect and alert on anomalies within seconds, not minutes.</p>
+          <p>These latency requirements drive the adoption of streaming integration even though it introduces significant additional complexity compared to batch.</p>
           <p>Streaming also enables architectural patterns that are not possible with batch: event sourcing, real-time materialized views, streaming ETL that keeps a data warehouse current within seconds of source changes, and reactive microservices architectures where services respond to domain events as they happen. The Lambda architecture (batch layer + speed layer + serving layer) was historically used to combine the accuracy of batch with the freshness of streaming, but modern Flink deployments often replace both layers with a single streaming pipeline that also handles reprocessing.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -127,7 +128,16 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    src["Sources&lt;br/&gt;CDC, apps"]
+    kafka["Kafka"]
+    flink["Stream processor&lt;br/&gt;Flink, Kafka Streams"]
+    sinks["Operational sinks"]
+    src --> kafka --> flink --> sinks</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Apache Flink Stateful Streaming Pipeline:
 
   Sources                 Flink Operators              Sinks
@@ -153,6 +163,9 @@
                          │  Checkpointed to S3 │
                          └─────────────────────┘
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Streaming integration: continuous events flow through a log into stream processors and real-time sinks.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -180,7 +193,8 @@
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>For Kafka Streams, use the high-level DSL (<code>KStream</code>, <code>KTable</code>, <code>GlobalKTable</code>) for straightforward transformations and joins. Kafka Streams automatically manages state in a local RocksDB store backed by a Kafka changelog topic, providing fault tolerance and restart recovery without external state management. For joins between a stream and a reference dataset, use a <code>GlobalKTable</code> (which replicates the full dataset to all instances) rather than a <code>KTable</code> (partitioned) to avoid co-partitioning requirements. Configure <code>commit.interval.ms</code> and <code>cache.max.bytes.buffering</code> to tune the latency/throughput tradeoff.</p>
-          <p>For Apache Flink, the critical configuration is the watermark strategy. Use <code>WatermarkStrategy.forBoundedOutOfOrderness(Duration.ofSeconds(5))</code> for data with occasional late events. Events arriving after the watermark has passed the event's timestamp are either dropped or routed to a side output for separate handling — configure a side output with <code>allowedLateness(Duration.ofMinutes(1))</code> to capture late events for reconciliation rather than silently dropping them. Checkpoint Flink state to S3 with incremental RocksDB checkpoints every 30–60 seconds. For exactly-once end-to-end, use Kafka transactions at the source and a transactional sink (Kafka, PostgreSQL via JDBC with upsert). The Flink Kafka connector with <code>semantic = EXACTLY_ONCE</code> wraps Kafka's transactional producer API.</p>
+          <p>For Apache Flink, the critical configuration is the watermark strategy. Use <code>WatermarkStrategy.forBoundedOutOfOrderness(Duration.ofSeconds(5))</code> for data with occasional late events. Events arriving after the watermark has passed the event's timestamp are either dropped or routed to a side output for separate handling — configure a side output with <code>allowedLateness(Duration.ofMinutes(1))</code> to capture late events for reconciliation rather than silently dropping them. Checkpoint Flink state to S3 with incremental RocksDB checkpoints every 30–60 seconds.</p>
+          <p>For exactly-once end-to-end, use Kafka transactions at the source and a transactional sink (Kafka, PostgreSQL via JDBC with upsert). The Flink Kafka connector with <code>semantic = EXACTLY_ONCE</code> wraps Kafka's transactional producer API.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

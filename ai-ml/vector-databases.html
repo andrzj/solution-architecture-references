@@ -99,7 +99,8 @@
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
           <p>A vector database is a data storage and retrieval system purpose-built for high-dimensional dense vectors — the numerical representations (embeddings) produced by machine learning models when they encode text, images, audio, or other unstructured data. Unlike relational or document databases that retrieve records by exact key or structured query, a vector database retrieves records by semantic similarity: given a query vector, it finds the stored vectors that are geometrically nearest to it in the embedding space, corresponding to the most semantically similar items.</p>
-          <p>The core operation is Approximate Nearest Neighbor (ANN) search. Exact nearest neighbor search in high-dimensional space requires comparing the query vector against every stored vector — an O(n) operation that becomes prohibitively slow at millions or billions of records. ANN algorithms trade a small amount of recall accuracy (missing some true nearest neighbors) for orders-of-magnitude faster retrieval. The dominant ANN index algorithms are <strong>HNSW</strong> (Hierarchical Navigable Small World graphs) — which builds a multi-layer graph structure for fast logarithmic search — and <strong>IVF</strong> (Inverted File Index) — which clusters vectors into Voronoi cells and searches only nearby clusters. Most production vector databases support both, and the choice affects the trade-off between memory usage, build time, query latency, and recall accuracy.</p>
+          <p>The core operation is Approximate Nearest Neighbor (ANN) search. Exact nearest neighbor search in high-dimensional space requires comparing the query vector against every stored vector — an O(n) operation that becomes prohibitively slow at millions or billions of records. ANN algorithms trade a small amount of recall accuracy (missing some true nearest neighbors) for orders-of-magnitude faster retrieval. The dominant ANN index algorithms are <strong>HNSW</strong> (Hierarchical Navigable Small World graphs) — which builds a multi-layer graph structure for fast logarithmic search — and <strong>IVF</strong> (Inverted File Index) — which clusters vectors into Voronoi cells and searches only nearby clusters.</p>
+          <p>Most production vector databases support both, and the choice affects the trade-off between memory usage, build time, query latency, and recall accuracy.</p>
           <p>Vector databases also provide metadata filtering — allowing searches to be scoped to a subset of vectors based on structured attributes (e.g., "find vectors similar to this query, but only from documents published after 2023 with category = 'technology'"). This hybrid filtering requirement is non-trivial: naive pre-filtering reduces the candidate set before ANN search (potentially missing results), while post-filtering reduces recall by discarding results after ANN search. Leading vector databases implement pre-filtering with payload-aware indexes that maintain recall.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -124,7 +125,26 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    documents_items_events["Documents / Items / Events"]
+    embedding_model["EMBEDDING MODEL"]
+    768["768"]
+    1536["1536"]
+    item_float_768_or_float["item → float[768] or float[1536]"]
+    vector_database["VECTOR DATABASE"]
+    ann_index["ANN INDEX"]
+    hnsw_layer_2_o_o_o["HNSW:  Layer 2  o─────o─────o"]
+    documents_items_events --> embedding_model
+    embedding_model --> 768
+    768 --> 1536
+    1536 --> item_float_768_or_float
+    item_float_768_or_float --> vector_database
+    vector_database --> ann_index
+    ann_index --> hnsw_layer_2_o_o_o</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
  WRITE PATH (indexing)
  ┌──────────────────────────────────────────────────────────┐
  │  Documents / Items / Events                               │
@@ -177,6 +197,9 @@
                                               │ + metadata         │
                                               └────────────────────┘
 </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -201,8 +224,10 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Calibrate HNSW parameters (<code>M</code> and <code>ef_construction</code>) to your recall and memory requirements. <code>M</code> controls the number of bidirectional edges per node in the graph — higher values improve recall but increase memory consumption and build time. <code>ef_construction</code> controls the size of the dynamic candidate list during index construction — higher values produce higher-quality graphs at the cost of longer build time. A common starting point is <code>M=16</code>, <code>ef_construction=100</code>; benchmark on your specific data distribution using recall@K metrics and adjust empirically. The query-time parameter <code>ef_search</code> can be tuned separately to trade per-query latency against recall.</p>
-          <p>Plan your vector dimensionality carefully. Higher-dimensional embeddings generally encode more semantic information but consume more memory and increase ANN search latency. Modern embedding models offer multiple dimensionality tiers — for example, 512, 1024, or 1536 dimensions. Evaluate whether a lower-dimensional model achieves sufficient recall for your task before defaulting to the highest-dimension option. Matryoshka Representation Learning (MRL) models (like OpenAI's text-embedding-3) allow truncating embeddings to lower dimensions without retraining, providing flexible dimensionality/performance trade-offs.</p>
+          <p>Calibrate HNSW parameters (<code>M</code> and <code>ef_construction</code>) to your recall and memory requirements. <code>M</code> controls the number of bidirectional edges per node in the graph — higher values improve recall but increase memory consumption and build time. <code>ef_construction</code> controls the size of the dynamic candidate list during index construction — higher values produce higher-quality graphs at the cost of longer build time. A common starting point is <code>M=16</code>, <code>ef_construction=100</code>; benchmark on your specific data distribution using recall@K metrics and adjust empirically.</p>
+          <p>The query-time parameter <code>ef_search</code> can be tuned separately to trade per-query latency against recall.</p>
+          <p>Plan your vector dimensionality carefully. Higher-dimensional embeddings generally encode more semantic information but consume more memory and increase ANN search latency. Modern embedding models offer multiple dimensionality tiers — for example, 512, 1024, or 1536 dimensions. Evaluate whether a lower-dimensional model achieves sufficient recall for your task before defaulting to the highest-dimension option.</p>
+          <p>Matryoshka Representation Learning (MRL) models (like OpenAI's text-embedding-3) allow truncating embeddings to lower dimensions without retraining, providing flexible dimensionality/performance trade-offs.</p>
           <p>Design for index lifecycle management. Unlike relational databases where inserts are immediate and consistent, vector databases with HNSW indexes handle inserts incrementally, but rebuilding the entire index from scratch (for example when migrating to a new embedding model) is a major operation. Maintain a "shadow index" — a second index built on the new configuration — and swap traffic to it once validation passes, rather than attempting an in-place migration. Always maintain the raw embeddings or the original source data so that re-embedding is possible if you change models.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

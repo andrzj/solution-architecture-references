@@ -100,7 +100,9 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Distributed scheduling is the problem of assigning units of work (tasks, jobs, containers) to compute resources (nodes, workers, threads) across a cluster, optimising for utilisation, fairness, latency, priority, and resource constraints. Schedulers range from simple round-robin work queues to sophisticated constraint-based bin-packers like the Kubernetes scheduler. The fundamental challenge is making assignment decisions with incomplete and stale information about resource availability while maintaining high throughput and low assignment latency.</p>
+          
+
+          <p>Distributed scheduling decides which worker runs which task across a pool of machines. Kubernetes schedules pods centrally; SQS consumers pull work; work-stealing balances load across threads. Cron jobs in multiple datacenters need leader election so only one node fires each schedule.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>As workloads outgrow a single machine, work must be distributed across multiple nodes. Without a scheduler, work distribution is manual — engineers assign tasks to specific machines, which doesn't scale and cannot adapt to failures. A distributed scheduler automates placement decisions, handles node failures by rescheduling work, enforces resource limits to prevent noisy neighbours, and optimises cluster utilisation. Modern schedulers also manage priorities, preemption, quotas, and affinity rules, making them central to multi-tenant cluster management.</p>
@@ -121,34 +123,43 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>Scheduling Architectures
-════════════════════════════
-Centralised Scheduler (Kubernetes-style):
-  Jobs/Pods ──► Scheduler (single process, HA replica)
-  Scheduler reads: node capacity, pod resource requests,
-                   affinity/anti-affinity, taints/tolerations
-  Scheduler writes: Pod.Spec.NodeName = "node-4"
-  Kubelet on node-4 reads binding, starts container.
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    CENT["Central scheduler assigns pods to nodes"]
+    QUEUE["Work queue workers pull tasks"]
+    STEAL["Work stealing from peer deques"]
+    CRON["Distributed cron with leader election"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Scheduling Architectures
+          ════════════════════════════
+          Centralised Scheduler (Kubernetes-style):
+            Jobs/Pods ──► Scheduler (single process, HA replica)
+            Scheduler reads: node capacity, pod resource requests,
+                             affinity/anti-affinity, taints/tolerations
+            Scheduler writes: Pod.Spec.NodeName = "node-4"
+            Kubelet on node-4 reads binding, starts container.
+          
+          Work Queue (Pull-based):
+            Producers ──► Queue (SQS, Kafka, Redis)
+                         ▲   ▲   ▲
+                        W1   W2   W3  (workers pull and process)
+            Worker polls, claims task, processes, acks.
+            Dead-letter queue for failed tasks after N retries.
+          
+          Work Stealing:
+            Each worker has a local deque of tasks.
+            Worker with empty deque steals from the back
+            of a random peer's deque.
+            Minimises contention vs. shared central queue.
+          
+          Distributed Cron (HA):
+            Multiple cron-runner instances + leader election (etcd/ZK).
+            Only elected leader fires scheduled jobs.
+            On leader failure: follower acquires lock → resumes cron.
+            Job deduplication: idempotency key or DB unique constraint
+            prevents double-execution during leader failover window.</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Scheduling patterns: centralized placement, pull-based queues, work stealing, and HA cron via elected leader.</figcaption>
+                    </figure>
 
-Work Queue (Pull-based):
-  Producers ──► Queue (SQS, Kafka, Redis)
-               ▲   ▲   ▲
-              W1   W2   W3  (workers pull and process)
-  Worker polls, claims task, processes, acks.
-  Dead-letter queue for failed tasks after N retries.
-
-Work Stealing:
-  Each worker has a local deque of tasks.
-  Worker with empty deque steals from the back
-  of a random peer's deque.
-  Minimises contention vs. shared central queue.
-
-Distributed Cron (HA):
-  Multiple cron-runner instances + leader election (etcd/ZK).
-  Only elected leader fires scheduled jobs.
-  On leader failure: follower acquires lock → resumes cron.
-  Job deduplication: idempotency key or DB unique constraint
-  prevents double-execution during leader failover window.</code></pre>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

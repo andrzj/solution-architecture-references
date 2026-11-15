@@ -128,7 +128,17 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>RBAC (simple):
+          <p>RBAC checks roles, ABAC evaluates attributes in OPA, ReBAC walks relation tuples, OAuth scopes gate coarse API access.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    rbac["RBAC roles on JWT"]
+    abac["ABAC OPA policy engine"]
+    rebac["ReBAC tuple store expansion"]
+    scope["OAuth2 scopes on token"]
+    rbac --> abac --> rebac --> scope</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>RBAC (simple):
   User → JWT { "roles": ["editor", "billing-viewer"] }
   API check: if NOT roles.contains("editor") → 403
 
@@ -166,6 +176,9 @@ OAuth2 Scopes (coarse-grained):
   invoices:write → POST /invoices, PUT /invoices/{id}
   
   Gateway enforces scope → service enforces resource ownership</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Role checks in JWT, OPA Rego on rich input, Zanzibar-style graph expansion, scope enforcement at gateway.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -193,13 +206,16 @@ OAuth2 Scopes (coarse-grained):
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <h3>Scopes vs roles vs permissions</h3>
-          <p><strong>OAuth2 scopes</strong> represent what the token is allowed to do — typically coarse-grained and user-consented (e.g., <code>read:profile</code>, <code>write:orders</code>). They are defined at the application level. <strong>Roles</strong> represent job functions (admin, editor); a user may have multiple roles. <strong>Permissions</strong> are fine-grained operations (e.g., <code>order.cancel</code>, <code>user.delete</code>). The best practice is a layered model: gateway enforces scopes, service enforces roles and fine-grained permissions.</p>
+          <p><strong>OAuth2 scopes</strong> represent what the token is allowed to do — typically coarse-grained and user-consented (e.g., <code>read:profile</code>, <code>write:orders</code>). They are defined at the application level. <strong>Roles</strong> represent job functions (admin, editor); a user may have multiple roles. <strong>Permissions</strong> are fine-grained operations (e.g., <code>order.cancel</code>, <code>user.delete</code>).</p>
+          <p>The best practice is a layered model: gateway enforces scopes, service enforces roles and fine-grained permissions.</p>
 
           <h3>Open Policy Agent (OPA)</h3>
-          <p>OPA is a general-purpose policy engine that evaluates policies written in the <strong>Rego</strong> language. Policies take a JSON input document (the authorisation request context) and return a decision (allow/deny + optional data). OPA can be deployed as: a sidecar (<code>opa</code> process alongside the service), an SDK embedded in the service, or a central policy service (with higher latency). Keep policies testable — OPA provides <code>opa test</code> for unit testing Rego policies. Use OPA bundles to distribute policy versions with the same CI/CD pipeline as code.</p>
+          <p>OPA is a general-purpose policy engine that evaluates policies written in the <strong>Rego</strong> language. Policies take a JSON input document (the authorisation request context) and return a decision (allow/deny + optional data). OPA can be deployed as: a sidecar (<code>opa</code> process alongside the service), an SDK embedded in the service, or a central policy service (with higher latency). Keep policies testable — OPA provides <code>opa test</code> for unit testing Rego policies.</p>
+          <p>Use OPA bundles to distribute policy versions with the same CI/CD pipeline as code.</p>
 
             <h3>Resource-based authorisation</h3>
-            <p>Resource-based authz checks whether the requesting identity owns or has been granted access to the specific resource instance — not just the resource type. Example: user A can read order #42 (because they own it) but not order #99 (owned by user B). This check requires domain context (the resource's owner field) and must happen inside the service, not at the gateway. Common patterns: automatically filter collection queries with <code>WHERE owner_id = $currentUser</code>, and explicitly check ownership before returning individual items. Return <code>404 Not Found</code> (rather than <code>403 Forbidden</code>) when the caller should not know the resource exists — to avoid enumeration attacks.</p>
+            <p>Resource-based authz checks whether the requesting identity owns or has been granted access to the specific resource instance — not just the resource type. Example: user A can read order #42 (because they own it) but not order #99 (owned by user B). This check requires domain context (the resource's owner field) and must happen inside the service, not at the gateway. Common patterns: automatically filter collection queries with <code>WHERE owner_id = $currentUser</code>, and explicitly check ownership before returning individual items.</p>
+          <p>Return <code>404 Not Found</code> (rather than <code>403 Forbidden</code>) when the caller should not know the resource exists — to avoid enumeration attacks.</p>
 
           <h3>Attribute filtering in responses</h3>
           <p>Sometimes a caller is allowed to read a resource but should not see all fields — a non-admin seeing a user record should not see <code>ssn</code>, <code>salary</code>, or internal notes. Implement field-level filtering in the service layer based on the caller's role/attributes, not in the API gateway. Document which fields are returned for each role in the OpenAPI spec. Consider separate response schemas per access level rather than conditional field omission — easier to test and document.</p>
@@ -244,11 +260,11 @@ OAuth2 Scopes (coarse-grained):
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li>OWASP API Security Top 10 — API1 (Broken Object Level Authorization) and API5 (Broken Function Level Authorization).</li>
-            <li>Google Zanzibar: Google's Consistent, Global Authorization System (USENIX ATC 2019).</li>
-            <li>Open Policy Agent documentation — openpolicyagent.org/docs</li>
-            <li>OpenFGA (Fine-Grained Authorization) — openfga.dev</li>
-            <li>NIST SP 800-162 — Guide to Attribute Based Access Control (ABAC).</li>
+            <li><a href="https://owasp.org/API-Security/" target="_blank" rel="noopener noreferrer">OWASP API Security Top 10 — API1 (Broken Object Level Authorization) and API5 (Broken Function Level Authorization).</a></li>
+            <li><a href="https://research.google/pubs/pub48190/" target="_blank" rel="noopener noreferrer">Google Zanzibar: Google&#x27;s Consistent, Global Authorization System (USENIX ATC 2019).</a></li>
+            <li><a href="https://www.openpolicyagent.org/docs" rel="noopener noreferrer" target="_blank">Open Policy Agent documentation</a> — policy-as-code authorization.</li>
+            <li><a href="https://openfga.dev/docs" target="_blank" rel="noopener noreferrer">OpenFGA (Fine-Grained Authorization) — openfga.dev</a></li>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-162/final" target="_blank" rel="noopener noreferrer">NIST SP 800-162 — Guide to Attribute Based Access Control (ABAC).</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

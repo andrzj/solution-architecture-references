@@ -100,8 +100,10 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Blue-green deployment is a release strategy that maintains two identical production environments — blue (current live) and green (new version) — and switches traffic between them in a single, near-instantaneous operation. At any time, only one environment is serving production traffic. The deployment process: (1) new version is deployed to the idle environment; (2) smoke tests and validation run against the idle environment; (3) the load balancer or DNS record is updated to route traffic to the new environment; (4) the old environment is kept live for a period to enable instant rollback; (5) after a stability window, the old environment is decommissioned or repurposed for the next release cycle.</p>
-          <p>The traffic switch can be performed at different layers. <strong>Load balancer switching</strong> is the most common: the load balancer's target group is changed from blue to green. This is near-instantaneous (under a second) and provides immediate rollback capability by reverting the target group assignment. <strong>DNS switching</strong> updates the DNS record to point to the new environment's IP or load balancer. DNS is slower due to TTL propagation (even with TTL set to 30-60 seconds, some clients cache longer) but works for environments without a shared load balancer. <strong>Kubernetes Service switching</strong> changes the Service selector labels to route to the new Deployment's pods — the cleanest approach in Kubernetes where both deployments coexist in the cluster and traffic switch is a label selector update.</p>
+          <p>The deployment process: (1) new version is deployed to the idle environment; (2) smoke tests and validation run against the idle environment; (3) the load balancer or DNS record is updated to route traffic to the new environment; (4) the old environment is kept live for a period to enable instant rollback;</p>
+          <p>(5) after a stability window, the old environment is decommissioned or repurposed for the next release cycle.</p>
+          <p>The traffic switch can be performed at different layers. <strong>Load balancer switching</strong> is the most common: the load balancer's target group is changed from blue to green. This is near-instantaneous (under a second) and provides immediate rollback capability by reverting the target group assignment. <strong>DNS switching</strong> updates the DNS record to point to the new environment's IP or load balancer.</p>
+          <p>DNS is slower due to TTL propagation (even with TTL set to 30-60 seconds, some clients cache longer) but works for environments without a shared load balancer. <strong>Kubernetes Service switching</strong> changes the Service selector labels to route to the new Deployment's pods — the cleanest approach in Kubernetes where both deployments coexist in the cluster and traffic switch is a label selector update.</p>
           <p>Blue-green is distinct from rolling deployments (incrementally replacing pods one at a time) and canary releases (routing a small percentage to the new version). Blue-green performs a complete, simultaneous switch of all traffic — it is binary, not gradual. This means if the new version has a problem, all users are affected rather than a subset. The compensation is that rollback is trivially fast — reverting to blue takes the same time as the original switch, typically under a second.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -121,7 +123,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>KUBERNETES BLUE-GREEN:
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    users["Users"]
+    svc["Service selector"]
+    blue["Blue deployment&lt;br/&gt;current"]
+    green["Green deployment&lt;br/&gt;new version"]
+    users --> svc
+    svc --> blue
+    svc -.->|switch| green</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>KUBERNETES BLUE-GREEN:
   # Blue deployment (current live)
   apiVersion: apps/v1
   kind: Deployment
@@ -182,6 +195,9 @@ DATABASE MIGRATION STRATEGY:
   Phase 3: Cleanup (next release cycle)
     - Remove backward compatibility code
     - Drop old columns in a follow-up migration</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Blue-green: two full environments share a service; traffic switches atomically from blue (live) to green (candidate).</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -204,7 +220,8 @@ DATABASE MIGRATION STRATEGY:
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Database migration is the hardest part of blue-green deployment. The naive approach — running destructive migrations before the switch — means that if rollback is needed, the old application code may be incompatible with the new schema. The solution is the <strong>expand-contract</strong> (or parallel-change) pattern: migrations are split into three phases. Expand: add new columns/tables while keeping old ones; both old and new application versions work. Contract: after the new version is stable in production, remove the old columns/tables in a subsequent release. This requires careful coordination and discipline but makes rollback always safe.</p>
+          <p>Database migration is the hardest part of blue-green deployment. The naive approach — running destructive migrations before the switch — means that if rollback is needed, the old application code may be incompatible with the new schema. The solution is the <strong>expand-contract</strong> (or parallel-change) pattern: migrations are split into three phases. Expand: add new columns/tables while keeping old ones; both old and new application versions work.</p>
+          <p>Contract: after the new version is stable in production, remove the old columns/tables in a subsequent release. This requires careful coordination and discipline but makes rollback always safe.</p>
           <p>In Kubernetes, use <strong>Argo Rollouts</strong> or <strong>Flagger</strong> rather than managing blue-green manually. These tools automate the deployment lifecycle: create the green deployment, run analysis (metric checks, smoke tests), switch the service selector, optionally scale down the blue deployment, and roll back automatically if analysis fails. This removes the operational complexity of coordinating the multi-step process manually.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

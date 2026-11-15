@@ -122,11 +122,13 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p><strong>Backward compatibility</strong> (also called backwards compatibility) means that a newer version of a system can still work correctly with older clients or consumers without requiring those clients to update. If service B (a consumer) was built against v1 of service A's API, service A can release v2 and service B will continue to function correctly without any changes — that is backward compatibility. The converse — a new client working with an old server — is <strong>forward compatibility</strong>. Both are required for truly independent deployment in a microservices or distributed system environment.</p>
+          <p>The converse — a new client working with an old server — is <strong>forward compatibility</strong>.</p>
+          <p>Both are required for truly independent deployment in a microservices or distributed system environment.</p>
           <p>Postel's Law, also known as the Robustness Principle, encapsulates the spirit of compatible API design: "Be conservative in what you send, be liberal in what you accept." APIs should be strict about what they produce (never remove or rename fields that consumers depend on) and lenient about what they consume (tolerate unknown fields, missing optional fields, and value variations). This principle directly enables backward and forward compatibility by ensuring both producer and consumer can evolve independently without requiring synchronized deployments.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In monolithic systems, all code is deployed together — compatibility between components is a build-time concern, not a runtime one. In distributed systems, microservices, mobile applications, and third-party API integrations, different versions of producer and consumer run simultaneously and must interoperate. A mobile app cannot be force-updated the moment a backend API changes. A downstream microservice may not be ready to deploy at the same time as an upstream service. Breaking changes in an API that does not maintain backward compatibility force all consumers to update simultaneously — a coordinated deployment that is expensive, risky, and at odds with independent team velocity.</p>
+          <p>In monolithic systems, all code is deployed together — compatibility between components is a build-time concern, not a runtime one. In distributed systems, microservices, mobile applications, and third-party API integrations, different versions of producer and consumer run simultaneously and must interoperate. A mobile app cannot be force-updated the moment a backend API changes. A downstream microservice may not be ready to deploy at the same time as an upstream service.</p>
+          <p>Breaking changes in an API that does not maintain backward compatibility force all consumers to update simultaneously — a coordinated deployment that is expensive, risky, and at odds with independent team velocity.</p>
           <p>Backward compatibility is foundational to continuous delivery and zero-downtime deployments. Blue-green deployments, canary releases, and rolling updates all require that the new version of a service interoperates with both old and new clients during the transition period. Without backward compatibility, any deployment window involves a hard cutover where old and new versions cannot coexist — effectively requiring maintenance windows.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -147,60 +149,68 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>The <strong>expand-contract pattern</strong> (also called parallel change) is the canonical technique for making breaking changes backward-compatibly, particularly for database schema migrations. It proceeds in three phases: Expand (add the new column/field/endpoint alongside the old), Migrate (update all consumers to use the new), and Contract (remove the old once all consumers have migrated). This allows zero-downtime migration with no synchronized deployment required.</p>
-          <pre><code>
-SAFE (additive) changes — backward compatible:
-  ✓ Add a new optional field to a response
-  ✓ Add a new endpoint or API operation
-  ✓ Add a new value to an enum in a response (consumers must tolerate unknown values)
-  ✓ Add a new optional request parameter with a sensible default
-  ✓ Relax a validation constraint (accept more inputs)
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    s1["Safe: optional fields"] --> s2["Safe: new endpoints"]
+    b1["Breaking: remove fields"] --> b2["Breaking: type change"]
+    old["full_name column"] --> both["Dual-write old and new columns"]
+    both --> new["first_name plus last_name only"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>SAFE (additive) changes — backward compatible:
+            ✓ Add a new optional field to a response
+            ✓ Add a new endpoint or API operation
+            ✓ Add a new value to an enum in a response (consumers must tolerate unknown values)
+            ✓ Add a new optional request parameter with a sensible default
+            ✓ Relax a validation constraint (accept more inputs)
+          
+          BREAKING changes — NOT backward compatible:
+            ✗ Remove a field from a response
+            ✗ Rename a field in a request or response
+            ✗ Change a field's type (string → integer)
+            ✗ Make an optional field required
+            ✗ Change the semantics of a field (same name, different meaning)
+            ✗ Remove an endpoint
+            ✗ Tighten a validation constraint (reject previously-valid inputs)
+          
+          Expand-Contract Pattern (database example):
+          Phase 1 — EXPAND
+            ┌──────────────┐    v1 reads: full_name column
+            │ Old column:  │    v2 reads: first_name + last_name
+            │  full_name   │    v2 writes: both old and new columns
+            │ New columns: │
+            │  first_name  │◄── New service version deployed
+            │  last_name   │    Old service still running against old column
+            └──────────────┘
+          
+          Phase 2 — MIGRATE
+            All consumers updated to use first_name/last_name.
+            Backfill script populates new columns from old column.
+            Old column kept populated for remaining old consumers.
+          
+          Phase 3 — CONTRACT
+            ┌──────────────┐    All consumers now use first_name/last_name.
+            │ New columns: │    Drop full_name column.
+            │  first_name  │◄── Safe to remove; no consumers reference it.
+            │  last_name   │
+            └──────────────┘
+          
+          API Versioning Strategies:
+            URL Path:    GET /v1/users/{id}  vs  GET /v2/users/{id}
+            Header:      Accept: application/vnd.myapi+json;version=2
+            Query Param: GET /users/{id}?version=2
+            Subdomain:   GET https://v2.api.example.com/users/{id}
+          
+          Serialization format backward compatibility:
+            Protobuf: field numbers are permanent identifiers.
+                      Never reuse a field number. Only add new fields.
+                      Field 1 in v1 schema must mean the same thing in v20.
+            Avro:     reader schema resolves against writer schema via registry.
+                      Add fields with defaults; never remove or rename fields.
+            JSON:     no schema enforcement by default; discipline required.
+                      Use a schema registry (e.g., AsyncAPI, OpenAPI) + linting.
+                    </code></pre></details>
+                      <figcaption id="typical-architecture-caption">API and schema evolution: additive changes preserve clients; breaking changes need versioning; expand-contract migrates databases without downtime.</figcaption>
+                    </figure>
 
-BREAKING changes — NOT backward compatible:
-  ✗ Remove a field from a response
-  ✗ Rename a field in a request or response
-  ✗ Change a field's type (string → integer)
-  ✗ Make an optional field required
-  ✗ Change the semantics of a field (same name, different meaning)
-  ✗ Remove an endpoint
-  ✗ Tighten a validation constraint (reject previously-valid inputs)
-
-Expand-Contract Pattern (database example):
-Phase 1 — EXPAND
-  ┌──────────────┐    v1 reads: full_name column
-  │ Old column:  │    v2 reads: first_name + last_name
-  │  full_name   │    v2 writes: both old and new columns
-  │ New columns: │
-  │  first_name  │◄── New service version deployed
-  │  last_name   │    Old service still running against old column
-  └──────────────┘
-
-Phase 2 — MIGRATE
-  All consumers updated to use first_name/last_name.
-  Backfill script populates new columns from old column.
-  Old column kept populated for remaining old consumers.
-
-Phase 3 — CONTRACT
-  ┌──────────────┐    All consumers now use first_name/last_name.
-  │ New columns: │    Drop full_name column.
-  │  first_name  │◄── Safe to remove; no consumers reference it.
-  │  last_name   │
-  └──────────────┘
-
-API Versioning Strategies:
-  URL Path:    GET /v1/users/{id}  vs  GET /v2/users/{id}
-  Header:      Accept: application/vnd.myapi+json;version=2
-  Query Param: GET /users/{id}?version=2
-  Subdomain:   GET https://v2.api.example.com/users/{id}
-
-Serialization format backward compatibility:
-  Protobuf: field numbers are permanent identifiers.
-            Never reuse a field number. Only add new fields.
-            Field 1 in v1 schema must mean the same thing in v20.
-  Avro:     reader schema resolves against writer schema via registry.
-            Add fields with defaults; never remove or rename fields.
-  JSON:     no schema enforcement by default; discipline required.
-            Use a schema registry (e.g., AsyncAPI, OpenAPI) + linting.
-          </code></pre>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -225,9 +235,11 @@ Serialization format backward compatibility:
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Consumer-driven contract testing (Pact):</strong> The most robust way to ensure backward compatibility is to test it automatically in CI. Pact is a consumer-driven contract testing framework: each consumer service defines a "contract" — a specification of the exact requests it makes and responses it expects. The provider service's CI pipeline runs these consumer contracts against its latest code to verify it does not break any consumer. This inverts the typical integration test model: instead of the provider testing against its own assumptions, it tests against its consumers' actual requirements. Breaking changes are caught before deployment, not after.</p>
+          <p><strong>Consumer-driven contract testing (Pact):</strong> The most robust way to ensure backward compatibility is to test it automatically in CI. Pact is a consumer-driven contract testing framework: each consumer service defines a "contract" — a specification of the exact requests it makes and responses it expects. The provider service's CI pipeline runs these consumer contracts against its latest code to verify it does not break any consumer. This inverts the typical integration test model: instead of the provider testing against its own assumptions, it tests against its consumers' actual requirements.</p>
+          <p>Breaking changes are caught before deployment, not after.</p>
           <p><strong>Semantic versioning for APIs:</strong> Follow semver conventions: MAJOR version increments signal breaking changes (v1 → v2), MINOR increments add backward-compatible features (v1.1), PATCH increments fix bugs without changing the API contract. Publish a deprecation policy — for example, "we will maintain the previous major version for 12 months after a new major is released." Communicate deprecation via API response headers (<code>Deprecation: true</code>, <code>Sunset: Sat, 01 Jan 2026 00:00:00 GMT</code>) and via documentation.</p>
-          <p><strong>Protobuf field number discipline:</strong> Protocol Buffers use field numbers — not field names — as the wire identity of each field. This means a field can be renamed without breaking compatibility (the number stays the same). However, if a field number is reused for a different field, deserialization will produce corrupted data. The rule is absolute: once a field number is used, it is permanently reserved, even if the field is removed. Use the <code>reserved</code> keyword to document retired field numbers and names: <code>reserved 3, 4; reserved "old_name";</code>.</p>
+          <p><strong>Protobuf field number discipline:</strong> Protocol Buffers use field numbers — not field names — as the wire identity of each field. This means a field can be renamed without breaking compatibility (the number stays the same). However, if a field number is reused for a different field, deserialization will produce corrupted data. The rule is absolute: once a field number is used, it is permanently reserved, even if the field is removed.</p>
+          <p>Use the <code>reserved</code> keyword to document retired field numbers and names: <code>reserved 3, 4; reserved "old_name";</code>.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

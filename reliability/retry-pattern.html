@@ -130,7 +130,22 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>Retry Flow with Exponential Backoff
+          <p>Transient HTTP errors trigger bounded retries with backoff before surfacing failure to the caller.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant Cl as Client
+    participant Rw as Retry wrapper
+    participant Ds as Downstream
+    Cl->>Rw: call()
+    Rw->>Ds: attempt 1
+    Ds-->>Rw: 503
+    Rw->>Rw: wait base times 2^n plus jitter
+    Rw->>Ds: attempt 2
+    Ds-->>Rw: 200 OK
+    Rw-->>Cl: success</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Retry Flow with Exponential Backoff
 ═════════════════════════════════════════════════════
 
 Client                   Retry Wrapper              Downstream
@@ -155,6 +170,9 @@ Error Classification
 ────────────────────
   Retry    → 429, 503, 504, connection timeout, DNS error
   No Retry → 400, 401, 403, 404, 422, business logic errors</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Retry wrapper retries 429/503/timeouts with jitter; 4xx client errors fail immediately without retry.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -182,7 +200,8 @@ Error Classification
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Always classify errors before retrying. Maintain two distinct sets: retryable errors (transient) and non-retryable errors (permanent). Retrying on a 400 Bad Request wastes resources and delays surfacing a bug; retrying on a 401 can lock accounts. In HTTP, 429 and 503 responses should also be checked for a <code>Retry-After</code> header and that interval respected rather than overriding it with your own backoff schedule.</p>
-          <p>Set a hard cap on retry count — three to five attempts is typical for synchronous request paths. Beyond that, open a circuit breaker. A <em>retry budget</em> approach limits the total fraction of requests that are retries (e.g., no more than 10% of all outgoing calls may be retries), preventing runaway retry amplification under sustained load. Libraries like Resilience4j (Java), Polly (.NET), and tenacity (Python) provide built-in retry policies with configurable predicates, backoff strategies, and attempt limits. AWS SDK clients implement adaptive retries by default, which adjust retry rate based on observed error rates.</p>
+          <p>Set a hard cap on retry count — three to five attempts is typical for synchronous request paths. Beyond that, open a circuit breaker. A <em>retry budget</em> approach limits the total fraction of requests that are retries (e.g., no more than 10% of all outgoing calls may be retries), preventing runaway retry amplification under sustained load. Libraries like Resilience4j (Java), Polly (.NET), and tenacity (Python) provide built-in retry policies with configurable predicates, backoff strategies, and attempt limits.</p>
+          <p>AWS SDK clients implement adaptive retries by default, which adjust retry rate based on observed error rates.</p>
           <p>For messaging systems, retries are typically handled at the broker level via re-delivery policies; do not add application-layer retries on top without understanding the combined effect on delivery count and DLQ routing.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

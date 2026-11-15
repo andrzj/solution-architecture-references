@@ -128,7 +128,20 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Stateless app instances behind a load balancer share session state in Redis and persist in the database.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    inet["Internet"] --> lb["Load balancer"]
+    lb --> a1["App 1"]
+    lb --> a2["App 2"]
+    lb --> an["App N"]
+    a1 --> redis["Shared Redis"]
+    a2 --> redis
+    an --> redis
+  redis --> db["RDS / PostgreSQL"]</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Internet Traffic
         │
         ▼
@@ -162,6 +175,9 @@ Auto-Scaling Group policy:
   CPU > 70%  → +2 instances (scale-out)
   CPU < 30%  → -1 instance  (scale-in, cooldown 300s)
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">ALB fans out to N stateless nodes, shared Redis for ephemeral state, RDS for durable data, ASG scales on CPU.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -189,7 +205,8 @@ Auto-Scaling Group policy:
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Statelessness is mandatory.</strong> Move HTTP session data to an external store (Redis with TTL-based expiry is the standard). Ensure no in-process state is mutated during request handling that must survive a process restart. Application configuration should be read at startup from environment variables or a configuration service, not embedded in instance-local files. Avoid any use of local disk for durable data; use object storage or a shared network mount instead.</p>
-          <p><strong>Load balancer configuration:</strong> For most HTTP workloads, use an Application Load Balancer with least-connections or round-robin. Sticky sessions (session affinity by cookie) are a pragmatic fallback when externalized session storage is impractical, but they reduce load distribution quality and must be combined with graceful instance draining on scale-in. Health checks must be tuned carefully — too aggressive and healthy instances are cycled unnecessarily; too lenient and unhealthy instances continue receiving traffic. A typical configuration uses a 5-second interval, 2-second timeout, 2 consecutive failures to mark unhealthy, and 3 successes to return to rotation. <strong>Auto-scaling triggers:</strong> CPU is the bluntest metric. Prefer request-per-second or queue depth metrics for request-driven services, and custom business metrics for data processing pipelines. Add a warm-up period (typically 60–300 seconds) before a new instance starts receiving full traffic to avoid overloading the database connection pool during initialization.</p>
+          <p><strong>Load balancer configuration:</strong> For most HTTP workloads, use an Application Load Balancer with least-connections or round-robin. Sticky sessions (session affinity by cookie) are a pragmatic fallback when externalized session storage is impractical, but they reduce load distribution quality and must be combined with graceful instance draining on scale-in. Health checks must be tuned carefully — too aggressive and healthy instances are cycled unnecessarily; too lenient and unhealthy instances continue receiving traffic. A typical configuration uses a 5-second interval, 2-second timeout, 2 consecutive failures to mark unhealthy, and 3 successes to return to rotation.</p>
+          <p><strong>Auto-scaling triggers:</strong> CPU is the bluntest metric. Prefer request-per-second or queue depth metrics for request-driven services, and custom business metrics for data processing pipelines. Add a warm-up period (typically 60–300 seconds) before a new instance starts receiving full traffic to avoid overloading the database connection pool during initialization.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -228,7 +245,7 @@ Auto-Scaling Group policy:
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://aws.amazon.com/blogs/aws/auto-scaling-for-ec2/" target="_blank" rel="noopener noreferrer">AWS Auto Scaling for EC2 — Official Blog</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/design-principles/scale-out" target="_blank" rel="noopener noreferrer">Scale out — Azure Architecture Center</a> — horizontal scaling design principles.</li>
             <li><a href="https://martinfowler.com/articles/practical-test-pyramid.html" target="_blank" rel="noopener noreferrer">The Twelve-Factor App: Processes (Statelessness) — 12factor.net</a></li>
             <li><a href="https://www.nginx.com/resources/glossary/load-balancing/" target="_blank" rel="noopener noreferrer">NGINX Load Balancing Overview</a></li>
           </ul>

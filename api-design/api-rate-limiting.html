@@ -107,7 +107,46 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Without rate limiting, a single misbehaving client (buggy retry loop, malicious crawler, DDoS) can consume all available server capacity and starve legitimate traffic. Rate limiting also enforces commercial tiering (a free plan gets 100 req/min; paid plans get 1,000 req/min) and prevents credential stuffing attacks by limiting auth endpoint call frequency.</p>
 
-          <h2 id="algorithms">Rate limiting algorithms</h2>
+          
+          <h2 id="when-to-use">When to use</h2>
+          <ul>
+            <li>Public or partner APIs with fair-use quotas and commercial tiers.</li>
+            <li>Authentication and password-reset endpoints vulnerable to brute force.</li>
+            <li>Expensive operations (search, export, report generation) needing per-endpoint caps.</li>
+            <li>Multi-tenant services where one tenant must not exhaust shared capacity.</li>
+          </ul>
+
+          <h2 id="when-not-to-use">When not to use</h2>
+          <ul>
+            <li>Strictly internal synchronous calls behind mutual TLS with trusted callers only — use backpressure instead.</li>
+            <li>When accurate per-IP limits would punish users behind carrier-grade NAT without an authenticated identity key.</li>
+            <li>Ultra-low-latency paths where a Redis round-trip per request is unacceptable without edge caching.</li>
+          </ul>
+
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The gateway enforces per-client counters and returns 429 with Retry-After when quotas exceed.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    client["Client"] --> gw["API Gateway"]
+    gw --> rl["Rate limiter Redis"]
+    rl -->|under quota| svc["Backend services"]
+    rl -->|over quota| e429["429 Retry-After"]</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Client --> API Gateway --> Rate limiter (Redis)
+                |                |
+                |                +-- increment counter per (client, window)
+                |                +-- 429 + Retry-After if over limit
+                v
+           Backend services</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Client through API gateway to Redis rate limiter before backend services.</figcaption>
+          </figure>
+
+          <h2 id="implementation-notes">Implementation notes</h2>
+          <p>Detailed treatment of algorithms, headers, OpenAPI, and client guidance appears in the sections below.</p>
+
+<h2 id="algorithms">Rate limiting algorithms</h2>
 
           <h3>Fixed window counter</h3>
           <pre><code>Window: 60s, Limit: 100 requests
@@ -267,7 +306,23 @@ RateLimit-Reset: 1714000060
             <li>Are auth endpoints and password-reset endpoints separately rate-limited to prevent brute force?</li>
           </ul>
 
-          <h2 id="related-patterns">Related patterns</h2>
+          <h2 
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Boundary burst</strong> — fixed windows allow 2× traffic at window edges; use sliding window or token bucket.</li>
+            <li><strong>Redis outage</strong> — fail-open allows abuse; fail-closed blocks all traffic; define explicit policy.</li>
+            <li><strong>Missing Retry-After</strong> — clients hammer 429 responses and amplify load.</li>
+            <li><strong>Global limit only</strong> — one abusive API key takes down the entire service for everyone.</li>
+          </ul>
+
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li>SaaS REST API: 1,000 requests/minute per API key with token-bucket burst of 100.</li>
+            <li>Login endpoint: 5 attempts per IP per minute plus CAPTCHA after threshold.</li>
+            <li>Report export: 10 requests per hour per organisation on <code>POST /exports</code>.</li>
+          </ul>
+
+id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="api-gateway.html">API Gateway</a> — rate limiting is typically enforced at the gateway layer.</li>
             <li><a href="api-authentication.html">API Authentication</a> — consumer identity is the dimension for rate limit attribution.</li>
@@ -276,11 +331,11 @@ RateLimit-Reset: 1714000060
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li>IETF draft-ietf-httpapi-ratelimit-headers — standardised RateLimit response headers.</li>
-            <li>RFC 6585 — 429 Too Many Requests status code.</li>
-            <li>Cloudflare Blog — counting with approximate sliding window counters.</li>
-            <li>Stripe Rate Limiting Guide — stripe.com/docs/rate-limits</li>
-            <li>GitHub REST API rate limiting — docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api</li>
+            <li><a href="https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/" rel="noopener noreferrer" target="_blank">IETF RateLimit headers draft</a> — standardised RateLimit response headers.</li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc6585" rel="noopener noreferrer" target="_blank">RFC 6585</a> — 429 Too Many Requests status code.</li>
+            <li><a href="https://blog.cloudflare.com/counting-things-a-lot-of-different-things/" rel="noopener noreferrer" target="_blank">Cloudflare — counting at scale</a> — approximate sliding window counters.</li>
+            <li><a href="https://stripe.com/docs/rate-limits" rel="noopener noreferrer" target="_blank">Stripe Rate Limiting Guide</a> — headers and client behaviour.</li>
+            <li><a href="https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api" rel="noopener noreferrer" target="_blank">GitHub REST API rate limiting</a> — X-RateLimit headers in practice.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
@@ -294,16 +349,22 @@ RateLimit-Reset: 1714000060
           <ul class="toc__list">
             <li><a href="#what-it-is" class="toc__link">What it is</a></li>
             <li><a href="#why-it-exists" class="toc__link">Why it exists</a></li>
-            <li><a href="#algorithms" class="toc__link">Algorithms</a></li>
+            <li><a href="#when-to-use" class="toc__link">When to use</a></li>
+            <li><a href="#when-not-to-use" class="toc__link">When not to use</a></li>
+            <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
+            <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
+            <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
+            <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
+            <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
+            <li><a href="#further-reading" class="toc__link">Further reading</a></li>
+<li><a href="#algorithms" class="toc__link">Algorithms</a></li>
             <li><a href="#response-headers" class="toc__link">Response headers</a></li>
             <li><a href="#limit-dimensions" class="toc__link">Limit dimensions</a></li>
             <li><a href="#burst-allowance" class="toc__link">Burst allowance</a></li>
             <li><a href="#openapi-documentation" class="toc__link">OpenAPI documentation</a></li>
             <li><a href="#client-implementation" class="toc__link">Client implementation</a></li>
-            <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
-            <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
-            <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
-            <li><a href="#further-reading" class="toc__link">Further reading</a></li>
           </ul>
         </nav>
       </aside>

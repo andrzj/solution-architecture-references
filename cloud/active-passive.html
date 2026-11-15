@@ -104,69 +104,107 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Active-Passive Architecture is a key concept in cloud architecture. This article covers the core principles, implementation patterns, and best practices.</p>
-
+          
+          <p>It is the most common enterprise DR pattern: cheaper than active-active while still meeting RTO targets measured in minutes when warm standby and rehearsed runbooks are in place.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Understanding active-passive architecture is essential for building robust, scalable systems. The patterns and practices described here have emerged from real-world experience across many organizations.</p>
-
+          <p>Organisations need better RTO than backup-and-restore but cannot justify full duplicate capacity in every region.</p>
+          <p>Regulators often require a geographically separated recovery site even when daily traffic is concentrated in one region.</p>
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When designing systems that require active-passive architecture capabilities.</li>
-            <li>When evaluating architectural trade-offs in your specific context.</li>
-            <li>When onboarding team members to established practices.</li>
+            <li>Business-critical apps with RTO of 5–60 minutes and RPO of seconds to minutes.</li>
+            <li>Database-heavy systems where Aurora Global Database or cross-region read replica promotion is the primary DR investment.</li>
+            <li>Teams with rehearsed failover runbooks and DNS or Global Accelerator health-checked routing.</li>
           </ul>
-
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>When the complexity overhead outweighs the benefit for your use case.</li>
-            <li>When simpler alternatives adequately solve the problem.</li>
+            <li>Passive region never tested — failover fails at 3 AM because credentials, secrets, or scaling scripts are stale.</li>
+            <li>Active-passive masquerading as active-active (both regions get writes) without conflict handling.</li>
           </ul>
-
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>ACTIVE-PASSIVE ARCHITECTURE OVERVIEW:
-
-  ┌─────────────────────────────────────┐
-  │         Active-Passive Architecture        │
-  │                                     │
-  │  Core principles and components     │
-  │  would be illustrated here          │
-  │                                     │
-  └─────────────────────────────────────┘
-</code></pre>
-
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    dns["Route 53 / global accelerator&lt;br/&gt;health checks"]
+    primary["Primary region&lt;br/&gt;active app + DB writer"]
+    standby["Standby region&lt;br/&gt;warm replicas"]
+    repl["Async replication"]
+    dns --> primary
+    dns -. failover .-> standby
+    primary --> repl --> standby</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>ACTIVE-PASSIVE FAILOVER
+────────────────────────────────────────────
+  Route 53 / Global Accelerator
+        │ primary health OK
+        ▼
+   PRIMARY region (100% traffic)
+   App + DB writer
+        │ replication (async/sync)
+        ▼
+   STANDBY region (0% traffic)
+   Scaled-down app + read replica
+        │
+   On failover: promote DB → scale app → flip DNS</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Active-passive: DNS or global acceleration routes to a primary region; standby receives replication for fast failover.</figcaption>
+          </figure>
           <h2 id="pros-and-cons">Pros and cons</h2>
-          <h3>Advantages</h3>
-          <ul>
-            <li>Provides structured approach to solving common problems.</li>
-            <li>Enables consistent implementation across teams.</li>
-            <li>Draws on proven industry practices.</li>
-          </ul>
-          <h3>Trade-offs</h3>
-          <ul>
-            <li>Requires investment in tooling and process.</li>
-            <li>May introduce additional complexity in simple scenarios.</li>
-          </ul>
-
+          <div class="pros-cons">
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+            <li>Lower cost than active-active while meeting moderate RTO.</li>
+            <li>Clear operational story: one primary writer simplifies consistency.</li>
+            <li>Failover drills can use passive region without customer traffic.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+            <li>RTO includes detection, decision, DNS TTL, DB promotion, and scale-out — often underestimated.</li>
+            <li>Replication lag defines real RPO; async replication loses in-flight writes.</li>
+            <li>Passive resources still incur storage and minimal compute cost.</li>
+              </ul>
+            </div>
+          </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>When implementing active-passive architecture, start with the core patterns and incrementally adopt more advanced techniques as your needs grow. Always validate against your specific requirements and constraints.</p>
-
+          <p>Automate promotion steps where possible (Aurora global failover, ECS/Kubernetes scale policies triggered by runbook). Keep secrets and container images identical in both regions.</p>
+          <p>Measure replication lag continuously; alert when lag exceeds RPO budget. Run quarterly GameDays that execute full failover including DNS flip.</p>
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Promotion without validation:</strong> Standby promoted while replication was broken — data loss exceeds RPO.</li>
+            <li><strong>DNS stickiness:</strong> Clients cache old IP addresses; failover appears partial — lower TTL on failover records.</li>
+          </ul>
+          <h2 id="decision-checklist">Decision checklist</h2>
+          <ul class="checklist">
+            <li>Has full failover been executed end-to-end in the last 90 days?</li>
+            <li>Is passive region infrastructure defined in IaC with the same modules as primary?</li>
+            <li>Are write dependencies (queues, caches) replicated or rebuilt during failover?</li>
+          </ul>
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>Billing service:</strong> Aurora Global Database with 1-second typical lag; passive ECS cluster at 25% capacity; failover runbook promotes replica and scales tasks in under 8 minutes.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="index.html">Cloud Architecture Overview</a> — Browse all cloud architecture articles.</li>
+            <li><a href="disaster-recovery.html">Disaster Recovery Patterns</a> — DR strategy spectrum.</li>
+            <li><a href="active-active.html">Active-Active Architecture</a> — When standby is not enough.</li>
+            <li><a href="multi-region.html">Multi-Region Architecture</a> — Regional topology overview.</li>
           </ul>
-
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/" target="_blank" rel="noopener noreferrer">Martin Fowler's Architecture Guide</a></li>
-            <li><a href="https://aws.amazon.com/architecture/" target="_blank" rel="noopener noreferrer">AWS Architecture Center</a></li>
+            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html" target="_blank" rel="noopener noreferrer">Aurora Global Database</a></li>
+            <li><a href="https://sre.google/sre-book/being-on-call/" target="_blank" rel="noopener noreferrer">Google SRE — Being On-Call</a></li>
+            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected Framework</a></li>
           </ul>
         </div>
-        <nav class="article-nav" aria-label="Article navigation">
-          <a href="index.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Back</span><span class="article-nav__title">Cloud Architecture</span></a>
+                <nav class="article-nav" aria-label="Article navigation">
+          <a href="active-active.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Active-Active Architecture</span></a>
+          <a href="disaster-recovery.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Disaster Recovery</span></a>
         </nav>
       </div>
       <aside class="article-aside">
-        <nav class="toc" aria-label="Table of contents">
+                <nav class="toc" aria-label="Table of contents">
           <div class="toc__title">On this page</div>
           <ul class="toc__list">
             <li><a href="#what-it-is" class="toc__link">What it is</a></li>
@@ -176,6 +214,9 @@
             <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
             <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
             <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
+            <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
           </ul>

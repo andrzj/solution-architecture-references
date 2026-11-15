@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Leaky Abstractions — SA References</title>
-  <meta name="description" content="Abstractions that expose implementation details they were meant to hide.">
+  <meta name="description" content="Leaky abstractions: design layers that expose implementation details, forcing callers to understand internals to use them safely.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,66 +99,61 @@
             <span class="badge badge--primary">Anti-Patterns</span>
           </div>
           <h1 class="article-header__title">Leaky Abstractions</h1>
-          <p class="article-header__desc">Abstractions that expose implementation details they were meant to hide.</p>
+          <p class="article-header__desc">APIs and frameworks that promise encapsulation but require callers to know storage, threading, or failure modes to use correctly.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>Leaky Abstractions is a key concept in anti-patterns. This article covers the core principles, implementation patterns, and best practices.</p>
-
+<h2 id="what-it-is">What it is</h2>
+          <p>A <strong>leaky abstraction</strong> presents a simple interface while secretly delegating to complex behavior that callers must understand to avoid bugs. Joel Spolsky’s classic example is TCP’s reliable stream hiding packet loss—until it doesn’t, and you need to understand retransmits. In distributed systems, ORMs, RPC clients, and “serverless” wrappers often leak partitions, timeouts, and consistency models.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Understanding leaky abstractions is essential for building robust, scalable systems. The patterns and practices described here have emerged from real-world experience across many organizations.</p>
-
-          <h2 id="when-to-use">When to use</h2>
-          <ul>
-            <li>When designing systems that require leaky abstractions capabilities.</li>
-            <li>When evaluating architectural trade-offs in your specific context.</li>
-            <li>When onboarding team members to established practices.</li>
-          </ul>
-
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>When the complexity overhead outweighs the benefit for your use case.</li>
-            <li>When simpler alternatives adequately solve the problem.</li>
-          </ul>
-
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>LEAKY ABSTRACTIONS OVERVIEW:
-
-  ┌─────────────────────────────────────┐
-  │         Leaky Abstractions                 │
-  │                                     │
-  │  Core principles and components     │
-  │  would be illustrated here          │
-  │                                     │
-  └─────────────────────────────────────┘
+          <p>Abstractions are built to boost productivity by hiding detail—until edge cases force that detail back through the API (session stickiness, idempotency keys, shard keys). When documentation omits these seams, every consumer rediscovers them in production incidents.</p>
+          <h2 id="when-to-use">How it manifests</h2>
+          <ul><li>Callers must read framework source to explain production behavior.</li><li>Error messages reference internal classes, shard IDs, or broker partitions.</li><li>Performance tuning requires knowledge of underlying storage layout.</li><li>Retries and timeouts cannot be configured safely without knowing internals.</li></ul>
+          <h2 id="when-not-to-use">How to recognize it early</h2>
+          <ul><li>Explicitly documented advanced options for expert users are not leaks—undocumented requirements are.</li></ul>
+          <h2 id="typical-architecture">Typical manifestation</h2>
+          <p>Simple surface; hazardous depth.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    application_code_just_ca["Application code         │  #quot;just call save()#quot;         ▼   ..."]
+    exposes_shard_key_requir["exposes shard key requirements   └────────┬────────┘            ▼    ..."]
+    application_code_just_ca --> exposes_shard_key_requir</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Application code
+        │  "just call save()"
+        ▼
+  ┌─────────────────┐
+  │ Repository API  │ ──► exposes shard key requirements
+  └────────┬────────┘
+           ▼
+       Database / Queue
+       (partitions, acks, visibility)
 </code></pre>
-
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <h3>Advantages</h3>
-          <ul>
-            <li>Provides structured approach to solving common problems.</li>
-            <li>Enables consistent implementation across teams.</li>
-            <li>Draws on proven industry practices.</li>
-          </ul>
-          <h3>Trade-offs</h3>
-          <ul>
-            <li>Requires investment in tooling and process.</li>
-            <li>May introduce additional complexity in simple scenarios.</li>
-          </ul>
-
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Simple surface; hazardous depth.</figcaption>
+          </figure>
+          <h2 id="pros-and-cons">Consequences and remediation</h2>
+          <div class="pros-cons">
+            <div class="pros-cons__col pros-cons__col--pros"><h3>Consequences</h3><ul><li>Misuse causes data loss or duplicate writes.</li><li>Framework swaps require sweeping application changes.</li><li>Onboarding cost spikes.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--cons"><h3>Remediation</h3><ul><li>Document failure and consistency models in the API.</li><li>Expose operational knobs explicitly (timeouts, idempotency).</li><li>Add integration tests that simulate failures.</li></ul></div>
+          </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>When implementing leaky abstractions, start with the core patterns and incrementally adopt more advanced techniques as your needs grow. Always validate against your specific requirements and constraints.</p>
-
+          <p>Model abstractions with ADRs stating what is guaranteed vs best-effort. Prefer thin domain APIs backed by well-named infrastructure adapters. Use contract tests including partition and timeout faults. When leaking is unavoidable, name it: <code>saveEventually</code>, <code>enqueueAtLeastOnce</code>.</p>
+          
+          <h2 id="common-failure-modes">Escalation patterns</h2>
+          <ul><li><strong>ORM N+1:</strong> Collections lazy-load across network boundaries.</li><li><strong>Serverless cold starts:</strong> Latency SLOs violated without provisioned concurrency.</li></ul>
+          <h2 id="decision-checklist">Diagnostic checklist</h2>
+          <ul class="checklist"><li>Can a new developer use this API without reading implementation code?</li><li>Are delivery and consistency guarantees documented at the boundary?</li><li>Do tests fail when underlying assumptions change?</li></ul>
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul><li><strong>Managed queue SDK:</strong> Default pull timeout caused duplicate processing until teams learned visibility timeout math.</li></ul>
           <h2 id="related-patterns">Related patterns</h2>
-          <ul>
-            <li><a href="index.html">Anti-Patterns Overview</a> — Browse all anti-patterns articles.</li>
-          </ul>
-
+          <ul><li><a href="../software-engineering/design-patterns.html">Design Patterns</a></li><li><a href="../foundations/eventual-consistency.html">Eventual Consistency</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/" target="_blank" rel="noopener noreferrer">Martin Fowler's Architecture Guide</a></li>
-            <li><a href="https://aws.amazon.com/architecture/" target="_blank" rel="noopener noreferrer">AWS Architecture Center</a></li>
+            <li><a href="https://www.joelonsoftware.com/2002/11/11/the-law-of-leaky-abstractions/" target="_blank" rel="noopener noreferrer">The Law of Leaky Abstractions</a></li>
+            <li><a href="https://martinfowler.com/ieeeSoftware/whenUseAndWhenNot.pdf" target="_blank" rel="noopener noreferrer">When to use and not use patterns — Martin Fowler</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/antipatterns/" target="_blank" rel="noopener noreferrer">Azure architecture antipatterns</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
@@ -170,13 +165,16 @@
           <div class="toc__title">On this page</div>
           <ul class="toc__list">
             <li><a href="#what-it-is" class="toc__link">What it is</a></li>
-            <li><a href="#why-it-exists" class="toc__link">Why it exists</a></li>
-            <li><a href="#when-to-use" class="toc__link">When to use</a></li>
-            <li><a href="#when-not-to-use" class="toc__link">When not to use</a></li>
-            <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
-            <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
-            <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
-            <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
+            <li><a href="#why-it-exists" class="toc__link">Why it emerges</a></li>
+            <li><a href="#when-to-use" class="toc__link">How it manifests</a></li>
+            <li><a href="#when-not-to-use" class="toc__link">How to recognize it early</a></li>
+            <li><a href="#typical-architecture" class="toc__link">Typical manifestation</a></li>
+            <li><a href="#pros-and-cons" class="toc__link">Consequences and remediation</a></li>
+            <li><a href="#implementation-notes" class="toc__link">Detailed analysis</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Escalation patterns</a></li>
+            <li><a href="#decision-checklist" class="toc__link">Diagnostic checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Real-world examples</a></li>
+            <li><a href="#related-patterns" class="toc__link">Related anti-patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
           </ul>
         </nav>

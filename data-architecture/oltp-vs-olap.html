@@ -101,12 +101,13 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p><strong>OLTP (Online Transaction Processing)</strong> databases are designed for high-frequency, short-duration read and write operations: inserting an order, updating a user's balance, looking up a customer by email. They use row-oriented storage (all columns of a row are stored together on disk), are heavily indexed for point lookups, and enforce ACID transactions. Examples: PostgreSQL, MySQL, Oracle, SQL Server, Amazon Aurora, CockroachDB.</p>
+          <p>Checkout paths need row stores and ACID point writes (<strong>OLTP</strong>); quarterly revenue rollups need columnar scans across history (<strong>OLAP</strong>) — mixing both on one engine usually serves neither workload well.</p>
           <p><strong>OLAP (Online Analytical Processing)</strong> databases are designed for complex aggregation queries over large datasets: "total revenue by product category by region for Q3", scanning millions or billions of rows across a few columns. They use columnar storage (all values of a column are stored together, enabling vectorized processing and high compression of similar values), are denormalized into star/snowflake schemas, and typically have weaker write performance. Examples: Amazon Redshift, Google BigQuery, Snowflake, ClickHouse, DuckDB.</p>
           <p><strong>HTAP (Hybrid Transactional/Analytical Processing)</strong> databases attempt to serve both workloads by maintaining both row-oriented and columnar representations of the same data internally. Examples: TiDB (row store + TiFlash columnar replica), SingleStore (formerly MemSQL), Google AlloyDB, Oracle Database with in-memory column store.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>The storage layout difference is fundamental. In row-oriented storage, a query that aggregates one column (e.g., <code>SUM(amount)</code>) across 1 billion rows must read all 1 billion rows from disk, including dozens of irrelevant columns. In columnar storage, the same query reads only the <code>amount</code> column, which is stored contiguously, allowing 10–100x less I/O and CPU work. The columnar format also enables aggressive dictionary encoding and run-length encoding compression: a column with only 100 distinct country values across 1 billion rows compresses to near zero. Conversely, an OLTP single-row UPDATE touches exactly one disk block in row-oriented storage; in columnar storage, updating a row requires rewriting every column file that contains that row.</p>
+          <p>The storage layout difference is fundamental. In row-oriented storage, a query that aggregates one column (e.g., <code>SUM(amount)</code>) across 1 billion rows must read all 1 billion rows from disk, including dozens of irrelevant columns. In columnar storage, the same query reads only the <code>amount</code> column, which is stored contiguously, allowing 10–100x less I/O and CPU work. The columnar format also enables aggressive dictionary encoding and run-length encoding compression: a column with only 100 distinct country values across 1 billion rows compresses to near zero.</p>
+          <p>Conversely, an OLTP single-row UPDATE touches exactly one disk block in row-oriented storage; in columnar storage, updating a row requires rewriting every column file that contains that row.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -126,7 +127,15 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    oltp["OLTP&lt;br/&gt;row store, short txs"]
+    etl["ELT / streaming"]
+    olap["OLAP&lt;br/&gt;columnar scans"]
+    oltp --> etl --> olap</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   OLTP vs OLAP Storage Layout:
 
   ROW-ORIENTED (OLTP — PostgreSQL heap):
@@ -151,6 +160,9 @@
   │  TiDB SQL layer              │──▶ Routes queries to TiKV or TiFlash
   └──────────────────────────────┘
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">OLTP serves concurrent row updates; OLAP column stores power aggregation workloads fed by ELT or streaming.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

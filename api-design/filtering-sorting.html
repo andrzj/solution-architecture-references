@@ -100,10 +100,49 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Filtering and sorting are query capabilities on collection endpoints that let clients retrieve the subset of data they need without receiving the entire collection. They work alongside pagination: filtering reduces the total result set; sorting determines the order; pagination retrieves it in pages.</p>
+          
           <p>Unlike pagination, which has established specifications (Relay, RFC 5988), filtering and sorting conventions are largely community-driven, with several competing styles. The goal is to choose a consistent, secure, and indexable approach for your API and document it thoroughly in OpenAPI.</p>
 
-          <h2 id="filtering-approaches">Filtering approaches</h2>
+          
+          <h2 id="why-it-exists">Why it exists</h2>
+          <p>Clients rarely need entire collections. Filtering and sorting let them retrieve relevant slices over HTTP without bespoke search endpoints for every query. Standard conventions reduce integration cost and make behaviour predictable across resources.</p>
+
+          <h2 id="when-to-use">When to use</h2>
+          <ul>
+            <li>Collection endpoints with more than a few dozen rows where clients need subsets (status, date range, owner).</li>
+            <li>Admin and support UIs that sort and filter tabular data.</li>
+            <li>Mobile clients that need sparse fieldsets to save bandwidth.</li>
+          </ul>
+
+          <h2 id="when-not-to-use">When not to use</h2>
+          <ul>
+            <li>Full-text search, fuzzy matching, or relevance scoring — use a search service or <code>POST /search</code>.</li>
+            <li>Arbitrary boolean logic across many fields — POST with a structured query DSL is clearer.</li>
+            <li>GraphQL APIs where the query language already expresses filters and field selection.</li>
+          </ul>
+
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Query params map through an allowlist to indexed WHERE and ORDER BY with scope checks.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    q["Query params status sort limit"] --> api["API allowlist map"]
+    api --> sql["Indexed WHERE ORDER BY LIMIT"]</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>GET /orders?status=confirmed&amp;sort=-createdAt&amp;limit=20
+
+Client query params --> API (allowlist map) --> SQL/ORM
+                         |                        |
+                         +-- validate fields       +-- indexed WHERE + ORDER BY
+                         +-- authorisation scope      + LIMIT/OFFSET or keyset</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">GET orders filters sort and limit translated to validated SQL with authorisation scope.</figcaption>
+          </figure>
+
+          <h2 id="implementation-notes">Implementation notes</h2>
+          <p>Filtering notations, sorting rules, sparse fieldsets, and OpenAPI examples are detailed below.</p>
+
+<h2 id="filtering-approaches">Filtering approaches</h2>
           <h3>Simple equality filters</h3>
           <pre><code>GET /orders?status=confirmed
 GET /orders?customerId=42&amp;status=pending</code></pre>
@@ -222,7 +261,7 @@ GraphQL field selection (always explicit):
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros of structured filter params</h3>
+              <h3>Pros</h3>
               <ul>
                 <li>Declarative — clients express intent without knowing the backend query language.</li>
                 <li>Cacheable — GET requests with query params are cached by HTTP caches and CDNs.</li>
@@ -251,7 +290,23 @@ GraphQL field selection (always explicit):
             <li>For complex search requirements, is POST /resource/search used instead of an unwieldy GET?</li>
           </ul>
 
-          <h2 id="related-patterns">Related patterns</h2>
+          <h2 
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>SQL injection via sort/filter</strong> — unvalidated <code>sort</code> or filter values passed to dynamic SQL.</li>
+            <li><strong>Missing indexes</strong> — popular filter combinations cause full table scans.</li>
+            <li><strong>Silent ignore</strong> — unknown filter params ignored instead of returning 400, hiding client bugs.</li>
+            <li><strong>Trusting client scope</strong> — <code>customerId</code> filter used without server-side authorisation enforcement.</li>
+          </ul>
+
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><code>GET /orders?status=shipped&amp;sort=-createdAt</code> for operations dashboards.</li>
+            <li><code>GET /products?fields=id,name,price</code> for mobile product lists.</li>
+            <li><code>POST /orders/search</code> when filter JSON exceeds URL length limits.</li>
+          </ul>
+
+id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="api-pagination.html">API Pagination</a> — filtering determines the total result set; pagination retrieves it in pages.</li>
             <li><a href="rest-api-design.html">REST API Design</a> — filtering is a core collection query capability.</li>
@@ -261,10 +316,10 @@ GraphQL field selection (always explicit):
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li>JSON:API Filtering — jsonapi.org/recommendations/#filtering</li>
-            <li>Google API Design Guide — filtering and sorting — cloud.google.com/apis/design/standard_fields</li>
-            <li>Microsoft REST API Guidelines — filtering — github.com/microsoft/api-guidelines</li>
-            <li>Elasticsearch Query DSL — reference for POST-based search endpoints.</li>
+            <li><a href="https://jsonapi.org/recommendations/#filtering" rel="noopener noreferrer" target="_blank">JSON:API Filtering</a> — recommended filter conventions.</li>
+            <li><a href="https://cloud.google.com/apis/design/standard_fields" rel="noopener noreferrer" target="_blank">Google API Design Guide — standard fields</a> — filtering and sorting fields.</li>
+            <li><a href="https://github.com/microsoft/api-guidelines/blob/vNext/Guidelines.md" rel="noopener noreferrer" target="_blank">Microsoft REST API Guidelines</a> — filtering guidance.</li>
+            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl.html" rel="noopener noreferrer" target="_blank">Elasticsearch Query DSL</a> — reference for POST-based search endpoints.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
@@ -277,15 +332,22 @@ GraphQL field selection (always explicit):
           <div class="toc__title">On this page</div>
           <ul class="toc__list">
             <li><a href="#what-it-is" class="toc__link">What it is</a></li>
-            <li><a href="#filtering-approaches" class="toc__link">Filtering approaches</a></li>
-            <li><a href="#sorting" class="toc__link">Sorting conventions</a></li>
-            <li><a href="#sparse-fieldsets" class="toc__link">Sparse fieldsets</a></li>
-            <li><a href="#security" class="toc__link">Security considerations</a></li>
-            <li><a href="#openapi-documentation" class="toc__link">OpenAPI documentation</a></li>
+            <li><a href="#why-it-exists" class="toc__link">Why it exists</a></li>
+            <li><a href="#when-to-use" class="toc__link">When to use</a></li>
+            <li><a href="#when-not-to-use" class="toc__link">When not to use</a></li>
+            <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
             <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
+            <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
             <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
+<li><a href="#filtering-approaches" class="toc__link">Filtering approaches</a></li>
+            <li><a href="#sorting" class="toc__link">Sorting</a></li>
+            <li><a href="#sparse-fieldsets" class="toc__link">Sparse fieldsets</a></li>
+            <li><a href="#security" class="toc__link">Security</a></li>
+            <li><a href="#openapi-documentation" class="toc__link">OpenAPI examples</a></li>
           </ul>
         </nav>
       </aside>

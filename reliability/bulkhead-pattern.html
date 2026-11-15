@@ -108,7 +108,8 @@
           <p>The most common implementation is thread pool isolation: instead of all outbound calls sharing a single application thread pool, each downstream dependency gets its own bounded thread pool. When the payment service becomes slow and its thread pool fills up, the payment bulkhead rejects new payment calls immediately, but the order service thread pool — which is separate — remains fully available to serve order reads and writes unaffected. The pattern is closely associated with Hystrix (now in maintenance mode) and its modern successor, Resilience4j.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In a service that calls multiple downstream dependencies, a single slow or failed dependency can exhaust the entire shared thread pool if all calls share the same executor. Consider a service that makes calls to Payment, Inventory, Notification, and Shipping. If Notification starts responding in 30 seconds instead of 30 ms, every notification call ties up a thread for 30 seconds. Under moderate load, the 50-thread shared pool fills entirely with hung notification threads, and payment calls — which are completing fine — cannot get a thread and start failing. A failure in a non-critical subsystem has propagated to a critical one through shared resource contention.</p>
+          <p>In a service that calls multiple downstream dependencies, a single slow or failed dependency can exhaust the entire shared thread pool if all calls share the same executor. Consider a service that makes calls to Payment, Inventory, Notification, and Shipping. If Notification starts responding in 30 seconds instead of 30 ms, every notification call ties up a thread for 30 seconds. Under moderate load, the 50-thread shared pool fills entirely with hung notification threads, and payment calls — which are completing fine — cannot get a thread and start failing.</p>
+          <p>A failure in a non-critical subsystem has propagated to a critical one through shared resource contention.</p>
           <p>Bulkheads break this dependency by assigning each downstream a bounded independent pool, ensuring that a slow or failing downstream can only consume its own allocated threads and cannot starve threads reserved for other, healthier dependencies.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -129,7 +130,21 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>Bulkhead: Thread Pool Isolation Per Downstream
+          <p>Each downstream dependency gets a bounded pool so a slow neighbour cannot exhaust shared threads.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    subgraph without["Without bulkhead — shared pool 50 threads"]
+        sp["Shared pool saturated by notification calls"]
+        sp --> fail["Payment calls queue or fail"]
+    end
+    subgraph with["With bulkhead — pools per dependency"]
+        pay["Payment pool 10t — 2 in flight"]
+        inv["Inventory pool 10t — idle"]
+        notif["Notification pool 10t — full, rejects fast"]
+    end</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Bulkhead: Thread Pool Isolation Per Downstream
 ═══════════════════════════════════════════════════════
 
 Without Bulkhead                With Bulkhead
@@ -153,6 +168,9 @@ Without Bulkhead                With Bulkhead
 Resilience4j BulkheadConfig:
   maxConcurrentCalls: 10
   maxWaitDuration: 0ms  (reject immediately when full)</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Without bulkheads one slow dependency fills the shared pool; with bulkheads other pools stay available and saturated pools reject fast.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -220,7 +238,7 @@ Resilience4j BulkheadConfig:
           <ul>
             <li><a href="https://resilience4j.readme.io/docs/bulkhead" rel="noopener noreferrer" target="_blank">Resilience4j Bulkhead documentation</a> — thread pool and semaphore implementations with configuration examples.</li>
             <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead" rel="noopener noreferrer" target="_blank">Bulkhead pattern — Azure Architecture Center</a> — pattern description with deployment and resource isolation examples.</li>
-            <li><a href="https://www.oreilly.com/library/view/release-it-2nd/9781680504514/" rel="noopener noreferrer" target="_blank">Release It! 2nd Ed. — Michael Nygard</a> — original comprehensive treatment of bulkheads, circuit breakers, and cascading failure patterns.</li>
+            <li><a href="https://pragprog.com/titles/mnee2/release-it-second-edition/" rel="noopener noreferrer" target="_blank">Release It! 2nd Ed. — Michael Nygard</a> — original comprehensive treatment of bulkheads, circuit breakers, and cascading failure patterns.</li>
           </ul>
         </div>
 

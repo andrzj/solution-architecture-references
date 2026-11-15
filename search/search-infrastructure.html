@@ -100,7 +100,7 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Search infrastructure encompasses the cluster architecture, data node configuration, index design, and operational policies that make a search engine reliable and cost-efficient at scale. An Elasticsearch or OpenSearch cluster is a distributed system composed of specialised node roles — dedicated master nodes for cluster state management, data nodes for storing and querying shards, coordinator nodes for request routing, and optional ingest/ML nodes. Getting this topology right is critical: an under-resourced master node can make the entire cluster unavailable during high write load, while over-sharded indexes burn heap memory even when idle.</p>
+          
           <p><strong>Index Lifecycle Management (ILM)</strong> is the Elasticsearch feature that automates the movement of indexes through storage tiers as they age and their query rate decreases. A time-series index (e.g., logs or events) starts on <strong>hot</strong> nodes (fast NVMe SSDs, high CPU) for real-time indexing and search, transitions to <strong>warm</strong> nodes (larger, cheaper SSDs) after 7 days for less-frequent queries, moves to <strong>cold</strong> nodes (bulk HDD or object-storage-backed) after 30 days, and is eventually deleted or snapshotted to S3. This tiered architecture can reduce search infrastructure costs by 60–80% compared to keeping all data on hot hardware.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -125,7 +125,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>ELASTICSEARCH CLUSTER TOPOLOGY (production):
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    master["Dedicated master nodes"]
+    data["Data nodes&lt;br/&gt;shards + replicas"]
+    coord["Coordinating nodes"]
+    ilm["Index lifecycle&lt;br/&gt;hot → warm → cold"]
+    master -.-> data
+    coord --> data
+    data --> ilm</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>ELASTICSEARCH CLUSTER TOPOLOGY (production):
 
   ┌─────────────────────────────────────────────────────┐
   │  Dedicated Master Nodes (3)                         │
@@ -174,6 +185,9 @@ INDEX ALIAS PATTERN:
        { "add":    { "index": "products-v4", "alias": "products" } }
      ] }
   4. Delete products-v3</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Search cluster: dedicated masters, data nodes holding shards, coordinators fronting queries, ILM rolling indices by age.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -200,7 +214,8 @@ INDEX ALIAS PATTERN:
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For shard sizing, use the rule of thumb: aim for 10–50GB per shard, and 1 primary shard per 2 CPU cores on hot nodes for write-heavy workloads. Use the <code>_cat/shards</code> API to audit current shard sizes. For a 500GB product index queried but rarely updated, 10 primary shards × 1 replica = 20 total shards is reasonable on a 3-node cluster. Set <code>index.refresh_interval: 30s</code> on hot write-heavy indexes (logs) to reduce indexing pressure; the default 1s refresh is only needed for near-real-time search use cases. Enable <code>_source: false</code> on fields not needed in response (computed fields, large blobs) to reduce storage footprint.</p>
+          <p>For shard sizing, use the rule of thumb: aim for 10–50GB per shard, and 1 primary shard per 2 CPU cores on hot nodes for write-heavy workloads. Use the <code>_cat/shards</code> API to audit current shard sizes. For a 500GB product index queried but rarely updated, 10 primary shards × 1 replica = 20 total shards is reasonable on a 3-node cluster. Set <code>index.refresh_interval: 30s</code> on hot write-heavy indexes (logs) to reduce indexing pressure; the default 1s refresh is only needed for near-real-time search use cases.</p>
+          <p>Enable <code>_source: false</code> on fields not needed in response (computed fields, large blobs) to reduce storage footprint.</p>
           <p>For heap sizing, follow the Elasticsearch recommendation: set JVM heap to no more than 50% of available RAM, and cap at 30–31GB to stay below the JVM compressed ordinary object pointer threshold. Above 32GB, pointer compression is disabled, which wastes memory and can crash the node under segment cache pressure. Monitor heap usage per node in Kibana's Stack Monitoring; sustained heap above 75% indicates the node is under-provisioned. Snapshot to S3/GCS regularly — Elasticsearch snapshots are incremental and cheap, and they are your only defence against accidental index deletion or hardware failure.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

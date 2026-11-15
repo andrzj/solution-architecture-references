@@ -101,7 +101,7 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Full-text search is a technique for querying large collections of natural-language documents by matching terms against a pre-built <strong>inverted index</strong> — a data structure that maps every unique term to the list of documents (and positions) that contain it. Unlike a database <code>LIKE '%term%'</code> scan, which must read every row, an inverted index lets the engine jump directly to the relevant document set in O(log n) time, making sub-second search over millions of documents feasible.</p>
+          <p>Searching a million support tickets for “password reset loop” cannot scan every row — full-text search tokenizes bodies, builds an <strong>inverted index</strong> from terms to document positions, and ranks hits in sub-second time instead of table scans.</p>
           <p>The core relevance model used by modern engines (Elasticsearch, OpenSearch, Solr) is <strong>BM25</strong> (Best Match 25), a probabilistic ranking function that improves on classic TF-IDF by saturating term frequency and normalising for document length. BM25 scores a document by combining: how often the query term appears in the document (term frequency, dampened), how rare the term is across the corpus (inverse document frequency), and the document length relative to the average. Tuning the <code>k1</code> (TF saturation) and <code>b</code> (length normalisation) parameters is the first step in relevance engineering.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -127,7 +127,17 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>┌─────────────────────────────────────────────────────────┐
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    src["Sources"]
+    etl["Tokenizer + analyzer"]
+    inv["Inverted index"]
+    q["User query&lt;br/&gt;BM25 score"]
+    src --> etl --> inv
+    q --> inv</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>┌─────────────────────────────────────────────────────────┐
 │                    INDEXING PIPELINE                    │
 │                                                         │
 │  Source DB / API                                        │
@@ -168,6 +178,9 @@ Elasticsearch Cluster:
   │ R2       │  │ R2       │  │ P0       │
   └──────────┘  └──────────┘  └──────────┘
   P=primary shard, R=replica shard</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Full-text search pipeline: analyzers build an inverted index; queries tokenize and rank hits with BM25.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -194,7 +207,8 @@ Elasticsearch Cluster:
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>The single most impactful design decision is <strong>analyzer selection</strong>. Use the built-in <code>english</code> analyzer (or equivalent per language) for free-text fields — it applies lowercase, stop-word removal, and the Porter stemmer. For product names, SKUs, and IDs, use the <code>keyword</code> type (no analysis) or the <code>standard</code> analyzer with case folding only. Define custom analyzers explicitly in the index mapping rather than relying on dynamic mapping, which often produces sub-optimal field types. At query time, always use the same analyzer as at index time, or explicitly set <code>search_analyzer</code> in the mapping.</p>
+          <p>The single most impactful design decision is <strong>analyzer selection</strong>. Use the built-in <code>english</code> analyzer (or equivalent per language) for free-text fields — it applies lowercase, stop-word removal, and the Porter stemmer. For product names, SKUs, and IDs, use the <code>keyword</code> type (no analysis) or the <code>standard</code> analyzer with case folding only. Define custom analyzers explicitly in the index mapping rather than relying on dynamic mapping, which often produces sub-optimal field types.</p>
+          <p>At query time, always use the same analyzer as at index time, or explicitly set <code>search_analyzer</code> in the mapping.</p>
           <p>For relevance tuning, start by auditing which fields exist in your documents and assigning boost weights: title fields typically get 3–5×, category tags 2×, and body text 1×. Use a <strong>multi-match query</strong> with <code>type: best_fields</code> or <code>cross_fields</code> depending on whether each field stands independently or all fields together describe a single concept. Instrument click-through rates and zero-result rates from the beginning — you cannot tune relevance without feedback signals. Tools like <strong>Quepid</strong> let you manage judgment lists (rated query-document pairs) and compute NDCG scores to measure relevance objectively across releases.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -235,7 +249,7 @@ Elasticsearch Cluster:
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/full-text-queries.html" target="_blank" rel="noopener noreferrer">Elasticsearch Full-Text Queries Reference</a></li>
-            <li><a href="https://opensourceconnections.com/blog/2015/10/16/bm25-the-next-generation-of-lucene-relevance/" target="_blank" rel="noopener noreferrer">BM25: The Next Generation of Lucene Relevance (OpenSource Connections)</a></li>
+            <li><a href="https://www.elastic.co/blog/practical-bm25-part-1-how-shards-affect-relevance-scoring-in-elasticsearch" target="_blank" rel="noopener noreferrer">Practical BM25 — Elasticsearch relevance scoring (Elastic blog)</a></li>
             <li><a href="https://www.manning.com/books/relevant-search" target="_blank" rel="noopener noreferrer">Relevant Search — Turnbull &amp; Berryman (Manning)</a></li>
           </ul>
         </div>

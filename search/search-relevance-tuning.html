@@ -100,7 +100,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Search relevance tuning is the iterative engineering and product process of measuring how well a search engine's ranked results satisfy user intent, then systematically improving those results. Without objective measurement, relevance tuning is guesswork — an engineer changes a boost weight and doesn't know if results got better or worse for the majority of queries. The foundation of relevance tuning is a <strong>judgment list</strong>: a curated set of (query, document, relevance-grade) triples where human annotators have rated each document's relevance to a query on a graded scale (0=irrelevant, 1=fair, 2=good, 3=perfect). Against this judgment list, retrieval quality is measured with metrics such as <strong>NDCG@10</strong> (Normalised Discounted Cumulative Gain at rank 10), which rewards highly-graded results appearing at the top of the ranked list.</p>
+          <p>The foundation of relevance tuning is a <strong>judgment list</strong>: a curated set of (query, document, relevance-grade) triples where human annotators have rated each document's relevance to a query on a graded scale (0=irrelevant, 1=fair, 2=good, 3=perfect).</p>
+          <p>Against this judgment list, retrieval quality is measured with metrics such as <strong>NDCG@10</strong> (Normalised Discounted Cumulative Gain at rank 10), which rewards highly-graded results appearing at the top of the ranked list.</p>
           <p><strong>Learning to Rank (LTR)</strong> is the machine-learning extension of manual tuning: instead of hand-crafting boost weights, a supervised model (typically a gradient-boosted tree or neural model) learns to predict relevance from a feature vector per (query, document) pair. Features include BM25 score, freshness, click-through rate, recency, category match, and derived features. The model is trained on judgment labels or implicit feedback (clicks) and outputs a ranking score that replaces the engine's raw BM25 score.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -125,7 +126,17 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>OFFLINE RELEVANCE PIPELINE:
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    logs["Query logs"]
+    judge["Human judgments"]
+    tune["Feature / weight tuning"]
+    eval["Offline NDCG eval"]
+    prod["Production ranking"]
+    logs --> judge --> tune --> eval --> prod</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>OFFLINE RELEVANCE PIPELINE:
                                                         
   Query Log ──► Sample top-N queries ──► Quepid / LabelStudio
                  (by frequency)                │
@@ -177,6 +188,9 @@ LTR PIPELINE:
         │
         ▼
   Online serving via rescore query</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Relevance tuning loop: labeled query–document pairs drive offline metric evaluation before promoting ranker changes.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -203,12 +217,13 @@ LTR PIPELINE:
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start by identifying your top 100–200 queries by session volume from your query log. These high-frequency queries account for 40–60% of total search sessions and are where relevance improvements have the highest business impact. Build a judgment list covering these queries first using Quepid: it integrates directly with Elasticsearch/Solr, provides a rating interface, and computes NDCG automatically. Aim for at least 3 annotators per query and use majority vote for ground truth. Set a minimum bar: any change to ranking configuration must not decrease mean NDCG@10 by more than 1 percentage point across the judgment list.</p>
+          <p>Start by identifying your highest-traffic queries from search logs (often the top few hundred by session volume). Improvements on those queries usually affect the most users, so build a judgment list covering them first. Tools such as Quepid integrate with Elasticsearch and Solr, provide a rating UI, and can compute NDCG. Use at least three annotators per query when practical, and majority vote for ground truth where raters disagree.</p>
+          <p>Before promoting a ranking change, compare mean NDCG@10 (or your chosen metric) on the judgment set against the current configuration and reject regressions.</p>
           <p>For implicit feedback, log events must capture at minimum: session ID, query text, result position, document ID, click boolean, and (for e-commerce) add-to-cart and purchase events. Apply <strong>position debiasing</strong> before using click data as relevance labels — documents shown in position 1 receive far more clicks than equally relevant documents in position 5 even if users would prefer position 5. Techniques include propensity-weighted click models (RandPair, IPS) or using only clicks with dwell time &gt; 30 seconds as positive labels. Without debiasing, LTR models learn to promote what is already ranked highly, not what is genuinely more relevant.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Tuning on head queries only</strong>: Optimising for the top 50 queries by volume while ignoring the long tail creates a system that looks great on NDCG but produces terrible results for 80% of unique queries.</li>
+            <li><strong>Tuning on head queries only</strong>: Optimising only for the highest-volume queries while ignoring the long tail can inflate headline metrics but still leave most unique queries with poor results.</li>
             <li><strong>Position bias in click-based LTR</strong>: Training LTR on raw click logs promotes already-top-ranked documents, creating a feedback loop that freezes the ranking in its initial configuration.</li>
             <li><strong>Stale judgment lists</strong>: A judgment list created 18 months ago against products that have since been discontinued or re-described causes NDCG tests to pass while real-world relevance degrades.</li>
             <li><strong>Over-optimising NDCG vs. business metrics</strong>: NDCG can be gamed by boosting already-clicked items; ensure NDCG improvements correlate with A/B tested conversion lifts before trusting them.</li>
@@ -241,9 +256,9 @@ LTR PIPELINE:
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://quepid.com/docs" target="_blank" rel="noopener noreferrer">Quepid Documentation — Judgment-based relevance testing</a></li>
+            <li><a href="https://github.com/o19s/quepid" target="_blank" rel="noopener noreferrer">Quepid (OpenSource Connections) — judgment-based relevance testing</a></li>
             <li><a href="https://www.manning.com/books/relevant-search" target="_blank" rel="noopener noreferrer">Relevant Search — Turnbull &amp; Berryman (Manning)</a></li>
-            <a href="https://elasticsearch-learning-to-rank.readthedocs.io/" target="_blank" rel="noopener noreferrer">Elasticsearch Learning to Rank Plugin Documentation</a></li>
+            <li><a href="https://elasticsearch-learning-to-rank.readthedocs.io/" target="_blank" rel="noopener noreferrer">Elasticsearch Learning to Rank Plugin Documentation</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

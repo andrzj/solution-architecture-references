@@ -103,66 +103,198 @@
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>Container Orchestration is a key concept in cloud architecture. This article covers the core principles, implementation patterns, and best practices.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p>Its architecture consists of a <strong>control plane</strong> (the cluster brain) and a <strong>data plane</strong> (the nodes running workloads).</p>
+          <p>The <strong>control plane</strong> components: <strong>API Server</strong> — the central HTTPS API for all cluster operations; all tools (kubectl, GitOps agents, controllers) interact exclusively with the API server. <strong>etcd</strong> — distributed key-value store holding all cluster state; the single source of truth; critical to back up. <strong>Scheduler</strong> — assigns pods to nodes based on resource requests, affinity rules, taints/tolerations. <strong>Controller Manager</strong> — runs control loops ensuring actual state matches desired state (e.g., Deployment controller ensures the correct number of replicas are running).</p>
+          <p><strong>Cloud Controller Manager</strong> — integrates with cloud provider APIs for LoadBalancer Services, PersistentVolumes backed by EBS/GCE PD.</p>
+          <p>The <strong>data plane</strong> runs on each worker node: <strong>kubelet</strong> — agent that receives pod specs from API server and manages containers via the container runtime; <strong>kube-proxy</strong> — implements Kubernetes Service networking via iptables/IPVS rules; <strong>Container runtime</strong> — containerd or CRI-O runs containers from images. Key workload types: <strong>Deployment</strong> — stateless, rolling updates, horizontal scaling; <strong>StatefulSet</strong> — stateful apps needing stable network identities and ordered pod management (databases, Kafka);</p>
+          <p><strong>DaemonSet</strong> — runs one pod per node (log forwarders, monitoring agents, CNI plugins); <strong>Job/CronJob</strong> — batch and scheduled work.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Understanding container orchestration is essential for building robust, scalable systems. The patterns and practices described here have emerged from real-world experience across many organizations.</p>
+          <p>Managing containers at scale without orchestration requires solving scheduling (which host runs which container?), service discovery (how do containers find each other?), scaling (how to add capacity under load?), health management (restart crashed containers, route around failed nodes), and rolling updates. Doing this with shell scripts and custom tooling at scale is the pre-Kubernetes reality many teams lived through. Kubernetes provides a declarative, API-driven model for all of this, backed by a large ecosystem and consistent behaviour across cloud providers.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When designing systems that require container orchestration capabilities.</li>
-            <li>When evaluating architectural trade-offs in your specific context.</li>
-            <li>When onboarding team members to established practices.</li>
+            <li>Microservices architectures running multiple services that benefit from consistent deployment, scaling, and networking abstractions.</li>
+            <li>Workloads with variable load requiring autoscaling — HPA and KEDA provide mature event-driven and metric-driven scaling.</li>
+            <li>Teams wanting portable, cloud-agnostic deployment that works identically on EKS, GKE, AKS, and on-premises clusters.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>When the complexity overhead outweighs the benefit for your use case.</li>
-            <li>When simpler alternatives adequately solve the problem.</li>
+            <li>Simple single-service applications — Kubernetes adds substantial operational complexity; App Service, Cloud Run, or Fargate are better fits for single applications without microservices complexity.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>CONTAINER ORCHESTRATION OVERVIEW:
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    api["K8s API server"]
+    sched["Scheduler"]
+    nodes["Worker nodes"]
+    pods["Pods&lt;br/&gt;Deployment replicas"]
+    svc["Service + Ingress"]
+    api --> sched --> nodes --> pods
+    pods --> svc</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>KUBERNETES DEPLOYMENT (stateless service):
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: production
+spec:
+  replicas: 5
+  selector:
+    matchLabels: { app: checkout }
+  template:
+    metadata:
+      labels: { app: checkout, version: v1.3.0 }
+    spec:
+      # Spread across availability zones
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+      containers:
+      - name: checkout
+        image: ghcr.io/org/checkout:v1.3.0
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet: { path: /healthz, port: 8080 }
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet: { path: /ready, port: 8080 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      # Graceful shutdown
+      terminationGracePeriodSeconds: 60
 
-  ┌─────────────────────────────────────┐
-  │         Container Orchestration            │
-  │                                     │
-  │  Core principles and components     │
-  │  would be illustrated here          │
-  │                                     │
-  └─────────────────────────────────────┘
-</code></pre>
+HORIZONTAL POD AUTOSCALER (HPA):
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: checkout
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: checkout
+  minReplicas: 3
+  maxReplicas: 50
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target: { type: Utilization, averageUtilization: 60 }
+  - type: Pods
+    pods:
+      metric: { name: requests_per_second }
+      target: { type: AverageValue, averageValue: "1000" }
+
+KEDA (event-driven autoscaling):
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: order-processor
+spec:
+  scaleTargetRef:
+    name: order-processor
+  minReplicaCount: 0   # Scale to zero when queue empty
+  maxReplicaCount: 100
+  triggers:
+  - type: aws-sqs-queue
+    metadata:
+      queueURL: https://sqs.eu-west-1.amazonaws.com/...
+      targetQueueLength: "5"  # 1 pod per 5 queue messages
+
+POD DISRUPTION BUDGET (availability guarantee):
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: checkout-pdb
+spec:
+  minAvailable: "60%"  # At least 60% of pods must be running
+  selector:
+    matchLabels: { app: checkout }
+  # Prevents node drains from disrupting &gt;40% of pods</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Kubernetes stateless service: the control plane schedules pods on nodes exposed through Service and Ingress.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
-          <h3>Advantages</h3>
-          <ul>
-            <li>Provides structured approach to solving common problems.</li>
-            <li>Enables consistent implementation across teams.</li>
-            <li>Draws on proven industry practices.</li>
-          </ul>
-          <h3>Trade-offs</h3>
-          <ul>
-            <li>Requires investment in tooling and process.</li>
-            <li>May introduce additional complexity in simple scenarios.</li>
-          </ul>
+          <div class="pros-cons">
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Self-healing: Kubernetes automatically restarts failed containers, reschedules pods from failed nodes, and routes traffic only to healthy pods — teams stop writing custom health-check-and-restart scripts.</li>
+                <li>Declarative scaling: HPA and KEDA scale pods automatically based on CPU, memory, or custom metrics/events; teams define scaling policy once and Kubernetes executes it continuously.</li>
+                <li>Portable abstraction: the same Deployment YAML works on EKS, GKE, AKS, and on-premises clusters, enabling multi-cloud and cloud migration strategies without application changes.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Steep operational complexity: Kubernetes has a large surface area (100+ resource types, RBAC, CNI plugins, storage classes, admission controllers); teams often need dedicated platform engineers or managed services (EKS, GKE) to operate it effectively.</li>
+                <li>Resource request misconfiguration is common and consequential: over-provisioned requests waste cluster capacity; under-provisioned requests lead to OOMKilled pods and CPU throttling; right-sizing requires ongoing tuning.</li>
+                <li>Stateful workloads remain complex: StatefulSets handle ordered pod management, but operating databases on Kubernetes (backup, restore, failover, storage management) still requires significant expertise compared to managed database services.</li>
+              </ul>
+            </div>
+          </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>When implementing container orchestration, start with the core patterns and incrementally adopt more advanced techniques as your needs grow. Always validate against your specific requirements and constraints.</p>
+          <p>Always set both <code>requests</code> and <code>limits</code> for CPU and memory. Requests determine pod scheduling (Kubernetes only schedules a pod to a node with sufficient available resources). Limits cap resource usage — memory limits cause OOMKilled, CPU limits cause throttling. Avoid setting CPU limits equal to CPU requests (this causes unnecessary throttling on bursty workloads); instead, set CPU limits 2-4x requests.</p>
+          <p>Use the Vertical Pod Autoscaler (VPA) in recommendation mode to observe actual resource usage over time and right-size requests/limits based on real data rather than guessing.</p>
+          <p>Deploy PodDisruptionBudgets (PDBs) for all production workloads. Without PDBs, a node drain (for maintenance or node pool upgrade) can terminate all pods of a Deployment simultaneously if they happen to be on draining nodes. A PDB with <code>minAvailable: 60%</code> ensures that node drains proceed pod-by-pod, maintaining availability. For critical services, set PDB to <code>minAvailable: N-1</code> where N is the minimum desired replica count, ensuring at least one pod is always terminating-not-yet-replaced during disruptions.</p>
+
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Missing resource requests</strong>: Pods without resource requests are scheduled on already-contended nodes; under load, they compete for CPU and are OOMKilled; cluster appears healthy by pod count but experiences widespread performance degradation.</li>
+            <li><strong>Readiness probe misconfiguration</strong>: Readiness probe succeeds too early (before app is truly ready) or fails too aggressively under load; traffic is sent to pods that are not ready, causing errors; or healthy pods are removed from service rotation during load spikes.</li>
+            <li><strong>Ignoring topology spread</strong>: All pods scheduled to the same availability zone; one AZ failure takes down the entire workload despite Kubernetes multi-AZ node groups; always configure topologySpreadConstraints for production workloads.</li>
+          </ul>
+
+          <h2 id="decision-checklist">Decision checklist</h2>
+          <ul class="checklist">
+            <li>Are resource requests and limits set for all containers?</li>
+            <li>Are liveness and readiness probes configured for all services?</li>
+            <li>Are PodDisruptionBudgets deployed for production workloads?</li>
+            <li>Are topologySpreadConstraints configured for multi-AZ distribution?</li>
+            <li>Is HPA configured for services with variable load?</li>
+            <li>Are StatefulSet-managed databases considered for migration to managed services?</li>
+          </ul>
+
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>Event-driven batch processing</strong>: Order processing service uses KEDA with SQS trigger; scales from 0 pods at night to 80 pods during morning peak; scales back to 0 when queue empties; 90% cost reduction vs always-on fleet sized for peak.</li>
+            <li><strong>Zero-downtime cluster upgrade</strong>: EKS node pool upgrade drains nodes one at a time; PDBs ensure checkout service maintains &gt;=3 running pods throughout; service health metrics show no error rate increase during 45-minute upgrade window.</li>
+            <li><strong>Multi-tenant platform</strong>: Platform team operates a single cluster with Namespace per team; ResourceQuotas limit each team's CPU/memory consumption; NetworkPolicies enforce namespace isolation; RBAC ensures teams can only access their own namespaces; teams deploy independently without platform team involvement.</li>
+          </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="index.html">Cloud Architecture Overview</a> — Browse all cloud architecture articles.</li>
+            <li><a href="service-mesh.html">Service Mesh</a> — mTLS, traffic management, and observability layer for inter-pod communication.</li>
+            <li><a href="../deployment/gitops.html">GitOps</a> — Declarative management of Kubernetes workloads from Git.</li>
+            <li><a href="../deployment/infrastructure-as-code.html">Infrastructure as Code</a> — Provisioning the Kubernetes cluster itself via Terraform.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/" target="_blank" rel="noopener noreferrer">Martin Fowler's Architecture Guide</a></li>
-            <li><a href="https://aws.amazon.com/architecture/" target="_blank" rel="noopener noreferrer">AWS Architecture Center</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/" target="_blank" rel="noopener noreferrer">Kubernetes Concepts Documentation</a></li>
+            <li><a href="https://keda.sh/docs/" target="_blank" rel="noopener noreferrer">KEDA Documentation</a></li>
+            <li><a href="https://learnk8s.io/production-best-practices" target="_blank" rel="noopener noreferrer">Kubernetes Production Best Practices — learnk8s</a></li>
           </ul>
         </div>
-        <nav class="article-nav" aria-label="Article navigation">
-          <a href="index.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Back</span><span class="article-nav__title">Cloud Architecture</span></a>
+                <nav class="article-nav" aria-label="Article navigation">
+          <a href="shared-responsibility-model.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Shared Responsibility Model</span></a>
+          <a href="kubernetes.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Kubernetes Architecture</span></a>
         </nav>
       </div>
       <aside class="article-aside">
@@ -176,6 +308,9 @@
             <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
             <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
             <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
+            <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
           </ul>

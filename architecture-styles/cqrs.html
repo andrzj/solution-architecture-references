@@ -122,10 +122,12 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>CQRS (Command Query Responsibility Segregation) is an architectural pattern that divides a system's operations into two distinct models: <em>Commands</em> that change state (write model), and <em>Queries</em> that return data (read model). These models can use completely different data representations, storage technologies, and optimizations. The write model enforces domain invariants and maintains strong consistency; the read model is denormalized and optimized for specific query shapes. Greg Young formalized CQRS as a natural extension of Bertrand Meyer's Command Query Separation principle (a method should either be a command that performs an action or a query that returns data, but not both). CQRS can be applied at different scales — from simple method separation within a single service to fully separated write and read databases with asynchronous projection updates.</p>
+          <p>CQRS (Command Query Responsibility Segregation) is an architectural pattern that divides a system's operations into two distinct models: <em>Commands</em> that change state (write model), and <em>Queries</em> that return data (read model). These models can use completely different data representations, storage technologies, and optimizations. The write model enforces domain invariants and maintains strong consistency; the read model is denormalized and optimized for specific query shapes.</p>
+          <p>Greg Young formalized CQRS as a natural extension of Bertrand Meyer's Command Query Separation principle (a method should either be a command that performs an action or a query that returns data, but not both). CQRS can be applied at different scales — from simple method separation within a single service to fully separated write and read databases with asynchronous projection updates.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In traditional CRUD systems, the same model serves both reads and writes. This creates tension: the write model needs normalization and invariant enforcement; the read model needs denormalization and query performance. A customer dashboard view may join 10 tables — but the write model doesn't need those joins. Conversely, optimizing the write model for read queries degrades write performance and complicates domain logic. CQRS resolves this by allowing each side to evolve independently. Read models (projections) can be rebuilt from scratch by replaying history; they can be optimized for specific UI shapes with no coupling to the write model. When combined with Event Sourcing, CQRS also enables temporal query capability — "what did this entity look like at 2pm yesterday?"</p>
+          <p>In traditional CRUD systems, the same model serves both reads and writes. This creates tension: the write model needs normalization and invariant enforcement; the read model needs denormalization and query performance. A customer dashboard view may join 10 tables — but the write model doesn't need those joins. Conversely, optimizing the write model for read queries degrades write performance and complicates domain logic.</p>
+          <p>CQRS resolves this by allowing each side to evolve independently. Read models (projections) can be rebuilt from scratch by replaying history; they can be optimized for specific UI shapes with no coupling to the write model. When combined with Event Sourcing, CQRS also enables temporal query capability — "what did this entity look like at 2pm yesterday?"</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -145,25 +147,36 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Commands go through the domain model which maintains write-side state. After processing, the write model publishes domain events that update read-side projections, which are optimized views consumed by queries.</p>
-          <pre><code>  ┌──────────┐    Command     ┌─────────────────┐
-  │  Client  │──────────────▶│  Command Handler │
-  └──────────┘               │  (Domain Logic)  │
-       │                     └────────┬─────────┘
-       │                              │ Persist + Event
-       │                     ┌────────▼─────────┐
-       │                     │   Write Store     │
-       │                     │  (Normalized DB)  │
-       │                     └────────┬─────────┘
-       │                              │ Domain Events
-       │                     ┌────────▼─────────┐
-       │                     │  Event Projector   │
-       │                     │  (async/sync)      │
-       │                     └────────┬─────────┘
-       │                              │ Updates
-       │ Query              ┌─────────▼──────────┐
-       └───────────────────▶│   Read Store        │
-                            │ (Denormalized Views)│
-                            └────────────────────┘</code></pre>
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart LR
+    C["Client"] -->|command| CH["Command handler"]
+    CH --> WS[("Write store")]
+    WS --> EV["Domain events"]
+    EV --> PR["Projector"]
+    PR --> RS[("Read store")]
+    C -->|query| RS</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>  ┌──────────┐    Command     ┌─────────────────┐
+            │  Client  │──────────────▶│  Command Handler │
+            └──────────┘               │  (Domain Logic)  │
+                 │                     └────────┬─────────┘
+                 │                              │ Persist + Event
+                 │                     ┌────────▼─────────┐
+                 │                     │   Write Store     │
+                 │                     │  (Normalized DB)  │
+                 │                     └────────┬─────────┘
+                 │                              │ Domain Events
+                 │                     ┌────────▼─────────┐
+                 │                     │  Event Projector   │
+                 │                     │  (async/sync)      │
+                 │                     └────────┬─────────┘
+                 │                              │ Updates
+                 │ Query              ┌─────────▼──────────┐
+                 └───────────────────▶│   Read Store        │
+                                      │ (Denormalized Views)│
+                                      └────────────────────┘</code></pre></details>
+                      <figcaption id="typical-architecture-caption">CQRS: commands update the write model; projectors build denormalized read models for queries.</figcaption>
+                    </figure>
+
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -189,7 +202,9 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with logical CQRS (separate command and query objects in the same service against the same database) before jumping to physical CQRS with separate databases — most systems get 80% of the benefit from logical separation alone. When moving to physical CQRS, decide on synchronous projections (updated in the same transaction as the write) vs. asynchronous projections (updated via events after the write). Synchronous projections sacrifice decoupling for consistency; async projections are more scalable but require clients to handle eventual consistency. Always include a projection rebuild mechanism — a command to replay all events and regenerate a projection from scratch. Use optimistic concurrency on the write side (version numbers on aggregates) to prevent lost updates.</p>
+          <p>Start with logical CQRS (separate command and query objects in the same service against the same database) before jumping to physical CQRS with separate databases — most systems get 80% of the benefit from logical separation alone. When moving to physical CQRS, decide on synchronous projections (updated in the same transaction as the write) vs. asynchronous projections (updated via events after the write). Synchronous projections sacrifice decoupling for consistency; async projections are more scalable but require clients to handle eventual consistency.</p>
+          <p>Always include a projection rebuild mechanism — a command to replay all events and regenerate a projection from scratch.</p>
+          <p>Use optimistic concurrency on the write side (version numbers on aggregates) to prevent lost updates.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -227,7 +242,7 @@
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">CQRS</a> — Martin Fowler's concise overview of the pattern.</li>
-            <li><a href="https://docs.microsoft.com/en-us/azure/architecture/patterns/cqrs" rel="noopener noreferrer" target="_blank">CQRS Pattern</a> — Microsoft Azure Architecture Center.</li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs" rel="noopener noreferrer" target="_blank">CQRS Pattern</a> — Microsoft Azure Architecture Center.</li>
             <li><a href="https://cqrs.files.wordpress.com/2010/11/cqrs_documents.pdf" rel="noopener noreferrer" target="_blank">CQRS Documents</a> — Greg Young's original CQRS documentation.</li>
           </ul>
         </div>

@@ -122,7 +122,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>An operation is <strong>idempotent</strong> if applying it multiple times produces the same result as applying it once. Formally, for a function <em>f</em>, idempotency means <em>f(f(x)) = f(x)</em>. In the context of distributed systems and APIs, an operation is idempotent if calling it once and calling it ten times with the same input leaves the system in the same final state. Setting a value is idempotent (SET x = 5 twice results in x = 5). Incrementing is not (INCREMENT x twice results in x = initial + 2).</p>
+          <p>An operation is <strong>idempotent</strong> if applying it multiple times produces the same result as applying it once. Formally, for a function <em>f</em>, idempotency means <em>f(f(x)) = f(x)</em>. In the context of distributed systems and APIs, an operation is idempotent if calling it once and calling it ten times with the same input leaves the system in the same final state.</p>
+          <p>Setting a value is idempotent (SET x = 5 twice results in x = 5). Incrementing is not (INCREMENT x twice results in x = initial + 2).</p>
           <p>Idempotency is essential in distributed systems because network communication is inherently unreliable. When a client sends a request and does not receive a response (due to timeout, network interruption, or server crash), it cannot know whether the operation was executed. If the operation is not idempotent, retrying it could cause duplicate effects: charging a customer twice, creating duplicate records, or sending the same email twice. Making operations idempotent means retries are always safe — the worst outcome is redundant work, not data corruption.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -147,45 +148,62 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>The most common implementation pattern for idempotent APIs is the <strong>idempotency key</strong>: the client generates a unique identifier (typically a UUID) for each logical operation and includes it in the request. The server uses this key to detect and short-circuit duplicate requests. The sequence is: check key store → if key exists, return cached response; if key does not exist, execute operation, store key with response, return response.</p>
-          <pre><code>
-Client                           Server
-  │                                │
-  │  POST /payments                │
-  │  Idempotency-Key: uuid-abc123  │
-  │  { amount: 99.99 }             │
-  │ ─────────────────────────────► │
-  │                                ├─► Check key store
-  │                                │     ┌────────────────────────┐
-  │                                │     │ idempotency_keys table │
-  │                                │     │ key | response | ttl   │
-  │                                │     └────────────────────────┘
-  │                                │
-  │  [First call: key not found]   │
-  │                                ├─► Execute payment
-  │                                ├─► Store key + response in DB
-  │                                │   (atomic with payment commit,
-  │  ◄─────────────────────────── │    or in same transaction)
-  │  201 { payment_id: "pay_456" } │
-  │                                │
-  │  [Network timeout — retry]     │
-  │                                │
-  │  POST /payments                │
-  │  Idempotency-Key: uuid-abc123  │
-  │  { amount: 99.99 }             │
-  │ ─────────────────────────────► │
-  │                                ├─► Check key store
-  │                                │     Key found! Return cached response.
-  │  ◄─────────────────────────── │     Payment NOT executed again.
-  │  201 { payment_id: "pay_456" } │
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant C as Client
+    participant S as API server
+    participant K as Idempotency store
+    C->>S: POST /payments + Idempotency-Key uuid-abc
+    S->>K: Lookup key
+    alt First request
+        S->>S: Execute payment
+        S->>K: Store key + response
+        S-->>C: 201 payment_id pay_456
+    else Retry same key
+        K-->>S: Cached response
+        S-->>C: 201 payment_id pay_456
+    end</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Client                           Server
+            │                                │
+            │  POST /payments                │
+            │  Idempotency-Key: uuid-abc123  │
+            │  { amount: 99.99 }             │
+            │ ─────────────────────────────► │
+            │                                ├─► Check key store
+            │                                │     ┌────────────────────────┐
+            │                                │     │ idempotency_keys table │
+            │                                │     │ key | response | ttl   │
+            │                                │     └────────────────────────┘
+            │                                │
+            │  [First call: key not found]   │
+            │                                ├─► Execute payment
+            │                                ├─► Store key + response in DB
+            │                                │   (atomic with payment commit,
+            │  ◄─────────────────────────── │    or in same transaction)
+            │  201 { payment_id: "pay_456" } │
+            │                                │
+            │  [Network timeout — retry]     │
+            │                                │
+            │  POST /payments                │
+            │  Idempotency-Key: uuid-abc123  │
+            │  { amount: 99.99 }             │
+            │ ─────────────────────────────► │
+            │                                ├─► Check key store
+            │                                │     Key found! Return cached response.
+            │  ◄─────────────────────────── │     Payment NOT executed again.
+            │  201 { payment_id: "pay_456" } │
+          
+          HTTP Method idempotency (by spec):
+            GET    → Idempotent (no side effects)
+            HEAD   → Idempotent (same as GET, no body)
+            PUT    → Idempotent (sets resource to exact state)
+            DELETE → Idempotent (second delete of same resource = 404, same state)
+            POST   → NOT idempotent (use Idempotency-Key header for safety)
+            PATCH  → NOT idempotent by spec (but can be made so by design)
+                    </code></pre></details>
+                      <figcaption id="typical-architecture-caption">Idempotency key flow: the server records each logical operation once and returns the cached outcome on client retries.</figcaption>
+                    </figure>
 
-HTTP Method idempotency (by spec):
-  GET    → Idempotent (no side effects)
-  HEAD   → Idempotent (same as GET, no body)
-  PUT    → Idempotent (sets resource to exact state)
-  DELETE → Idempotent (second delete of same resource = 404, same state)
-  POST   → NOT idempotent (use Idempotency-Key header for safety)
-  PATCH  → NOT idempotent by spec (but can be made so by design)
-          </code></pre>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -211,7 +229,8 @@ HTTP Method idempotency (by spec):
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Idempotency key storage:</strong> The idempotency key table must be stored in a database that is visible to all instances of the service. Using a local in-memory store defeats the purpose in a multi-instance deployment. The key and its associated cached response should be committed <em>atomically</em> with the operation itself — if you charge the card in the same database transaction in which you insert the idempotency key, you can never have a state where the charge succeeded but the key was not stored (or vice versa). For operations that span external systems (e.g., charging a payment provider), use the outbox pattern to ensure the idempotency record is committed before the external call is confirmed.</p>
-          <p><strong>Database-level idempotency:</strong> SQL databases support idempotent write patterns natively. <code>INSERT INTO orders (...) ON CONFLICT (idempotency_key) DO NOTHING</code> (PostgreSQL) atomically either creates the record or does nothing if the key already exists. <code>INSERT OR IGNORE</code> in SQLite, and <code>INSERT IGNORE</code> in MySQL serve the same purpose. For updates, <code>UPDATE orders SET status='paid' WHERE order_id=? AND status='pending'</code> is idempotent because the WHERE clause means the second update matches no rows if the first already changed the status. Optimistic locking via version columns is another approach: <code>UPDATE orders SET status='paid', version=version+1 WHERE order_id=? AND version=?</code>.</p>
+          <p><strong>Database-level idempotency:</strong> SQL databases support idempotent write patterns natively. <code>INSERT INTO orders (...) ON CONFLICT (idempotency_key) DO NOTHING</code> (PostgreSQL) atomically either creates the record or does nothing if the key already exists. <code>INSERT OR IGNORE</code> in SQLite, and <code>INSERT IGNORE</code> in MySQL serve the same purpose. For updates, <code>UPDATE orders SET status='paid' WHERE order_id=?</p>
+          <p>AND status='pending'</code> is idempotent because the WHERE clause means the second update matches no rows if the first already changed the status. Optimistic locking via version columns is another approach: <code>UPDATE orders SET status='paid', version=version+1 WHERE order_id=? AND version=?</code>.</p>
           <p><strong>Idempotent message consumers:</strong> In event-driven systems with at-least-once delivery (Kafka, SQS, RabbitMQ), consumers must handle duplicate messages. The standard pattern is a deduplication table keyed on the message ID: before processing, check if the message ID exists in the table; if yes, acknowledge and skip; if no, process and insert the ID in the same transaction. Kafka's log compaction and consumer offset tracking provide exactly-once <em>within a consumer group</em>, but the application-level consumer still needs idempotency for external side effects like database writes or HTTP calls.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -251,7 +270,7 @@ HTTP Method idempotency (by spec):
           <ul>
             <li><a href="https://stripe.com/docs/api/idempotent_requests" rel="noopener noreferrer" target="_blank">Stripe: Idempotent Requests</a> — Stripe's production implementation of idempotency keys, a gold-standard reference.</li>
             <li><a href="https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/" rel="noopener noreferrer" target="_blank">Making Retries Safe with Idempotent APIs — AWS Builder's Library</a> — Amazon's in-depth treatment of idempotency in production distributed systems.</li>
-            <li><a href="https://www.amazon.com/Designing-Data-Intensive-Applications-Reliable-Maintainable/dp/1449373321" rel="noopener noreferrer" target="_blank">Designing Data-Intensive Applications — Martin Kleppmann</a> — comprehensive treatment of exactly-once semantics, at-least-once delivery, and idempotency in stream processing.</li>
+            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/idempotent-receiver.html" rel="noopener noreferrer" target="_blank">Idempotent Receiver — Martin Fowler</a> — pattern-level treatment of safe retries and duplicate handling.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

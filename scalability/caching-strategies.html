@@ -128,7 +128,19 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Cache-aside, write-through, and write-behind trade off consistency, latency, and durability; L1/L2/CDN stack them.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    aside["Cache-aside: miss loads DB then populates cache"]
+    wt["Write-through: sync cache and DB"]
+    wb["Write-behind: cache now, DB async"]
+    multi["L1 in-process, L2 Redis, L3 CDN"]
+    aside --> multi
+    wt --> multi
+    wb --> multi</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Pattern 1: Cache-Aside (Lazy Loading)
   App ──► Cache (Redis) ── HIT ──► return value
           │
@@ -169,6 +181,9 @@
   TTL:  evict after fixed time regardless of access
   FIFO: evict oldest inserted item (rare)
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Cache-aside on miss, write-through synchronous DB, write-behind async queue, plus multi-level L1 Redis CDN.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -195,8 +210,10 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Eviction and TTL tuning:</strong> TTL is the most important parameter — too short and cache hit rate drops; too long and stale data accumulates. Start with empirical measurement: P95 time between updates for the data type. For product catalogs updated hourly, TTL=5 minutes is appropriate. For user profile data updated rarely, TTL=1 hour is fine. Use LRU eviction for general caches where access patterns follow a power law (20% of keys receive 80% of traffic). Use LFU for caches where frequency of access is a better predictor of future access than recency (e.g., global top-K popular items). Use TTL-only eviction when data expires independently of access pattern (session tokens, rate limit counters).</p>
-          <p><strong>Thundering herd prevention:</strong> When a popular cache key expires, all concurrent requests that miss the cache simultaneously query the database. Prevent this with probabilistic early expiration: instead of expiring at exactly TTL, each request computes <code>if (current_time + delta &gt; expiry)</code> where delta is drawn from a probability distribution — allowing one request to regenerate the cache before it actually expires. An alternative is the "mutex on miss" pattern: the first miss acquires a distributed lock (Redis SET NX with expiry), re-fetches from DB and populates cache, while subsequent misses wait for the lock and then re-check the cache. <strong>Cache warming:</strong> After a deployment or Redis restart, the cache is cold and all requests miss simultaneously. Implement a warm-up job that pre-populates the most frequently accessed keys from the database before routing production traffic to new instances.</p>
+          <p><strong>Eviction and TTL tuning:</strong> TTL is the most important parameter — too short and cache hit rate drops; too long and stale data accumulates. Start with empirical measurement: P95 time between updates for the data type. For product catalogs updated hourly, TTL=5 minutes is appropriate. For user profile data updated rarely, TTL=1 hour is fine.</p>
+          <p>Use LRU eviction for general caches where access patterns follow a power law (20% of keys receive 80% of traffic). Use LFU for caches where frequency of access is a better predictor of future access than recency (e.g., global top-K popular items). Use TTL-only eviction when data expires independently of access pattern (session tokens, rate limit counters).</p>
+          <p><strong>Thundering herd prevention:</strong> When a popular cache key expires, all concurrent requests that miss the cache simultaneously query the database. Prevent this with probabilistic early expiration: instead of expiring at exactly TTL, each request computes <code>if (current_time + delta &gt; expiry)</code> where delta is drawn from a probability distribution — allowing one request to regenerate the cache before it actually expires. An alternative is the "mutex on miss" pattern: the first miss acquires a distributed lock (Redis SET NX with expiry), re-fetches from DB and populates cache, while subsequent misses wait for the lock and then re-check the cache. <strong>Cache warming:</strong> After a deployment or Redis restart, the cache is cold and all requests miss simultaneously.</p>
+          <p>Implement a warm-up job that pre-populates the most frequently accessed keys from the database before routing production traffic to new instances.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

@@ -122,10 +122,12 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Event-Driven Architecture (EDA) is an architectural paradigm where components communicate by producing and consuming events — immutable records of something that happened. Producers emit events without knowledge of who will consume them; consumers subscribe to event types without knowledge of who produced them. This temporal and spatial decoupling is the defining characteristic of EDA. Events flow through a broker (Kafka, RabbitMQ, AWS SNS/SQS, Google Pub/Sub) that durably stores and distributes them. EDA is not a single pattern but a family of patterns: event notification (fire and forget), event-carried state transfer (event carries enough data for consumers to act without querying the producer), and event sourcing (events as the system of record).</p>
+          
+          <p>Events flow through a broker (Kafka, RabbitMQ, AWS SNS/SQS, Google Pub/Sub) that durably stores and distributes them. EDA is not a single pattern but a family of patterns: event notification (fire and forget), event-carried state transfer (event carries enough data for consumers to act without querying the producer), and event sourcing (events as the system of record).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Synchronous request-response coupling creates cascading failures — if the downstream service is slow or unavailable, the caller blocks or fails. EDA breaks this coupling: the producer emits an event and continues regardless of consumer availability. It also enables fan-out — a single event can trigger multiple independent consumers simultaneously without the producer knowing about them, making it easy to add new behaviors without modifying existing systems. High-throughput systems like payment processors, IoT pipelines, and analytics systems naturally model their workload as streams of events, making EDA the natural fit. The pattern was formalized by Martin Fowler's distinction between event notification, event-carried state transfer, and event sourcing patterns.</p>
+          <p>Synchronous request-response coupling creates cascading failures — if the downstream service is slow or unavailable, the caller blocks or fails. EDA breaks this coupling: the producer emits an event and continues regardless of consumer availability. It also enables fan-out — a single event can trigger multiple independent consumers simultaneously without the producer knowing about them, making it easy to add new behaviors without modifying existing systems. High-throughput systems like payment processors, IoT pipelines, and analytics systems naturally model their workload as streams of events, making EDA the natural fit.</p>
+          <p>The pattern was formalized by Martin Fowler's distinction between event notification, event-carried state transfer, and event sourcing patterns.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -145,27 +147,38 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Producers publish events to topics in the broker. Consumers subscribe to topics using consumer groups for parallel processing. The broker persists events, enabling replay and late-joining consumers.</p>
-          <pre><code>  Order Service        Payment Service     Fraud Service
-  (Producer)           (Consumer)          (Consumer)
-       │                    │                   │
-       │ OrderPlaced         │                   │
-       └────────────────────┼───────────────────┘
-                            │
-                 ┌──────────▼──────────────┐
-                 │   Message Broker         │
-                 │   (Kafka / RabbitMQ)     │
-                 │                          │
-                 │  Topic: order.placed     │
-                 │  Topic: payment.result   │
-                 │  Topic: inventory.update │
-                 └──────────────────────────┘
-                            │
-              ┌─────────────┼───────────────┐
-              │             │               │
-         ┌────▼───┐   ┌─────▼──┐   ┌───────▼───┐
-         │Email   │   │Invntry │   │Analytics  │
-         │Svc     │   │Svc     │   │Svc        │
-         └────────┘   └────────┘   └───────────┘</code></pre>
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    OS["Order service"] --> BRK["Message broker topics"]
+    PS["Payment service"] --> BRK
+    FS["Fraud service"] --> BRK
+    BRK --> EM["Email service"]
+    BRK --> INV["Inventory service"]
+    BRK --> AN["Analytics service"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>  Order Service        Payment Service     Fraud Service
+            (Producer)           (Consumer)          (Consumer)
+                 │                    │                   │
+                 │ OrderPlaced         │                   │
+                 └────────────────────┼───────────────────┘
+                                      │
+                           ┌──────────▼──────────────┐
+                           │   Message Broker         │
+                           │   (Kafka / RabbitMQ)     │
+                           │                          │
+                           │  Topic: order.placed     │
+                           │  Topic: payment.result   │
+                           │  Topic: inventory.update │
+                           └──────────────────────────┘
+                                      │
+                        ┌─────────────┼───────────────┐
+                        │             │               │
+                   ┌────▼───┐   ┌─────▼──┐   ┌───────▼───┐
+                   │Email   │   │Invntry │   │Analytics  │
+                   │Svc     │   │Svc     │   │Svc        │
+                   └────────┘   └────────┘   └───────────┘</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Event-driven topology: producers publish domain events; multiple consumers react asynchronously via the broker.</figcaption>
+                    </figure>
+
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -192,7 +205,8 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Always include a correlation ID (trace ID) in every event to enable end-to-end tracing across services. Design all consumers to be idempotent — at-least-once delivery is the common guarantee, so duplicate events must be handled safely using a deduplication key. Use a schema registry (Confluent Schema Registry with Avro, or Protobuf) to enforce schema evolution rules and prevent breaking changes. Prefer choreography (services react to events autonomously) over orchestration (a central orchestrator tells services what to do) for loose coupling; use orchestration when the business process is complex, has compensation logic, or needs a single view of process state. Implement a dead-letter queue for events that consistently fail processing.</p>
+          <p>Always include a correlation ID (trace ID) in every event to enable end-to-end tracing across services. Design all consumers to be idempotent — at-least-once delivery is the common guarantee, so duplicate events must be handled safely using a deduplication key. Use a schema registry (Confluent Schema Registry with Avro, or Protobuf) to enforce schema evolution rules and prevent breaking changes. Prefer choreography (services react to events autonomously) over orchestration (a central orchestrator tells services what to do) for loose coupling; use orchestration when the business process is complex, has compensation logic, or needs a single view of process state.</p>
+          <p>Implement a dead-letter queue for events that consistently fail processing.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -230,7 +244,7 @@
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://martinfowler.com/articles/201701-event-driven.html" rel="noopener noreferrer" target="_blank">What do you mean by "Event-Driven"?</a> — Martin Fowler's taxonomy of EDA patterns.</li>
-            <li><a href="https://www.confluent.io/blog/event-driven-microservices-with-apache-kafka/" rel="noopener noreferrer" target="_blank">Event-Driven Microservices with Kafka</a> — Confluent engineering blog.</li>
+            <li><a href="https://kafka.apache.org/documentation/" rel="noopener noreferrer" target="_blank">Apache Kafka Documentation</a> — streaming platform reference for event logs and consumers.</li>
             <li><a href="https://www.asyncapi.com/docs" rel="noopener noreferrer" target="_blank">AsyncAPI Specification</a> — Standard for documenting event-driven APIs.</li>
           </ul>
         </div>

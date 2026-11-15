@@ -126,7 +126,16 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Precomputed summaries refresh on schedule or from event projectors feeding CQRS read models.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    oltp["OLTP writes"] --> mv["Materialized view refresh"]
+    mv --> read["Fast summary queries"]
+    cmd["Command events"] --> proj["Read model projector"]
+    proj --> read</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   PostgreSQL MATERIALIZED VIEW:
 
   -- Create a materialized view for sales summary
@@ -174,6 +183,9 @@
   → replaced by:
   SELECT * FROM order_summary WHERE order_id = ?   -- 1ms, no joins
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">PostgreSQL materialized view with CONCURRENTLY refresh and CQRS projector maintaining denormalized reads.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -200,7 +212,8 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Refresh strategies in PostgreSQL:</strong> <code>REFRESH MATERIALIZED VIEW</code> performs a full recompute and requires an exclusive lock, blocking all reads during the refresh. For production systems with high-traffic views, always use <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code>, which computes the new result set, then atomically swaps it in using a diff-based approach. CONCURRENT requires a unique index on the materialized view. Schedule refreshes during low-traffic periods or use pg_cron for automated periodic refresh. Monitor refresh duration — a view that takes 5 minutes to refresh but is scheduled every minute will cause overlapping refreshes and increasing database load.</p>
+          <p><strong>Refresh strategies in PostgreSQL:</strong> <code>REFRESH MATERIALIZED VIEW</code> performs a full recompute and requires an exclusive lock, blocking all reads during the refresh. For production systems with high-traffic views, always use <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code>, which computes the new result set, then atomically swaps it in using a diff-based approach. CONCURRENT requires a unique index on the materialized view. Schedule refreshes during low-traffic periods or use pg_cron for automated periodic refresh.</p>
+          <p>Monitor refresh duration — a view that takes 5 minutes to refresh but is scheduled every minute will cause overlapping refreshes and increasing database load.</p>
           <p><strong>Application-level materialized views:</strong> For cross-service or cross-database scenarios where database-native materialized views cannot span service boundaries, implement application-level materialized views: a dedicated process subscribes to change events (Kafka, CDC, database triggers) and maintains a denormalized read table in a read-optimized store (PostgreSQL read replica, Redis, Elasticsearch). This is the CQRS read model pattern. The key principle is that the read store is rebuilt entirely from the event stream — it is derived data, not a source of truth. This enables rebuilding the read model from scratch by replaying the event stream whenever the schema needs to change.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

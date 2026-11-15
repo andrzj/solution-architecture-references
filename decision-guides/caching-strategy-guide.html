@@ -98,7 +98,7 @@
 
           </div>
           <div class="article-content"><h2 id="what-it-is">The decision</h2>
-          <p>Caching is a strategy for storing copies of data in fast-access storage to avoid repeatedly fetching it from slower sources (databases, external APIs, computation). The fundamental question is not whether to cache, but how: specifically, who is responsible for loading data into the cache, and when do writes update the cache versus the database. The answer determines consistency guarantees, failure modes, and implementation complexity.</p>
+          
           <p>The four primary caching strategies are cache-aside (lazy loading), where the application manages all cache interactions; write-through, where all writes go to both cache and database synchronously; write-behind (write-back), where writes update the cache immediately but database updates are deferred asynchronously; and read-through, where the cache tier intercepts reads and handles cache misses transparently. Each strategy represents a different trade-off between consistency, write performance, read performance, and operational complexity.</p>
           <p>Caching is not just about Redis or Memcached. HTTP caching at CDN and browser layers, in-process application caches (JVM heap, local dictionaries), database query caches, and service mesh response caches all apply the same principles. The strategy decision applies at every caching layer, and the right answer differs by layer. A product page might use write-through caching for inventory counts (strong consistency needed) but CDN caching with cache-aside refresh for product descriptions (eventual consistency acceptable, high read volume).</p>
 
@@ -125,7 +125,24 @@
           </ul>
 
           <h2 id="typical-architecture">Comparison</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    cache_aside_lazy_loading["CACHE-ASIDE (Lazy Loading)"]
+    read_write["READ:                           WRITE:"]
+    app_cache_miss_app_datab["App → Cache (miss)              App → Database ✓"]
+    app_database_app_invalid["App → Database                  App → Invalidate cache key"]
+    app_cache_set_ttl_or_ski["App → Cache (set, TTL)          (or skip cache invalidation)"]
+    app_return_data["App → Return data"]
+    write_through["WRITE-THROUGH"]
+    cache_aside_lazy_loading --> read_write
+    read_write --> app_cache_miss_app_datab
+    app_cache_miss_app_datab --> app_database_app_invalid
+    app_database_app_invalid --> app_cache_set_ttl_or_ski
+    app_cache_set_ttl_or_ski --> app_return_data
+    app_return_data --> write_through</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
 CACHE-ASIDE (Lazy Loading)
 ═══════════════════════════════════════════════════
 READ:                           WRITE:
@@ -182,6 +199,9 @@ STRATEGY SELECTION GUIDE
  Cache-Aside       Write-   Write-   Write-
  (TTL-based)       Through  Behind   Through
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Trade-offs</h2>
           <div class="pros-cons">
@@ -206,9 +226,11 @@ STRATEGY SELECTION GUIDE
           </div>
 
           <h2 id="implementation-notes">Implementation considerations</h2>
-          <p>For cache-aside, TTL selection is the most consequential configuration decision. Too short a TTL defeats the purpose of caching; too long causes stale data issues. A useful heuristic: set TTL to the maximum staleness the business can tolerate for that data type. User session data: 30 minutes. Product descriptions: 1 hour. Pricing and inventory: 60 seconds or use event-driven invalidation. Reference data (country codes, categories): 24 hours. Apply cache stampede protection by adding jitter to TTLs (randomize within ±10% of target TTL) so that mass cache expiration events don't trigger simultaneous database load spikes.</p>
+          <p>For cache-aside, TTL selection is the most consequential configuration decision. Too short a TTL defeats the purpose of caching; too long causes stale data issues. A useful heuristic: set TTL to the maximum staleness the business can tolerate for that data type. User session data: 30 minutes.</p>
+          <p>Product descriptions: 1 hour. Pricing and inventory: 60 seconds or use event-driven invalidation. Reference data (country codes, categories): 24 hours. Apply cache stampede protection by adding jitter to TTLs (randomize within ±10% of target TTL) so that mass cache expiration events don't trigger simultaneous database load spikes.</p>
           <p>For write-behind caching, the asynchronous database write introduces a window where data exists only in cache. If the cache node fails during this window, the write is lost. Production write-behind implementations require the cache to persist queued writes to disk (Redis AOF mode) and handle write failure with retry logic and dead letter handling for failed writes. This complexity often means write-behind is reserved for high-frequency, low-criticality writes (view counts, click tracking, metrics aggregation) rather than transactional data.</p>
-          <p>Cache eviction policies determine what happens when the cache is full. Redis supports LRU (Least Recently Used), LFU (Least Frequently Used), TTL-based, and random eviction. For cache-aside with unpredictable access patterns, LFU maximizes hit rate. For session caches, LRU ensures recent users are retained. Allkeys-LRU evicts any key; volatile-LRU evicts only keys with TTLs set, which provides a safety net: keys without TTL (critical data) are never evicted. Always configure a maxmemory-policy explicitly rather than relying on defaults, which vary by Redis version.</p>
+          <p>Cache eviction policies determine what happens when the cache is full. Redis supports LRU (Least Recently Used), LFU (Least Frequently Used), TTL-based, and random eviction. For cache-aside with unpredictable access patterns, LFU maximizes hit rate. For session caches, LRU ensures recent users are retained.</p>
+          <p>Allkeys-LRU evicts any key; volatile-LRU evicts only keys with TTLs set, which provides a safety net: keys without TTL (critical data) are never evicted. Always configure a maxmemory-policy explicitly rather than relying on defaults, which vary by Redis version.</p>
 
           <h2 id="common-failure-modes">Common mistakes</h2>
           <ul>

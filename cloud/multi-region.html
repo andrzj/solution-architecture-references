@@ -104,69 +104,106 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Multi-Region Architecture is a key concept in cloud architecture. This article covers the core principles, implementation patterns, and best practices.</p>
-
+          
+          <p>Design choices include <em>active-passive</em> (one region serves production traffic while another waits on standby), <em>active-active</em> (multiple regions serve traffic concurrently), and <em>data-local</em> patterns where compute is regional but authoritative data lives in a single primary region with read replicas elsewhere.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Understanding multi-region architecture is essential for building robust, scalable systems. The patterns and practices described here have emerged from real-world experience across many organizations.</p>
-
+          <p>Customers expect services to stay available when an entire region fails. A single-region deployment ties reliability to one power grid, fibre bundle, and operations team mistake.</p>
+          <p>Latency-sensitive global products cannot place all users far from one data centre; multi-region placement moves compute closer to users without building private POP networks.</p>
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When designing systems that require multi-region architecture capabilities.</li>
-            <li>When evaluating architectural trade-offs in your specific context.</li>
-            <li>When onboarding team members to established practices.</li>
+            <li><strong>Global SaaS</strong> with users on multiple continents and strict uptime SLAs.</li>
+            <li>Regulatory requirements to process data in specific countries while still offering a unified product.</li>
+            <li><strong>DR targets</strong> below what pilot-light DR in a secondary region can achieve — need always-warm capacity.</li>
           </ul>
-
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>When the complexity overhead outweighs the benefit for your use case.</li>
-            <li>When simpler alternatives adequately solve the problem.</li>
+            <li>Single-country products with modest uptime requirements — multi-region adds cost and consistency complexity without proportional benefit.</li>
+            <li>Applications with a single-primary database that cannot tolerate cross-region write conflicts without a full redesign.</li>
           </ul>
-
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>MULTI-REGION ARCHITECTURE OVERVIEW:
-
-  ┌─────────────────────────────────────┐
-  │         Multi-Region Architecture          │
-  │                                     │
-  │  Core principles and components     │
-  │  would be illustrated here          │
-  │                                     │
-  └─────────────────────────────────────┘
-</code></pre>
-
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    subgraph topo["Multi-region topologies"]
+        ap["Active-passive&lt;br/&gt;failover region"]
+        aa["Active-active&lt;br/&gt;parallel regions"]
+        dr["Backup / DR&lt;br/&gt;async copies"]
+    end
+    global["Global traffic entry&lt;br/&gt;DNS / LB"]
+    global --> topo</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>MULTI-REGION TOPOLOGIES
+────────────────────────────────────────────
+Active-Passive                Active-Active
+  Users ──DNS──► Primary          Global DNS / Latency routing
+         │ fail                     ├──────────┬──────────┐
+         ▼ over                     ▼          ▼          ▼
+     eu-west-1 (active)         us-east-1   eu-west-1  ap-southeast-1
+     us-east-1 (standby)        (writes)    (writes)   (read-heavy)
+            │                         └──── Global DB / conflict layer
+            └── async replication ────────┘</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Multi-region topologies: global entry fans to active-passive pairs, active-active regions, or backup-focused DR layouts.</figcaption>
+          </figure>
           <h2 id="pros-and-cons">Pros and cons</h2>
-          <h3>Advantages</h3>
-          <ul>
-            <li>Provides structured approach to solving common problems.</li>
-            <li>Enables consistent implementation across teams.</li>
-            <li>Draws on proven industry practices.</li>
-          </ul>
-          <h3>Trade-offs</h3>
-          <ul>
-            <li>Requires investment in tooling and process.</li>
-            <li>May introduce additional complexity in simple scenarios.</li>
-          </ul>
-
+          <div class="pros-cons">
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+            <li>Regional isolation limits blast radius of provider incidents.</li>
+            <li>Latency-based routing improves experience for distant users.</li>
+            <li>Warm standby regions shorten failover versus cold backups.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+            <li>Cross-region data replication cost and consistency trade-offs.</li>
+            <li>Operational complexity: deployments must succeed in every active region.</li>
+            <li>Debugging distributed systems across regions is harder during incidents.</li>
+              </ul>
+            </div>
+          </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>When implementing multi-region architecture, start with the core patterns and incrementally adopt more advanced techniques as your needs grow. Always validate against your specific requirements and constraints.</p>
-
+          <p>Pick a <strong>traffic steering</strong> model early: Route 53 latency routing, geoproximity, or anycast with Global Accelerator. Document failover triggers (health check thresholds, manual runbook).</p>
+          <p>Standardise infrastructure per region with Terraform/CDK modules; drift between regions causes failover surprises. Run GameDays that fail over production traffic quarterly.</p>
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Split-brain after DNS TTL:</strong> Stale DNS caches send traffic to a failed region longer than expected — use low TTLs on health-checked records only during incidents.</li>
+            <li><strong>Schema migration skew:</strong> Region B deploys before region A; database migration breaks older code — enforce same-version deployments or backward-compatible migrations.</li>
+          </ul>
+          <h2 id="decision-checklist">Decision checklist</h2>
+          <ul class="checklist">
+            <li>Is RTO/RPO defined per tier of service with a mapped multi-region pattern?</li>
+            <li>Are health checks end-to-end (not just ALB /) from outside each region?</li>
+            <li>Can the database tier fail over without manual steps in under the target RTO?</li>
+            <li>Is cross-region egress cost modeled for steady-state replication?</li>
+          </ul>
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>Streaming platform:</strong> Primary in us-east-1, active-active API in eu-west-1 and ap-southeast-1; DynamoDB global tables for session state; 30-second DNS failover tested monthly.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="index.html">Cloud Architecture Overview</a> — Browse all cloud architecture articles.</li>
+            <li><a href="disaster-recovery.html">Disaster Recovery Patterns</a> — RTO/RPO framing for regional failure.</li>
+            <li><a href="active-active.html">Active-Active Architecture</a> — Concurrent multi-region serving.</li>
+            <li><a href="active-passive.html">Active-Passive Architecture</a> — Standby region failover model.</li>
+            <li><a href="cloud-networking.html">Cloud Networking</a> — VPC peering and hybrid connectivity.</li>
           </ul>
-
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/" target="_blank" rel="noopener noreferrer">Martin Fowler's Architecture Guide</a></li>
-            <li><a href="https://aws.amazon.com/architecture/" target="_blank" rel="noopener noreferrer">AWS Architecture Center</a></li>
+            <li><a href="https://docs.aws.amazon.com/whitepapers/latest/aws-fault-isolation-boundaries/regions.html" target="_blank" rel="noopener noreferrer">AWS Fault Isolation — Regions</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/design-guides/resiliency" target="_blank" rel="noopener noreferrer">Azure Architecture — Resiliency</a></li>
+            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected Framework</a></li>
           </ul>
         </div>
-        <nav class="article-nav" aria-label="Article navigation">
-          <a href="index.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Back</span><span class="article-nav__title">Cloud Architecture</span></a>
+                <nav class="article-nav" aria-label="Article navigation">
+          <a href="multi-cloud-strategy.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Multi-Cloud Strategy</span></a>
+          <a href="active-active.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Active-Active Architecture</span></a>
         </nav>
       </div>
       <aside class="article-aside">
-        <nav class="toc" aria-label="Table of contents">
+                <nav class="toc" aria-label="Table of contents">
           <div class="toc__title">On this page</div>
           <ul class="toc__list">
             <li><a href="#what-it-is" class="toc__link">What it is</a></li>
@@ -176,6 +213,9 @@
             <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
             <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
             <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
+            <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
           </ul>

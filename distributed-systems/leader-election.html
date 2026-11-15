@@ -101,7 +101,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Leader election is the process by which a group of distributed nodes agrees on designating exactly one of themselves as the "leader" responsible for coordinating a shared task. The elected leader may perform writes to a shared resource, drive a distributed algorithm, schedule work, or manage cluster metadata. The rest of the nodes become followers and defer to the leader. When the leader fails, a new election is triggered to select a replacement.</p>
+          
+          <p>Leader election picks one node in a cluster to coordinate writes, locks, or scheduled jobs. Followers watch the leader and promote a replacement when the leader dies. Kafka partition leaders and single-writer databases rely on this pattern.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Many coordination problems — replication, lock management, partition assignment, scheduled job execution — are simpler with a single authoritative node. Without a designated leader, every node must coordinate with every other node for every decision (O(n²) communication). Leader election concentrates decision-making, reducing coordination overhead to O(n) for follower-to-leader communication. The challenge is ensuring exactly one leader exists at any time, even across network partitions and process failures.</p>
@@ -123,27 +124,36 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>ZooKeeper ephemeral nodes are a common leader election pattern:</p>
-          <pre><code>ZooKeeper Leader Election via Ephemeral Sequential Nodes
-═════════════════════════════════════════════════════════
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    A["Node A candidate-0001 leader"] --> B["Node B watches A"]
+    B --> C["Node C watches B"]
+    A -.->|"crash deletes ephemeral node"| B
+    B -.->|"becomes leader"| C</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>ZooKeeper Leader Election via Ephemeral Sequential Nodes
+          ═════════════════════════════════════════════════════════
+          
+          All candidates create: /election/candidate-XXXXXXXX (sequential)
+          
+            Node A creates: /election/candidate-0000000001
+            Node B creates: /election/candidate-0000000002
+            Node C creates: /election/candidate-0000000003
+          
+          Leader = node holding the lowest-numbered znode
+          
+            → Node A is leader (has candidate-0000000001)
+            → Node B watches candidate-0000000001
+            → Node C watches candidate-0000000002 (watches next lower)
+          
+          Node A crashes → its ephemeral znode is deleted automatically
+            → Node B's watch fires → Node B becomes leader
+            → Node C watches candidate-0000000002 (now B's node)
+          
+          Fencing token: leader is assigned epoch/term number.
+          Storage guards reject writes with outdated epoch.</code></pre></details>
+                      <figcaption id="typical-architecture-caption">ZooKeeper leader election: lowest sequential ephemeral znode wins; watchers promote the next node on failure.</figcaption>
+                    </figure>
 
-All candidates create: /election/candidate-XXXXXXXX (sequential)
-
-  Node A creates: /election/candidate-0000000001
-  Node B creates: /election/candidate-0000000002
-  Node C creates: /election/candidate-0000000003
-
-Leader = node holding the lowest-numbered znode
-
-  → Node A is leader (has candidate-0000000001)
-  → Node B watches candidate-0000000001
-  → Node C watches candidate-0000000002 (watches next lower)
-
-Node A crashes → its ephemeral znode is deleted automatically
-  → Node B's watch fires → Node B becomes leader
-  → Node C watches candidate-0000000002 (now B's node)
-
-Fencing token: leader is assigned epoch/term number.
-Storage guards reject writes with outdated epoch.</code></pre>
           <p>In Raft, leader election is built into the consensus protocol: nodes use randomised election timeouts; the first to time out sends <code>RequestVote</code> RPCs; a candidate gaining majority votes becomes the leader for that term.</p>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -170,7 +180,8 @@ Storage guards reject writes with outdated epoch.</code></pre>
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Fencing tokens</strong> are the key safety mechanism for preventing split-brain damage. Each time a new leader is elected, it receives a monotonically increasing token (term number, epoch, or ZooKeeper session ID). The leader includes this token in every write request to storage. The storage system rejects writes with tokens lower than the highest it has seen, preventing a zombie (old) leader from overwriting data after a new leader has been elected.</p>
-          <p><strong>TTL-based leases with heartbeats:</strong> the leader holds a lease that expires after a TTL unless renewed via heartbeat. Followers will not act as leader until the lease expires. The leader must stop acting as leader before its lease expires if it loses connectivity. This approach works well with Redis (SET NX PX) or Kubernetes leader election via ConfigMap/Lease annotations. Ensure clocks are reasonably synchronised — clock drift can cause a lease to expire on the leader's clock before the TTL has elapsed on followers.</p>
+          <p><strong>TTL-based leases with heartbeats:</strong> the leader holds a lease that expires after a TTL unless renewed via heartbeat. Followers will not act as leader until the lease expires. The leader must stop acting as leader before its lease expires if it loses connectivity. This approach works well with Redis (SET NX PX) or Kubernetes leader election via ConfigMap/Lease annotations.</p>
+          <p>Ensure clocks are reasonably synchronised — clock drift can cause a lease to expire on the leader's clock before the TTL has elapsed on followers.</p>
           <p><strong>Epoch numbers</strong> serve as fencing tokens in Kafka, where each partition has a leader epoch written to ZooKeeper (pre-KRaft) or to the metadata log (KRaft mode). Consumers and other brokers reject writes from brokers with outdated epochs.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

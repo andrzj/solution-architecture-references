@@ -106,7 +106,8 @@
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Startup time and initial page load time are critical metrics. An application that eagerly initializes 50 services, loads 10,000 product images, and fetches megabytes of JSON at startup will be unresponsive for seconds before the user can interact with it. Lazy loading decouples initialization from startup, allowing the critical path to complete quickly while non-essential resources load in the background or on demand.</p>
-          <p>Memory usage is the other motivating factor. A product listing page might display 12 products but the catalog contains 100,000. Eagerly loading all 100,000 products into memory would require gigabytes of RAM and take minutes. Lazy loading (fetching the current page of results only) reduces this to kilobytes. The same applies to database ORM queries: a user object with lazily-loaded associations returns quickly with just the user record; loading all orders, all addresses, all payment methods eagerly would result in hundreds of database joins that are almost always unnecessary for the immediate use case.</p>
+          <p>Memory usage is the other motivating factor. A product listing page might display 12 products but the catalog contains 100,000. Eagerly loading all 100,000 products into memory would require gigabytes of RAM and take minutes. Lazy loading (fetching the current page of results only) reduces this to kilobytes.</p>
+          <p>The same applies to database ORM queries: a user object with lazily-loaded associations returns quickly with just the user record; loading all orders, all addresses, all payment methods eagerly would result in hundreds of database joins that are almost always unnecessary for the immediate use case.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -126,7 +127,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Defer work until needed: singleton init, eager ORM joins, viewport images, virtual lists, skeleton UI.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    singleton["Lazy singleton init"]
+    orm["Eager join vs N+1 lazy load"]
+    img["loading=lazy and IntersectionObserver"]
+    virt["Virtual scroll small DOM"]
+    skel["Skeleton then hydrate"]
+    singleton --> orm --> img --> virt --> skel</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Lazy Singleton (thread-safe, double-checked locking):
   class ConfigService {
     private static volatile instance: ConfigService | null = null;
@@ -182,6 +194,9 @@
   3. Replace skeleton with real content (300-1000ms)
   → User sees activity immediately, no blank white screen
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Patterns from double-checked locking and N+1 fixes through lazy images, virtual scroll, and skeleton screens.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -208,7 +223,8 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>The N+1 problem:</strong> ORM lazy loading is the source of the most common database performance problem in application development. The N+1 pattern: load a list of N parent records, then for each parent access a lazily-loaded association, triggering N additional queries. For 100 orders with lazy-loaded items, this is 101 queries instead of 1. The fix is always eager loading (JOIN-based loading of the association in the original query). In Hibernate/JPA, use <code>JOIN FETCH</code> or <code>@EntityGraph</code>. In Sequelize, use <code>include</code> options. In Rails ActiveRecord, use <code>includes</code>. Enable SQL query logging in development and review it for N+1 patterns; they are almost never obvious from reading the application code alone.</p>
+          <p><strong>The N+1 problem:</strong> ORM lazy loading is the source of the most common database performance problem in application development. The N+1 pattern: load a list of N parent records, then for each parent access a lazily-loaded association, triggering N additional queries. For 100 orders with lazy-loaded items, this is 101 queries instead of 1. The fix is always eager loading (JOIN-based loading of the association in the original query).</p>
+          <p>In Hibernate/JPA, use <code>JOIN FETCH</code> or <code>@EntityGraph</code>. In Sequelize, use <code>include</code> options. In Rails ActiveRecord, use <code>includes</code>. Enable SQL query logging in development and review it for N+1 patterns; they are almost never obvious from reading the application code alone.</p>
           <p><strong>Intersection Observer for images:</strong> The HTML <code>loading="lazy"</code> attribute provides native browser lazy loading for images and iframes with no JavaScript required. It defers loading of off-screen images until they are near the viewport. For custom components (lazy sections, code-split React components), use the Intersection Observer API with a <code>rootMargin</code> of 200–400px to pre-load just before the user scrolls to the element, avoiding visible loading delays. Always specify <code>width</code> and <code>height</code> attributes on lazily-loaded images to reserve space and prevent Cumulative Layout Shift (CLS), which is a Core Web Vital metric.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

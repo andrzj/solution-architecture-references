@@ -104,11 +104,13 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p><strong>Recovery Time Objective (RTO)</strong> is the maximum acceptable duration of downtime following a disaster — the time from incident declaration to service restoration. <strong>Recovery Point Objective (RPO)</strong> is the maximum acceptable amount of data loss measured in time — if RPO is 1 hour and a disaster strikes at 14:00, the system must be restorable to its 13:00 state with no more than 1 hour of transaction loss. These two metrics are the primary inputs to DR strategy selection: lower RTO and RPO require more expensive, always-hot standby infrastructure; higher tolerance enables simpler, cheaper backup-based approaches.</p>
-          <p>AWS defines four DR strategies along a cost-vs-recovery-speed spectrum. <strong>Backup and Restore</strong> (RTO: hours, RPO: hours) stores backups in S3 and restores from scratch; cheapest option (~$50–200/month for backup storage). <strong>Pilot Light</strong> (RTO: 10–60 min, RPO: minutes) keeps a minimal version of the environment running in the DR region — just the database replication and core networking, with compute scaled to zero; cost ~$200–500/month. <strong>Warm Standby</strong> (RTO: minutes, RPO: seconds) runs a scaled-down but fully functional version of the system in the DR region; cost ~$500–3,000/month. <strong>Multi-Site Active-Active</strong> (RTO: near-zero, RPO: near-zero) runs full capacity in both regions simultaneously with traffic split between them; cost: 2× normal infrastructure.</p>
+          <p><strong>Recovery Point Objective (RPO)</strong> is the maximum acceptable amount of data loss measured in time — if RPO is 1 hour and a disaster strikes at 14:00, the system must be restorable to its 13:00 state with no more than 1 hour of transaction loss. These two metrics are the primary inputs to DR strategy selection: lower RTO and RPO require more expensive, always-hot standby infrastructure; higher tolerance enables simpler, cheaper backup-based approaches.</p>
+          <p>AWS defines four DR strategies along a cost-vs-recovery-speed spectrum. <strong>Backup and Restore</strong> (RTO: hours, RPO: hours) stores backups in S3 and restores from scratch; cheapest option (~$50–200/month for backup storage). <strong>Pilot Light</strong> (RTO: 10–60 min, RPO: minutes) keeps a minimal version of the environment running in the DR region — just the database replication and core networking, with compute scaled to zero; cost ~$200–500/month. <strong>Warm Standby</strong> (RTO: minutes, RPO: seconds) runs a scaled-down but fully functional version of the system in the DR region; cost ~$500–3,000/month.</p>
+          <p><strong>Multi-Site Active-Active</strong> (RTO: near-zero, RPO: near-zero) runs full capacity in both regions simultaneously with traffic split between them; cost: 2× normal infrastructure.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Regional AWS failures occur — us-east-1 had a significant disruption in December 2021, and smaller AZ-level failures occur several times per year. Without a DR strategy, a regional failure means total service outage until AWS restores the region. For organisations with revenue-generating applications, the financial impact of downtime can be enormous: Amazon's own estimate of $220,000/minute for their systems implies that a 2-hour outage costs $26M. More relevant: a 4-hour outage for an e-commerce platform with $1M/day GMV costs $165K in direct revenue loss plus customer trust damage. The cost of warm standby DR ($1,000/month) is negligible compared to a single outage event.</p>
+          <p>Regional AWS failures occur — us-east-1 had a significant disruption in December 2021, and smaller AZ-level failures occur several times per year. Without a DR strategy, a regional failure means total service outage until AWS restores the region. For organisations with revenue-generating applications, the financial impact of downtime can be enormous: Amazon's own estimate of $220,000/minute for their systems implies that a 2-hour outage costs $26M. More relevant: a 4-hour outage for an e-commerce platform with $1M/day GMV costs $165K in direct revenue loss plus customer trust damage.</p>
+          <p>The cost of warm standby DR ($1,000/month) is negligible compared to a single outage event.</p>
           <p>DR strategy selection requires honesty about the business impact of downtime. Many organisations claim an RTO of "15 minutes" without building or testing the infrastructure required to achieve it. The technical requirement for 15-minute RTO is a Warm Standby with pre-provisioned compute in the DR region, automated health checks triggering DNS failover, and a runbook that has been tested in a GameDay exercise within the last 90 days. "We have backups in S3" does not deliver 15-minute RTO — it delivers 4–12 hour RTO depending on database size and restore automation maturity.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -127,7 +129,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>DR Strategy Comparison
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    subgraph strategies["DR strategies"]
+        backup["Backup &amp; restore&lt;br/&gt;hours RTO"]
+        pilot["Pilot light&lt;br/&gt;minimal standby"]
+        warm["Warm standby&lt;br/&gt;scaled-down copy"]
+        active["Active-active&lt;br/&gt;multi-site traffic"]
+    end
+    rpo["Lower RPO / RTO needs"] --> strategies</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>DR Strategy Comparison
 ─────────────────────────────────────────────────────────────
 Strategy         RTO        RPO        Cost/month   Always On
 ─────────────────────────────────────────────────────────────
@@ -155,6 +168,9 @@ Warm Standby Architecture (AWS)
   3. Aurora Global DB promotes eu-west-1 replica (~1 min)
   4. ECS scales from 2 → 10 tasks (~3 min)
   Total RTO: ~5 minutes</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">DR strategy spectrum: backup through active-active trades cost against recovery time and data loss tolerance.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -181,8 +197,10 @@ Warm Standby Architecture (AWS)
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>DR runbooks must be executable by any engineer on the on-call rotation, not just the architect who designed the system. Document every manual step with exact CLI commands, console URLs, and expected output. Automate what can be automated: Aurora Global Database promotion is a single API call (<code>PromoteReadReplicaDBCluster</code>); ECS service scaling is a single API call; Route 53 record updates are a single API call. Build a "break glass" Lambda or Step Functions state machine that executes all failover steps in sequence and sends status updates to an incident Slack channel. The ideal failover is triggered by a single command and completes in under 5 minutes without manual intervention.</p>
-          <p>DR testing cadence should be quarterly at a minimum for Tier 1 applications. A DR test should simulate the actual failure: terminate all instances in the primary region (or suspend Route 53 health checks), verify the DR environment serves traffic correctly, validate data integrity, and measure the actual RTO achieved. Document the measured RTO vs the target RTO, and update the runbook for any gaps discovered. For GameDay testing: use AWS FIS (Fault Injection Simulator) to inject region-level failures in a controlled environment without customer impact. Require each application team to pass a DR GameDay before receiving a production-readiness certification.</p>
+          <p>DR runbooks must be executable by any engineer on the on-call rotation, not just the architect who designed the system. Document every manual step with exact CLI commands, console URLs, and expected output. Automate what can be automated: Aurora Global Database promotion is a single API call (<code>PromoteReadReplicaDBCluster</code>); ECS service scaling is a single API call; Route 53 record updates are a single API call. Build a "break glass" Lambda or Step Functions state machine that executes all failover steps in sequence and sends status updates to an incident Slack channel.</p>
+          <p>The ideal failover is triggered by a single command and completes in under 5 minutes without manual intervention.</p>
+          <p>DR testing cadence should be quarterly at a minimum for Tier 1 applications. A DR test should simulate the actual failure: terminate all instances in the primary region (or suspend Route 53 health checks), verify the DR environment serves traffic correctly, validate data integrity, and measure the actual RTO achieved. Document the measured RTO vs the target RTO, and update the runbook for any gaps discovered. For GameDay testing: use AWS FIS (Fault Injection Simulator) to inject region-level failures in a controlled environment without customer impact.</p>
+          <p>Require each application team to pass a DR GameDay before receiving a production-readiness certification.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

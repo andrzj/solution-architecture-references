@@ -125,7 +125,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>Poison Message Detection and Quarantine Flow
+          <p>Delivery count thresholds route permanent failures to quarantine while transient errors keep backoff retries.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    msg["Message arrives"] --> count{"Delivery count vs max"}
+    count -->|below max| try["Process attempt"]
+    count -->|at max| classify["Classify failure"]
+    classify -->|structural| dlq["Poison queue / DLQ"]
+    classify -->|transient| retry["Backoff retry"]
+    dlq --> alert["Alert operations"]</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Poison Message Detection and Quarantine Flow
 ════════════════════════════════════════════════
 
 Message arrives at consumer
@@ -162,6 +173,9 @@ Message arrives at consumer
   Alert operations team
   → Pagerduty / Slack: "Poison message in orders-dlq"
   → Link to diagnostic dashboard</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Classify structural vs infrastructure failure, write poison metadata to DLQ, and alert operators.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -187,7 +201,8 @@ Message arrives at consumer
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Consumer code should catch exceptions, classify them (structural vs. transient), and either NACK (return to queue for retry) or explicitly forward to the DLQ. Do not rely solely on the broker's automatic dead-lettering by delivery count — add consumer-side logging of the failure reason, exception class, and message metadata to the DLQ message header. This context is critical for rapid diagnosis. For Kafka, the Spring Kafka <code>SeekToCurrentErrorHandler</code> and <code>DeadLetterPublishingRecoverer</code> provide a production-ready poison message implementation for partition-ordered consumers.</p>
+          <p>Consumer code should catch exceptions, classify them (structural vs. transient), and either NACK (return to queue for retry) or explicitly forward to the DLQ. Do not rely solely on the broker's automatic dead-lettering by delivery count — add consumer-side logging of the failure reason, exception class, and message metadata to the DLQ message header. This context is critical for rapid diagnosis.</p>
+          <p>For Kafka, the Spring Kafka <code>SeekToCurrentErrorHandler</code> and <code>DeadLetterPublishingRecoverer</code> provide a production-ready poison message implementation for partition-ordered consumers.</p>
           <p>Tune <code>maxReceiveCount</code> (SQS) or equivalent based on the observed transient failure rate for the specific consumer. If the dependency is healthy 99.9% of the time and failures typically resolve in 1–2 retries, a threshold of 3–5 is appropriate. If the dependency can be down for extended periods and messages must not be lost, a higher threshold with longer visibility timeout may be appropriate — but combine this with a circuit breaker that pauses consumption entirely during outages rather than accumulating delivery count against healthy messages.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -225,8 +240,9 @@ Message arrives at consumer
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.spring.io/spring-kafka/docs/current/reference/html/#dead-letters" rel="noopener noreferrer" target="_blank">Dead-Letter Topic support — Spring Kafka documentation</a> — <code>DeadLetterPublishingRecoverer</code> and error handling configuration.</li>
+            <li><a href="https://docs.spring.io/spring-kafka/reference/retrytopic.html" rel="noopener noreferrer" target="_blank">Non-Blocking Retries and DLTs — Spring for Apache Kafka</a> — <code>@RetryableTopic</code> and dead-letter topic routing.</li>
             <li><a href="https://www.rabbitmq.com/dlx.html" rel="noopener noreferrer" target="_blank">Dead Letter Exchanges — RabbitMQ documentation</a> — DLX routing configuration and per-queue dead-lettering.</li>
+            <li><a href="https://sre.google/sre-book/table-of-contents/" target="_blank" rel="noopener noreferrer">Google SRE book</a></li>
           </ul>
         </div>
 

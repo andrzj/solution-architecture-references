@@ -98,12 +98,14 @@
 
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
-          <p>A God Object (also called a God Class) is a class, module, or component that has grown to encompass too much knowledge, too many responsibilities, and too many dependencies. It violates the Single Responsibility Principle in the most extreme way: rather than having one reason to change, it has dozens. Every other component in the system depends on it. It knows the internal details of other modules. It holds state that logically belongs to other components. Modifying it is dangerous, testing it is painful, and understanding it in full is often impossible.</p>
+          
+          <p>It knows the internal details of other modules. It holds state that logically belongs to other components. Modifying it is dangerous, testing it is painful, and understanding it in full is often impossible.</p>
           <p>In microservices architectures, the same pattern emerges at the service level as a God Service: a single service that handles user management, authentication, authorization, preferences, notifications, audit logging, and anything else that involves the concept of a "user." Teams justify this because these concerns are related — they all touch the User entity. But cohesion around a data entity is not the same as cohesion around a business capability. The User entity may be a data pivot point, but authentication, profile management, and notification preferences are distinct business capabilities with different change rates, different scaling requirements, and different team ownership.</p>
           <p>Arthur Riel, in his book <em>Object-Oriented Design Heuristics</em>, identified the God Class as one of the most damaging object-oriented design mistakes. The defining symptoms are: the class has an excessively large interface (many public methods), it manipulates data that other classes manage, and it is involved in many features that seem unrelated to each other. In systems terms: high afferent coupling (many things depend on it) combined with high efferent coupling (it depends on many things) is the signature of a God component.</p>
 
           <h2 id="why-it-exists">Why it emerges</h2>
-          <p>God Objects emerge through accretion: the gradual accumulation of responsibility over time, one small addition at a time. A class starts with a clear, focused purpose. Then a feature request comes in that is slightly adjacent to the class's responsibility, and it is easier to add a method here than to create a new class. Then another. Then someone discovers the class already has helper methods that a new feature needs, so the new feature's logic goes there too. Each individual addition is defensible. The cumulative result is not. This is the gravitational pull of existing code: a class that already exists, already has the dependencies you need, and already has the relevant data is the path of least resistance.</p>
+          <p>God Objects emerge through accretion: the gradual accumulation of responsibility over time, one small addition at a time. A class starts with a clear, focused purpose. Then a feature request comes in that is slightly adjacent to the class's responsibility, and it is easier to add a method here than to create a new class. Then another.</p>
+          <p>Then someone discovers the class already has helper methods that a new feature needs, so the new feature's logic goes there too. Each individual addition is defensible. The cumulative result is not. This is the gravitational pull of existing code: a class that already exists, already has the dependencies you need, and already has the relevant data is the path of least resistance.</p>
           <p>Organizational dynamics amplify the problem. If a single team or individual owns a component that touches a widely-shared domain concept (users, accounts, products), other teams will route their requirements through that team rather than managing the complexity of owning a new component. "Can you add this to UserService?" is an easier ask than "we need to design a new service, agree on its API, deploy and operate it." The UserService team may resist scope creep but eventually yield to organizational pressure, especially when the feature appears "logically related" to existing functionality.</p>
           <p>Insufficient upfront design also plays a role. When a system is grown without a deliberate decomposition strategy — without Domain-Driven Design or an equivalent discipline for identifying bounded contexts — responsibilities naturally aggregate around the entities that happen to be central to the domain. In an e-commerce system, Order is a central concept that touches inventory, payment, shipping, notifications, and reporting. Without explicit boundaries, all of this logic ends up in an OrderService that is really an orchestration layer for the entire business domain, not a focused service for order management.</p>
 
@@ -125,7 +127,26 @@
           </ul>
 
           <h2 id="typical-architecture">Typical manifestation</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    god_service_userservice["God Service: #quot;UserService#quot; — everything depends on it"]
+    god_service["God Service"]
+    userservice["UserService"]
+    authenticate_credential["+ authenticate(credentials)"]
+    getuserprofile_userid["+ getUserProfile(userId)"]
+    updateprofile_userid_da["+ updateProfile(userId, data)"]
+    getuserpreferences_user["+ getUserPreferences(userId)"]
+    updatepreferences_useri["+ updatePreferences(userId, prefs)"]
+    god_service_userservice --> god_service
+    god_service --> userservice
+    userservice --> authenticate_credential
+    authenticate_credential --> getuserprofile_userid
+    getuserprofile_userid --> updateprofile_userid_da
+    updateprofile_userid_da --> getuserpreferences_user
+    getuserpreferences_user --> updatepreferences_useri</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   God Service: "UserService" — everything depends on it
 
   ┌─────────────────────────────────────────────────────┐
@@ -181,6 +202,9 @@
   │retention │ │policy engine │
   └──────────┘ └──────────────┘
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Consequences and remediation</h2>
           <div class="pros-cons">
@@ -205,9 +229,12 @@
           </div>
 
           <h2 id="implementation-notes">Detailed analysis</h2>
-          <p>The God Object pattern is a direct violation of the Single Responsibility Principle, but understanding <em>why</em> the SRP matters is more useful than simply invoking it. A class or service should have one reason to change — meaning it should be accountable to one actor or stakeholder group. If AuthenticationTeam, ProfileTeam, NotificationTeam, and AuditTeam all have requirements that flow through UserService, UserService has four different reasons to change. Each of those reasons may generate changes that conflict with, or inadvertently break, the other reasons' requirements. The responsibility separation is not about code organization aesthetics; it is about managing change independently.</p>
-          <p>In distributed systems, the God Service pattern is particularly damaging because it creates availability coupling across independent business capabilities. If UserService goes down, authentication fails, which means no user can log in. But it also means profile updates fail, notification preferences cannot be read, audit events cannot be logged, and permission checks return errors. What should be a partial degradation — "users cannot update their profile" — becomes a total outage because all of these capabilities share a deployment boundary. Correctly decomposed services fail independently: AuthService going down affects authentication, but ProfileService continues serving profile data, NotificationService continues delivering notifications, and so on.</p>
-          <p>The most effective decomposition strategy combines two complementary techniques: cohesion analysis and stakeholder analysis. Cohesion analysis asks "which methods change together and for the same reasons?" — methods that change together should stay together. Stakeholder analysis asks "who requests changes to this component?" — if different stakeholder groups drive different parts of the component's evolution, those parts belong in different components. These two lenses will typically converge on the same decomposition, providing high confidence in the proposed boundaries. DDD's bounded context concept formalizes this: a bounded context is a region of the domain model where a particular ubiquitous language applies consistently, and service boundaries should align with bounded context boundaries.</p>
+          <p>The God Object pattern is a direct violation of the Single Responsibility Principle, but understanding <em>why</em> the SRP matters is more useful than simply invoking it. A class or service should have one reason to change — meaning it should be accountable to one actor or stakeholder group. If AuthenticationTeam, ProfileTeam, NotificationTeam, and AuditTeam all have requirements that flow through UserService, UserService has four different reasons to change. Each of those reasons may generate changes that conflict with, or inadvertently break, the other reasons' requirements.</p>
+          <p>The responsibility separation is not about code organization aesthetics; it is about managing change independently.</p>
+          <p>In distributed systems, the God Service pattern is particularly damaging because it creates availability coupling across independent business capabilities. If UserService goes down, authentication fails, which means no user can log in. But it also means profile updates fail, notification preferences cannot be read, audit events cannot be logged, and permission checks return errors. What should be a partial degradation — "users cannot update their profile" — becomes a total outage because all of these capabilities share a deployment boundary.</p>
+          <p>Correctly decomposed services fail independently: AuthService going down affects authentication, but ProfileService continues serving profile data, NotificationService continues delivering notifications, and so on.</p>
+          <p>The most effective decomposition strategy combines two complementary techniques: cohesion analysis and stakeholder analysis. Cohesion analysis asks "which methods change together and for the same reasons?" — methods that change together should stay together. Stakeholder analysis asks "who requests changes to this component?" — if different stakeholder groups drive different parts of the component's evolution, those parts belong in different components. These two lenses will typically converge on the same decomposition, providing high confidence in the proposed boundaries.</p>
+          <p>DDD's bounded context concept formalizes this: a bounded context is a region of the domain model where a particular ubiquitous language applies consistently, and service boundaries should align with bounded context boundaries.</p>
 
           <h2 id="common-failure-modes">Escalation patterns</h2>
           <ul>

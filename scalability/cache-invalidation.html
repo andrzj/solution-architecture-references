@@ -126,7 +126,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Choose passive TTL expiry, active invalidation on write, tag-based purge, or probabilistic early refresh to avoid stampedes.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    ttl["TTL expiry — simple, possibly stale"]
+    evt["Event invalidation on write"]
+    tag["Tag-based invalidation"]
+    xfetch["Probabilistic early expiration"]
+    cdn["CDN PURGE to all PoPs"]
+    ttl --> evt --> tag --> xfetch --> cdn</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Strategy 1: TTL-Based (passive expiry)
   Write to DB → cache naturally expires after TTL
   └─ Pro: simple   └─ Con: data stale until TTL elapses
@@ -161,6 +172,9 @@
   HTTP PURGE or API call → invalidation propagated to all PoPs
   └─ Takes 5–30 seconds to propagate globally
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Invalidation strategies from TTL and event-driven deletes through tag purge, XFetch, and CDN propagation.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -187,8 +201,11 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Delete vs. update on invalidation:</strong> The safest approach is to delete (DEL) the cache key rather than updating it atomically. Updating the cache from the write path risks cache poisoning: if the write transaction rolls back after the cache update, the cache holds data that was never committed to the database. Delete-on-write is safe: the next read will miss and re-populate from the committed database state. The pattern is: 1) write to DB; 2) on successful commit, DEL the affected cache keys. The brief period between delete and re-population introduces one cache miss but guarantees consistency.</p>
-          <p><strong>Race condition on invalidation:</strong> The classic race: (1) Thread A reads from DB; (2) Thread B writes to DB and invalidates cache; (3) Thread A writes stale data to cache. The cache now holds the old value after the invalidation. This is inherent to cache-aside with concurrent writes and misses. Mitigation options: use a short TTL as a safety net; use optimistic locking (store a version with the cached value, only write-back if version matches current); use CDC (Change Data Capture) to drive invalidations from the database WAL rather than the application write path, ensuring invalidations are ordered correctly relative to writes.</p>
+          <p><strong>Delete vs. update on invalidation:</strong> The safest approach is to delete (DEL) the cache key rather than updating it atomically. Updating the cache from the write path risks cache poisoning: if the write transaction rolls back after the cache update, the cache holds data that was never committed to the database. Delete-on-write is safe: the next read will miss and re-populate from the committed database state.</p>
+          <p>The pattern is: 1) write to DB; 2) on successful commit, DEL the affected cache keys.</p>
+          <p>The brief period between delete and re-population introduces one cache miss but guarantees consistency.</p>
+          <p><strong>Race condition on invalidation:</strong> The classic race: (1) Thread A reads from DB; (2) Thread B writes to DB and invalidates cache; (3) Thread A writes stale data to cache. The cache now holds the old value after the invalidation. This is inherent to cache-aside with concurrent writes and misses. Mitigation options: use a short TTL as a safety net; use optimistic locking (store a version with the cached value, only write-back if version matches current);</p>
+          <p>use CDC (Change Data Capture) to drive invalidations from the database WAL rather than the application write path, ensuring invalidations are ordered correctly relative to writes.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

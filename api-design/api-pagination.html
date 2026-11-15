@@ -100,10 +100,51 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Pagination divides a large ordered collection into pages that clients retrieve sequentially. Without pagination, a <code>GET /orders</code> endpoint might return millions of rows, causing multi-second response times, excessive memory use, and potential timeouts. Every collection endpoint that can grow unboundedly must be paginated.</p>
+          <p>Without pagination, a <code>GET /orders</code> endpoint might return millions of rows, causing multi-second response times, excessive memory use, and potential timeouts. Every collection endpoint that can grow unboundedly must be paginated.</p>
           <p>The key design dimensions for a pagination strategy are: <strong>stability</strong> (does concurrent insertion/deletion corrupt the page sequence?), <strong>performance</strong> (is the database query efficient at large offsets?), <strong>bookmarkability</strong> (can a client return to an exact page?), and <strong>navigability</strong> (can the client jump to arbitrary pages or only navigate sequentially?).</p>
 
-          <h2 id="offset-limit">Offset/limit pagination</h2>
+          
+          <h2 id="why-it-exists">Why it exists</h2>
+          <p>Unbounded collection responses overwhelm clients, databases, and networks. Pagination caps page size, bounds memory, and keeps latency predictable as data grows into millions of rows.</p>
+
+          <h2 id="when-to-use">When to use</h2>
+          <ul>
+            <li>Every list endpoint that can grow without a fixed upper bound.</li>
+            <li>Infinite-scroll and "load more" mobile UIs (cursor or keyset pagination).</li>
+            <li>Admin grids that need stable ordering under concurrent writes (avoid naive offset).</li>
+          </ul>
+
+          <h2 id="when-not-to-use">When not to use</h2>
+          <ul>
+            <li>Small, bounded collections (configuration enums, &lt; 100 rows) where paging adds friction.</li>
+            <li>Real-time streams where consumers read events sequentially (Kafka, SSE) rather than random pages.</li>
+            <li>When clients require random access to page N of M on billion-row tables — consider search or export APIs instead of deep offset paging.</li>
+          </ul>
+
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Offset pagination is simple but costly at depth; cursor keyset seeks scale on indexed sort keys.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    off["Offset limit scans m plus n rows"]
+    cur["Cursor decodes last sort key"]
+    cur --> seek["Index seek WHERE tuple less than cursor"]</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Offset model:
+  Client -- limit/offset --> API --> DB: LIMIT n OFFSET m (scans m+n rows)
+
+Cursor (keyset) model:
+  Client -- cursor token --> API --> decode last (createdAt, id)
+                                 --> DB: WHERE (createdAt,id) &lt; (?)
+                                       ORDER BY ... LIMIT n  (index seek)</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">LIMIT/OFFSET scans skipped rows versus decoded cursor using composite index seek.</figcaption>
+          </figure>
+
+          <h2 id="implementation-notes">Implementation notes</h2>
+          <p>Strategies (offset, cursor, keyset, tokens, Link header, Relay) and operational details follow below.</p>
+
+<h2 id="offset-limit">Offset/limit pagination</h2>
           <pre><code>GET /orders?offset=0&amp;limit=20   → rows 1–20
 GET /orders?offset=20&amp;limit=20  → rows 21–40
 GET /orders?offset=40&amp;limit=20  → rows 41–60
@@ -206,10 +247,10 @@ X-Total-Count: 1842
 }</code></pre>
           <p>The Relay connection specification standardises cursor-based pagination in GraphQL. Every paginated list is a <em>connection</em> with: <code>edges</code> (array of { cursor, node }), <code>pageInfo</code> (hasNextPage, hasPreviousPage, startCursor, endCursor), and optionally <code>totalCount</code>. Arguments are <code>first</code>/<code>after</code> (forward) and <code>last</code>/<code>before</code> (backward). Most GraphQL clients and frameworks have built-in Relay connection support.</p>
 
-          <h2 id="pros-and-cons">Pros and cons comparison</h2>
+          <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Cursor advantages</h3>
+              <h3>Pros</h3>
               <ul>
                 <li>O(log N) performance regardless of position — no full table scans.</li>
                 <li>Stable under concurrent inserts/deletes — no skipped or duplicated items.</li>
@@ -218,7 +259,7 @@ X-Total-Count: 1842
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Offset advantages</h3>
+              <h3>Cons</h3>
               <ul>
                 <li>Supports random page access ("jump to page 50").</li>
                 <li>Supports total count for "Page N of M" UIs.</li>
@@ -238,7 +279,23 @@ X-Total-Count: 1842
             <li>Does the pagination response include a <code>hasMore</code> / <code>nextCursor</code> to avoid the "last page" problem?</li>
           </ul>
 
-          <h2 id="related-patterns">Related patterns</h2>
+          <h2 
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Deep offset</strong> — <code>OFFSET 1000000</code> timeouts as tables grow.</li>
+            <li><strong>Duplicate/skipped rows</strong> — offset pages shift when rows are inserted or deleted during traversal.</li>
+            <li><strong>Missing tie-breaker</strong> — sort on non-unique <code>createdAt</code> yields unstable order across pages.</li>
+            <li><strong>Expensive COUNT(*)</strong> — total count on every page request stalls large tables.</li>
+          </ul>
+
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li>Stripe-style cursor lists with <code>starting_after</code> for payment and customer resources.</li>
+            <li>GitHub <code>Link</code> header pagination for commits and issues.</li>
+            <li>GraphQL Relay connections with <code>first</code>/<code>after</code> on mobile feeds.</li>
+          </ul>
+
+id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="rest-api-design.html">REST API Design</a> — pagination is a core REST collection pattern.</li>
             <li><a href="filtering-sorting.html">API Filtering and Sorting</a> — sort keys determine which columns need keyset indexes.</li>
@@ -248,10 +305,10 @@ X-Total-Count: 1842
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li>RFC 8288 — Web Linking (pagination Link headers).</li>
-            <li>Relay Cursor Connections Specification — relay.dev/graphql/connections.htm</li>
-            <li>Use the Index, Luke — use-the-index-luke.com (keyset pagination chapter).</li>
-            <li>Google API Design Guide — Pagination — cloud.google.com/apis/design/design_patterns#list_pagination</li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc8288" rel="noopener noreferrer" target="_blank">RFC 8288 — Web Linking</a> — pagination Link headers.</li>
+            <li><a href="https://relay.dev/graphql/connections.htm" rel="noopener noreferrer" target="_blank">Relay Cursor Connections Specification</a> — GraphQL pagination standard.</li>
+            <li><a href="https://use-the-index-luke.com/sql/partial-results/fetch-next-page" rel="noopener noreferrer" target="_blank">Use the Index, Luke — keyset pagination</a> — database performance for paging.</li>
+            <li><a href="https://cloud.google.com/apis/design/design_patterns#list_pagination" rel="noopener noreferrer" target="_blank">Google API Design Guide — Pagination</a> — page tokens and list methods.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
@@ -264,17 +321,24 @@ X-Total-Count: 1842
           <div class="toc__title">On this page</div>
           <ul class="toc__list">
             <li><a href="#what-it-is" class="toc__link">What it is</a></li>
-            <li><a href="#offset-limit" class="toc__link">Offset/limit pagination</a></li>
-            <li><a href="#cursor-pagination" class="toc__link">Cursor-based pagination</a></li>
-            <li><a href="#keyset-pagination" class="toc__link">Keyset pagination</a></li>
-            <li><a href="#page-tokens" class="toc__link">Opaque page tokens</a></li>
-            <li><a href="#total-counts" class="toc__link">Total count implications</a></li>
-            <li><a href="#link-header" class="toc__link">RFC 5988 Link header</a></li>
-            <li><a href="#graphql-relay" class="toc__link">GraphQL Relay spec</a></li>
-            <li><a href="#pros-and-cons" class="toc__link">Comparison</a></li>
+            <li><a href="#why-it-exists" class="toc__link">Why it exists</a></li>
+            <li><a href="#when-to-use" class="toc__link">When to use</a></li>
+            <li><a href="#when-not-to-use" class="toc__link">When not to use</a></li>
+            <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
+            <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
+            <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
             <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
+<li><a href="#offset-limit" class="toc__link">Offset/limit</a></li>
+            <li><a href="#cursor-pagination" class="toc__link">Cursor pagination</a></li>
+            <li><a href="#keyset-pagination" class="toc__link">Keyset pagination</a></li>
+            <li><a href="#page-tokens" class="toc__link">Page tokens</a></li>
+            <li><a href="#total-counts" class="toc__link">Total counts</a></li>
+            <li><a href="#link-header" class="toc__link">Link header</a></li>
+            <li><a href="#graphql-relay" class="toc__link">GraphQL Relay</a></li>
           </ul>
         </nav>
       </aside>

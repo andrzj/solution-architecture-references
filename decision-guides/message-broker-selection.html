@@ -98,13 +98,15 @@
 
           </div>
           <div class="article-content"><h2 id="what-it-is">The decision</h2>
-          <p>Message brokers are the backbone of asynchronous architectures, providing the persistent queues and event streams that decouple services in time. The major options—Apache Kafka, RabbitMQ, Amazon SQS/SNS, Apache Pulsar, and Redis Streams—represent very different design philosophies, and choosing the wrong one for your workload creates operational burden and performance ceilings that are expensive to escape later.</p>
-          <p>Kafka is a distributed log optimized for high throughput, long-term message retention, and event replay. RabbitMQ is a traditional message broker with flexible routing patterns, designed for complex message topologies where messages are consumed and discarded. SQS is a fully managed AWS service that excels at simple, durable queuing with minimal operational overhead. Pulsar extends Kafka's model with tiered storage and multi-tenancy. Redis Streams provides millisecond latency for real-time use cases where in-memory processing is acceptable.</p>
+          
+          <p>Kafka is a distributed log optimized for high throughput, long-term message retention, and event replay. RabbitMQ is a traditional message broker with flexible routing patterns, designed for complex message topologies where messages are consumed and discarded. SQS is a fully managed AWS service that excels at simple, durable queuing with minimal operational overhead. Pulsar extends Kafka's model with tiered storage and multi-tenancy.</p>
+          <p>Redis Streams provides millisecond latency for real-time use cases where in-memory processing is acceptable.</p>
           <p>These systems differ along several axes that matter profoundly: throughput (messages per second), latency (time from publish to consumer processing), retention (how long messages are kept), routing complexity (how messages are directed to specific consumers), multi-tenancy (isolation between teams or applications), and operational complexity (how much expertise is required to run it reliably). No single broker excels on all axes simultaneously.</p>
 
           <h2 id="why-it-exists">Why it matters</h2>
           <p>Message brokers sit at the center of event-driven architectures. Getting this selection wrong has cascading consequences. Choosing Kafka for a simple task queue wastes engineering effort on operational complexity (ZooKeeper/KRaft cluster management, partition rebalancing, consumer group coordination) that provides no benefit over SQS. Choosing SQS for a high-throughput event streaming use case hits throughput limits (SQS processes ~3,000 messages/second per queue for standard queues) and lacks the log retention and replay capabilities needed for event sourcing patterns.</p>
-          <p>Message ordering, delivery guarantees, and consumer group semantics differ significantly between brokers. Kafka guarantees ordering within a partition; ordering across partitions requires careful key selection. SQS standard queues guarantee at-least-once delivery but not ordering; SQS FIFO queues add ordering but at higher cost and lower throughput. RabbitMQ delivers messages in order but removes them on acknowledgment, making replay impossible. These guarantees directly affect what application-level logic you need to implement for idempotency, deduplication, and reordering.</p>
+          <p>Message ordering, delivery guarantees, and consumer group semantics differ significantly between brokers. Kafka guarantees ordering within a partition; ordering across partitions requires careful key selection. SQS standard queues guarantee at-least-once delivery but not ordering; SQS FIFO queues add ordering but at higher cost and lower throughput. RabbitMQ delivers messages in order but removes them on acknowledgment, making replay impossible.</p>
+          <p>These guarantees directly affect what application-level logic you need to implement for idempotency, deduplication, and reordering.</p>
           <p>Operational cost is often underestimated. Kafka clusters require expertise in partition management, consumer lag monitoring, replication configuration, and broker recovery procedures. A misconfigured Kafka cluster—wrong retention settings, insufficient replicas, unbalanced partitions—silently degrades performance or loses data. Managed services (Confluent Cloud, Amazon MSK for Kafka; CloudAMQP for RabbitMQ; AWS SQS for queuing) trade cost for operational simplicity, and for most teams the managed service premium pays for itself in engineering hours saved.</p>
 
           <h2 id="when-to-use">Choose Kafka when</h2>
@@ -127,7 +129,24 @@
           </ul>
 
           <h2 id="typical-architecture">Comparison</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    throughput_vs_complexity["THROUGHPUT VS COMPLEXITY COMPARISON"]
+    throughput_msgs_sec["Throughput (msgs/sec)"]
+    1m_kafka["1M                                       ● Kafka"]
+    pulsar["● Pulsar"]
+    10k_rabbitmq["10K                        ● RabbitMQ"]
+    1k_redis_streams_per_ins["1K    ● Redis Streams (per instance)"]
+    sqs_per_queue["● SQS (per queue)"]
+    throughput_vs_complexity --> throughput_msgs_sec
+    throughput_msgs_sec --> 1m_kafka
+    1m_kafka --> pulsar
+    pulsar --> 10k_rabbitmq
+    10k_rabbitmq --> 1k_redis_streams_per_ins
+    1k_redis_streams_per_ins --> sqs_per_queue</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
 THROUGHPUT VS COMPLEXITY COMPARISON
 ════════════════════════════════════════════════════════════════
 
@@ -167,6 +186,9 @@ SQS         → Simple work queues, Lambda triggers, microservice decoupling on 
 Pulsar       → Multi-tenant platforms, tiered storage for infinite retention, geo-replication
 Redis Streams→ Real-time leaderboards, IoT telemetry, live notifications, sub-ms pipelines
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Trade-offs</h2>
           <div class="pros-cons">
@@ -191,9 +213,11 @@ Redis Streams→ Real-time leaderboards, IoT telemetry, live notifications, sub-
           </div>
 
           <h2 id="implementation-notes">Implementation considerations</h2>
-          <p>For Kafka, partition count is one of the most important configuration decisions—it cannot be decreased after the fact without data migration, and increasing it redistributes data and triggers consumer rebalancing. A common guideline is to provision 10–30 partitions per topic for moderate throughput, allowing consumer parallelism to match partition count. Replication factor should be 3 for production (data survives two broker failures). Set <code>min.insync.replicas=2</code> with <code>acks=all</code> for producer durability to prevent data loss when a broker fails. Use Schema Registry with Avro or Protobuf to enforce message schema compatibility as producers and consumers evolve independently.</p>
+          <p>For Kafka, partition count is one of the most important configuration decisions—it cannot be decreased after the fact without data migration, and increasing it redistributes data and triggers consumer rebalancing. A common guideline is to provision 10–30 partitions per topic for moderate throughput, allowing consumer parallelism to match partition count. Replication factor should be 3 for production (data survives two broker failures). Set <code>min.insync.replicas=2</code> with <code>acks=all</code> for producer durability to prevent data loss when a broker fails.</p>
+          <p>Use Schema Registry with Avro or Protobuf to enforce message schema compatibility as producers and consumers evolve independently.</p>
           <p>For RabbitMQ, choose the exchange type carefully as it determines routing behavior: direct exchanges route by exact routing key (task queues); topic exchanges route by pattern-matching (logs.*.error); fanout exchanges broadcast to all bound queues (notifications); headers exchanges route by message headers (complex criteria). Lazy queues (stored on disk rather than in memory) are mandatory for queues that may grow large—default queues that grow beyond available RAM crash the broker. Enable publisher confirms and consumer acknowledgments for at-least-once delivery; unacknowledged messages are requeued on consumer failure.</p>
-          <p>For SQS, understanding the difference between Standard and FIFO queues is essential. Standard queues offer maximum throughput but with at-least-once delivery (occasional duplicates) and best-effort ordering. FIFO queues guarantee exactly-once processing and strict FIFO within a message group, but throughput is limited to 3,000 messages/second with batching or 300 without. Use SQS with Dead Letter Queues (DLQ) for every production queue—messages that fail processing after a configurable number of attempts are moved to the DLQ, preventing poison pills from blocking the main queue indefinitely. Set the visibility timeout at 6x the maximum expected processing time to prevent premature message redelivery.</p>
+          <p>For SQS, understanding the difference between Standard and FIFO queues is essential. Standard queues offer maximum throughput but with at-least-once delivery (occasional duplicates) and best-effort ordering. FIFO queues guarantee exactly-once processing and strict FIFO within a message group, but throughput is limited to 3,000 messages/second with batching or 300 without. Use SQS with Dead Letter Queues (DLQ) for every production queue—messages that fail processing after a configurable number of attempts are moved to the DLQ, preventing poison pills from blocking the main queue indefinitely.</p>
+          <p>Set the visibility timeout at 6x the maximum expected processing time to prevent premature message redelivery.</p>
 
           <h2 id="common-failure-modes">Common mistakes</h2>
           <ul>

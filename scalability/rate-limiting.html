@@ -126,7 +126,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Pick fixed window, sliding counter, token bucket, or leaky bucket; enforce consistently in Redis with 429 headers.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    fw["Fixed window — boundary burst"]
+    sw["Sliding window counter"]
+    tb["Token bucket — allows burst"]
+    lb["Leaky bucket — smooth output"]
+    redis["Redis Lua atomic enforcement"]
+    fw --> sw --> tb --> lb --> redis</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Algorithm Comparison:
 
   Fixed Window (simple, has boundary burst problem):
@@ -167,6 +178,9 @@
   X-RateLimit-Remaining: 0
   X-RateLimit-Reset: 1699123456
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Algorithm tradeoffs and distributed Redis sliding-window counter returning standard rate limit headers.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -194,7 +208,8 @@
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Algorithm selection:</strong> For most APIs, the sliding window counter implemented with Redis is the best choice: it approximates a true sliding window, uses only 2 counters (O(1) memory), and is accurate within ~0.5% of the ideal algorithm. Use token bucket when your API clients have legitimately bursty access patterns (e.g., an analytics job that queries 500 records at startup then only 5 records/minute ongoing). Use leaky bucket when protecting a downstream with a strict rate requirement (e.g., an external AI API with a hard 10 req/s limit). Avoid sliding window log in production — O(requests) memory does not scale.</p>
-          <p><strong>Rate limit keys:</strong> Choose the right client identifier. API key rate limiting is the most precise — it tracks by authenticated client regardless of IP. IP-based rate limiting is appropriate for unauthenticated endpoints (login) but is unreliable for corporate or mobile clients behind NAT. User-based rate limiting (authenticated user ID) is best for per-user fairness in SaaS products. Implement multiple dimensions: per-IP for unauthenticated, per-API-key for authenticated, and global limits per endpoint as a last resort against total overload. Use separate Redis key namespaces per dimension: <code>rl:ip:{ip}</code>, <code>rl:key:{apikey}:{endpoint}</code>.</p>
+          <p><strong>Rate limit keys:</strong> Choose the right client identifier. API key rate limiting is the most precise — it tracks by authenticated client regardless of IP. IP-based rate limiting is appropriate for unauthenticated endpoints (login) but is unreliable for corporate or mobile clients behind NAT. User-based rate limiting (authenticated user ID) is best for per-user fairness in SaaS products.</p>
+          <p>Implement multiple dimensions: per-IP for unauthenticated, per-API-key for authenticated, and global limits per endpoint as a last resort against total overload. Use separate Redis key namespaces per dimension: <code>rl:ip:{ip}</code>, <code>rl:key:{apikey}:{endpoint}</code>.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

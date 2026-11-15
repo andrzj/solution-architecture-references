@@ -127,7 +127,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Growing vCPU and RAM keeps working sets in memory; NUMA topology matters on large sockets.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    before["db.r6g.xlarge — working set spills to disk"]
+    after["db.r6g.4xlarge — working set in RAM"]
+    before --> after
+    n0["NUMA node 0 cores and local RAM"]
+    n1["NUMA node 1 cores and local RAM"]
+    n0 <-.->|QPI slower cross-access| n1</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Database Vertical Scaling — Before and After
 
   BEFORE (under-provisioned):
@@ -160,6 +171,9 @@
          └─────QPI/xGMI─────┘
    Cross-NUMA access ~2× slower than local
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Before/after RDS instance scale-up and two-socket NUMA local vs remote memory access.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -187,7 +201,8 @@
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Diminishing returns and Amdahl's Law:</strong> Vertical scaling follows Amdahl's Law — if 20% of your workload is serial and non-parallelizable, the maximum theoretical speedup is capped at 5× regardless of how many cores you add. Profile your application first to identify the actual bottleneck before resizing. For databases, use pg_stat_statements, EXPLAIN ANALYZE, and slow query logs to confirm whether you are CPU-bound, memory-bound (cache miss rate), or I/O-bound before choosing the instance upgrade direction.</p>
-          <p><strong>NUMA considerations:</strong> On large multi-socket servers (96+ cores), Non-Uniform Memory Access topology matters. A PostgreSQL instance will perform differently depending on whether its memory allocations are NUMA-local or must cross the interconnect. Use <code>numactl --hardware</code> to inspect topology and pin the database process to a NUMA node with <code>numactl --cpunodebind=0 --membind=0</code> to prevent cross-NUMA latency. In cloud environments, "bare metal" instance types (e.g., i4i.metal on AWS) expose NUMA directly, while virtualized instances abstract it away. Cloud resize procedure: for RDS, initiate an instance class modification during a maintenance window; Multi-AZ deployments will perform a failover to the standby, minimizing disruption to typically under 60 seconds.</p>
+          <p><strong>NUMA considerations:</strong> On large multi-socket servers (96+ cores), Non-Uniform Memory Access topology matters. A PostgreSQL instance will perform differently depending on whether its memory allocations are NUMA-local or must cross the interconnect. Use <code>numactl --hardware</code> to inspect topology and pin the database process to a NUMA node with <code>numactl --cpunodebind=0 --membind=0</code> to prevent cross-NUMA latency. In cloud environments, "bare metal" instance types (e.g., i4i.metal on AWS) expose NUMA directly, while virtualized instances abstract it away.</p>
+          <p>Cloud resize procedure: for RDS, initiate an instance class modification during a maintenance window; Multi-AZ deployments will perform a failover to the standby, minimizing disruption to typically under 60 seconds.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

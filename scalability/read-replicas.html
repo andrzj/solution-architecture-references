@@ -127,7 +127,20 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Writes hit the primary; read traffic spreads across replicas with optional read-your-writes LSN tokens.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    app["Application"]
+    app -->|writes| pri["Primary R/W"]
+    pri -->|WAL| r1["Replica 1"]
+    pri --> r2["Replica 2"]
+    app -->|reads| proxy["Read proxy"]
+    proxy --> r1
+    proxy --> r2
+    token["Read-your-writes LSN token"]</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Application
       │
       ├─── Writes ──────────────────────►┌──────────────────┐
@@ -164,6 +177,9 @@
   Replica 1 ◄─read─┘ (no binlog lag, <10ms replica lag)
   Replica 2 ◄─read─┘
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Primary streams WAL to replicas via proxy; Aurora shared storage reduces replica lag.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -191,7 +207,8 @@
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Replication lag monitoring is critical.</strong> Set up CloudWatch alarms (for RDS: ReplicaLag metric), Prometheus alerts, or database-level monitoring on replica_lag_seconds. A common threshold is &gt;30 seconds, which indicates the replica is falling behind and reads from it may be significantly stale. During high write load (bulk imports, mass updates), replica lag can spike to minutes. Application code should be prepared to fall back to the primary for critical reads if replica lag exceeds a configurable threshold.</p>
-          <p><strong>Read-your-writes consistency:</strong> After a user submits a form, they expect to see their submission reflected immediately. If the subsequent page load reads from a replica with lag, the user's own data may appear absent. The standard solution is session-level read routing: immediately after a write, route the user's subsequent reads to the primary for a brief window (e.g., 30 seconds), or use PostgreSQL LSN tracking to route reads to a replica only after it has caught up to at least the write LSN. Some ORMs (Sequelize, SQLAlchemy) and database proxies (RDS Proxy) support this natively. For non-critical reads (leaderboards, recommendations), replica staleness is typically acceptable.</p>
+          <p><strong>Read-your-writes consistency:</strong> After a user submits a form, they expect to see their submission reflected immediately. If the subsequent page load reads from a replica with lag, the user's own data may appear absent. The standard solution is session-level read routing: immediately after a write, route the user's subsequent reads to the primary for a brief window (e.g., 30 seconds), or use PostgreSQL LSN tracking to route reads to a replica only after it has caught up to at least the write LSN. Some ORMs (Sequelize, SQLAlchemy) and database proxies (RDS Proxy) support this natively.</p>
+          <p>For non-critical reads (leaderboards, recommendations), replica staleness is typically acceptable.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -230,7 +247,7 @@
           <ul>
             <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Aurora.Replication.html" target="_blank" rel="noopener noreferrer">Amazon Aurora — Replication with Aurora Replicas</a></li>
             <li><a href="https://www.postgresql.org/docs/current/warm-standby.html" target="_blank" rel="noopener noreferrer">PostgreSQL — Warm Standby and Streaming Replication</a></li>
-            <li><a href="https://proxysql.com/documentation/read-write-split/" target="_blank" rel="noopener noreferrer">ProxySQL — Read/Write Split Configuration</a></li>
+            <li><a href="https://github.com/sysown/proxysql" target="_blank" rel="noopener noreferrer">ProxySQL — GitHub repository</a> — read/write split and query routing.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

@@ -101,7 +101,9 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A distributed transaction is an operation that spans multiple independent resource managers (databases, message brokers, file systems) and must satisfy ACID properties — atomicity, consistency, isolation, and durability — across all of them. Either all participants commit their changes, or all roll back, with no partial outcomes visible to observers. The canonical protocol for achieving this is Two-Phase Commit (2PC), standardized as the X/Open XA specification.</p>
+          
+
+          <p>A distributed transaction commits or aborts work spanning multiple databases through a coordinator. Two-phase commit (2PC) is the classic pattern: prepare votes, then commit if all agree. It preserves ACID but blocks on coordinator or participant failures.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Single-node databases achieve atomicity cheaply using write-ahead logs and local locks. Once data lives in separate systems — two relational databases, a database and a message queue, or databases in separate microservices — there is no single transaction log. Without coordination, a crash mid-operation leaves some participants committed and others not, creating permanent data inconsistency. Distributed transactions were introduced to provide the same atomicity guarantees engineers relied on in monolithic systems, even after distributing state across multiple nodes or services.</p>
@@ -126,25 +128,41 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Two-Phase Commit operates in two rounds of communication between a coordinator and N participants:</p>
-          <pre><code>Phase 1 — Prepare
-─────────────────
-Coordinator                Participant A      Participant B
-    │──── PREPARE ──────────────►│                │
-    │──── PREPARE ───────────────────────────────►│
-    │◄─── VOTE YES ─────────────│                │
-    │◄─── VOTE YES ──────────────────────────────│
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant C as Coordinator
+    participant A as Participant A
+    participant B as Participant B
+    C->>A: PREPARE
+    C->>B: PREPARE
+    A-->>C: VOTE YES
+    B-->>C: VOTE YES
+    C->>A: COMMIT
+    C->>B: COMMIT
+    A-->>C: ACK
+    B-->>C: ACK</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Phase 1 — Prepare
+          ─────────────────
+          Coordinator                Participant A      Participant B
+              │──── PREPARE ──────────────►│                │
+              │──── PREPARE ───────────────────────────────►│
+              │◄─── VOTE YES ─────────────│                │
+              │◄─── VOTE YES ──────────────────────────────│
+          
+          Phase 2 — Commit (all voted YES)
+          ──────────────────────────────────
+              │──── COMMIT ───────────────►│                │
+              │──── COMMIT ────────────────────────────────►│
+              │◄─── ACK ──────────────────│                │
+              │◄─── ACK ────────────────────────────────────│
+          
+          Phase 2 — Abort (any voted NO / coordinator timeout)
+          ──────────────────────────────────────────────────────
+              │──── ROLLBACK ─────────────►│                │
+              │──── ROLLBACK ──────────────────────────────►│</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Two-phase commit: coordinator collects prepare votes, then commits or aborts all participants atomically.</figcaption>
+                    </figure>
 
-Phase 2 — Commit (all voted YES)
-──────────────────────────────────
-    │──── COMMIT ───────────────►│                │
-    │──── COMMIT ────────────────────────────────►│
-    │◄─── ACK ──────────────────│                │
-    │◄─── ACK ────────────────────────────────────│
-
-Phase 2 — Abort (any voted NO / coordinator timeout)
-──────────────────────────────────────────────────────
-    │──── ROLLBACK ─────────────►│                │
-    │──── ROLLBACK ──────────────────────────────►│</code></pre>
           <p>XA is the standard C API / Java interface (JTA) that maps this protocol to specific resource managers. A transaction manager (e.g., Atomikos, Narayana, IBM TXSeries) drives the protocol and maintains a durable transaction log to recover after crashes.</p>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -171,7 +189,8 @@ Phase 2 — Abort (any voted NO / coordinator timeout)
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>The coordinator failure problem is the central challenge: if the coordinator crashes after collecting all YES votes but before sending COMMIT, participants are stuck in the prepared state holding locks and cannot determine the outcome without the coordinator recovering. Three-Phase Commit (3PC) adds a pre-commit phase to reduce blocking but still cannot handle network partitions (by the FLP impossibility result, no deterministic algorithm can). In practice, durable coordinator logs and automated recovery are the standard mitigation. Most modern Java EE / Jakarta EE containers use Narayana or Atomikos as JTA transaction managers; Spring's <code>JtaTransactionManager</code> delegates to them. Ensure XA timeouts are tuned — default values are often far too long for interactive workloads.</p>
+          <p>The coordinator failure problem is the central challenge: if the coordinator crashes after collecting all YES votes but before sending COMMIT, participants are stuck in the prepared state holding locks and cannot determine the outcome without the coordinator recovering. Three-Phase Commit (3PC) adds a pre-commit phase to reduce blocking but still cannot handle network partitions (by the FLP impossibility result, no deterministic algorithm can). In practice, durable coordinator logs and automated recovery are the standard mitigation. Most modern Java EE / Jakarta EE containers use Narayana or Atomikos as JTA transaction managers; Spring's <code>JtaTransactionManager</code> delegates to them.</p>
+          <p>Ensure XA timeouts are tuned — default values are often far too long for interactive workloads.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -209,9 +228,9 @@ Phase 2 — Abort (any voted NO / coordinator timeout)
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.cs.cornell.edu/courses/cs614/2004sp/papers/BHG87_chapter7.pdf" rel="noopener noreferrer" target="_blank">Concurrency Control and Recovery in Database Systems — Bernstein, Hadzilacos, Goodman</a> — foundational textbook treatment of 2PC.</li>
-            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/two-phase-commit.html" rel="noopener noreferrer" target="_blank">Two-Phase Commit — Martin Fowler's Patterns of Distributed Systems</a> — concise practical explanation.</li>
-            <li><a href="https://www.infoq.com/articles/microservices-transactions/" rel="noopener noreferrer" target="_blank">Managing Distributed Transactions in Microservices — InfoQ</a> — overview of tradeoffs and alternatives.</li>
+            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/two-phase-commit.html" rel="noopener noreferrer" target="_blank">Two-Phase Commit — Martin Fowler's Patterns of Distributed Systems</a> — concise practical explanation of 2PC phases and blocking behavior.</li>
+            <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Saga — microservices.io</a> — preferred alternative when cross-service ACID transactions are too costly.</li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/saga" rel="noopener noreferrer" target="_blank">Saga design pattern — Azure Architecture Center</a> — orchestration vs. choreography guidance for long-running work.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

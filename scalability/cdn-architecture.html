@@ -105,7 +105,8 @@
           <p>CDNs were originally designed for static assets (images, CSS, JavaScript, video), but modern CDNs like Cloudflare, Fastly, and AWS CloudFront are capable of caching dynamic API responses, terminating TLS at the edge, running application logic at PoPs (edge computing via Lambda@Edge or Cloudflare Workers), providing DDoS protection, and accelerating dynamic content through optimized private backbone networks between PoPs and origin.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Network latency scales with physical distance. A user in Tokyo hitting an origin server in Virginia experiences 180–220ms of round-trip latency purely from the speed of light, before any server processing time. A CDN PoP in Tokyo reduces that to under 5ms. For web applications, this difference is the gap between a responsive application and an unusable one. Studies consistently show that every 100ms of additional latency reduces conversion rates by 1–7%.</p>
+          <p>Network latency scales with physical distance. A user in Tokyo hitting an origin server in Virginia experiences 180–220ms of round-trip latency purely from the speed of light, before any server processing time. A CDN PoP in Tokyo reduces that to under 5ms. For web applications, this difference is the gap between a responsive application and an unusable one.</p>
+          <p>Studies consistently show that every 100ms of additional latency reduces conversion rates by 1–7%.</p>
           <p>CDNs also act as a traffic multiplier for origin capacity. A single origin server that can handle 1,000 requests/second can effectively serve millions of requests/second if 99.9% are served from CDN cache. This is especially critical for viral traffic spikes (product launches, news events) where traffic can increase 1,000× in minutes — no amount of auto-scaling could respond fast enough, but CDN cache absorbs the load immediately. CDN infrastructure also provides inherent DDoS resilience: a globally distributed network with hundreds of Tbps of capacity can absorb volumetric attacks that would overwhelm any origin infrastructure.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -127,7 +128,16 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Edge PoPs serve cached assets; origin shield collapses misses; edge workers run auth and routing at the edge.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    user["User at edge PoP"] -->|hit| edge["Serve from edge cache"]
+    user -->|miss| shield["Origin shield"]
+    shield --> origin["Origin servers"]
+    edge --> workers["Edge functions auth A/B bot checks"]</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Global CDN Topology:
   User (Tokyo) ──► CDN PoP Tokyo ──HIT──► serve from edge cache
                         │
@@ -167,6 +177,9 @@
   99 requests wait for in-progress fetch
   All 100 served from shared result
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Tokyo user hits PoP, origin shield on miss, Cache-Control governs caching, workers handle edge logic.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -193,7 +206,8 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Cache-Control header strategy:</strong> The most critical CDN configuration decision is setting correct <code>Cache-Control</code> headers on origin responses. For static assets with content-addressed URLs (filenames including a hash like <code>app.a8f3b2.js</code>), use <code>max-age=31536000, immutable</code> — the content never changes so it can be cached for one year. For dynamic API responses that can be shared across users, use <code>public, max-age=300, stale-while-revalidate=60</code> — cached for 5 minutes with 60 additional seconds of stale serving while background revalidation occurs. For user-specific responses, use <code>Cache-Control: private, no-store</code> to prevent CDN caching. Use <code>Surrogate-Control</code> or <code>CDN-Cache-Control</code> headers for CDN-only TTLs that differ from browser cache TTLs.</p>
+          <p><strong>Cache-Control header strategy:</strong> The most critical CDN configuration decision is setting correct <code>Cache-Control</code> headers on origin responses. For static assets with content-addressed URLs (filenames including a hash like <code>app.a8f3b2.js</code>), use <code>max-age=31536000, immutable</code> — the content never changes so it can be cached for one year. For dynamic API responses that can be shared across users, use <code>public, max-age=300, stale-while-revalidate=60</code> — cached for 5 minutes with 60 additional seconds of stale serving while background revalidation occurs. For user-specific responses, use <code>Cache-Control: private, no-store</code> to prevent CDN caching.</p>
+          <p>Use <code>Surrogate-Control</code> or <code>CDN-Cache-Control</code> headers for CDN-only TTLs that differ from browser cache TTLs.</p>
           <p><strong>Origin Shield:</strong> Enable origin shield (CloudFront's Origin Shield, Fastly's Shielding) to designate a single intermediate PoP as the last-hop before origin. This collapses concurrent cache misses: instead of 100 PoPs worldwide each sending a miss to the origin simultaneously, they all send misses to the shield PoP, which makes a single request to origin. Origin shield reduces origin request volume by 10–50× and prevents thundering herd on cache expiry. It also improves cache hit rates because popular content stays in the shield PoP's large cache even after it's evicted from smaller regional PoPs.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

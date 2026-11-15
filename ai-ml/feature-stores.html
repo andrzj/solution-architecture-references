@@ -98,7 +98,7 @@
 
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
-          <p>A feature store is a centralized data platform specifically designed to manage ML features — the engineered inputs that models use to make predictions. It serves as the connective tissue between data engineering and model development, providing a consistent, reusable, and well-governed repository of feature definitions and their computed values. Features are defined once and made available to multiple teams and models, eliminating duplication and inconsistency.</p>
+          
           <p>Feature stores comprise two distinct storage layers that serve fundamentally different use cases. The <strong>offline store</strong> is optimized for bulk access during model training: it stores historical feature values with timestamps, supports point-in-time correct joins (ensuring no future data leaks into training), and is typically backed by columnar storage systems like Parquet files on S3, BigQuery, or Apache Hive. The <strong>online store</strong> is optimized for low-latency retrieval during model inference: it stores only the most recent feature values for each entity and is backed by key-value systems like Redis, DynamoDB, or Cassandra.</p>
           <p>A feature store also provides a feature registry — a catalog where teams document what each feature means, how it is computed, who owns it, and what models use it. This governance layer transforms isolated feature computations into a reusable organizational asset. Modern feature stores like Feast, Tecton, Hopsworks, and Vertex AI Feature Store build on these principles to varying degrees of sophistication.</p>
 
@@ -125,7 +125,26 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    data_sources["DATA SOURCES"]
+    event_stream["Event Stream"]
+    data_warehouse["Data Warehouse"]
+    operational_db["Operational DB"]
+    feature_computation_laye["FEATURE COMPUTATION LAYER"]
+    batch_transform["Batch Transform"]
+    spark_dbt["(Spark / dbt)"]
+    offline_store["OFFLINE STORE"]
+    data_sources --> event_stream
+    event_stream --> data_warehouse
+    data_warehouse --> operational_db
+    operational_db --> feature_computation_laye
+    feature_computation_laye --> batch_transform
+    batch_transform --> spark_dbt
+    spark_dbt --> offline_store</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
  ┌──────────────────────────────────────────────────────────────┐
  │                     DATA SOURCES                              │
  │   [Event Stream]      [Data Warehouse]     [Operational DB]   │
@@ -166,6 +185,9 @@
  │  Lineage · Stats · Tags│
  └────────────────────────┘
 </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -191,7 +213,8 @@
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Design feature definitions with versioning in mind from day one. A feature is not just a column name; it is a named, versioned computation over source data. When the computation logic changes (e.g., changing an aggregation window from 7 days to 30 days), create a new version rather than mutating the existing definition. This ensures that models trained on the old definition continue to work correctly, and the migration to the new definition is an explicit, controlled step.</p>
-          <p>Synchronization between the offline and online stores is a critical reliability concern. The typical pattern uses a materialization job that periodically reads from the offline store and writes to the online store. The frequency of materialization determines the "freshness" of online features. For use cases where freshness requirements are strict (e.g., real-time fraud detection needing features from the last 5 minutes), a streaming pipeline must write directly to the online store from the event stream, bypassing the offline store. This dual-write pattern requires careful ordering guarantees to avoid writing stale values over fresh ones.</p>
+          <p>Synchronization between the offline and online stores is a critical reliability concern. The typical pattern uses a materialization job that periodically reads from the offline store and writes to the online store. The frequency of materialization determines the "freshness" of online features. For use cases where freshness requirements are strict (e.g., real-time fraud detection needing features from the last 5 minutes), a streaming pipeline must write directly to the online store from the event stream, bypassing the offline store.</p>
+          <p>This dual-write pattern requires careful ordering guarantees to avoid writing stale values over fresh ones.</p>
           <p>Feature statistics and monitoring should be built into the store. Compute distribution statistics (mean, median, percentiles, nullity rate) for every feature during materialization and track them over time. Sudden changes in these statistics — a spike in null values, a shift in the distribution of an aggregated count — are often the first signal that an upstream data source has changed, before any model accuracy metrics degrade. Integrate these statistics with your observability stack and alert on significant distribution shifts.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

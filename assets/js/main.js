@@ -15,6 +15,7 @@ function getPreferredTheme() {
 function setTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   localStorage.setItem(THEME_KEY, theme);
+  if (window.mermaid) initMermaidDiagrams();
 }
 
 function toggleTheme() {
@@ -321,6 +322,7 @@ function initSearch(inputSelector, resultsSelector) {
    ============================================================ */
 function initCopyCode() {
   document.querySelectorAll('pre').forEach(pre => {
+    if (pre.closest('.architecture-diagram')) return;
     const btn = document.createElement('button');
     btn.className = 'copy-btn';
     btn.textContent = 'Copy';
@@ -360,7 +362,70 @@ function initCopyCode() {
   });
 }
 
-/* 8. Auto-generate IDs for headings
+/* 8. Mermaid architecture diagrams
+   ============================================================ */
+let mermaidLoadPromise = null;
+
+function getAssetsBase() {
+  const css = document.querySelector('link[href*="assets/css/main.css"]');
+  if (css) {
+    return css.getAttribute('href').replace(/assets\/css\/main\.css.*$/, '');
+  }
+  return getBasePath();
+}
+
+function loadMermaid() {
+  if (window.mermaid) return Promise.resolve();
+  if (mermaidLoadPromise) return mermaidLoadPromise;
+  mermaidLoadPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = getAssetsBase() + 'assets/vendor/mermaid.min.js';
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Failed to load Mermaid'));
+    document.head.appendChild(s);
+  });
+  return mermaidLoadPromise;
+}
+
+async function initMermaidDiagrams() {
+  const blocks = document.querySelectorAll('.architecture-diagram .mermaid');
+  if (!blocks.length) return;
+  try {
+    await loadMermaid();
+  } catch {
+    document.querySelectorAll('.architecture-diagram').forEach(fig => {
+      fig.classList.add('architecture-diagram--fallback');
+    });
+    return;
+  }
+  const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default';
+  const primary = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim() || '#3b82f6';
+  const surface = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim() || '#ffffff';
+  const text = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#1e293b';
+  mermaid.initialize({
+    startOnLoad: false,
+    theme,
+    securityLevel: 'strict',
+    fontFamily: 'var(--font-sans)',
+    flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis', padding: 12 },
+    sequence: { useMaxWidth: true },
+    themeVariables: {
+      primaryColor: surface,
+      primaryTextColor: text,
+      lineColor: primary,
+      secondaryColor: surface,
+      tertiaryColor: surface,
+    },
+  });
+  blocks.forEach(el => {
+    el.removeAttribute('data-processed');
+    el.innerHTML = el.textContent;
+  });
+  await mermaid.run({ nodes: blocks });
+}
+
+/* 9. Auto-generate IDs for headings
    ============================================================ */
 function slugify(text) {
   return text.toLowerCase()
@@ -378,7 +443,7 @@ function initHeadingIds() {
   });
 }
 
-/* 9. Init all
+/* 10. Init all
    ============================================================ */
 document.addEventListener('DOMContentLoaded', () => {
   // Theme button
@@ -391,6 +456,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initHeadingIds();
   initTocHighlight();
   initCopyCode();
+  initMermaidDiagrams();
 
   // Search in topnav
   initSearch('#topSearch', '#topSearchResults');

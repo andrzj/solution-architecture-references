@@ -101,7 +101,7 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Change Data Capture (CDC) is an integration technique that monitors a database's transaction log (write-ahead log, binlog, redo log) to capture row-level changes — inserts, updates, and deletes — and stream them as events to downstream consumers in near real-time. Unlike polling-based approaches that periodically query tables for changed records, CDC reads the database's internal replication infrastructure, which is already maintained for high-availability purposes. This makes CDC efficient, low-overhead, and capable of capturing deletes (which timestamp-based polling cannot).</p>
+          
           <p>The dominant open-source tool for CDC is Debezium, a distributed platform built on Kafka Connect that provides connectors for PostgreSQL (using logical replication / WAL), MySQL (binlog), SQL Server (change tracking tables), MongoDB (oplog), Oracle (LogMiner), and others. Each change event emitted by Debezium contains the full before- and after-image of the row, metadata about the source transaction (LSN position, timestamp, transaction ID), and the DDL operation type. These events are published to Kafka topics, typically one topic per source table.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -127,7 +127,19 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    db[("Source DB&lt;br/&gt;WAL / binlog")]
+    conn["CDC connector&lt;br/&gt;Debezium"]
+    kafka["Kafka topics"]
+    search["Search index"]
+    dwh["Warehouse"]
+    cache["Cache eviction"]
+    db --> conn --> kafka
+    kafka --> search & dwh & cache</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   PostgreSQL (source)               Kafka                    Consumers
   ┌────────────────────┐
   │  Application DB    │
@@ -147,6 +159,9 @@
   Debezium Postgres Connector
   (Kafka Connect Worker)
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Change data capture: database transaction log becomes an event stream feeding search, analytics, and caches.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -173,7 +188,8 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For PostgreSQL, enable logical replication by setting <code>wal_level = logical</code> in <code>postgresql.conf</code> and creating a replication slot for Debezium. A replication slot causes the WAL to be retained until the consumer acknowledges receipt, so monitor slot lag carefully — an idle or lagging connector will cause unbounded WAL growth and can fill your disk. Set <code>max_slot_wal_keep_size</code> as a safety valve. Create a dedicated replication user with <code>REPLICATION</code> privilege and grant <code>SELECT</code> on all tables to be captured. For MySQL, enable the binlog with <code>binlog_format = ROW</code> and <code>binlog_row_image = FULL</code>.</p>
+          <p>For PostgreSQL, enable logical replication by setting <code>wal_level = logical</code> in <code>postgresql.conf</code> and creating a replication slot for Debezium. A replication slot causes the WAL to be retained until the consumer acknowledges receipt, so monitor slot lag carefully — an idle or lagging connector will cause unbounded WAL growth and can fill your disk. Set <code>max_slot_wal_keep_size</code> as a safety valve. Create a dedicated replication user with <code>REPLICATION</code> privilege and grant <code>SELECT</code> on all tables to be captured.</p>
+          <p>For MySQL, enable the binlog with <code>binlog_format = ROW</code> and <code>binlog_row_image = FULL</code>.</p>
           <p>Use the Debezium Schema Registry integration to publish Avro-encoded events; this ensures schema compatibility is enforced as source schemas evolve. Configure <code>tombstone.on.delete = true</code> to emit null-value tombstone events on deletes, enabling Kafka log compaction to work correctly. For tables with sensitive PII, use Debezium's Single Message Transformations (SMTs) to mask or drop fields before they reach the Kafka topic. Monitor connector lag with the <code>kafka.connect:type=connector-metrics</code> JMX metrics and set alerts on <code>offset-lag</code> exceeding acceptable thresholds.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -214,7 +230,7 @@
           <ul>
             <li><a href="https://debezium.io/documentation/reference/stable/" target="_blank" rel="noopener noreferrer">Debezium Documentation — Official reference for CDC connectors</a></li>
             <li><a href="https://www.postgresql.org/docs/current/logical-replication.html" target="_blank" rel="noopener noreferrer">PostgreSQL Logical Replication documentation</a></li>
-            <li><a href="https://martin.kleppmann.com/2015/06/02/change-data-capture-at-linkedin.html" target="_blank" rel="noopener noreferrer">Change Data Capture at LinkedIn — Martin Kleppmann</a></li>
+            <li><a href="https://docs.aws.amazon.com/prescriptive-guidance/latest/patterns/perform-cdc-using-amazon-msk-connect.html" target="_blank" rel="noopener noreferrer">CDC with Amazon MSK Connect — AWS Prescriptive Guidance pattern</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

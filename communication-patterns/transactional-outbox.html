@@ -90,11 +90,13 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>The transactional outbox pattern solves one of the fundamental reliability problems in event-driven microservices: a service must atomically update its database <em>and</em> publish an event to the message broker, but these are two separate systems and cannot participate in the same ACID transaction. The outbox pattern avoids this by writing the event to an <code>outbox</code> table in the same database transaction as the business data. A separate relay process reads unpublished rows from the outbox table and publishes them to the broker, then marks them as published. The relay may use polling or Change Data Capture (CDC) via Debezium to detect new outbox rows.</p>
+          <p>The transactional outbox pattern solves one of the fundamental reliability problems in event-driven microservices: a service must atomically update its database <em>and</em> publish an event to the message broker, but these are two separate systems and cannot participate in the same ACID transaction. The outbox pattern avoids this by writing the event to an <code>outbox</code> table in the same database transaction as the business data. A separate relay process reads unpublished rows from the outbox table and publishes them to the broker, then marks them as published.</p>
+          <p>The relay may use polling or Change Data Capture (CDC) via Debezium to detect new outbox rows.</p>
           <p>The result is that the database write and the event publication become eventually consistent with at-least-once delivery guaranteed: if the service commits the DB transaction, the event will eventually be published. If the service crashes before commit, neither the DB change nor the event is visible — the atomicity guarantee of the local database transaction eliminates the race condition.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>The dual-write problem is insidious: a service writes to the database, then publishes a message to Kafka. Between these two operations, the service can crash, the broker can be unavailable, or the network can fail. The result is a database that has the updated state but no message published (silent data loss from the broker's perspective) or, if the order is reversed, a message published for a database write that was rolled back (phantom events). Both corrupt downstream systems. The transactional outbox pattern is the standard solution for this class of problem in microservices — it appears in virtually every event-driven architecture guide and is directly supported by frameworks like Eventuate Tram, Axon, and Debezium's outbox router.</p>
+          <p>The dual-write problem is insidious: a service writes to the database, then publishes a message to Kafka. Between these two operations, the service can crash, the broker can be unavailable, or the network can fail. The result is a database that has the updated state but no message published (silent data loss from the broker's perspective) or, if the order is reversed, a message published for a database write that was rolled back (phantom events). Both corrupt downstream systems.</p>
+          <p>The transactional outbox pattern is the standard solution for this class of problem in microservices — it appears in virtually every event-driven architecture guide and is directly supported by frameworks like Eventuate Tram, Axon, and Debezium's outbox router.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -113,7 +115,18 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>The service writes to the business table and the outbox table in a single transaction. The relay process queries the outbox for unpublished rows (polling) or reads the DB change log via CDC (Debezium). The relay publishes each event to the broker, then marks it as published in the outbox. Processed rows are pruned on a schedule.</p>
-<pre><code>Service (within single DB transaction):
+<figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    svc["Application service"]
+    db[("Business DB + outbox table")]
+    relay["Outbox relay&lt;br/&gt;poll or CDC"]
+    broker["Message broker"]
+    svc -->|single TX| db
+    relay -->|read unpublished| db
+    relay --> broker</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Service (within single DB transaction):
   BEGIN TX
     INSERT INTO orders (id, status, ...) VALUES ('ord-1', 'confirmed', ...)
     INSERT INTO outbox (id, event_type, aggregate_id, payload, published)
@@ -133,6 +146,9 @@ Relay Process (CDC variant - Debezium):
   → publishes directly to Kafka topic via Debezium Outbox Router
   No polling, sub-second latency, no extra DB queries
 </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Transactional outbox: domain write and outbox row commit atomically; a relay publishes to the broker.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

@@ -101,7 +101,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>An event store is a database optimized for storing an immutable, append-only sequence of domain events. Instead of storing the current state of an entity (e.g., the current balance of a bank account), the event store records every event that changed that entity's state (<code>AccountOpened</code>, <code>MoneyDeposited(100)</code>, <code>MoneyWithdrawn(30)</code>, <code>MoneyDeposited(50)</code>). Current state is derived by replaying events from the beginning (or from a snapshot). This is the storage mechanism that implements the <strong>Event Sourcing</strong> pattern.</p>
+          <p>, the current balance of a bank account), the event store records every event that changed that entity's state (<code>AccountOpened</code>, <code>MoneyDeposited(100)</code>, <code>MoneyWithdrawn(30)</code>, <code>MoneyDeposited(50)</code>). Current state is derived by replaying events from the beginning (or from a snapshot).</p>
+          <p>This is the storage mechanism that implements the <strong>Event Sourcing</strong> pattern.</p>
           <p>Dedicated event store databases include <strong>EventStoreDB</strong> (Greg Young's purpose-built event database), which organizes events into named streams (one stream per aggregate instance, e.g., <code>Order-42</code>). Event stores can also be implemented on top of PostgreSQL (append-only table with stream ID and sequence number), Apache Kafka (partitioned log with event retention), or DynamoDB (partition key = stream ID, sort key = sequence number).</p>
           <p>Key concepts: <strong>Stream</strong> — a sequence of events for one aggregate instance; <strong>Event</strong> — an immutable fact that something happened, with a type, payload, and metadata; <strong>Projection</strong> — a read model built by replaying events and applying them to an in-memory or persisted state; <strong>Snapshot</strong> — a point-in-time capture of aggregate state to avoid replaying all events from the beginning.</p>
 
@@ -126,7 +127,16 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    cmd["Command handler"]
+    es[("Event store&lt;br/&gt;append-only")]
+    proj["Projections / read models"]
+    cmd -->|append events| es
+    es --> proj</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Command side (Event Sourcing + Event Store):
 
   Client ──▶ CommandHandler ──▶ Load stream from EventStore
@@ -152,6 +162,9 @@
      ├──▶ RevenueProjection      ──▶ ClickHouse (analytics)
      └──▶ FraudDetectionProjection ▶ Redis (real-time scoring)
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Event store: commands append domain events; projections rebuild current state and query models from the log.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -178,8 +191,10 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Optimistic concurrency control</strong> is fundamental to event stores. When appending events, specify the expected stream version (the version number of the last event read when loading the aggregate). If the stream has been written to by another process since loading, the append fails with a concurrency conflict, and the command must be retried by reloading the aggregate and re-executing the business logic. EventStoreDB's append API accepts an <code>expectedRevision</code> parameter for this. This prevents the lost-update problem without pessimistic locking.</p>
-          <p><strong>Event versioning and upcasting</strong>: domain events are serialized to JSON/Avro/Protobuf and stored. When the event schema must evolve (adding a field, renaming a field, splitting an event into two), old events in the store still use the old schema. An <em>upcaster</em> transforms old event versions into the current version during deserialization, before the aggregate processes them. Store the event type name and version (<code>OrderCreated_v2</code>) in the event metadata to route to the correct upcaster. Design events for immutability: instead of changing events, create new event types when business semantics change significantly.</p>
+          <p><strong>Optimistic concurrency control</strong> is fundamental to event stores. When appending events, specify the expected stream version (the version number of the last event read when loading the aggregate). If the stream has been written to by another process since loading, the append fails with a concurrency conflict, and the command must be retried by reloading the aggregate and re-executing the business logic. EventStoreDB's append API accepts an <code>expectedRevision</code> parameter for this.</p>
+          <p>This prevents the lost-update problem without pessimistic locking.</p>
+          <p><strong>Event versioning and upcasting</strong>: domain events are serialized to JSON/Avro/Protobuf and stored. When the event schema must evolve (adding a field, renaming a field, splitting an event into two), old events in the store still use the old schema. An <em>upcaster</em> transforms old event versions into the current version during deserialization, before the aggregate processes them. Store the event type name and version (<code>OrderCreated_v2</code>) in the event metadata to route to the correct upcaster.</p>
+          <p>Design events for immutability: instead of changing events, create new event types when business semantics change significantly.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -217,7 +232,7 @@
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://www.eventstore.com/blog/what-is-event-sourcing" target="_blank" rel="noopener noreferrer">What is Event Sourcing? — EventStore</a></li>
-            <li><a href="https://developers.eventstore.com/clients/grpc/" target="_blank" rel="noopener noreferrer">EventStoreDB Client Documentation</a></li>
+            <li><a href="https://www.eventstore.com/docs" target="_blank" rel="noopener noreferrer">EventStoreDB Documentation</a></li>
             <li><a href="https://gregoryyoung.wordpress.com/2010/04/02/doing-cqrs-for-the-wrong-reasons/" target="_blank" rel="noopener noreferrer">Doing CQRS for the Wrong Reasons — Greg Young</a></li>
           </ul>
         </div>

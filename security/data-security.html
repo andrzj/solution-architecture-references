@@ -100,11 +100,12 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Data security encompasses the controls that protect data throughout its lifecycle — creation, storage, processing, transmission, and destruction — with a focus on preventing unauthorised access, disclosure, modification, or destruction. The foundation is <strong>data classification</strong>: assigning sensitivity levels to data (Public, Internal, Confidential, Restricted) based on the harm that disclosure would cause, and applying proportionate controls at each level. <strong>Encryption at rest</strong> protects data stored on disk from physical media theft; <strong>encryption in transit</strong> (TLS) protects data from network interception; and <strong>column-level encryption</strong> (also called application-level encryption or field-level encryption) protects specific sensitive fields even within a database to which the application has legitimate read access.</p>
+          <p>The foundation is <strong>data classification</strong>: assigning sensitivity levels to data (Public, Internal, Confidential, Restricted) based on the harm that disclosure would cause, and applying proportionate controls at each level. <strong>Encryption at rest</strong> protects data stored on disk from physical media theft; <strong>encryption in transit</strong> (TLS) protects data from network interception; and <strong>column-level encryption</strong> (also called application-level encryption or field-level encryption) protects specific sensitive fields even within a database to which the application has legitimate read access.</p>
           <p><strong>Tokenisation</strong> replaces a sensitive value (credit card number, SSN) with a non-sensitive surrogate token that has no mathematical relationship to the original value and can only be de-tokenised by authorised parties with access to the token vault. It differs from encryption in that the token cannot be de-tokenised without the vault, even with the algorithm. <strong>Data masking</strong> transforms data for lower-trust environments: static masking creates a de-identified copy for development/testing; dynamic masking returns masked values in real-time to unprivileged users. PII (Personally Identifiable Information) handling requires additional controls under GDPR and CCPA: data minimisation (don't collect what you don't need), purpose limitation (don't use data beyond its stated purpose), retention limits (delete data when no longer needed), and the right to erasure (technical ability to delete all data associated with a user).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Data breaches are among the most costly security incidents: the IBM Cost of a Data Breach Report 2023 found an average cost of $4.45M per breach. Encryption at rest means that stolen database backups or cloud storage contents are unreadable without access to the encryption keys. Column-level encryption for the most sensitive fields (SSNs, payment card data, medical records) means that even a SQL injection attack that reads the database returns ciphertext rather than plaintext PII. GDPR/CCPA have created significant legal and financial obligations for data protection: GDPR fines can reach €20M or 4% of global revenue, whichever is higher. Technical controls (encryption, masking, access logging) provide both security and the compliance evidence required during regulatory audits.</p>
+          <p>Data breaches are among the most costly security incidents: the IBM Cost of a Data Breach Report 2023 found an average cost of $4.45M per breach. Encryption at rest means that stolen database backups or cloud storage contents are unreadable without access to the encryption keys. Column-level encryption for the most sensitive fields (SSNs, payment card data, medical records) means that even a SQL injection attack that reads the database returns ciphertext rather than plaintext PII. GDPR/CCPA have created significant legal and financial obligations for data protection: GDPR fines can reach €20M or 4% of global revenue, whichever is higher.</p>
+          <p>Technical controls (encryption, masking, access logging) provide both security and the compliance evidence required during regulatory audits.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -120,7 +121,16 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>DATA CLASSIFICATION FRAMEWORK:
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    pub["Public"]
+    intl["Internal"]
+    conf["Confidential"]
+    rest["Restricted&lt;br/&gt;PII, PHI, credentials"]
+    pub --> intl --> conf --> rest</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>DATA CLASSIFICATION FRAMEWORK:
   Restricted:  PII, PHI, PAN (payment), credentials
                → Column-level encryption, strict access, full audit
   Confidential: Internal financial data, trade secrets
@@ -179,6 +189,9 @@ DATA ACCESS LOGGING:
    table, row_count, purpose_label}
   Immutable log in append-only store (WORM)
   Reviewed in quarterly access audits</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Data classification tiers drive encryption depth, access controls, and audit requirements from public to restricted data.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -203,7 +216,8 @@ DATA ACCESS LOGGING:
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use envelope encryption for column-level encryption: generate a unique data encryption key (DEK) per-record or per-field, encrypt the sensitive value with the DEK, then encrypt the DEK with a KMS-managed key encryption key (KEK). Store the encrypted DEK alongside the ciphertext. This pattern means key rotation only requires re-encrypting the DEKs (lightweight), not re-encrypting all the data. AWS KMS, Google Cloud KMS, and HashiCorp Vault all support this pattern. For searchable encrypted data, consider deterministic encryption (same plaintext always produces same ciphertext, allowing equality comparison) for low-cardinality fields, or use a blind index (hash of the plaintext, indexed separately) for lookups, understanding that this leaks some information about equality.</p>
+          <p>Use envelope encryption for column-level encryption: generate a unique data encryption key (DEK) per-record or per-field, encrypt the sensitive value with the DEK, then encrypt the DEK with a KMS-managed key encryption key (KEK). Store the encrypted DEK alongside the ciphertext. This pattern means key rotation only requires re-encrypting the DEKs (lightweight), not re-encrypting all the data. AWS KMS, Google Cloud KMS, and HashiCorp Vault all support this pattern.</p>
+          <p>For searchable encrypted data, consider deterministic encryption (same plaintext always produces same ciphertext, allowing equality comparison) for low-cardinality fields, or use a blind index (hash of the plaintext, indexed separately) for lookups, understanding that this leaks some information about equality.</p>
           <p>For GDPR erasure, design the system from the start to support pseudonymisation: store a stable internal user_id as a foreign key in all data tables rather than PII like email. On erasure, the PII record is deleted or nulled, but the user_id foreign key rows in analytics and audit tables remain intact (now pseudonymous). For event streams and append-only logs, implement crypto-shredding: encrypt user-specific events with a per-user encryption key; when erasure is requested, delete the user's encryption key from KMS — all their encrypted events become unreadable.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

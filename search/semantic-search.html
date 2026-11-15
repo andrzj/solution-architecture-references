@@ -101,7 +101,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Semantic search retrieves documents based on the <em>meaning</em> of a query rather than its exact keywords. An <strong>embedding model</strong> (such as a sentence-transformer or OpenAI's text-embedding API) converts both the query and each document into a dense floating-point vector, typically 384 to 3,072 dimensions. Semantically similar texts produce vectors that are close in high-dimensional space, measured by <strong>cosine similarity</strong> (or dot product for normalised vectors). Retrieving the k most similar documents is an Approximate Nearest Neighbour (ANN) search — finding the k closest vectors without exhaustively comparing every document.</p>
+          <p>A query for “heart attack treatment” should surface articles titled “myocardial infarction” — semantic search embeds query and documents into dense vectors; <strong>cosine similarity</strong> in that space matches paraphrases without hand-built synonym lists.</p>
+          <p>Retrieving the k most similar documents is an Approximate Nearest Neighbour (ANN) search — finding the k closest vectors without exhaustively comparing every document.</p>
           <p>The primary ANN index algorithm in production today is <strong>HNSW</strong> (Hierarchical Navigable Small World), a graph-based structure that allows logarithmic-time approximate neighbour lookup. Elasticsearch (from v8.0), pgvector, Pinecone, Weaviate, Qdrant, and Milvus all offer HNSW-based ANN indexes. The critical distinction in architecture is between <strong>bi-encoders</strong> — models that encode query and document independently and compare vectors — and <strong>cross-encoders</strong> — models that take a (query, document) pair and score relevance jointly. Bi-encoders scale to millions of documents (pre-encode offline); cross-encoders are slower but more accurate, used only for re-ranking a small candidate set.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -127,7 +128,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>INDEXING PIPELINE:
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    docs["Documents"]
+    emb["Bi-encoder embeddings"]
+    idx["Vector / dense index"]
+    q["Query embedding"]
+    hits["Top-K similar chunks"]
+    docs --> emb --> idx
+    q --> idx --> hits</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>INDEXING PIPELINE:
   Documents
      │
      ▼
@@ -168,6 +180,9 @@ BI-ENCODER vs CROSS-ENCODER:
   Cross-encoder: slow (full attention over
               query+doc pair), used for
               reranking top-K candidates only</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Semantic search: dual encoders map queries and documents into vectors; ANN search retrieves meaning-aligned chunks.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -195,7 +210,8 @@ BI-ENCODER vs CROSS-ENCODER:
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Choose your embedding model based on the trade-off between quality and cost. Open-source bi-encoders from the sentence-transformers library (e.g., <code>all-MiniLM-L6-v2</code> at 384 dims, or <code>e5-large-v2</code> at 1024 dims) run on CPU or GPU in-process and avoid per-call API costs. OpenAI's <code>text-embedding-3-small</code> (1536 dims) and <code>text-embedding-3-large</code> (3072 dims) offer strong quality at ~$0.02/1M tokens but require chunked batching for large corpora. Match the model used at index time exactly at query time — even a minor version change produces incompatible embeddings that silently degrade recall.</p>
-          <p>For HNSW tuning, the two key parameters are <code>m</code> (number of edges per node, typically 16–64) and <code>ef_construction</code> (search depth during index build, typically 100–400). Higher values improve recall but increase memory and build time. At query time, <code>ef_search</code> controls the recall-vs-latency trade-off. A recall@10 of 0.95 at ef_search=100 is typical for well-tuned HNSW. Implement a <strong>two-stage retrieval</strong> pipeline: retrieve top-100 candidates with ANN (fast), then re-rank with a cross-encoder (accurate) to produce the final top-10. This hybrid approach achieves near cross-encoder accuracy at bi-encoder speed.</p>
+          <p>For HNSW tuning, the two key parameters are <code>m</code> (number of edges per node, typically 16–64) and <code>ef_construction</code> (search depth during index build, typically 100–400). Higher values improve recall but increase memory and build time. At query time, <code>ef_search</code> controls the recall-vs-latency trade-off. A recall@10 of 0.95 at ef_search=100 is typical for well-tuned HNSW.</p>
+          <p>Implement a <strong>two-stage retrieval</strong> pipeline: retrieve top-100 candidates with ANN (fast), then re-rank with a cross-encoder (accurate) to produce the final top-10. This hybrid approach achieves near cross-encoder accuracy at bi-encoder speed.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

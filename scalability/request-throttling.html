@@ -106,7 +106,8 @@
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>A server has a finite concurrency capacity — a certain number of threads, goroutines, or event loop slots. Accepting more concurrent requests than this capacity causes thread pool exhaustion, out-of-memory errors, or extreme latency increases as the OS scheduler thrashes between too many threads. Throttling prevents this by ensuring the concurrency stays within bounds even under overload. The key insight is that it is better to make some requests wait (finite queue) than to allow all requests to proceed slowly and fail due to resource exhaustion.</p>
-          <p>Queueing theory (Little's Law: L = λW) formalizes this: average concurrency L equals arrival rate λ multiplied by average processing time W. If λ exceeds your system's capacity, concurrency grows unbounded. Throttling caps λ at the ingress, keeping L within the system's safe operating zone. This is particularly important for protecting stateful dependencies like databases: a database running at 5ms query latency when handling 100 concurrent queries might run at 500ms under 1,000 concurrent queries as lock contention and I/O saturation compound. Throttling the application tier prevents cascading degradation in downstream tiers.</p>
+          <p>Queueing theory (Little's Law: L = λW) formalizes this: average concurrency L equals arrival rate λ multiplied by average processing time W. If λ exceeds your system's capacity, concurrency grows unbounded. Throttling caps λ at the ingress, keeping L within the system's safe operating zone. This is particularly important for protecting stateful dependencies like databases: a database running at 5ms query latency when handling 100 concurrent queries might run at 500ms under 1,000 concurrent queries as lock contention and I/O saturation compound.</p>
+          <p>Throttling the application tier prevents cascading degradation in downstream tiers.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -125,7 +126,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <p>Concurrency caps, priority queues, adaptive client-side throttle, NGINX limit_req, and gRPC flow control shed load.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    sem["Concurrency semaphore timeout"]
+    prio["Priority queues HIGH NORMAL LOW"]
+    adapt["Adaptive client throttle probability"]
+    nginx["NGINX limit_req burst"]
+    grpc["gRPC flow control backpressure"]
+    sem --> prio --> adapt --> nginx --> grpc</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Concurrency-Based Throttling (semaphore model):
   max_concurrency = 200
   active_requests = semaphore(200)
@@ -173,6 +185,9 @@
   server can send. On overload, server stops issuing WINDOW_UPDATEs
   → backpressure flows back to the calling client automatically.
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Semaphore admission, priority worker drain order, Google SRE adaptive throttle, NGINX burst, gRPC WINDOW_UPDATE.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -199,8 +214,11 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Concurrency vs. rate limiting:</strong> These are complementary controls with different semantics. Rate limiting says "no more than N requests per second." Concurrency limiting says "no more than N requests active simultaneously." A server with 10 threads can handle 10 concurrent 1-second requests = 10 req/s OR 10 concurrent 10-millisecond requests = 1,000 req/s. Rate limiting alone doesn't protect against long-running requests that hold threads. Always implement both: rate limiting prevents per-client abuse; concurrency limiting prevents total server overload regardless of client behavior.</p>
-          <p><strong>Queue depth and timeout:</strong> The queue depth determines how much latency smoothing you provide vs. how much memory overhead you accept. A queue depth of 2× your concurrency limit is a reasonable starting point. More importantly, set a queue timeout equal to your client's expected timeout minus your processing time. If clients time out after 5 seconds and processing takes 1 second, queue timeout should be 4 seconds. Requests that wait longer than that will fail on the client side anyway — there is no point completing them.</p>
+          <p><strong>Concurrency vs. rate limiting:</strong> These are complementary controls with different semantics. Rate limiting says "no more than N requests per second." Concurrency limiting says "no more than N requests active simultaneously." A server with 10 threads can handle 10 concurrent 1-second requests = 10 req/s OR 10 concurrent 10-millisecond requests = 1,000 req/s. Rate limiting alone doesn't protect against long-running requests that hold threads.</p>
+          <p>Always implement both: rate limiting prevents per-client abuse; concurrency limiting prevents total server overload regardless of client behavior.</p>
+          <p><strong>Queue depth and timeout:</strong> The queue depth determines how much latency smoothing you provide vs. how much memory overhead you accept. A queue depth of 2× your concurrency limit is a reasonable starting point. More importantly, set a queue timeout equal to your client's expected timeout minus your processing time.</p>
+          <p>If clients time out after 5 seconds and processing takes 1 second, queue timeout should be 4 seconds.</p>
+          <p>Requests that wait longer than that will fail on the client side anyway — there is no point completing them.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

@@ -98,7 +98,7 @@
 
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
-          <p>A training pipeline is an automated, repeatable workflow that takes raw or pre-processed data and produces a trained, validated model artifact ready for deployment. It encodes every step of the ML training process — data ingestion, validation, preprocessing, feature computation, model training, evaluation, and registration — into an orchestrated sequence of tasks that can be triggered on a schedule, by an event, or manually by a practitioner.</p>
+          
           <p>At its core, a training pipeline treats the process of producing a model the same way CI/CD treats the process of producing a software release: as a deterministic, automated, auditable workflow. Each run is tracked with metadata — what data was used, what hyperparameters were set, what metrics were achieved — enabling comparison across runs and full reproducibility. The pipeline replaces error-prone, manually executed notebooks and scripts with a system that reliably produces consistent output.</p>
           <p>Modern training pipeline frameworks (Kubeflow Pipelines, Apache Airflow with ML operators, Metaflow, Vertex AI Pipelines, SageMaker Pipelines) express the workflow as a directed acyclic graph (DAG) of tasks. Each node in the DAG is a containerized step with defined inputs, outputs, and resource requirements. Outputs from one step (e.g., a preprocessed dataset) become inputs to the next (e.g., the training job), with provenance tracked through the pipeline's metadata store.</p>
 
@@ -124,7 +124,26 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    schedule_cron_event_new["Schedule (cron) / Event (new data) / API"]
+    step_1_data_ingestion_am["STEP 1: DATA INGESTION &amp;amp; VALIDATION"]
+    step_1_data_ingestion_a["│  STEP 1: DATA INGESTION &amp;amp; VALIDATION"]
+    pull_from_feature_store["Pull from feature store / data warehouse"]
+    schema_validation_row_co["Schema validation · Row count checks"]
+    fail_abort_pipeline_aler["FAIL → abort pipeline, alert on-call"]
+    step_2_preprocessing_amp["STEP 2: PREPROCESSING &amp;amp; SPLIT"]
+    step_2_preprocessing_am["│  STEP 2: PREPROCESSING &amp;amp; SPLIT"]
+    schedule_cron_event_new --> step_1_data_ingestion_am
+    step_1_data_ingestion_am --> step_1_data_ingestion_a
+    step_1_data_ingestion_a --> pull_from_feature_store
+    pull_from_feature_store --> schema_validation_row_co
+    schema_validation_row_co --> fail_abort_pipeline_aler
+    fail_abort_pipeline_aler --> step_2_preprocessing_amp
+    step_2_preprocessing_amp --> step_2_preprocessing_am</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
  TRIGGER
  ┌────────────────────────────────────────────┐
  │  Schedule (cron) / Event (new data) / API   │
@@ -174,6 +193,9 @@
  │  Trigger deployment pipeline (staging → canary → prod)    │
  └──────────────────────────────────────────────────────────┘
 </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -198,7 +220,8 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Containerize every pipeline step. Each step should be a self-contained Docker image with pinned dependency versions. This ensures that the training environment is identical whether a step runs locally, in CI, or on a remote cluster. Avoid sharing libraries between steps via a common base environment — the isolation prevents dependency conflicts and makes individual steps easier to test independently. Package the training code as a versioned container image and tag it with the git commit SHA, ensuring a precise link between the pipeline run and the code that produced it.</p>
+          <p>Containerize every pipeline step. Each step should be a self-contained Docker image with pinned dependency versions. This ensures that the training environment is identical whether a step runs locally, in CI, or on a remote cluster. Avoid sharing libraries between steps via a common base environment — the isolation prevents dependency conflicts and makes individual steps easier to test independently.</p>
+          <p>Package the training code as a versioned container image and tag it with the git commit SHA, ensuring a precise link between the pipeline run and the code that produced it.</p>
           <p>Build data validation as a hard gate at the start of the pipeline. Use a framework like Great Expectations or TensorFlow Data Validation to define expected schemas, value ranges, and distribution properties for training data. Any validation failure should abort the pipeline and page the on-call data engineer rather than producing a silently degraded model. Define validation expectations based on the training data distribution at the time of the original model training, and update them when that baseline legitimately changes.</p>
           <p>Separate hyperparameter tuning from the main training pipeline. Hyperparameter searches are expensive, exploratory, and do not need to run with every scheduled retraining. Design the pipeline with a "fine-tuning mode" (occasional, triggered manually or by a significant data shift) and a "refresh mode" (frequent, automated, retrains with the best known hyperparameters on fresh data). This separation dramatically reduces compute costs and pipeline run times for routine retraining while preserving the ability to do full hyperparameter exploration when warranted.</p>
 

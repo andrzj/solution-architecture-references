@@ -101,11 +101,13 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A database index is a data structure stored separately from the table that maps values of one or more columns to the physical location of matching rows, enabling the database to find rows without scanning the entire table. Without indexes, every query that filters on a non-primary-key column requires a sequential scan — O(N) in the number of rows. With an appropriate index, the same query runs in O(log N) (B-tree) or O(1) amortized (Hash), making the difference between a 10ms and a 30-second query on a 100M-row table.</p>
-          <p>PostgreSQL index types: <strong>B-tree</strong> (default) — balanced tree, supports <code>=</code>, <code>&lt;</code>, <code>&gt;</code>, <code>BETWEEN</code>, <code>IN</code>, <code>LIKE 'prefix%'</code>, <code>ORDER BY</code>; the right choice for most situations; <strong>Hash</strong> — O(1) equality lookups, does not support range queries, rarely preferable to B-tree; <strong>GIN (Generalized Inverted Index)</strong> — maps each element of a composite value (array element, JSONB key, tsvector lexeme) to its containing rows; required for <code>@&gt;</code> containment, <code>?</code> key-exists, and full-text search; <strong>GiST (Generalized Search Tree)</strong> — extensible tree for geometric, range, and full-text data; used for PostGIS spatial queries, range type containment, and nearest-neighbor searches; <strong>BRIN (Block Range INdex)</strong> — stores min/max per block range, extremely small (10–1000x smaller than B-tree), effective only when column values are physically correlated with row insertion order (timestamps on append-only tables).</p>
+          
+          <p>PostgreSQL index types: <strong>B-tree</strong> (default) — balanced tree, supports <code>=</code>, <code>&lt;</code>, <code>&gt;</code>, <code>BETWEEN</code>, <code>IN</code>, <code>LIKE 'prefix%'</code>, <code>ORDER BY</code>; the right choice for most situations; <strong>Hash</strong> — O(1) equality lookups, does not support range queries, rarely preferable to B-tree; <strong>GIN (Generalized Inverted Index)</strong> — maps each element of a composite value (array element, JSONB key, tsvector lexeme) to its containing rows;</p>
+          <p>required for <code>@&gt;</code> containment, <code>?</code> key-exists, and full-text search; <strong>GiST (Generalized Search Tree)</strong> — extensible tree for geometric, range, and full-text data; used for PostGIS spatial queries, range type containment, and nearest-neighbor searches; <strong>BRIN (Block Range INdex)</strong> — stores min/max per block range, extremely small (10–1000x smaller than B-tree), effective only when column values are physically correlated with row insertion order (timestamps on append-only tables).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Sequential scans are the performance worst case for selective queries. A table with 100M rows and 10KB average row size is 1TB of data — a sequential scan reads all 1TB even if the query matches 10 rows. Indexes trade write overhead (updating the index on INSERT/UPDATE/DELETE) and storage (the index structure itself) for dramatically faster reads. The tradeoff is favorable for most read-heavy OLTP workloads. The art of indexing is matching index types to query access patterns: not every index improves performance, and too many indexes significantly slow writes and bloat storage.</p>
+          <p>Sequential scans are the performance worst case for selective queries. A table with 100M rows and 10KB average row size is 1TB of data — a sequential scan reads all 1TB even if the query matches 10 rows. Indexes trade write overhead (updating the index on INSERT/UPDATE/DELETE) and storage (the index structure itself) for dramatically faster reads. The tradeoff is favorable for most read-heavy OLTP workloads.</p>
+          <p>The art of indexing is matching index types to query access patterns: not every index improves performance, and too many indexes significantly slow writes and bloat storage.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -125,7 +127,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    q["Query pattern"]
+    btree["B-tree index"]
+    gin["GIN / GiST"]
+    partial["Partial index"]
+    q -->|equality, range, sort| btree
+    q -->|JSON, full text, arrays| gin
+    q -->|hot subset| partial</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   Index type selection guide (PostgreSQL):
 
   Query Pattern                         → Index Type
@@ -175,6 +188,9 @@
   WHERE idx_scan = 0
   ORDER BY pg_relation_size(indexrelid) DESC;
           </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Index selection: match PostgreSQL index families to equality, containment, and partial-filter access paths.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -201,7 +217,8 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use <code>EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)</code> — not just <code>EXPLAIN</code> — to see actual execution times, row count estimates vs. actual, and buffer hit/miss statistics. Key signals: <code>Seq Scan</code> on large tables with a selective WHERE clause is the primary indicator of a missing index; <code>cost</code> estimates wildly different from <code>actual time</code> indicate stale statistics — run <code>ANALYZE tablename</code>; high <code>Buffers: read</code> vs. <code>Buffers: hit</code> ratio indicates cache thrashing that an index may not solve without also tuning <code>shared_buffers</code> and <code>effective_cache_size</code>. For large tables, use <code>CREATE INDEX CONCURRENTLY</code> to build indexes without locking writes — the index build takes longer but doesn't block production traffic.</p>
+          <p>Use <code>EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)</code> — not just <code>EXPLAIN</code> — to see actual execution times, row count estimates vs. actual, and buffer hit/miss statistics. Key signals: <code>Seq Scan</code> on large tables with a selective WHERE clause is the primary indicator of a missing index; <code>cost</code> estimates wildly different from <code>actual time</code> indicate stale statistics — run <code>ANALYZE tablename</code>; high <code>Buffers: read</code> vs. <code>Buffers: hit</code> ratio indicates cache thrashing that an index may not solve without also tuning <code>shared_buffers</code> and <code>effective_cache_size</code>.</p>
+          <p>For large tables, use <code>CREATE INDEX CONCURRENTLY</code> to build indexes without locking writes — the index build takes longer but doesn't block production traffic.</p>
           <p>For composite indexes, the column order follows a rule: put <strong>equality predicates first</strong>, then <strong>range predicates</strong>, then <strong>ORDER BY columns</strong>. For a query <code>WHERE tenant_id = $1 AND created_at &gt; $2 ORDER BY created_at</code>, the optimal index is <code>(tenant_id, created_at)</code> — equality filter first (tenant_id reduces the scan to a single tenant's data), range scan second (created_at traversal within that partition). Placing the range column first wastes the index because the range scan can't then use the equality column to filter. Monitor index bloat periodically: <code>SELECT pg_size_pretty(pg_relation_size(indexrelid)) AS index_size, indexrelname FROM pg_stat_user_indexes ORDER BY pg_relation_size(indexrelid) DESC</code> — indexes significantly larger than expected for their row count indicate bloat requiring <code>REINDEX CONCURRENTLY</code>.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>

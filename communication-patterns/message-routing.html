@@ -90,7 +90,8 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>Message routing is the set of patterns and mechanisms that determine which consumer or queue receives each message. In a simple system, every consumer subscribes to every topic and filters what it processes. At scale, this is wasteful and brittle. Routing patterns push filtering and dispatch decisions to the infrastructure layer — the broker, an intermediary router service, or the message envelope itself — ensuring messages arrive only at handlers that need them, with less compute wasted and clearer data contracts.</p>
+          
+          <p>Routing patterns push filtering and dispatch decisions to the infrastructure layer — the broker, an intermediary router service, or the message envelope itself — ensuring messages arrive only at handlers that need them, with less compute wasted and clearer data contracts.</p>
           <p>The foundational routing strategies are: <strong>content-based routing</strong> (route based on payload or header values), <strong>topic-per-event-type routing</strong> (each event type has a dedicated topic), <strong>routing slip</strong> (the message carries a list of destinations to visit in order), and <strong>process manager</strong> (a stateful coordinator decides the next destination based on accumulated state). These are not mutually exclusive; production systems often combine them.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -113,7 +114,20 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Content-based routing inspects message headers or payload and directs the message to one of N queues. Topic-per-event-type routing relies on the broker's native subscription model (SNS filter policies, Kafka topic names, AMQP routing keys). The routing slip pattern embeds a list of queue destinations in the message envelope; each consumer reads from its slot, processes, and forwards to the next slot. The process manager pattern is a stateful service that queries its database to determine the next routing decision.</p>
-<pre><code>Content-Based Router
+<figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    msg["Incoming message&lt;br/&gt;type, region, priority"]
+    cbr["Content-based router"]
+    eu["Queue: order-eu-high"]
+    us["Queue: order-us"]
+    dlq["DLQ"]
+    slip["Routing slip&lt;br/&gt;step chain"]
+    msg --> cbr
+    cbr --> eu & us & dlq
+    msg --> slip</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Content-Based Router
   Incoming message: { "type": "order", "region": "EU", "priority": "high" }
   ├── if region == "EU"   → queue: order-eu-high
   ├── if region == "US"   → queue: order-us-standard
@@ -134,6 +148,9 @@ Routing Slip Pattern
     2. currentStep++ → forward to "enrich-queue"
   ...
 </code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Message routing: content-based rules and routing slips steer messages to the correct downstream queues.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
@@ -152,7 +169,8 @@ Routing Slip Pattern
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Broker-native routing (prefer this):</strong> Use the broker's built-in routing capabilities before adding custom routing services. SNS supports attribute-based filter policies that route to different SQS queues at zero extra latency. Kafka routes by topic name and partition key. RabbitMQ uses exchange types (direct, topic, headers, fanout) and routing keys. These are battle-tested, scalable, and require no extra infrastructure.</p>
+          <p><strong>Broker-native routing (prefer this):</strong> Use the broker's built-in routing capabilities before adding custom routing services. SNS supports attribute-based filter policies that route to different SQS queues at zero extra latency. Kafka routes by topic name and partition key. RabbitMQ uses exchange types (direct, topic, headers, fanout) and routing keys.</p>
+          <p>These are battle-tested, scalable, and require no extra infrastructure.</p>
           <p><strong>Content-based routing in code:</strong> When broker-native routing is insufficient (complex conditions, multi-field logic), implement a lightweight router consumer: subscribe to an incoming topic, inspect the message, publish to the appropriate downstream topic, ACK the original. Keep routing logic stateless and purely functional (no side effects) so the router can be scaled horizontally without coordination.</p>
           <p><strong>Dead-letter routing:</strong> Every queue or topic should have an associated dead-letter queue (DLQ) that captures messages that fail to process after N retries. DLQs should be monitored with alerts, and a runbook should document the remediation steps (replay, manual intervention, discard). Never silently discard messages; route to DLQ instead.</p>
           <p><strong>Routing in Apache Camel / Spring Integration:</strong> These frameworks provide a Content-Based Router EIP implementation: <code>&lt;choice&gt;&lt;when&gt;&lt;simple&gt;${header.type} == 'order'&lt;/simple&gt;&lt;to uri="activemq:order-queue"/&gt;&lt;/when&gt;&lt;otherwise&gt;&lt;to uri="activemq:unknown-dlq"/&gt;&lt;/otherwise&gt;&lt;/choice&gt;</code>. The <em>otherwise</em> clause is critical — always handle unmatched messages.</p>
