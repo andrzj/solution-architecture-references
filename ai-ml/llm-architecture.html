@@ -98,33 +98,33 @@
 
           </div>
           <div class="article-content">          <h2 id="what-it-is">What it is</h2>
-          <p><strong>LLM architecture</strong> is how you run large language models in production: accept prompts, generate tokens one at a time, and manage GPU memory for the growing key-value (KV) cache. A customer-support chatbot that streams answers needs this stack; calling a hosted API instead offloads it entirely.</p>
-          <p>The core challenge is that LLM inference is fundamentally different from traditional neural network inference. LLMs generate tokens auto-regressively: each new token requires a forward pass through the entire model, and the computation for each forward pass depends on the key-value (KV) cache accumulated from all previous tokens in the context. This means inference is memory-bandwidth bound rather than compute bound, and the cost per request scales with the sequence length. The KV cache can consume tens of gigabytes of GPU memory for long contexts, severely limiting how many concurrent requests a single GPU instance can handle.</p>
-          <p>Key architectural techniques address these constraints. <strong>Continuous batching</strong> (also called dynamic batching or iteration-level scheduling) interleaves requests at the token generation level so that finished requests immediately free their KV cache slot for new requests, dramatically improving GPU utilization. <strong>Paged attention</strong> (introduced in vLLM) manages the KV cache in fixed-size pages analogous to virtual memory, eliminating internal and external fragmentation. <strong>Quantization</strong> reduces model weights from 16-bit to 8-bit or 4-bit, halving or quartering memory requirements at the cost of some accuracy.</p>
-          <p><strong>Tensor parallelism</strong> and <strong>pipeline parallelism</strong> distribute the model across multiple GPUs to serve models that exceed a single GPU's memory.</p>
+          <p><strong>LLM architecture</strong> is how you run transformer language models in production: tokenize prompts, run prefill and decode phases, manage the growing key-value (KV) cache, and stream tokens back to clients. It is the serving layer beneath chat, RAG, and agent features — distinct from choosing which model weights you call.</p>
+          <p>Meridian Commerce’s <strong>shopper copilot</strong> (product Q&amp;A, outfit suggestions, post-add-to-cart nudges) hits an LLM gateway that rate-limits mobile clients, routes traffic between Azure OpenAI chat completions and a vLLM pool for overflow, and streams responses over SSE. Peak holiday traffic is why Meridian owns this stack instead of naïvely pinning one request per GPU.</p>
+          <p>Autoregressive decode means each new token reuses prior KV activations; long RAG contexts plus chat history make inference memory-bandwidth heavy. vLLM’s <strong>PagedAttention</strong> stores KV cache in fixed-size pages (like virtual memory) to cut fragmentation (<a href="https://arxiv.org/abs/2309.06180" rel="noopener noreferrer" target="_blank">Kwon et al., PagedAttention</a>), and <strong>continuous batching</strong> schedules decode steps across concurrent shopper sessions so finished chats free GPU slots immediately (<a href="https://docs.vllm.ai/en/latest/" rel="noopener noreferrer" target="_blank">vLLM documentation</a>).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Large language models present serving challenges that existing ML serving infrastructure was not designed to handle. A 70-billion parameter model requires roughly 140GB of GPU memory in FP16, which exceeds the capacity of a single GPU (even an H100 with 80GB HBM3). Even models that fit on a single GPU face the challenge that each inference request holds a growing KV cache that occupies an unpredictable and increasing share of GPU memory throughout the generation process. Naive serving approaches that allocate the maximum possible KV cache per request upfront waste enormous amounts of memory on unused reserved space.</p>
-          <p>Throughput requirements for LLM serving differ qualitatively from classification models. A classification model produces one output per input; an LLM produces hundreds of tokens sequentially, with each step dependent on the previous. This temporal dependency means traditional request-response batching — wait for N requests, process them together, return all results — is inefficient because requests have different lengths and complete at different times, causing short requests to wait for long ones. Continuous batching solves this by treating generation at the token level, not the request level.</p>
-          <p>Dedicated LLM serving infrastructure has emerged (vLLM, TensorRT-LLM, SGLang, Ollama) to address these challenges with purpose-built memory management, scheduling algorithms, and model execution backends. Without such infrastructure, organizations deploying LLMs would either severely under-utilize expensive GPU hardware or fail to meet latency SLAs under any meaningful load.</p>
+          <p>Meridian’s first copilot prototype called a single GPU with static batching: Black Friday threads queued behind one power user pasting entire care guides, time-to-first-token missed latency targets, and GPUs sat half-empty between bursts.</p>
+          <p>LLM serving needs iteration-level scheduling, not batch-at-end classification serving. The diagram’s <em>Prefill worker</em> ingests the fat RAG prompt; <em>Decode workers</em> stream short recommendation blurbs; the <em>KV cache manager</em> tracks pages per session; optional <em>tensor-parallel GPU group</em> shards a larger catalog-tuned model when Azure capacity is throttled.</p>
+          <p>Azure OpenAI covers baseline copilot traffic with managed scale; vLLM on Meridian’s GPU fleet handles burst routing and keeps PII-heavy prompts inside the VPC when policy requires it — same OpenAI-compatible request shape on both sides (<a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/switching-endpoints" rel="noopener noreferrer" target="_blank">Azure OpenAI endpoints</a>).</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Deploying transformer language models with more than a few billion parameters where memory management and batching significantly affect throughput and cost.</li>
-            <li>Applications with concurrent user requests where naive one-request-per-GPU serving leaves GPUs mostly idle.</li>
-            <li>Long-context applications (RAG, document analysis, multi-turn chat) where KV cache management is critical to serving capacity.</li>
-            <li>Cost-sensitive deployments where efficient GPU utilization directly impacts the cost per 1,000 tokens served.</li>
-            <li>Organizations deploying open-weight models (Llama, Mistral, Mixtral) that need to build their own serving infrastructure rather than using a managed API.</li>
+            <li>Meridian-scale concurrent shopper chats where one-GPU-one-session wastes HBM and misses latency SLOs.</li>
+            <li>Copilot prompts with long catalog RAG context (retrieved chunks + transcript) where KV cache sizing dominates capacity planning.</li>
+            <li>Hybrid routing: Azure OpenAI primary, vLLM warm standby or overflow with identical chat-completions schemas.</li>
+            <li>Open-weight models (e.g., Llama-family) that must run in Meridian’s region for data residency.</li>
+            <li>Token streaming UX — outfit picks that render word-by-word in the mobile storefront.</li>
           </ul>
 
-          <h2 id="when-not-to-use">When NOT to use</h2>
+          <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Applications using managed LLM APIs (OpenAI, Anthropic, Google) where the serving infrastructure is entirely abstracted — focus on prompt engineering and application logic instead.</li>
-            <li>Very low-traffic applications (&lt;10 requests/hour) where a simple inference loop is sufficient and batching provides no benefit.</li>
-            <li>Small models (under 1B parameters) that fit trivially in GPU memory and don't require advanced KV cache management or multi-GPU parallelism.</li>
+            <li>Low-volume internal tools where Azure OpenAI alone is simpler than operating GPU schedulers.</li>
+            <li>Tasks with no generation path — embedding-only catalog indexing belongs in the vector pipeline, not decode workers.</li>
+            <li>Small models that fit one GPU without paging when traffic never overlaps.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Read the diagram top-down as a copilot request: the mobile client → <em>LLM gateway</em> (auth, quotas) → <em>Prefill worker</em> (tokenize + build KV for retrieved catalog chunks) → <em>Decode workers</em> with continuous batching → <em>KV cache manager</em> (paged blocks per session) → <em>Response streaming</em> (SSE). Heavy catalog models optionally flow through the <em>tensor-parallel GPU group</em>.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     client["Client / chat / RAG app"]
@@ -194,7 +194,7 @@
               NVLink / InfiniBand AllReduce
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Production LLM serving: gateway fronts prefill (prompt) and decode (token) workers; paged KV cache storage; optional tensor-parallel GPUs for large models.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Meridian shopper copilot: gateway → prefill/decode workers → paged KV cache → streamed SSE responses; optional tensor-parallel GPUs for large catalog models.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -202,52 +202,54 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Continuous batching and paged attention dramatically improve GPU utilization compared to naive serving, reducing the cost per token by 10–20x in high-concurrency scenarios.</li>
-                <li>Prefill-decode disaggregation allows matching hardware to the distinct characteristics of each phase, further optimizing resource utilization.</li>
-                <li>Quantization (INT8, INT4) reduces memory requirements and increases throughput with manageable accuracy trade-offs for most applications.</li>
-                <li>Self-hosted LLM serving provides data privacy guarantees that managed API providers cannot offer for sensitive enterprise data.</li>
+                <li>vLLM continuous batching keeps Meridian GPUs full during drop-day traffic instead of serializing one copilot thread per card.</li>
+                <li>PagedAttention raises concurrent session count when every shopper carries a fat RAG prefix.</li>
+                <li>Gateway dual-routing preserves UX when Azure throttles — failover to private vLLM without app rewrites.</li>
+                <li>Prefix caching on static copilot system prompts trims prefill cost for repeat mobile opens.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Infrastructure complexity is very high — managing GPU clusters, KV cache, batching schedulers, and multi-node parallelism requires specialized expertise.</li>
-                <li>GPU hardware costs are substantial; even a single A100 80GB instance costs thousands of dollars per month, making self-hosting expensive at low volumes compared to API pricing.</li>
-                <li>Model updates require zero-downtime serving migration strategies more complex than traditional software deployments.</li>
-                <li>Long-tail latency spikes caused by long-context requests can degrade average tail latency for all concurrent requests on shared infrastructure.</li>
+                <li>Meridian SRE owns GPU drivers, vLLM upgrades, and KV fragmentation tuning — not just REST integrations.</li>
+                <li>Warm GPU fleets cost money on quiet Tuesday mornings compared with pure pay-per-token APIs.</li>
+                <li>Model rollovers need blue/green engine deploys so copilot sessions do not die mid-stream.</li>
+                <li>One shopper pasting a huge care guide can still inflate tail latency for neighbors on shared decode workers.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Choose the right parallelism strategy for your model size and hardware topology. Tensor parallelism (splitting individual layers across GPUs) is best for reducing single-request latency on large models but requires fast inter-GPU interconnects (NVLink or InfiniBand) — it performs poorly across nodes with slow networking. Pipeline parallelism (assigning different layers to different GPUs or nodes) achieves better throughput on distributed clusters but introduces pipeline bubbles and increases latency. For models that fit on a single node with NVLink, tensor parallelism is preferred; for models requiring multiple nodes, combine both strategies.</p>
-          <p>Calibrate your quantization strategy carefully. INT8 weight quantization with activation quantization (using GPTQ, AWQ, or SmoothQuant) typically achieves 95-99% of FP16 quality at half the memory footprint. INT4 quantization pushes further but introduces more significant quality degradation, especially for reasoning tasks. Profile your specific use case: for customer service chatbots, INT4 may be entirely acceptable; for code generation or mathematical reasoning, INT8 or FP16 may be necessary.</p>
-          <p>Always benchmark quantized models on your specific task distribution before deployment.</p>
-          <p>Design your context window management strategy before building the serving system. Applications with long contexts (multi-document analysis, long conversations) consume KV cache memory proportionally to context length, limiting concurrent request capacity. Techniques for managing this include prompt caching (reusing the KV cache for repeated system prompts), sliding window attention, and context compression. Define the maximum context length your application requires and size your GPU memory accordingly, accounting for the worst-case KV cache consumption multiplied by your desired concurrent request count.</p>
+          <p><strong>Gateway:</strong> Meridian’s copilot API enforces shopper auth, per-device rate limits, and prompt logging with redacted payment fields before prefill. Routes pick Azure vs. vLLM from health, cost, and data-class flags.</p>
+          <p><strong>Prefill vs. decode:</strong> Catalog RAG makes prefill compute-heavy (many retrieved tokens); decode stays relatively short for shopper replies. Separate pools or disaggregated workers let Meridian scale each phase independently.</p>
+          <p><strong>vLLM ops:</strong> Run with OpenAI-compatible <code>/v1/chat/completions</code>, cap <code>max_tokens</code> for mobile snippets, and set <code>max_model_len</code> from worst-case context (system + RAG + history). Monitor KV cache usage and batch size in vLLM metrics.</p>
+          <p><strong>Context budget:</strong> Copilot truncates oldest transcript turns before dropping retrieved catalog chunks; Azure and vLLM paths share the same token budget logic.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>KV cache exhaustion:</strong> Under high load with long-context requests, the KV cache fills completely, causing new requests to be rejected or queued indefinitely. Mitigate with queue depth limits, context length limits per request, and preemption policies that swap low-priority requests to CPU memory.</li>
-            <li><strong>GPU memory OOM on model loading:</strong> Attempting to load a model larger than available GPU HBM fails catastrophically. Plan GPU memory allocation accounting for model weights, KV cache working set, and PyTorch/CUDA framework overhead, which typically adds 2-3GB per GPU.</li>
-            <li><strong>Head-of-line blocking by long requests:</strong> A single very long generation request occupies KV cache memory and decode compute for minutes, degrading throughput for all shorter concurrent requests. Implement maximum generation length limits and priority-based scheduling.</li>
-            <li><strong>Tensor parallel communication bottleneck:</strong> Placing tensor-parallel shards across nodes connected by Ethernet (rather than InfiniBand or NVLink) causes AllReduce communication to dominate latency. Always use high-bandwidth interconnects for tensor-parallel deployments.</li>
+            <li><strong>KV cache exhaustion:</strong> Flash drop exhausts paged blocks; new sessions get HTTP 429 unless Meridian sheds load or spills to Azure-only routing.</li>
+            <li><strong>OOM at load:</strong> Shipping a bigger catalog-tuned checkpoint without re-sizing tensor-parallel width prevents the model from loading — capacity planning must include CUDA overhead.</li>
+            <li><strong>Head-of-line blocking:</strong> Unlimited <code>max_tokens</code> lets one user generate an essay; cap generation length for copilot and prioritize interactive SSE sessions.</li>
+            <li><strong>Cross-node tensor parallel:</strong> Sharding vLLM across Ethernet-heavy nodes makes AllReduce dominate; keep TP inside NVLink pairs.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>What is the model size in parameters, and how much GPU memory is required in FP16, INT8, and INT4?</li>
-            <li>What are the latency requirements (time-to-first-token and tokens-per-second) for your application?</li>
-            <li>What is the expected maximum context length, and how does it constrain concurrent request capacity?</li>
-            <li>Is tensor parallelism feasible — do your GPUs have NVLink or InfiniBand interconnects for efficient AllReduce?</li>
-            <li>Have you evaluated quantization quality on your specific task and validated that accuracy degradation is acceptable?</li>
-            <li>Is prefill-decode disaggregation warranted given your traffic pattern (high prefill cost vs. high generation length)?</li>
+            <li>What are Meridian’s p50/p95 targets for time-to-first-token and tokens/sec on mobile copilot?</li>
+            <li>What is the worst-case prompt size (system + RAG chunks + history) in tokens?</li>
+            <li>Does vLLM capacity cover Azure overflow, or only residency-sensitive traffic?</li>
+            <li>Are prefill and decode pools sized from measured traces, not guesswork?</li>
+            <li>Is there a blue/green path for vLLM model and tokenizer updates?</li>
+            <li>Do gateway logs correlate shopper session IDs across Azure and vLLM backends?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
+          <p>Meridian’s <strong>shopper copilot</strong> end-to-end:</p>
           <ul>
-            <li><strong>Enterprise internal chatbot:</strong> A 13B parameter Llama model served on two A100 80GB GPUs with tensor parallelism; INT8 quantized to fit within memory budget; vLLM handles continuous batching for 50 concurrent employee users; system prompts are prefix-cached to reduce per-request cost.</li>
-            <li><strong>Code completion service:</strong> A 34B coding model deployed across four GPUs with pipeline parallelism; requests are prioritized by interactive vs. batch use; response streaming via SSE reduces perceived latency for IDE integrations.</li>
-            <li><strong>Document analysis API:</strong> A 70B model deployed across eight H100s for long-context (128k token) document analysis; prefill is disaggregated to a high-FLOPs node while decode workers handle token generation; sliding window KV cache manages memory for very long documents.</li>
+            <li><strong>Browse assist:</strong> “Waterproof trail shoes under $120?” — gateway → prefill with retrieved catalog chunks → decode streams three SKU cards with short rationales over SSE.</li>
+            <li><strong>Cart nudge:</strong> After add-to-cart, copilot pulls care-guide chunks; KV cache pages hold the RAG prefix while decode emits a one-line leather-care tip.</li>
+            <li><strong>Peak routing:</strong> Azure OpenAI serves steady traffic; when quota pressure rises, gateway shifts new sessions to vLLM on Meridian GPUs without changing the mobile SDK.</li>
+            <li><strong>Residency path:</strong> EU shoppers whose prompts may include address hints stay on EU vLLM; US traffic uses Azure US regions — same prompt templates, different backend target.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -263,7 +265,7 @@
             <li><a href="https://vllm.readthedocs.io/en/latest/" rel="noopener noreferrer" target="_blank">vLLM Documentation – Efficient LLM Serving</a></li>
             <li><a href="https://arxiv.org/abs/2309.06180" rel="noopener noreferrer" target="_blank">Efficient Memory Management for Large Language Model Serving (PagedAttention) – Kwon et al. 2023</a></li>
             <li><a href="https://developer.nvidia.com/blog/mastering-llm-techniques-inference-optimization/" rel="noopener noreferrer" target="_blank">Mastering LLM Techniques: Inference Optimization – NVIDIA Developer Blog</a></li>
-            <li><a href="https://docs.nvidia.com/tensorrt-llm/latest/index.html" rel="noopener noreferrer" target="_blank">TensorRT-LLM Documentation – NVIDIA</a></li>
+            <li><a href="https://nvidia.github.io/TensorRT-LLM/" rel="noopener noreferrer" target="_blank">TensorRT-LLM documentation – NVIDIA</a></li>
           </ul>
         </div>
         </div>
@@ -275,7 +277,7 @@
               <li><a href="#what-it-is">What it is</a></li>
               <li><a href="#why-it-exists">Why it exists</a></li>
               <li><a href="#when-to-use">When to use</a></li>
-              <li><a href="#when-not-to-use">When NOT to use</a></li>
+              <li><a href="#when-not-to-use">When not to use</a></li>
               <li><a href="#typical-architecture">Typical architecture</a></li>
               <li><a href="#pros-and-cons">Pros and cons</a></li>
               <li><a href="#implementation-notes">Implementation notes</a></li>

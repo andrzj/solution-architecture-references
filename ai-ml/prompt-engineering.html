@@ -104,15 +104,28 @@
         </div>
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
-          
+          <p><strong>Prompt engineering</strong> is how teams turn brittle chat strings into versioned templates, typed variables, and measured behavior before production. It covers system/developer/user message roles, grounding instructions, output shape, and the eval harness that guards model or template changes.</p>
+          <p>At <strong>Meridian Commerce</strong>, Customer Support does not paste free-form prompts into a playground. They ship <code>support_answer_v3</code> templates in git: system rules (“answer only from <code>{{retrieved_context}}</code>”), developer guardrails (tone, escalation triggers), and the shopper’s message — then parse JSON answers with citation fields.</p>
+          <p>The diagram flows <em>Template v3</em> → <em>vars</em> (context chunks, locale, order hints) → <em>LLM</em> (Azure OpenAI chat completions) → <em>parser</em> (schema validation) → <em>unit + LLM eval suite</em>. That pipeline matches Azure’s guidance to separate instructions, grounding content, and the user task (<a href="https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/prompt-engineering" rel="noopener noreferrer" target="_blank">Azure OpenAI prompt engineering</a>).</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Small wording changes swing accuracy wildly. Without structured prompts and eval sets, teams cannot safely change models or add features.</p>
+          <p>Meridian once “fixed” a support hotfix by adding “always offer free shipping” to the system prompt in prod without a version bump; returns policy accuracy dropped and nobody could diff what changed. LLM outputs shift with tiny wording, model upgrades, and temperature.</p>
+          <p>Templates plus semver and golden eval sets let support swap GPT-4o for a newer deployment, add EU locale variables, or tighten citation JSON without guessing. When Lewis-style RAG feeds the model, the prompt layer is what forces grounding instead of parametric improvisation.</p>
+
           <h2 id="when-to-use">When to use</h2>
-          <ul><li>Classification/extraction via LLM.</li><li>RAG answer generation.</li><li>Tool-calling agents.</li><li>Moderation and routing prompts.</li></ul>
+          <ul>
+            <li>Meridian support RAG answers that must cite chunk IDs and refuse when context is empty.</li>
+            <li>Structured extraction — return eligibility <code>{ "eligible": boolean, "reason_code": string }</code> for supervisor tooling.</li>
+            <li>Copilot routing prompts that classify shopper intent before tool calls.</li>
+            <li>Moderation and PII-redaction pre-prompts shared across Azure and vLLM backends.</li>
+          </ul>
           <h2 id="when-not-to-use">When not to use</h2>
-          <ul><li>When fine-tuning on large proprietary data is cheaper at volume.</li></ul>
+          <ul>
+            <li>Ultra-high-volume classification where fine-tuned small models beat giant prompts on cost — measure tokens/month first.</li>
+            <li>One-off internal scripts with no SLA; a pinned notebook may suffice until usage repeats.</li>
+          </ul>
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Template + variables + eval harness.</p>
+          <p>Meridian’s prompt service renders <em>Template v3</em> with Handlebars-style <em>vars</em>, calls chat completions with <code>response_format</code> JSON schema where supported, runs the <em>parser</em>, and only then returns text to Zendesk. CI executes the <em>unit + LLM eval suite</em> on every template merge.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     template_v3["Template v3"]
@@ -129,29 +142,67 @@
               <pre class="architecture-diagram__canvas"><code>Template v3 ► vars ► LLM ► parser ► unit + LLM eval suite
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Template + variables + eval harness.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Meridian support prompts: versioned template and vars → LLM → schema parser → CI eval suite.</figcaption>
           </figure>
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul><li>Fast iteration.</li><li>No weight updates required.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul><li>Token cost.</li><li>Brittle without evals.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Meridian ships template v3.2.0 and rolls back to v3.1.0 without redeploying RAG indexes.</li>
+                <li>JSON schema outputs slot into supervisor dashboards without regex fragility.</li>
+                <li>Eval suite catches regressions when Azure bumps a model version behind the same API name.</li>
+                <li>Few-shot examples live in the template repo only when A/B evals prove lift — no mystery examples in prod env vars.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Long system prompts plus RAG chunks burn tokens on every support message.</li>
+                <li>Without evals, “small wording tweaks” silently raise escalation rates.</li>
+                <li>Template sprawl — checkout, returns, loyalty — needs ownership or diagrams lie about one true template.</li>
+              </ul>
+            </div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Separate system, developer, and user messages; request structured outputs (JSON schema). Maintain golden eval sets; run on every prompt/model change. Document failure modes; add few-shot examples only when evals prove lift.</p>
-          
+          <p><strong>Message roles:</strong> System holds grounding and policy; developer holds tool JSON and schema reminders; user holds the shopper text only — Azure recommends keeping evidence out of the user role when possible.</p>
+          <p><strong>Variables:</strong> <code>{{retrieved_context}}</code>, <code>{{locale}}</code>, and <code>{{order_summary}}</code> are injected server-side; agents never edit raw template files in the CRM.</p>
+          <p><strong>Structured output:</strong> Support answers use a parser-validated schema <code>{ "answer", "citations[]", "escalate" }</code>; temperature 0–0.2 for policy tasks.</p>
+          <p><strong>Eval harness:</strong> A curated golden ticket set (human-labeled ideal answers plus must-cite doc IDs) runs in CI with deterministic template tests and LLM-judged faithfulness on a pinned model snapshot; deploys block when citation quality regresses.</p>
+          <p><strong>Few-shot:</strong> Meridian added three return-eligibility examples only after offline eval raised macro-F1; shots are part of template v3, not ad-hoc agent copy-paste.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul><li><strong>Prompt drift:</strong> Hotfixes in prod without version bump.</li><li><strong>Over-long context:</strong> Costs and lost focus.</li></ul>
+          <ul>
+            <li><strong>Prompt drift:</strong> Ops edits the live system string in Azure studio; git template v3 no longer matches production.</li>
+            <li><strong>Context stuffing:</strong> Pasting ten RAG chunks “to be safe” blows token budget and triggers lost-in-the-middle omissions.</li>
+            <li><strong>Schema sprawl:</strong> Parser accepts free text some days and JSON others; downstream automations break silently.</li>
+            <li><strong>Eval stale:</strong> Golden set reflects 2024 policies; new EU directive ships but CI stays green while prod lies.</li>
+          </ul>
           <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist"><li>Are prompts stored in git with semver?</li><li>Do evals cover edge and adversarial inputs?</li><li>Is output parsed with schema validation?</li></ul>
+          <ul class="checklist">
+            <li>Are Meridian support templates in git with semver tags and change logs?</li>
+            <li>Does CI run unit renders plus LLM evals on every template and model pin change?</li>
+            <li>Are RAG grounding rules explicit (“if context empty, escalate”)?</li>
+            <li>Is output schema-validated before Zendesk sees text?</li>
+            <li>Do evals include adversarial shopper prompts (jailbreak, fake policy quotes)?</li>
+            <li>Are few-shot blocks justified by measured offline lift?</li>
+          </ul>
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul><li><strong>Invoice extractor:</strong> JSON schema + 3-shot examples raised field accuracy from 82% to 96%.</li></ul>
+          <p>Meridian <strong>support prompt templates + eval</strong>:</p>
+          <ul>
+            <li><strong><code>support_answer_v3</code>:</strong> Renders retrieved policy chunks, outputs JSON with <code>citations</code> pointing at vector chunk IDs for audit.</li>
+            <li><strong><code>support_triage_v2</code>:</strong> Classifies “shipping delay vs. return vs. warranty” before choosing retrieval filters.</li>
+            <li><strong>Release gate:</strong> PR bumps template to v3.3.0; eval suite compares faithfulness and escalation rate against v3.2.0 on golden tickets before merge.</li>
+            <li><strong>Model upgrade:</strong> Azure announces a new chat model; Meridian re-runs the same template pin on shadow traffic and promotes only when citation quality matches the prior model on the golden set.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="llm-architecture.html">LLM Architecture</a></li><li><a href="ai-guardrails.html">AI Guardrails</a></li><li><a href="rag-architecture.html">RAG Architecture</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://platform.openai.com/docs/guides/prompt-engineering" target="_blank" rel="noopener noreferrer">OpenAI prompt engineering guide</a></li>
-            <li><a href="https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering" target="_blank" rel="noopener noreferrer">Anthropic prompt design</a></li>
-            <li><a href="https://ml-ops.org/" target="_blank" rel="noopener noreferrer">MLOps community resources</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/prompt-engineering" target="_blank" rel="noopener noreferrer">Azure OpenAI – Prompt engineering concepts</a></li>
+            <li><a href="https://arxiv.org/abs/2005.11401" target="_blank" rel="noopener noreferrer">Lewis et al. – Retrieval-Augmented Generation (grounding context)</a></li>
+            <li><a href="https://platform.openai.com/docs/guides/prompt-engineering" target="_blank" rel="noopener noreferrer">OpenAI – Prompt engineering guide</a></li>
+            <li><a href="https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering" target="_blank" rel="noopener noreferrer">Anthropic – Prompt design</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

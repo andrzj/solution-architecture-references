@@ -99,32 +99,31 @@
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
           
-          <p>Online serving exposes models as REST or gRPC endpoints. Requests arrive with feature vectors, the model computes a prediction, and the result is returned within a latency SLA — often single-digit milliseconds for simple models, or tens to hundreds of milliseconds for deep learning models. The serving infrastructure must handle request routing, load balancing, autoscaling, model version management, and health checking. Platforms like TensorFlow Serving, TorchServe, Triton Inference Server, and managed offerings like AWS SageMaker handle much of this plumbing.</p>
-          <p>Batch inference runs predictions over a large dataset — typically millions to billions of records — writing results to a data warehouse or file store for downstream consumption. This pattern is used when predictions don't need to be real-time: generating daily recommendation lists, pre-scoring all customers for a campaign, or applying a model to an entire document corpus. Batch inference can leverage CPU or GPU clusters at scale without the latency constraints of online serving.</p>
+          <p><strong>Model serving</strong> at <strong>Meridian Commerce</strong> is how the <strong>Catalog search ranking</strong> model reaches shoppers. <strong>Online inference</strong> exposes a gRPC ranking endpoint: each query fetches candidate product features, scores them within a latency budget, and returns a reordered list. <strong>Batch inference</strong> (the separate path in the diagram) pre-scores catalog segments overnight for email campaigns and category landing pages where millisecond latency is unnecessary.</p>
+          <p>Meridian’s serving layer handles routing, autoscaling, canary traffic splits, and versioned model servers (Triton, TorchServe, or SageMaker endpoints). The application does not load ONNX weights directly — it calls serving, which owns GPU batching and rollout semantics.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Training a model is only half the work. A model sitting in a Jupyter notebook or a file on a researcher's laptop delivers no business value. Model serving bridges the gap between trained artifacts and production applications. Without it, every team integrating an ML model would need to write their own serving code, handle versioning, manage rollouts, and implement scaling — duplicating effort across the organization and creating a long tail of ad hoc, unmaintained serving solutions.</p>
-          <p>Production inference has non-trivial engineering requirements that differ from training. Latency percentiles (p99, p999) matter much more than throughput alone. Models must be versioned and replaced without downtime. Multiple model versions often need to run simultaneously for A/B testing or shadow deployments.</p>
-          <p>Hardware accelerators (GPUs, TPUs, specialized inference chips) must be efficiently allocated and batched. These requirements justify a dedicated serving infrastructure rather than bespoke solutions per model.</p>
-          <p>Safe model deployment requires gradual rollout mechanisms. Unlike a traditional software deployment that can be rolled back in seconds, a model update may silently degrade accuracy in ways that aren't immediately apparent. Canary deployments — routing a small fraction of traffic to the new model while the majority continues using the old model — allow teams to compare prediction quality in production before committing to a full rollout. This requires serving infrastructure that supports traffic splitting and per-version observability.</p>
+          <p>Meridian’s ranking model lived in a data-science repo long after it beat the rules engine in offline NDCG. Search still called legacy heuristics because no one owned production inference, versioning, or GPU pooling. Serving turns the trained artifact into a contract the storefront can depend on.</p>
+          <p>Catalog search cares about p99 latency and safe rollout more than batch throughput. Multiple ranking versions must coexist for canary and shadow tests; GPUs must be shared across ranking and related models. Gradual promotion — 95% on v1.2, 5% on v1.3 in the diagram — lets Meridian compare score distributions before full cutover, something a blue/green app deploy alone does not guarantee.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Models need to serve predictions in real time within strict latency budgets — use online serving with REST or gRPC endpoints.</li>
-            <li>Large-scale predictions over historical or slowly-changing data sets where real-time latency is not required — use batch inference.</li>
-            <li>Continuous event processing where predictions must be generated as data flows through a stream — use stream-based inference.</li>
-            <li>Multiple versions of a model need to run simultaneously for A/B testing, gradual rollout, or shadow deployment evaluation.</li>
-            <li>GPU or specialized accelerator hardware must be shared across multiple models to control infrastructure costs.</li>
+            <li>Meridian search needs <strong>real-time ranking</strong> within tens of milliseconds — online gRPC with feature-store lookup.</li>
+            <li>Marketing needs <strong>batch scores</strong> for all active users or SKUs — nightly Airflow/Spark job on the batch path in the diagram.</li>
+            <li>Ranking experiments require <strong>canary or shadow</strong> traffic without redeploying the web tier.</li>
+            <li>GPU inference must be <strong>centralized</strong> so Catalog and recommendations do not each provision idle GPUs.</li>
+            <li>Predictions must be <strong>logged</strong> for monitoring (see <a href="model-monitoring.html">Model Monitoring</a>) and ground-truth join.</li>
           </ul>
 
-          <h2 id="when-not-to-use">When NOT to use</h2>
+          <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Ad hoc one-time batch scoring jobs that don't need to be operationalized — a simple script run manually may be sufficient.</li>
-            <li>Very simple models (logistic regression, decision trees) that can be embedded directly in the application code without a dedicated serving layer — avoid operational overhead when the model is trivial.</li>
-            <li>Contexts where prediction latency requirements are so tight (&lt;1ms) that the network round trip to a serving endpoint is itself the bottleneck — consider embedding the model in the application process.</li>
+            <li>One-off Meridian analyst batch — a notebook writing parquet may suffice without a scheduled batch pipeline.</li>
+            <li>Trivial filters (e.g., in-stock bit) with no learned model — embed in the API, skip a server.</li>
+            <li>Sub-millisecond scoring where network RTT dominates — consider in-process ONNX for a tiny model only after measuring end-to-end latency.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The diagram’s <strong>top path</strong> is Meridian’s online search flow: clients hit the gateway (auth, rate limits, 95%/5% split), model servers pre-process requests, pull ranking features, run GPU inference, optionally cache hot SKU scores, and emit logs to observability. The <strong>batch path</strong> is the overnight catalog job — scheduler → feature prep in Spark → batch score on a GPU cluster → scores land in S3 or the warehouse for campaigns.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     client_application["CLIENT APPLICATION"]
@@ -194,52 +193,52 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Decouples model development from application code — models can be updated, replaced, or rolled back without changing the calling application.</li>
-                <li>Canary and A/B deployment patterns enable safe, measurable model rollouts with automatic rollback on degradation signals.</li>
-                <li>Centralized serving infrastructure allows hardware (especially GPUs) to be shared across models, significantly reducing cost per model.</li>
-                <li>Standardized serving reduces the per-model operational burden; teams deploy a model artifact rather than building and maintaining bespoke serving code.</li>
+                <li>Meridian swaps ranking v1.3 without a storefront release — search keeps a stable gRPC contract.</li>
+                <li>Canary and shadow paths compare listwise scores before shoppers see a bad reorder.</li>
+                <li>Shared Triton/SageMaker GPU pools cut cost versus per-team inference pods.</li>
+                <li>Platform team operates one serving playbook; Catalog ships artifacts, not custom Flask wrappers.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Network latency introduced by the round trip to a serving endpoint may be unacceptable for extremely latency-sensitive applications.</li>
-                <li>Serving infrastructure adds operational complexity — load balancers, autoscaling, GPU provisioning, and health checking all require ongoing attention.</li>
-                <li>GPU serving costs are high; underutilized serving instances are expensive, requiring careful autoscaling and bin-packing policies.</li>
-                <li>Multi-model serving on shared hardware (model multiplexing) introduces noisy-neighbor problems where one model's workload impacts another's latency.</li>
+                <li>Extra hop from search BFF to serving adds RTT and must stay inside Meridian’s search latency budget once feature fetch is included.</li>
+                <li>Gateways, autoscaling, and GPU health checks are ongoing ops work.</li>
+                <li>Idle GPU replicas during overnight traffic troughs are expensive without scale-to-zero policies.</li>
+                <li>Sharing GPUs between ranking and embedding models can create noisy-neighbor tail latency.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Measure and optimize inference latency from the client's perspective, not just the model's compute time. End-to-end inference latency includes network I/O, feature retrieval from a feature store or cache, pre/post-processing steps, and model compute. Profile each step separately. Often the majority of inference latency is in feature retrieval, not in model compute — optimize accordingly.</p>
-          <p>For deep learning models, batching multiple requests together (dynamic batching) significantly improves GPU utilization without proportionally increasing latency.</p>
-          <p>Implement shadow deployment as a first-class citizen of your serving architecture. In a shadow deployment, the new model version receives a copy of every request that the production model receives, but its predictions are logged rather than returned to the user. This allows you to compare the production model's predictions against the challenger model's predictions on real traffic — without any user-facing risk — before deciding to promote the challenger. Tools like Seldon, BentoML, and AWS SageMaker support this pattern natively.</p>
-          <p>Design your model API contracts defensively. Treat the input schema as a formal contract: version it, validate every incoming request against it, and emit clear errors for schema violations rather than silently returning garbage predictions. Similarly, define an output schema and include a confidence score or calibration signal alongside every prediction. Downstream consumers of predictions should never be surprised by a model returning an unexpected output format after an update.</p>
+          <p>Profile Meridian search end-to-end: gateway, feature-store reads, tensor assembly, GPU forward pass, post-processing. Ranker compute is often smaller than bulk feature retrieval — cache hot product features and co-locate serving near the online store region.</p>
+          <p>Enable <strong>dynamic batching</strong> on the ranking server for burst traffic; cap batch wait time so p99 does not violate SLA.</p>
+          <p>Run <strong>shadow</strong> ranking: v1.3 scores every query alongside v1.2 but only v1.2 answers the user until NDCG and score-distribution checks pass.</p>
+          <p>Version input schemas (<code>query_id</code>, candidate SKU list, feature vector layout) and reject malformed requests before inference. Batch jobs use the same schema written to parquet to avoid train-serve skew.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Cold start latency:</strong> Container-based model servers with long initialization times (loading a large neural network from disk) cause severe tail latency for the first requests after a scale-out event. Mitigate with pre-warming strategies and keep-alive minimum replicas.</li>
-            <li><strong>GPU memory fragmentation:</strong> When multiple models are hosted on a shared GPU, memory fragmentation can prevent loading a new model even when nominal free memory exists. Use explicit memory allocation policies and model multiplexing frameworks designed for GPU sharing.</li>
-            <li><strong>Runaway batch jobs:</strong> Batch inference jobs that don't have circuit breakers or row-count limits can consume entire clusters for days if fed unexpectedly large datasets. Always partition batch jobs and implement progress checkpointing.</li>
-            <li><strong>Silent prediction degradation after rollout:</strong> A model update changes the prediction distribution in subtle ways that pass A/B tests but cause downstream issues (e.g., the ranking changes so steeply that user experience degrades). Monitor prediction distribution stability, not just aggregate accuracy, during and after rollouts.</li>
+            <li><strong>Cold start after scale-out:</strong> Loading Meridian’s wide ranking network on new GPU pods spikes p999 — keep minimum replicas and pre-warm on deploy.</li>
+            <li><strong>Feature fetch dominates:</strong> Online store timeouts blow the latency budget while the GPU sits idle — circuit-break to cached defaults only where product allows.</li>
+            <li><strong>Runaway batch score:</strong> A marketing segment typo scores the entire catalog — partition batch jobs and cap row counts.</li>
+            <li><strong>Steep ranking shifts:</strong> A canary passes average CTR but collapses long-tail discovery — watch score histograms, not only top-line CTR.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>What is the latency SLA for online predictions (p50, p99, p999)?</li>
-            <li>Is GPU hardware required for inference, and how will it be provisioned and shared?</li>
-            <li>What is the traffic splitting mechanism for canary deployments and A/B tests?</li>
-            <li>How will prediction inputs and outputs be logged for monitoring and ground truth collection?</li>
-            <li>What is the rollback procedure if a newly deployed model degrades production metrics?</li>
-            <li>Is dynamic batching configured to maximize GPU utilization without violating latency budgets?</li>
+            <li>Are online ranking SLAs defined (p50/p99) including feature retrieval?</li>
+            <li>Is GPU serving shared with autoscaling and dynamic batching tuned for Catalog peaks?</li>
+            <li>Does the gateway implement Meridian’s 95/5 (or similar) canary split with per-version metrics?</li>
+            <li>Are request ID, features, scores, and model version logged for every online and batch run?</li>
+            <li>Is rollback a registry pointer flip plus traffic shift, tested in staging?</li>
+            <li>Does batch inference reuse the same preprocessing contract as the real-time path?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Search ranking API:</strong> A deep learning ranking model is served via gRPC behind a load balancer; incoming queries retrieve candidate feature vectors from a feature store, the model scores candidates within 20ms p99, and results are returned ranked.</li>
-            <li><strong>Daily product recommendations:</strong> A batch inference job runs nightly, scoring every active user against the recommendation model using yesterday's behavioral features; results are written to a DynamoDB table used by the website as a pre-computed recommendations cache.</li>
-            <li><strong>Fraud detection stream scorer:</strong> Transactions are published to a Kafka topic; a Flink job enriches each event with entity features from an online store, scores it against a gradient-boosted model, and publishes the fraud score to a downstream topic within 50ms.</li>
+            <li><strong>Meridian search ranking (online):</strong> A shopper query hits gRPC ranking; features for the candidate set load from the online store; the model returns reordered SKUs within the agreed search SLO.</li>
+            <li><strong>Meridian campaign batch:</strong> Overnight Spark prepares features; the batch path scores every active loyalty member; results land in DynamoDB for email “top picks” modules.</li>
+            <li><strong>Canary promotion:</strong> v1.3 receives 5% of live queries per the diagram until monitoring clears drift and NDCG against click labels.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -253,10 +252,10 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/index.html" rel="noopener noreferrer" target="_blank">NVIDIA Triton Inference Server Documentation</a></li>
-            <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/deploy-model.html" rel="noopener noreferrer" target="_blank">Deploy Models for Inference – Amazon SageMaker</a></li>
-            <li><a href="https://www.tensorflow.org/tfx/guide/serving" rel="noopener noreferrer" target="_blank">TensorFlow Serving Guide</a></li>
-            <li><a href="https://christophergs.com/machine%20learning/2019/03/17/how-to-deploy-machine-learning-models/" rel="noopener noreferrer" target="_blank">How to Deploy Machine Learning Models – Christopher Samiullah</a></li>
+            <li><a href="https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/index.html" rel="noopener noreferrer" target="_blank">NVIDIA Triton Inference Server Documentation</a> — multi-framework GPU serving and dynamic batching.</li>
+            <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/deploy-model.html" rel="noopener noreferrer" target="_blank">Deploy Models for Inference – Amazon SageMaker</a> — managed endpoints, variants, and auto scaling.</li>
+            <li><a href="https://www.tensorflow.org/tfx/guide/serving" rel="noopener noreferrer" target="_blank">TensorFlow Serving Guide</a> — versioned model servers and request semantics.</li>
+            <li><a href="https://christophergs.com/machine%20learning/2019/03/17/how-to-deploy-machine-learning-models/" rel="noopener noreferrer" target="_blank">How to Deploy Machine Learning Models</a> — Christopher Samiullah on production inference patterns.</li>
           </ul>
         </div>
         </div>
@@ -268,7 +267,7 @@
               <li><a href="#what-it-is">What it is</a></li>
               <li><a href="#why-it-exists">Why it exists</a></li>
               <li><a href="#when-to-use">When to use</a></li>
-              <li><a href="#when-not-to-use">When NOT to use</a></li>
+              <li><a href="#when-not-to-use">When not to use</a></li>
               <li><a href="#typical-architecture">Typical architecture</a></li>
               <li><a href="#pros-and-cons">Pros and cons</a></li>
               <li><a href="#implementation-notes">Implementation notes</a></li>
