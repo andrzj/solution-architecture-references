@@ -96,33 +96,22 @@
             <span class="badge badge--secondary">Advanced</span>
           </div>
           <h1 class="article-header__title">GraphQL</h1>
-          <p class="article-header__desc">A query language for APIs and a runtime for executing those queries, enabling clients to request exactly the data they need — including schema definition, resolvers, the N+1 problem, federation, and caching challenges.</p>
+          <p class="article-header__desc">GraphQL query language, schema, resolvers, and operations (query, mutation, subscription)—with batching, federation, persisted queries, and production guardrails aligned to graphql.org.</p>
           <div class="article-header__meta"><span>⏱ 16 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>GraphQL is a query language for APIs — and a server-side runtime for executing those queries — developed by Facebook and open-sourced in 2015. Instead of exposing a fixed set of URL endpoints, a GraphQL server exposes a single endpoint (typically <code>POST /graphql</code>) and accepts structured query documents that describe exactly what the client wants. The server validates the query against a strongly-typed schema and returns a JSON response shaped to match the query.</p>
-          <p>The three root operation types are <strong>Query</strong> (read-only, idempotent), <strong>Mutation</strong> (state-changing operations), and <strong>Subscription</strong> (real-time push via WebSocket). The schema, defined using Schema Definition Language (SDL), is the contract between client and server.</p>
-          <pre><code># Schema Definition Language
+<h2 id="what-it-is">What it is</h2>
+          <p><strong>GraphQL</strong> is a query language for APIs and a runtime that executes those queries against a type system. Clients send a single request—usually <code>POST /graphql</code> with a JSON body containing <code>query</code> and optional <code>variables</code>—and the server returns JSON shaped like the query tree. The public contract is the <strong>schema</strong>, typically written in Schema Definition Language (SDL): object types, fields, arguments, and the three root operation kinds defined in the <a href="https://spec.graphql.org/" target="_blank" rel="noopener noreferrer">GraphQL specification</a>: <strong>Query</strong> (reads), <strong>Mutation</strong> (writes), and <strong>Subscription</strong> (push updates, usually over WebSockets).</p>
+          <p>Unlike REST, where each URL returns a fixed representation, GraphQL lets the caller name exactly which fields to resolve—including nested objects—so one round trip can assemble a screen-sized graph. The server walks the query tree and invokes a <strong>resolver</strong> per field to fetch data from databases, other services, or caches.</p>
+          <pre><code># Schema (SDL) — illustrative fragment
 type User {
   id: ID!
   name: String!
-  email: String!
   orders(first: Int, after: String): OrderConnection!
 }
 
-type Order {
-  id: ID!
-  total: Float!
-  status: OrderStatus!
-  lineItems: [LineItem!]!
-}
-
-enum OrderStatus { PENDING FULFILLED CANCELLED }
-
 type Query {
   user(id: ID!): User
-  products(filter: ProductFilter): [Product!]!
 }
 
 type Mutation {
@@ -134,29 +123,28 @@ type Subscription {
 }</code></pre>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Facebook built GraphQL to solve the mobile performance problem: their REST APIs suffered from both over-fetching (returning fields the mobile app didn't need, wasting bandwidth) and under-fetching (requiring multiple serial round trips to assemble a screen). With hundreds of millions of mobile users on variable-quality networks, these inefficiencies were significant.</p>
-          <p>REST's rigid resource model also meant that each new UI feature required either a new endpoint or changes to an existing one — creating tight coupling between API servers and frontend teams. GraphQL inverts this relationship: the schema evolves independently of the queries, and clients drive what they retrieve.</p>
+          <p>Mobile and web clients often need different field sets from the same domain model. Classic REST tends to <em>over-fetch</em> (fixed JSON blobs with unused fields) or <em>under-fetch</em> (many sequential calls to stitch a view). GraphQL inverts the coupling: the schema stays stable while product teams change queries when UIs evolve, without requesting a new endpoint for every layout tweak.</p>
+          <p>The trade-off is operational: resolver trees can hide N+1 database access, caching is harder than cacheable GET URLs, and expressive queries need depth and cost guards. Teams adopt GraphQL when client flexibility and a typed contract matter more than leaning on HTTP caching conventions.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Multiple client types (web, iOS, Android, third-party) with different data requirements for the same underlying entities.</li>
-            <li>Rapidly evolving frontends where teams need to add fields without backend coordination.</li>
-            <li>Data-heavy dashboards requiring aggregated data from multiple domain areas in a single request.</li>
-            <li>Developer portals where an explorable, self-documenting schema improves DX.</li>
-            <li>Backends serving a BFF-like aggregation role across internal microservices.</li>
+            <li>Several client surfaces (web, mobile, partners) with different data shapes over the same backend.</li>
+            <li>Aggregation layers (BFFs, experience APIs) that compose multiple services into one typed graph.</li>
+            <li>Developer-facing APIs where introspection and schema-first tooling improve integration speed.</li>
+            <li>Dashboards or detail views that need nested, related entities in a single request.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Simple CRUD APIs with a single client</strong> — the overhead of schema design, resolvers, and tooling is not justified.</li>
-            <li><strong>File upload-heavy APIs</strong> — multipart file upload over GraphQL is awkward; REST handles it more naturally.</li>
-            <li><strong>Service-to-service internal calls</strong> — gRPC offers better performance with code generation and typed contracts.</li>
-            <li><strong>APIs where HTTP caching is critical</strong> — GET-based query caching is complex with GraphQL's single endpoint POST model.</li>
-            <li><strong>Teams without GraphQL expertise</strong> — the resolver execution model and schema design decisions have a significant learning curve.</li>
+            <li>Simple CRUD with one client type—schema and resolver machinery may outweigh benefit.</li>
+            <li>Heavy binary or multipart upload/download—REST or gRPC usually fit better.</li>
+            <li>Internal high-throughput RPC where binary codecs and streaming matter (<a href="grpc.html">gRPC</a>).</li>
+            <li>Edge/CDN HTTP caching as the primary performance strategy without persisted queries or GET support.</li>
+            <li>Teams unwilling to invest in query limits, DataLoader-style batching, and schema governance.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>One POST executes a typed query; DataLoader batches N+1 resolvers; federation composes subgraphs.</p>
+          <p>The gateway or client posts a document; the engine validates against the schema, executes resolvers depth-first, and batches relationship loads where batching helpers are wired.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     client["Client POST /graphql"] --> srv["GraphQL server"]
@@ -169,36 +157,19 @@ type Subscription {
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>Client
   |
-  |-- POST /graphql
-  |   { query: "{ user(id:\"42\") { name orders { total } } }" }
+  |-- POST /graphql { query, variables, operationName }
+  v
+GraphQL server (parse → validate → execute)
   |
-GraphQL Server (Apollo Server / Strawberry / Hasura)
-  |
-  |-- Query parsed &amp; validated against Schema
-  |-- Execution engine resolves fields
-  |
-  |-- userResolver(id: 42)     → Users DB
-  |-- ordersResolver(userId:42) → Orders DB (via DataLoader)
-  |
-  |← { data: { user: { name: "Alice", orders: [...] } } }
+  |-- Query.user → userResolver → Users store
+  |-- User.orders → ordersResolver → DataLoader → Orders store
+  v
+Response { "data": { ... }, "errors": [ ... ] }  (partial data possible)
 
-DataLoader batching (N+1 fix):
-  Without DataLoader:
-    resolve user 1 → SELECT * FROM orders WHERE user_id=1
-    resolve user 2 → SELECT * FROM orders WHERE user_id=2
-    resolve user 3 → SELECT * FROM orders WHERE user_id=3  (N queries)
-
-  With DataLoader:
-    collect keys [1,2,3] in a tick
-    → SELECT * FROM orders WHERE user_id IN (1,2,3)  (1 query)
-
-Federation:
-  [Supergraph Schema]
-     ↙               ↘
-[Users Subgraph]  [Orders Subgraph]
-  (owns User)       (owns Order, extends User)</code></pre>
+Federation (multi-team):
+  Router/gateway plan → Users subgraph + Orders subgraph (@key entities)</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">GraphQL server resolves fields, DataLoader batches order lookups, federated users and orders subgraphs.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Validated query execution with optional DataLoader batching; federated routers compose team-owned subgraphs.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -206,93 +177,89 @@ Federation:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Clients request exactly the fields they need — no over-fetching or under-fetching.</li>
-                <li>Single round trip can fetch deeply nested, related data across multiple entities.</li>
-                <li>Strongly-typed schema is a living contract and auto-generates documentation.</li>
-                <li>Introspection allows tooling (GraphiQL, Postman, codegen) to discover capabilities.</li>
-                <li>Schema evolution is additive by default — adding fields is non-breaking.</li>
-                <li>Federation enables a distributed supergraph composed of multiple team-owned subgraphs.</li>
+                <li>Clients request precise field sets—less over-fetching and fewer chatty round trips.</li>
+                <li>Strong schema is documentation, validation, and codegen input in one artifact.</li>
+                <li>Introspection enables GraphiQL, IDE plugins, and client generation when policy allows.</li>
+                <li>Additive schema changes are the default; deprecations give consumers a migration path.</li>
+                <li>Federation (e.g. Apollo Router, Cosmo) scales ownership across service teams.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>N+1 query problem requires DataLoader or similar batching; easy to overlook in resolvers.</li>
-                <li>HTTP caching doesn't work naturally because most requests are POST to the same URL.</li>
-                <li>Complex queries allow clients to trigger expensive resolver trees — requires query depth/cost limiting.</li>
-                <li>Schema design is hard; poor type design becomes a long-lived liability.</li>
-                <li>Error handling is non-standard: partial success returns HTTP 200 with an <code>errors</code> array.</li>
-                <li>File upload, multipart responses, and binary data are awkward compared to REST.</li>
+                <li>Naive resolvers cause N+1 I/O; batching (DataLoader) must be deliberate.</li>
+                <li>POST-heavy traffic resists generic HTTP caching without persisted queries or field-level cache hints.</li>
+                <li>Arbitrary query depth can stress backends—depth, cost, and timeout limits are required.</li>
+                <li>Errors may return HTTP 200 with an <code>errors</code> array and partial <code>data</code>—monitoring must account for that.</li>
+                <li>Schema design mistakes are expensive to unwind across many clients.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <h3>Resolver design</h3>
-          <p>Each field in a GraphQL schema has a resolver function responsible for returning its value. Resolvers form a tree that mirrors the query shape. The root resolvers (on Query/Mutation types) typically fetch the top-level entity; nested resolvers (on object types) fetch related data. Keep resolvers thin — delegate to a service or repository layer rather than embedding business logic.</p>
+          <h3>Resolvers and execution</h3>
+          <p>Resolvers receive <code>(parent, args, context, info)</code> and return a value or Promise for each field. Keep them thin: authorize in middleware or root fields, fetch in repositories, and avoid business rules duplicated across sibling fields. The execution engine runs resolvers in an order consistent with the query shape—plan for parallel sibling fields where your runtime supports it.</p>
 
-          <h3>The N+1 problem and DataLoader</h3>
-          <p>The classic GraphQL performance trap: if you fetch a list of 100 users and each user has an <code>orders</code> field, a naive implementation executes 100 individual database queries. <strong>DataLoader</strong> (Facebook's library, now available in every major language) solves this by batching all keys collected within a single JavaScript event loop tick into one query, then distributing results back to individual resolvers. Always use a per-request DataLoader instance to avoid cross-request data leakage.</p>
+          <h3>N+1 and DataLoader</h3>
+          <p>Listing 100 parents each resolving a child collection can become 101 database round trips. <strong>DataLoader</strong> collects keys per tick (or per request frame) and issues one batched query, then maps rows back to resolvers. Instantiate loaders <strong>per request</strong> so cached batches never leak across users.</p>
 
-          <h3>Persisted queries</h3>
-          <p>Persisted queries (also called Automatic Persisted Queries / APQ) replace the full query string with a hash. On first request the server stores the query; subsequent requests send only the hash. Benefits: smaller request payloads, the ability to use GET requests (enabling HTTP caching), and preventing clients from sending arbitrary queries in production (allowlist mode).</p>
+          <h3>Persisted queries and transport</h3>
+          <p><a href="https://graphql.org/learn/persisted-queries/" target="_blank" rel="noopener noreferrer">Automatic Persisted Queries</a> send a hash instead of the full document after registration—smaller bodies, optional GET for reads, and production allowlists. Pair with variables validated against input types in SDL.</p>
 
-          <h3>Schema stitching vs Federation</h3>
-          <p><strong>Schema stitching</strong> (older approach) merges multiple GraphQL schemas at the gateway, manually delegating resolvers. <strong>Apollo Federation</strong> is the modern standard: each subgraph team decorates their schema with <code>@key</code> directives to define entity boundaries, and the gateway (Apollo Router or Cosmo) assembles the supergraph query plan at runtime without manual delegation wiring. Federation is preferred for large organisations with multiple API-owning teams.</p>
+          <h3>Federation vs manual stitching</h3>
+          <p>Manual stitching merged schemas at a gateway with hand-written delegation. Federation marks entities with <code>@key</code> in subgraphs; the router builds query plans across services. Prefer federation when many teams own slices of one product graph.</p>
 
-          <h3>Caching with GraphQL</h3>
-          <p>HTTP caching is difficult because most queries are POST. Strategies include: (1) <strong>Persisted queries with GET</strong> for read-only operations, enabling CDN/edge caching by URL. (2) <strong>Response caching middleware</strong> (e.g., Apollo Server's <code>@cacheControl</code> directive) which sets Cache-Control headers per type. (3) <strong>Client-side normalised caching</strong> (Apollo Client, Relay) which stores entities by ID and merges updates in the local cache, avoiding redundant network calls.</p>
-
-          <h3>Introspection and security</h3>
-          <p>Introspection allows any client to query the full schema (<code>__schema</code>, <code>__type</code>). In production, disable or restrict introspection to authenticated internal users — it reveals your entire data model to potential attackers. Always implement query depth limits, query complexity limits, and rate limiting to prevent denial-of-service via deeply nested queries.</p>
+          <h3>Caching and security</h3>
+          <p>Strategies: persisted GET queries at the CDN, server-side response cache keyed by operation + variables, and client normalized stores (Apollo Client, Relay). Disable or restrict introspection in production; enforce authentication on sensitive root fields; cap query depth and estimated cost. See <a href="https://graphql.org/learn/security/" target="_blank" rel="noopener noreferrer">GraphQL security notes</a>.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Missing DataLoader</strong> — resolver fetches data per-object instead of batching; 100-row list becomes 101 queries.</li>
-            <li><strong>Unrestricted query depth</strong> — a malicious or runaway client nests queries 50 levels deep, exhausting the server.</li>
-            <li><strong>Leaking internal errors</strong> — GraphQL servers can accidentally expose stack traces in the <code>extensions</code> field of error responses.</li>
-            <li><strong>Schema breaking changes without a deprecation cycle</strong> — removing a field immediately breaks all clients that use it; always deprecate first (<code>@deprecated</code>).</li>
-            <li><strong>Overly broad types</strong> — a god <code>Query</code> type with hundreds of root fields becomes unmaintainable; structure with namespaced types or federation.</li>
-            <li><strong>Per-request schema introspection in production</strong> — enabling introspection for all requests exposes the schema and adds overhead.</li>
+            <li><strong>Unbatched relations</strong> — list screens trigger one query per row.</li>
+            <li><strong>Unbounded queries</strong> — deeply nested fragments exhaust CPU or database pools.</li>
+            <li><strong>Breaking removals</strong> — deleting fields without <code>@deprecated</code> breaks shipping clients.</li>
+            <li><strong>Error leakage</strong> — stack traces in <code>extensions</code> expose internals.</li>
+            <li><strong>God Query type</strong> — hundreds of root fields with no domain grouping or federation boundaries.</li>
+            <li><strong>Shared DataLoader singletons</strong> — cross-request cache bleed and wrong authorization context.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are DataLoaders used for every relationship that resolves a collection of sub-entities?</li>
-            <li>Is query depth limiting and/or cost analysis configured?</li>
-            <li>Is introspection restricted to authenticated/internal callers in production?</li>
-            <li>Are persisted queries used for all production client queries?</li>
-            <li>Is there a schema evolution policy (deprecation before removal, breaking-change alerts)?</li>
-            <li>Is error handling distinguishing between business errors (expected) and system errors (unexpected)?</li>
-            <li>For multi-team setups, is Apollo Federation or similar being used instead of manual schema stitching?</li>
-            <li>Is a per-request DataLoader instance used (not a shared singleton)?</li>
+            <li>Is batching in place for every list→detail relationship?</li>
+            <li>Are depth, cost, and timeout limits configured and tested?</li>
+            <li>Is introspection limited in production?</li>
+            <li>Are persisted queries (or equivalent allowlists) used for external clients?</li>
+            <li>Is there a deprecation policy before field removal?</li>
+            <li>Do alerts treat GraphQL <code>errors</code> separately from HTTP status?</li>
+            <li>For multi-team graphs, is federation (or a clear monolith boundary) documented?</li>
+            <li>Are loaders and auth context scoped per request?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>GitHub's public API (v4)</strong> — GraphQL enables third-party developers to query exactly the repository, issue, and pull request fields they need, dramatically reducing response sizes compared to the v3 REST API.</li>
-            <li><strong>Shopify Storefront API</strong> — a single GraphQL query fetches products, variants, prices, and inventory status in one round trip for e-commerce storefronts.</li>
-            <li><strong>Internal developer platform supergraph</strong> — each domain team (users, orders, payments, fulfilment) owns a subgraph; platform teams compose the router without any team needing to know the others' internals.</li>
-            <li><strong>Mobile BFF</strong> — GraphQL used as a Backend-for-Frontend aggregation layer that fetches from four microservices and returns a single shaped response optimised for the mobile screen layout.</li>
+            <li><strong>Case study —</strong> GitHub’s GraphQL API v4 lets integrators fetch repository, issue, and label fields in one operation instead of chaining REST resources.</li>
+            <li><strong>Case study —</strong> Shopify Storefront API serves storefronts with nested product, variant, and inventory fields in a single query over checkout-scale traffic.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> runs a mobile checkout BFF whose GraphQL <code>Cart</code> type resolves pricing, inventory, and promotions from three microservices; product can add a field to the query without new REST endpoints.</li>
+            <li><strong>Illustrative scenario —</strong> A platform team operates a federated supergraph: payments, orders, and catalog each publish a subgraph while a router enforces auth and query cost limits at the edge.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="rest-api-design.html">REST API Design</a> — the alternative to GraphQL for resource-oriented APIs.</li>
-            <li><a href="grpc.html">gRPC</a> — binary RPC for high-performance internal APIs.</li>
-            <li><a href="backend-for-frontend.html">Backend for Frontend (BFF)</a> — GraphQL is a common implementation of BFF aggregation.</li>
-            <li><a href="api-gateway.html">API Gateway</a> — GraphQL router/gateway pattern for federated schemas.</li>
-            <li><a href="api-pagination.html">API Pagination</a> — Relay connection spec is the GraphQL pagination standard.</li>
+            <li><a href="rest-api-design.html">REST API Design</a> — resource URLs and HTTP caching semantics.</li>
+            <li><a href="grpc.html">gRPC</a> — binary RPC for service-to-service calls.</li>
+            <li><a href="backend-for-frontend.html">Backend for Frontend (BFF)</a> — GraphQL is a common BFF implementation.</li>
+            <li><a href="api-gateway.html">API Gateway</a> — terminates TLS, auth, and rate limits in front of the GraphQL router.</li>
+            <li><a href="api-pagination.html">API Pagination</a> — Relay cursor connections for GraphQL lists.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://graphql.github.io/graphql-spec" target="_blank" rel="noopener noreferrer">GraphQL specification — graphql.github.io/graphql-spec</a></li>
-            <li><a href="https://www.apollographql.com/docs/federation" rel="noopener noreferrer" target="_blank">Apollo Federation documentation</a> — federated GraphQL gateways.</li>
-            <li><a href="https://github.com/graphql/dataloader" rel="noopener noreferrer" target="_blank">DataLoader</a> — batching and caching for GraphQL resolvers.</li>
-            <li>Lee Byron &amp; Dan Schafer — <em>GraphQL: A data query language</em> (Engineering at Meta blog, 2015).</li>
-            <li>Marc-André Giroux — <em>Production Ready GraphQL</em> (book, 2020).</li>
-            <li><a href="https://relay.dev/graphql/connections.htm" target="_blank" rel="noopener noreferrer">Relay Pagination Spec — relay.dev/graphql/connections.htm</a></li>
+            <li><a href="https://graphql.org/learn/" target="_blank" rel="noopener noreferrer">GraphQL — Introduction (graphql.org/learn)</a></li>
+            <li><a href="https://spec.graphql.org/" target="_blank" rel="noopener noreferrer">GraphQL Specification — spec.graphql.org</a></li>
+            <li><a href="https://graphql.org/learn/queries/" target="_blank" rel="noopener noreferrer">GraphQL — Queries and Mutations</a></li>
+            <li><a href="https://graphql.org/learn/persisted-queries/" target="_blank" rel="noopener noreferrer">GraphQL — Persisted Queries</a></li>
+            <li><a href="https://graphql.org/learn/security/" target="_blank" rel="noopener noreferrer">GraphQL — Security</a></li>
+            <li><a href="https://github.com/graphql/dataloader" target="_blank" rel="noopener noreferrer">DataLoader — batching and caching for resolvers</a></li>
+            <li><a href="https://relay.dev/graphql/connections.htm" target="_blank" rel="noopener noreferrer">Relay Cursor Connections Specification</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
