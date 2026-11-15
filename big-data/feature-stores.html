@@ -99,61 +99,130 @@
             <span class="badge badge--primary">Big Data & Analytics</span>
           </div>
           <h1 class="article-header__title">Feature Stores</h1>
-          <p class="article-header__desc">Central registry serving consistent training and inference features with lineage and reuse across models.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">Central registry and serving layer for ML features: offline warehouse history, online low-latency lookups, point-in-time training joins, and lineage across Spark and stream pipelines.</p>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
-<h2 id="what-it-is">What it is</h2>
-          <p>A <strong>feature store</strong> centralizes feature definitions, materializes them into offline training sets and online low-latency stores, and guarantees point-in-time correctness. It reduces duplicate feature engineering and training/serving skew.</p>
+          <h2 id="what-it-is">What it is</h2>
+          <p>A <strong>feature store</strong> is the data-platform layer between lakehouse or warehouse tables and ML workloads. It holds a <strong>feature registry</strong> (definitions, owners, schemas), <strong>materialisation pipelines</strong> that turn curated gold-layer facts into model-ready signals, an <strong>offline store</strong> with full history for training and backfills, and an <strong>online store</strong> with the latest values per entity for real-time scoring. Implementations such as Feast, Tecton, and Vertex AI Feature Store share that split; they differ in how much registry, streaming, and operations are managed for you.</p>
+          <p>Point-in-time correct reads are the contract that matters for analytics at scale: training datasets must join each label to feature values that existed <em>before</em> the event, not whatever was computed last night. The store encodes that join semantics so teams do not reimplement fragile timestamp logic in every Spark job.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without a feature store, each team rebuilds pipelines; subtle timestamp bugs leak future data into training. Shared features accelerate experimentation while enforcing governance.</p>
+          <p>In many organisations the warehouse already holds the truth for orders, sessions, and device events—but three ML-adjacent failures still appear without a feature store. <strong>Training-serving skew</strong> shows up when batch SQL or PySpark builds training columns while a separate service recomputes “the same” aggregates at inference with different null handling or time zones. <strong>Duplicated pipeline work</strong> spreads when fraud, recommendations, and growth each schedule their own 30-day velocity jobs from the same Kafka topic. <strong>Data leakage</strong> slips in when trainers join fact tables on <code>user_id</code> alone and accidentally pull feature rows timestamped after the label event—offline AUC looks strong until production catches up.</p>
+          <p>A feature store pushes feature engineering into governed, reusable batch and stream jobs, writes consistent snapshots to offline and online stores, and exposes one retrieval API for training exports and serving. That is the same problem space data engineering already solves with medallion layers; the store adds entity-centric versioning, freshness SLAs, and serving latency guarantees on top.</p>
+
           <h2 id="when-to-use">When to use</h2>
-          <ul><li>Multiple models reuse the same signals (churn, LTV, fraud).</li><li>Strict point-in-time joins for training.</li><li>Need sub-10ms online feature retrieval.</li><li>Regulatory lineage on model inputs.</li></ul>
+          <ul>
+            <li>Several models or squads consume the same engineered signals from the lakehouse or stream (churn, LTV, fraud velocity, personalisation).</li>
+            <li>Training runs need historical snapshots with point-in-time joins on entity and event time.</li>
+            <li>Online inference needs keyed lookups in tens of milliseconds—materialise to Redis, DynamoDB, Bigtable, or a managed online store.</li>
+            <li>Governance expects lineage from raw ingestion through gold tables to model features and prediction logs.</li>
+            <li>Platform teams want one Spark/Flink materialisation pattern instead of ad hoc notebook exports.</li>
+          </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
-          <ul><li>Single prototype model with handful of features.</li><li>Batch-only models refreshed monthly without online serving.</li></ul>
+          <ul>
+            <li>A single experimental model with a dozen columns and one owner—warehouse SQL plus a scheduled export may suffice.</li>
+            <li>Pure batch scoring on a monthly cadence with no latency SLA and no shared features across teams.</li>
+            <li>No capacity to operate materialisation jobs, online store HA, and freshness alerting.</li>
+            <li>Features are only raw identifiers with no shared aggregations—serving might be a thin lookup API.</li>
+          </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Batch/stream materialization into offline + online stores.</p>
+          <p>Sources land in bronze/silver; feature pipelines (Spark batch, Flink or Spark Structured Streaming) compute entity-time series; dual writes or sync jobs populate offline history and online latest-value stores; trainers and inference clients read through the store SDK.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart LR
-    sources["Sources"]
-    feature_pipelines["Feature pipelines"]
-    offline_store_warehouse["Offline store (warehouse)"]
-    training_online_store_re["training                               ▼                          Onl..."]
-    inference["inference"]
-    sources --> feature_pipelines
-    feature_pipelines --> offline_store_warehouse
-    offline_store_warehouse --> training_online_store_re
-    training_online_store_re --> inference</div>
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    sources["Lakehouse / streams"]
+  batch_stream["Batch and stream transforms"]
+    offline["Offline store"]
+    online["Online store"]
+    registry["Feature registry"]
+    training["Training exports"]
+    serving["Real-time scoring"]
+    sources --> batch_stream
+    batch_stream --> offline
+    batch_stream --> online
+    batch_stream --> registry
+    offline --> training
+    online --> serving
+    registry --> training
+    registry --> serving</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Sources ► Feature pipelines ► Offline store (warehouse) ► training
-                              ▼
-                         Online store (Redis/Dynamo) ► inference
+              <pre class="architecture-diagram__canvas"><code>  Lakehouse / Kafka (silver & gold)
+            ↓
+    Feature pipelines (Spark / Flink / dbt)
+            ↓
+     ┌──────┴──────┐
+     ▼             ▼
+ Offline store   Online store
+ (S3, BQ,        (Redis, DynamoDB,
+  Delta, Hive)    Bigtable)
+     │             │
+     ▼             ▼
+ Training        Inference
+ (PITC joins)    (key lookup)
+            ╲     ╱
+         Feature registry (defs, owners, lineage)
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Batch/stream materialization into offline + online stores.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Materialisation from curated data platforms into offline history and online latest values, with a registry underneath.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul><li>Reuse; consistent definitions.</li><li>Point-in-time joins built-in.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul><li>Platform overhead.</li><li>Operational complexity for freshness.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>One definition powers batch retraining and online scoring—skew investigations compare versions instead of diffing unrelated code paths.</li>
+                <li>Shared features cut duplicate Spark spend and align metrics across BI and ML consumers of the same gold tables.</li>
+                <li>Built-in or library-assisted point-in-time joins reduce leakage when labels are time-stamped events.</li>
+                <li>Registry metadata ties features to owners, freshness SLAs, and downstream models for governance.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Two storage tiers plus sync jobs are real platform ownership—staleness in the online path directly hurts models.</li>
+                <li>Streaming materialisation for sub-minute freshness costs more than nightly warehouse SQL alone.</li>
+                <li>Adopting Feast, Tecton, or Vertex abstractions adds onboarding time before the first production feature ships.</li>
+                <li>Online store outages or hot-key overload break scoring paths—capacity planning and paging are mandatory.</li>
+              </ul>
+            </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Register features with owners, schema, freshness SLA, and backfill jobs. Use consistent transformation code for offline and online where possible. Monitor staleness and null rates per feature; block promotion on drift thresholds.</p>
-          
+          <p><strong>Version features explicitly:</strong> Bump names or semantic versions when aggregation windows or source tables change (<code>purchase_count_30d_v2</code>). Pin versions at train time; migrate serving deliberately with shadow comparisons.</p>
+          <p><strong>Match freshness to the model:</strong> Batch features can follow the gold table schedule; fraud or personalisation signals may need stream materialisation into the online store with monotonic event timestamps so out-of-order writes do not regress values.</p>
+          <p><strong>Observe like data pipelines:</strong> Emit row counts, null rates, and max feature age per materialisation run into the same stack used for data quality—block promotion when drift or staleness crosses thresholds.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul><li><strong>Training/serving skew:</strong> Different code paths.</li><li><strong>Stale online features:</strong> Silent model degradation.</li></ul>
+          <ul>
+            <li><strong>Stale online values:</strong> A failed dbt or Spark job leaves yesterday’s rollups in Redis—alert on per-feature freshness, not only job success.</li>
+            <li><strong>Cold-start entities:</strong> New keys have no history—define defaults, document imputation, and monitor how often models rely on them.</li>
+            <li><strong>Schema drift upstream:</strong> Renamed event fields without bumping feature version silently change distributions—validate contracts at silver ingress.</li>
+            <li><strong>Training-serving skew:</strong> Different languages or libraries for offline vs online transforms—prefer one definition, or log served feature vectors for label joins.</li>
+          </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist"><li>Are training labels joined with point-in-time correctness?</li><li>Is online freshness SLAs monitored?</li><li>Can you trace a prediction to feature versions?</li></ul>
+          <ul class="checklist">
+            <li>Which features are shared across models and must not be recomputed per team?</li>
+            <li>Is batch freshness enough, or do specific signals need stream materialisation?</li>
+            <li>Are training labels joined point-in-time on entity and event timestamps?</li>
+            <li>Does a platform squad own materialisation schedules, backfills, and on-call?</li>
+            <li>What are online lookup latency, availability, and cache targets for scoring?</li>
+            <li>Is feature versioning defined before the first production model pins definitions?</li>
+          </ul>
           <h2 id="example-use-cases">Example use cases</h2>
           <ul><li><strong>Fraud model:</strong> Shared velocity features power both batch retrain and real-time scoring.</li></ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="../ai-ml/feature-stores.html">Feature Stores (ML)</a></li><li><a href="ml-feature-engineering.html">ML Feature Engineering</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.feast.dev/" target="_blank" rel="noopener noreferrer">Feast</a></li>
-            <li><a href="https://docs.feast.dev/getting-started/architecture" target="_blank" rel="noopener noreferrer">Feast architecture overview</a></li>
-            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark documentation</a></li>
+            <li><a href="https://docs.feast.dev/" target="_blank" rel="noopener noreferrer">Feast Feature Store documentation</a> — open-source offline/online serving and registry.</li>
+            <li><a href="https://docs.feast.dev/getting-started/architecture" target="_blank" rel="noopener noreferrer">Feast architecture overview</a> — registry, materialisation, and store components.</li>
+            <li><a href="https://www.tecton.ai/blog/what-is-a-feature-store/" target="_blank" rel="noopener noreferrer">What is a Feature Store? — Tecton</a> — managed platform patterns for batch and streaming features.</li>
+            <li><a href="https://cloud.google.com/vertex-ai/docs/featurestore/overview" target="_blank" rel="noopener noreferrer">Vertex AI Feature Store overview</a> — managed online and offline serving on Google Cloud.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

@@ -98,31 +98,36 @@
             <span class="badge badge--muted">AI &amp; ML</span>
           </div>
           <h1 class="article-header__title">ML Feature Engineering</h1>
-          <p class="article-header__desc">Feature stores (Feast, Tecton, Hopsworks), online store vs offline store, point-in-time correct joins, feature pipelines, cross-team feature sharing, training-serving skew prevention, feature monitoring, and drift detection.</p>
+          <p class="article-header__desc">Engineering ML features on lakehouse and stream data: Feast, Tecton, and Vertex-style stores, offline vs online tiers, point-in-time joins, Spark/Flink pipelines, skew prevention, and drift monitoring.</p>
           <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A <strong>feature store</strong> is an infrastructure layer that centralises feature computation, storage, and serving for both model training (offline) and real-time model inference (online), ensuring that the same feature logic is used in both contexts, features are discoverable across teams, and features are served with low latency during inference.</p>
+          <p><strong>ML feature engineering</strong> on a data platform is the work of turning curated warehouse and stream data into stable, entity-keyed signals models can train on and score with at runtime. That includes aggregations over sliding windows, encodings, joins across domains, and freshness choices—but also the <strong>operational contract</strong>: the same logic in batch retraining and online inference, discoverable definitions, and historical values addressable by entity and timestamp.</p>
+          <p>At scale, teams usually anchor that work in a <strong>feature store</strong>: a registry plus offline store (full history on S3 Parquet, BigQuery, Hive, or Delta) and online store (Redis, DynamoDB, Bigtable) fed by Spark or Flink materialisation. Feast, Tecton, and Vertex AI Feature Store implement the same split with different degrees of managed operations.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without a feature store, three common problems emerge: (1) <strong>training-serving skew</strong> — the Python code used to compute features during training differs from the Java/Go code used in the production scoring service, causing subtle differences in feature values and degraded model performance; (2) <strong>feature duplication</strong> — three different teams independently compute "user purchase count in the last 30 days" in three different pipelines, each with different logic and different bugs; and (3) <strong>data leakage</strong> — features joined without point-in-time correctness allow future information to leak into training data, producing models that perform well in training but fail in production.</p>
+          <p>Gold tables and dashboards already answer “what happened,” but ML needs keyed, time-aligned inputs tied to each decision moment. Without platform patterns, the same failures recur. <strong>Training-serving skew</strong> appears when notebook SQL builds training columns while production services reimplement aggregates in another language. <strong>Duplication</strong> multiplies when every squad schedules its own rolling-window job from the same Kafka topic. <strong>Leakage</strong> hides in naive joins: a label at time <em>T</em> paired with a feature computed at <em>T+1</em> inflates offline metrics until live traffic disproves them.</p>
+          <p>Formal feature engineering on the big-data stack—medallion sources, idempotent Spark jobs, optional stream enrichment, dual offline/online writes, and point-in-time training exports—makes features as reusable as any other data product while meeting latency and audit requirements.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Multiple models share engineered signals across teams.</li>
-            <li>Online inference needs low-latency feature lookups with offline training on the same definitions.</li>
-            <li>Point-in-time correctness is required for regulatory or high-stakes models.</li>
-            <li>Feature reuse and lineage must be auditable.</li>
+            <li>Models consume shared signals built from lakehouse gold tables or high-volume event streams.</li>
+            <li>Both historical retraining and online scoring must read logically identical feature definitions.</li>
+            <li>Labels are time-stamped events and require point-in-time joins to time-varying features.</li>
+            <li>Cross-team reuse, lineage, and freshness SLAs matter as much as model accuracy.</li>
+            <li>Stream plus batch materialisation is required to bridge warehouse cadence and inference latency.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>One model with a handful of features maintained in a single pipeline.</li>
-            <li>Pure batch scoring with no online serving and monthly retrains only.</li>
+            <li>One offline model with a handful of columns refreshed from a single SQL job on a relaxed schedule.</li>
+            <li>No online serving path and no expectation of sharing engineered features outside one team.</li>
+            <li>Features are passed through unchanged from raw operational tables with no aggregations or versioning needs.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Raw and silver data feeds batch and streaming feature pipelines; computed values land in offline and online stores; trainers pull point-in-time datasets while inference services read latest values per entity key.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     feature_store_architectu["FEATURE STORE ARCHITECTURE"]
@@ -286,7 +291,7 @@ FEATURE MONITORING AND DRIFT DETECTION
   Tools: Evidently AI (open-source), WhyLogs/whylabs, Fiddler, Arize
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Feature stores (Feast, Tecton, Hopsworks), online store vs offline store, point-in-time correct joins, feature pipelines, cross-team feature sharing, training-serving skew prevention, feature monitoring, and drift detection.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Dual offline/online stores, point-in-time training joins, and registry-backed definitions fed by Spark and stream pipelines.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -294,40 +299,44 @@ FEATURE MONITORING AND DRIFT DETECTION
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Point-in-time correct joins eliminate data leakage, producing models that match offline evaluation performance in production.</li>
-                <li>Single feature definition for training and serving eliminates training-serving skew — the number one silent killer of ML model production performance.</li>
-                <li>Feature reuse across teams reduces duplication: a fraud team's 30-day purchase velocity feature can be shared with the recommendations team.</li>
-                <li>Low-latency online store (Redis) enables real-time feature serving for synchronous ML API calls without recomputing features per request.</li>
+                <li>Point-in-time correct exports align training labels with historical feature snapshots—reducing leakage on time-varying warehouse facts.</li>
+                <li>One registered definition for offline and online paths narrows training-serving skew—the dominant silent production regression for engineered features.</li>
+                <li>Reuse across squads avoids repeated Spark jobs for the same rolling-window metrics from shared gold tables.</li>
+                <li>Pre-materialised online values keep inference off the critical path instead of recomputing aggregates per API request.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Feature store adds infrastructure complexity: an offline store, online store (Redis), feature registry, and materialisation pipeline all require provisioning and maintenance.</li>
-                <li>Feature registry discipline requires organisational adoption: teams must register features, maintain definitions, and follow naming conventions — governance overhead.</li>
-                <li>Online store costs increase linearly with feature count × entity count × read QPS — at large scale (millions of users × hundreds of features) Redis costs can be substantial.</li>
-                <li>Point-in-time joins are computationally expensive at scale — large PITC training dataset generation can take hours in Spark.</li>
+                <li>Offline store, online store, registry, and materialisation jobs add platform surface area beyond warehouse SQL alone.</li>
+                <li>Registry and naming discipline is organisational work—features must be owned, documented, and versioned like data products.</li>
+                <li>Online store cost and hot-key risk scale with entity cardinality, feature width, and read QPS.</li>
+                <li>Large point-in-time training dataset builds are shuffle-heavy in Spark and need partition tuning and cache strategy.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Feature naming conventions:</strong> Establish a naming convention early and enforce it via the feature registry. A useful pattern: <code>{entity}_{source}_{aggregation}_{window}</code> — e.g., <code>user_transactions_count_30d</code>, <code>card_velocity_amount_sum_1h</code>. Consistent names make features discoverable and reduce duplicates.</p>
-          <p><strong>Streaming features vs batch features:</strong> Some features must be updated in near real-time (card transaction velocity in the last 1 hour for fraud detection). These require a streaming pipeline (Flink/Kafka Streams) writing to the online store on every event. Batch features (30-day purchase history) can be updated hourly or daily. Use streaming features sparingly — they add significant pipeline complexity compared to batch materialisation.</p>
+          <p><strong>Naming and registry:</strong> Enforce a pattern such as <code>{entity}_{source}_{aggregation}_{window}</code> (for example <code>user_transactions_count_30d</code>) in the registry so teams discover existing features before launching another pipeline.</p>
+          <p><strong>Batch vs stream materialisation:</strong> Nightly or hourly Spark jobs from gold tables cover most windows; reserve Flink or Kafka Streams for signals that must land in the online store within minutes. Each streaming feature needs explicit watermarking and out-of-order handling.</p>
+          <p><strong>Single source of truth for logic:</strong> Where the store supports it, declare features once (Feast FeatureView, Tecton definition, Vertex entity type) and let the platform materialise both tiers; otherwise log served feature vectors for label joins.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Training-serving skew without realising it:</strong> A Python feature computed in a Jupyter notebook for training and a Scala feature computed in a production service produce subtly different values (different null handling, different time zones) — the model underperforms silently in production. Log and compare feature distributions at training vs serving time.</li>
-            <li><strong>No point-in-time correctness on time-series features:</strong> Any feature that changes over time (e.g., credit score, account age, recent activity count) must use PITC joins in training; forgetting this for even one feature can leak future information and inflate model metrics by 5–20%.</li>
+            <li><strong>Training-serving skew:</strong> Different runtimes or null/time-zone handling between notebook training code and production serving—compare distributions on logged inference features.</li>
+            <li><strong>Missing point-in-time joins:</strong> Any time-varying column joined without “as-of” semantics can leak future warehouse state and inflate offline metrics.</li>
+            <li><strong>Online staleness:</strong> Materialisation lag or failed micro-batches leave scoring on outdated rollups—per-feature freshness alarms, not only job-level green checks.</li>
+            <li><strong>Unbounded streaming state:</strong> Long-window aggregations without compaction or TTL blow memory in Flink executors or online store key cardinality.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are all time-varying features joined with point-in-time correct logic in training datasets?</li>
-            <li>Is the same feature definition (same code path) used for offline training and online serving?</li>
-            <li>Are feature values logged at inference time to enable actual-vs-predicted analysis?</li>
-            <li>Is feature drift monitored (PSI or equivalent statistical test) with alerts for significant changes?</li>
-            <li>Is there a feature registry where teams can discover and reuse existing features before building new ones?</li>
+            <li>Are all time-varying features joined with point-in-time correct logic when building training sets?</li>
+            <li>Does one definition (or logged serving vectors) back both offline export and online lookup?</li>
+            <li>Which features are batch-only vs stream-materialised, and are freshness SLAs defined for each?</li>
+            <li>Are inference-time feature values logged for label joinback and skew debugging?</li>
+            <li>Is drift monitored (PSI, null rate, range) with alerts tied to materialisation runs?</li>
+            <li>Can teams discover and reuse registry features before adding new Spark jobs?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -345,9 +354,10 @@ FEATURE MONITORING AND DRIFT DETECTION
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.feast.dev/" target="_blank" rel="noopener noreferrer">Feast Feature Store Documentation</a></li>
+            <li><a href="https://docs.feast.dev/" target="_blank" rel="noopener noreferrer">Feast Feature Store documentation</a></li>
+            <li><a href="https://docs.feast.dev/getting-started/architecture" target="_blank" rel="noopener noreferrer">Feast architecture overview</a></li>
             <li><a href="https://www.tecton.ai/blog/what-is-a-feature-store/" target="_blank" rel="noopener noreferrer">What is a Feature Store? — Tecton</a></li>
-            <li><a href="https://www.featurestore.org/" target="_blank" rel="noopener noreferrer">Feature Store — Community resource</a></li>
+            <li><a href="https://cloud.google.com/vertex-ai/docs/featurestore/overview" target="_blank" rel="noopener noreferrer">Vertex AI Feature Store overview</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
