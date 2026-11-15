@@ -104,61 +104,110 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Shared Database is a key concept in anti-patterns. This article covers the core principles, implementation patterns, and best practices.</p>
+          <p>The <strong>Shared Database</strong> anti-pattern appears when two or more services or applications read and write the same database schema as if it were a shared integration layer. On paper the system is split into services. In practice, teams still coordinate through tables, views, and stored procedures that everyone owns and nobody owns at once.</p>
+          <p>Microsoft and others document this as integration through the database: the DB becomes the message bus, the contract repository, and the coupling point. It is one of the fastest ways to build a <a href="distributed-monolith.html">distributed monolith</a>.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Understanding shared database is essential for building robust, scalable systems. The patterns and practices described here have emerged from real-world experience across many organizations.</p>
+          <p>Teams reach for a shared database for understandable reasons. A single schema is easy to query with SQL joins. Reporting wants one source of truth. Migrations from a legacy monolith often leave one database in place while code is split into deployable units. Short deadlines make “we will fix boundaries later” tempting.</p>
+          <p>The pain shows up later. Schema changes require cross-team agreement. One service’s migration can break another at runtime. Performance tuning becomes political: indexes that help one consumer hurt another. Independence—the main reason to adopt services—never arrives.</p>
 
-          <h2 id="when-to-use">When to use</h2>
+          <h2 id="when-to-use">When you see it</h2>
           <ul>
-            <li>When designing systems that require shared database capabilities.</li>
-            <li>When evaluating architectural trade-offs in your specific context.</li>
-            <li>When onboarding team members to established practices.</li>
+            <li>Multiple repositories deploy separately but connect to the same production database or schema.</li>
+            <li>Services bypass APIs and read “foreign” tables owned by another team.</li>
+            <li>Database triggers or batch jobs synchronize state that should be owned by a single boundary.</li>
+            <li>Release notes routinely say “deploy Service A and B together because of schema change X.”</li>
+            <li>ORM models for another team’s tables are copied or linked through a shared library.</li>
           </ul>
 
-          <h2 id="when-not-to-use">When not to use</h2>
+          <h2 id="when-not-to-use">When it is (briefly) acceptable</h2>
           <ul>
-            <li>When the complexity overhead outweighs the benefit for your use case.</li>
-            <li>When simpler alternatives adequately solve the problem.</li>
+            <li>During a time-boxed strangler migration: one database only while you carve out true service-owned stores.</li>
+            <li>For read-only replicas or analytics sandboxes that never write back to the operational schema.</li>
+            <li>Inside a <strong>modular monolith</strong> where one team owns the entire database and deployment unit.</li>
           </ul>
+          <p>Even then, treat shared access as debt with a written exit plan—not as the target architecture.</p>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <pre><code>SHARED DATABASE OVERVIEW:
+          <p>Each “service” talks to the same logical database. Cross-domain rules leak into SQL, and deployment independence is an illusion.</p>
+          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
+          <pre class="architecture-diagram__canvas"><code>  Client ──► API Gateway ──┬──► Order Service ────┐
+                           │                        │
+                           ├──► Inventory Service ─┼──►  SHARED OLTP DATABASE
+                           │                        │      (orders, stock,
+                           └──► Billing Service ─────┘       customers, …)
+                                        ▲
+                                        │
+                                 nightly ETL / reports
+                                        │
+                                   BI dashboards
 
-  ┌─────────────────────────────────────┐
-  │         Shared Database                    │
-  │                                     │
-  │  Core principles and components     │
-  │  would be illustrated here          │
-  │                                     │
-  └─────────────────────────────────────┘
-</code></pre>
+  Hidden coupling:
+  • Inventory UPDATE triggers order status change
+  • Billing JOINs orders + customers directly
+  • All teams share one migration pipeline</code></pre>
+          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Shared database anti-pattern: independently deployed services with one operational schema and cross-table dependencies.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
-          <h3>Advantages</h3>
-          <ul>
-            <li>Provides structured approach to solving common problems.</li>
-            <li>Enables consistent implementation across teams.</li>
-            <li>Draws on proven industry practices.</li>
-          </ul>
-          <h3>Trade-offs</h3>
-          <ul>
-            <li>Requires investment in tooling and process.</li>
-            <li>May introduce additional complexity in simple scenarios.</li>
-          </ul>
+          <div class="pros-cons">
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Why teams keep it</h3>
+              <ul>
+                <li>Fast to ship early: familiar SQL, existing DBAs, one backup strategy.</li>
+                <li>Ad-hoc reporting with joins across domains.</li>
+                <li>No need to design events or APIs for every read path yet.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Long-term costs</h3>
+              <ul>
+                <li>Cannot evolve schemas independently; every change is a multi-team release.</li>
+                <li>Blast radius of bad queries or locks spans the whole platform.</li>
+                <li>Ownership blur: nobody can enforce invariants at the service boundary.</li>
+                <li>Scaling write load on one domain stresses everyone on the same instance.</li>
+              </ul>
+            </div>
+          </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>When implementing shared database, start with the core patterns and incrementally adopt more advanced techniques as your needs grow. Always validate against your specific requirements and constraints.</p>
+          <p>Remediate in small steps. Give each bounded context its own database (or schema with hard network isolation). Replace cross-table reads with APIs or replicated read models. Use change-data capture or domain events to publish facts other contexts need—do not grant them write access.</p>
+          <p>Where you must share data temporarily, use explicit views or replication consumers with contracts, not ad hoc table access. Track progress with architecture decision records so “temporary” does not become permanent.</p>
+
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Schema lock-in:</strong> fear of breaking consumers freezes migrations until emergency firefights.</li>
+            <li><strong>Silent cross-writes:</strong> two services update the same row without a single transactional owner.</li>
+            <li><strong>Reporting-driven OLTP abuse:</strong> heavy analytics queries run on the operational database.</li>
+            <li><strong>Shared ORM package:</strong> domain entities ship as a library, recreating compile-time monolith coupling.</li>
+          </ul>
+
+          <h2 id="decision-checklist">Decision checklist</h2>
+          <ul class="checklist">
+            <li>Does each production service have credentials that can reach only its own schema?</li>
+            <li>Can any service deploy a schema change without another team’s code going live the same day?</li>
+            <li>Are cross-context reads served by APIs or materialized views—not direct table access?</li>
+            <li>Is there a dated plan to retire shared-database access left from the monolith?</li>
+          </ul>
+
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>Retail split:</strong> Order and catalog services shared Postgres; a catalog price column rename broke checkout until both apps rolled back together.</li>
+            <li><strong>Healthcare SaaS:</strong> Scheduling and billing services read the same patient table; a privacy column addition violated billing’s assumptions and halted claims for a week.</li>
+          </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="index.html">Anti-Patterns Overview</a> — Browse all anti-patterns articles.</li>
+            <li><a href="distributed-monolith.html">Distributed Monolith</a> — the usual outcome of shared data plus synchronous calls.</li>
+            <li><a href="../data-architecture/database-per-service.html">Database per Service</a> — the target pattern for service-owned data.</li>
+            <li><a href="../architecture-styles/modular-monolith.html">Modular Monolith</a> — when one team truly owns one database.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/" target="_blank" rel="noopener noreferrer">Martin Fowler's Architecture Guide</a></li>
-            <li><a href="https://aws.amazon.com/architecture/" target="_blank" rel="noopener noreferrer">AWS Architecture Center</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/design-principles/microservices#data-ownership" target="_blank" rel="noopener noreferrer">Azure Architecture Center — Data ownership in microservices</a></li>
+            <li><a href="https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-decomposing-monoliths/decomposition-patterns.html" target="_blank" rel="noopener noreferrer">AWS — Decomposition patterns when breaking up monoliths</a></li>
+            <li><a href="https://martinfowler.com/bliki/IntegrationDatabase.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Integration Database</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
@@ -176,6 +225,9 @@
             <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
             <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
             <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
+            <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
           </ul>
