@@ -100,11 +100,12 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Autocomplete (also called search-as-you-type or type-ahead) is the feature that displays a dropdown of suggested completions, popular queries, or matching documents as a user types each character. It dramatically reduces the number of keystrokes needed to reach a successful search, surfaces content users didn't know existed, and corrects typos before an empty-results page is shown. The core technical challenge is delivering relevant suggestions in under 100ms — faster than a user can type the next character.</p>
-          <p>There are two primary architectural approaches. <strong>Index-time approaches</strong> pre-expand every prefix into tokens at write time (using an edge n-gram tokenizer or a dedicated <code>completion</code> field type), so queries are simple lookups. <strong>Query-time approaches</strong> run prefix queries, fuzzy queries, or phrase-suggest queries at read time against the normal index. Index-time approaches are faster at query time but inflate index size; query-time approaches require no special index structure but consume more CPU per request. Most production systems combine both: a completion suggester for the happy path and a fuzzy fallback for typos.</p>
+          <p><strong>Autocomplete &amp;amp; Suggestions</strong> is the pattern to use when any search interface where users type free-form queries and expect instant feedback while typing. Autocomplete (also called search-as-you-type or type-ahead) is the feature that displays a dropdown of suggested completions, popular queries, or matching documents as a user types each character. It dramatically reduces the number of keystrokes needed to reach a successful search, surfaces content users didn't know existed, and corrects typos before an empty-results page is shown. The core technical challenge is delivering relevant suggestions in under 100ms — faster than a user can type the next character.</p>
+          <p>There are two primary architectural approaches. <strong>Index-time approaches</strong> pre-expand every prefix into tokens at write time (using an edge n-gram tokenizer or a dedicated <code>completion</code> field type), so queries are simple lookups. <strong>Query-time approaches</strong> run prefix queries, fuzzy queries, or phrase-suggest queries at read time against the normal index. Index-time approaches are faster at query time but inflate index size; query-time approaches require no special index structure but consume more CPU per request.</p>
+          <p>Most production systems combine both: a completion suggester for the happy path and a fuzzy fallback for typos.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Users abandon searches when they can't formulate the right query. Studies show that sites with working autocomplete see higher search engagement, lower zero-result rates, and higher conversion. Autocomplete also solves the "vocabulary mismatch" problem: a user typing "footwear" may not realise the catalogue uses the term "shoes". By surfacing matching product names and categories as they type, autocomplete guides users to the vocabulary the system understands.</p>
+          <p>Users often abandon search when they cannot guess the right keywords. Autocomplete reduces typing, surfaces catalog vocabulary users did not know, and can steer queries away from empty result sets. It also addresses vocabulary mismatch: someone typing "footwear" may not realise the catalogue indexes "shoes". By showing matching product names, categories, and past queries as they type, autocomplete aligns user language with indexed terms.</p>
           <p>At scale, the latency requirement (sub-100ms, end-to-end) makes standard BM25 full-text queries insufficient: they do too much work per character change. The completion suggester and edge n-gram approaches trade index storage for query speed, using purpose-built FST (Finite State Transducer) data structures that can traverse millions of completions in microseconds — a data structure that cannot be replicated in a general-purpose database.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -125,43 +126,34 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The browser debounces keystrokes and calls a thin autocomplete API. That service checks a short-TTL cache, then queries a search cluster index tuned for prefix or completion retrieval. Catalog updates flow through the same indexing pipeline used for full search.</p>
           <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>User types: "wir" (wants "wireless headphones")
+          <pre class="architecture-diagram__canvas"><code>
+┌─────────────┐   debounced keystrokes   ┌──────────────────┐
+│ Web / mobile│ ───────────────────────► │ Autocomplete API │
+│   client    │                          │ (BFF or gateway) │
+└─────────────┘                          └────────┬─────────┘
+                                                  │ cache miss
+                                                  ▼
+                                         ┌──────────────────┐
+                                         │  Redis / CDN     │
+                                         │  (5–30s TTL)     │
+                                         └────────┬─────────┘
+                                                  │
+                                                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Search cluster (Elasticsearch / OpenSearch)      │
+│   completion field  │  edge n-gram  │  search_as_you_type    │
+└───────────────────────────────┬─────────────────────────────┘
+                                │ index pipeline (CDC / batch)
+                                ▼
+                       ┌─────────────────┐
+                       │ Product catalog │
+                       │ or content DB   │
+                       └─────────────────┘
 
-── Approach 1: Edge N-Gram (index-time) ──────────────────
-Index mapping:
-  title: {
-    type: text,
-    analyzer: "autocomplete_index",   // generates: w, wi, wir, wire...
-    search_analyzer: "standard"       // searches exact prefix
-  }
-
-Query: { match: { "title": "wir" } }
-→ Matches docs containing token "wir" (edge n-gram of "wireless")
-→ Very fast, larger index size
-
-── Approach 2: Completion Suggester ─────────────────────
-Index mapping:
-  suggest: {
-    type: completion,
-    analyzer: standard,
-    contexts: [{ name: "category", type: "category" }]
-  }
-
-Query: _search/suggest
-  { "product_suggest": { "prefix": "wir",
-      "completion": { "field": "suggest", "size": 5,
-        "fuzzy": { "fuzziness": 1 } } } }
-→ FST traversal, very fast, supports fuzzy matching
-
-── Approach 3: search_as_you_type field ─────────────────
-Mapping:
-  title: { type: search_as_you_type }
-  (auto-creates: title._2gram, title._3gram, title._index_prefix)
-
-Query: { multi_match: { query: "wir",
-    type: bool_prefix,
-    fields: ["title","title._2gram","title._3gram"] } }</code></pre>
+Example prefix "wir" → ranked suggestions: Wireless Headphones, Wired Mic…
+          </code></pre>
           <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
           </figure>
 
@@ -190,7 +182,8 @@ Query: { multi_match: { query: "wir",
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For most cases, the <code>search_as_you_type</code> field type (Elasticsearch 7.2+) offers the best balance: it automatically creates shingle sub-fields for 2-gram and 3-gram tokens alongside a prefix index, and the <code>bool_prefix</code> multi-match query type efficiently combines these. This approach keeps memory in the JVM heap lower than the completion suggester while delivering latency comparable to edge n-gram. Reserve the <code>completion</code> type for curated suggestion lists (e.g., top 1,000 most-searched queries) where you need context filtering and weight-based ordering.</p>
+          <p>Three common Elasticsearch/OpenSearch indexing strategies cover most cases. <strong>Edge n-grams</strong> at index time expand each term into prefixes (<code>w</code>, <code>wi</code>, <code>wir</code>, …) for fast prefix match but larger indices. The <strong>completion suggester</strong> stores suggestions in an FST for microsecond lookups and supports weights and context filters — best for curated or popularity-ranked lists. <strong><code>search_as_you_type</code></strong> (7.2+) auto-creates shingle and prefix sub-fields and pairs with <code>bool_prefix</code> queries — a balanced default for product titles and mixed token lengths.</p>
+          <p>For most cases, <code>search_as_you_type</code> offers the best balance: it keeps JVM heap lower than the completion suggester while delivering latency comparable to edge n-gram. Reserve the <code>completion</code> type for curated suggestion lists (for example, the top 1,000 most-searched queries) where you need context filtering and weight-based ordering.</p>
           <p>For popularity-based ranking, store a <code>weight</code> field in the completion document equal to the search frequency (updated by a daily batch job from query logs). Combine this with context filtering to serve different suggestions to different user segments or on different pages. Implement a debounce of 150–300ms on the client side to avoid firing a request per keystroke — this halves server load with negligible UX impact. Always cache autocomplete responses in a shared cache (Redis) with a short TTL (5–30 seconds) since the suggestion list changes slowly relative to query volume.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
