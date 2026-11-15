@@ -90,7 +90,7 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>The claim check pattern (also called reference-based messaging) splits a large message into two parts: the <em>payload</em> is stored in an external store (S3 bucket, Azure Blob Storage, GCS), and a lightweight <em>claim check</em> — a reference token containing the storage URL or object key — is sent through the message broker. The consumer receives the claim check, fetches the payload from the external store using the reference, processes it, and optionally deletes it. The broker never sees the large data.</p>
+          <p><strong>Claim Check Pattern</strong> is the pattern to use when large payloads exceeding broker limits — any message over ~64 KB that would exceed or stress your broker's limits (256 KB for SQS, custom for RabbitMQ/Kafka). The claim check pattern (also called reference-based messaging) splits a large message into two parts: the <em>payload</em> is stored in an external store (S3 bucket, Azure Blob Storage, GCS), and a lightweight <em>claim check</em> — a reference token containing the storage URL or object key — is sent through the message broker. The consumer receives the claim check, fetches the payload from the external store using the reference, processes it, and optionally deletes it. The broker never sees the large data.</p>
           <p>The pattern is named after a luggage claim check: you drop your bag (payload) at the baggage counter (blob store) and receive a ticket (claim check token). The ticket travels with you (through the broker) and you redeem it at the destination to retrieve your luggage.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -112,7 +112,8 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Producer stores the payload in the external store and receives a reference URL or key. Producer constructs a small message containing the reference, metadata, and routing headers. Producer publishes the small message to the broker. Consumer receives the message, extracts the reference, fetches the payload from external storage, processes it, and ACKs the message. After processing, the consumer may delete the payload or leave it for the TTL to expire.</p>
+          <p>Producer stores the payload in the external store and receives a reference URL or key. Producer constructs a small message containing the reference, metadata, and routing headers. Producer publishes the small message to the broker. Consumer receives the message, extracts the reference, fetches the payload from external storage, processes it, and ACKs the message.</p>
+          <p>After processing, the consumer may delete the payload or leave it for the TTL to expire.</p>
 <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
           <pre class="architecture-diagram__canvas"><code>Producer
   1. PUT large-payload.pdf → S3 Bucket
@@ -154,7 +155,8 @@ Consumer
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Pre-signed URLs vs object keys:</strong> There are two strategies for the claim check token. Option A: store the object key (e.g., <code>jobs/2024-01/abc123.pdf</code>) and grant consumers IAM access to the bucket. This is simpler but requires consumers to have permanent S3 read permissions. Option B: include a pre-signed URL with a short TTL (e.g., 30 minutes). This allows consumers without bucket credentials to fetch the payload — useful for cross-account or third-party consumers — but the URL must be generated at publish time, and expiry must align with maximum consumer processing latency.</p>
+          <p><strong>Pre-signed URLs vs object keys:</strong> There are two strategies for the claim check token. Option A: store the object key (e.g., <code>jobs/2024-01/abc123.pdf</code>) and grant consumers IAM access to the bucket. This is simpler but requires consumers to have permanent S3 read permissions. Option B: include a pre-signed URL with a short TTL (e.g., 30 minutes).</p>
+          <p>This allows consumers without bucket credentials to fetch the payload — useful for cross-account or third-party consumers — but the URL must be generated at publish time, and expiry must align with maximum consumer processing latency.</p>
           <p><strong>Storage lifecycle and TTL:</strong> Configure S3 lifecycle rules to delete objects after N days based on the prefix or tag. A common approach: set a TTL of 7 days on the payload bucket. If the consumer is healthy, it processes messages well within this window. If the consumer is down for more than 7 days, the payload is gone and the message is a broken reference — handle this as a dead-letter case.</p>
           <p><strong>Security:</strong> Never store sensitive payloads without server-side encryption (S3 SSE-KMS or SSE-S3). Ensure the bucket is not publicly accessible. If using pre-signed URLs, generate them with the minimum TTL necessary and validate the content hash on retrieval to detect tampering. Treat the claim check message as sensitive if the URL reveals information about the stored data.</p>
           <p><strong>Observability impact:</strong> Log the claim check reference at every stage (publish, fetch, process, delete) so that distributed traces can link log lines to specific payloads. Without this, debugging a failed consumer is difficult because the log message only contains a reference URL, not the payload content.</p>
