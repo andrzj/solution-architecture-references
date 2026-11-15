@@ -101,17 +101,12 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Contract testing verifies that a service correctly implements the interface expectations of its consumers. A <strong>contract</strong> is a formal specification of the interactions between a consumer (caller) and a provider (API), capturing the requests the consumer makes and the responses it expects. Contract tests run independently against each service without requiring a live integrated environment.</p>
-          <p>There are two main approaches:</p>
-          <ul>
-            <li><strong>Consumer-driven contract testing (CDCT)</strong> — consumers define the contract by writing tests that capture their expectations. The contract is published and the provider verifies it runs against the real provider. Pact is the dominant framework.</li>
-            <li><strong>Provider-driven contract testing</strong> — the provider defines the contract (e.g., an OpenAPI spec) and consumers test against it. Schemathesis and Dredd run against the provider to verify the implementation matches the spec.</li>
-          </ul>
+          <p><strong>Contract testing</strong> checks that an API provider’s behaviour matches what its consumers rely on, without standing up every dependent service in one integration environment. A <strong>contract</strong> records request/response shapes—or OpenAPI schemas—that consumers need; tests run on the consumer side against mocks and on the provider side against the real implementation or spec.</p>
+          <p>Two common flavours: <strong>consumer-driven</strong> (consumers publish interaction contracts—Pact is the usual framework; providers verify in CI) and <strong>provider-driven</strong> (canonical OpenAPI describes the API; tools such as Schemathesis or Dredd assert the running service matches the spec). Bi-directional setups compare consumer expectations to provider OpenAPI in a broker without live cross-service calls.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In microservices architectures, services are deployed independently. Integration tests that require multiple services to be running simultaneously are slow, fragile, expensive to maintain, and block independent deployment. Contract testing detects interface incompatibilities early — in CI, before deployment — without the overhead of full integration test environments. The question changes from "do all these services work together in a test environment?" to "does this service correctly implement the contract its consumers rely on?"</p>
+          <p>Microservices deploy on independent cadences. Full-stack integration suites are slow, flaky, and couple release trains. Contract tests answer “will this provider version break a consumer already in production?” in seconds per service, and support <code>can-i-deploy</code> gates when a broker stores contracts and verification results.</p>
 
-          
           <h2 id="when-to-use">When to use</h2>
           <ul>
             <li>Microservices deployed independently where integration tests are slow or flaky.</li>
@@ -153,10 +148,30 @@
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Pact flow: consumer CI publishes, provider CI verifies, can-i-deploy checks promotion.</figcaption>
           </figure>
 
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Pact, provider verification, bi-directional testing, and OpenAPI tools are covered in the following sections.</p>
+          <h2 id="pros-and-cons">Pros and cons</h2>
+          <div class="pros-cons">
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Fast feedback—consumer tests hit mocks; provider verification replays recorded interactions.</li>
+                <li>Surfaces breaking changes before deploy when paired with a broker and verification in CI.</li>
+                <li>Documents what each consumer actually uses, not the entire API surface.</li>
+                <li>Enables independent deployment when <code>can-i-deploy</code> checks compatibility per version.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Broker, provider states, and CI wiring add operational overhead.</li>
+                <li>Pact needs adoption on both sides unless bi-directional OpenAPI bridging is used.</li>
+                <li>Contracts cover exercised interactions only—untested routes can still break.</li>
+                <li>Complex provider states for data setup are costly to maintain.</li>
+              </ul>
+            </div>
+          </div>
 
-<h2 id="consumer-driven">Consumer-driven contracts with Pact</h2>
+          <h2 id="implementation-notes">Implementation notes</h2>
+          <h3 id="consumer-driven">Consumer-driven contracts with Pact</h3>
           <pre><code>// Consumer test (JavaScript, Pact)
 const { Pact } = require('@pact-foundation/pact');
 
@@ -210,7 +225,7 @@ describe('Orders API consumer', () => {
           </ul>
           <p>Using matchers is critical: if you assert <code>total: 149.99</code> exactly, the contract breaks if the provider returns a different but valid order. Assert structure and type, not ephemeral values.</p>
 
-          <h2 id="provider-verification">Provider verification</h2>
+          <h3 id="provider-verification">Provider verification</h3>
           <pre><code>// Provider verification (JavaScript, Pact)
 const { Verifier } = require('@pact-foundation/pact');
 
@@ -232,7 +247,7 @@ describe('Orders API provider verification', () => {
 });</code></pre>
           <p>The provider fetches the contracts from the Pact Broker and replays each interaction against the real running provider. For each interaction, the provider state handler sets up the required test data. The verifier checks that responses match the contract's matchers. Provider verification runs in the provider's CI pipeline — a failing verification means the provider has made a breaking change relative to a deployed consumer.</p>
 
-          <h2 id="pact-broker">Pact Broker and can-i-deploy</h2>
+          <h3 id="pact-broker">Pact Broker and can-i-deploy</h3>
           <p>The Pact Broker stores contracts published by consumers and verification results published by providers. It enables the critical <strong><code>can-i-deploy</code></strong> query: "Is it safe to deploy version X of service A, given the currently deployed versions of all its dependencies?"</p>
           <pre><code># Check if orders-api v2.3.0 can be deployed to production
 pact-broker can-i-deploy \
@@ -245,10 +260,10 @@ pact-broker can-i-deploy \
 # orders-api v2.3.0 is compatible with orders-ui v1.7.2 (deployed to production)</code></pre>
           <p>This makes contract testing a deployment safety gate in CI/CD pipelines. PactFlow (hosted Pact Broker) adds bi-directional contract testing support.</p>
 
-          <h2 id="bidirectional">Bi-directional contract testing</h2>
+          <h3 id="bidirectional">Bi-directional contract testing</h3>
           <p>Bi-directional contract testing (BDCT), supported by PactFlow, bridges consumer-driven and provider-driven approaches. The consumer publishes its Pact contract; the provider publishes its OpenAPI spec. PactFlow performs the compatibility verification: it checks whether the provider's OpenAPI spec is a superset of the consumer's Pact contract without running either side's tests against a live server. This enables teams to adopt contract testing without requiring all parties to use Pact.</p>
 
-          <h2 id="openapi-contract-tests">OpenAPI-based contract testing</h2>
+          <h3 id="openapi-contract-tests">OpenAPI-based contract testing</h3>
           <h3>Schemathesis</h3>
           <pre><code># Run Schemathesis against a live API
 schemathesis run https://api.example.com/openapi.json \
@@ -275,7 +290,7 @@ before('orders &gt; GET /orders &gt; 200', (transaction, done) => {
 });</code></pre>
           <p>Dredd runs each documented example request from the OpenAPI spec against the provider and verifies the response matches the documented status code and schema. More transaction-oriented (one test per documented example) vs Schemathesis's generative approach. Use Dredd for "do the documented examples work?" and Schemathesis for "does the API handle edge cases correctly?"</p>
 
-          <h2 id="why-integration-tests-fall-short">Why integration tests don't replace contracts</h2>
+          <h3 id="why-integration-tests-fall-short">Why integration tests don't replace contracts</h3>
           <p>Integration tests require all services to be running simultaneously in a shared environment. This creates several problems in a microservices context:</p>
           <ul>
             <li><strong>Deployment coupling</strong> — all services must be at compatible versions in the integration environment; independent deployment becomes harder to achieve.</li>
@@ -286,27 +301,13 @@ before('orders &gt; GET /orders &gt; 200', (transaction, done) => {
           </ul>
           <p>Contract testing answers the deployment compatibility question directly, cheaply, and without requiring a shared environment. Integration tests remain valuable for end-to-end workflow validation but are insufficient alone for interface compatibility verification in independent deployment workflows.</p>
 
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>Fast — contract tests run in milliseconds against mocks; no live environment needed for consumer tests.</li>
-                <li>Catches breaking changes before deployment — the provider can't deploy a change that breaks a published contract.</li>
-                <li>Documents real consumer usage — contracts describe exactly what each consumer uses, not the full API surface.</li>
-                <li>Enables independent deployment — <code>can-i-deploy</code> provides a deployment safety gate per consumer version.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Initial setup overhead — requires a Pact Broker or PactFlow, provider state management, and CI integration.</li>
-                <li>Pact contracts require both sides to adopt the same framework; bi-directional contracts alleviate this.</li>
-                <li>Contracts only cover documented interactions — they won't catch bugs in parts of the API no consumer exercises.</li>
-                <li>Provider states (test data setup) for complex scenarios can be difficult to maintain.</li>
-              </ul>
-            </div>
-          </div>
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Exact-value contracts</strong> — Pact interactions assert literals instead of matchers, causing false breakages.</li>
+            <li><strong>Stale broker contracts</strong> — old consumer versions block provider deploys unnecessarily.</li>
+            <li><strong>Missing provider states</strong> — verification fails because test data does not match interaction state.</li>
+            <li><strong>Contracts without coverage</strong> — happy-path only; edge cases still break in production.</li>
+          </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
@@ -318,23 +319,15 @@ before('orders &gt; GET /orders &gt; 200', (transaction, done) => {
             <li>Are contracts versioned by consumer version (not just latest) to support rollbacks?</li>
           </ul>
 
-          <h2 
-          <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul>
-            <li><strong>Exact-value contracts</strong> — Pact interactions assert literals instead of matchers, causing false breakages.</li>
-            <li><strong>Stale broker contracts</strong> — old consumer versions block provider deploys unnecessarily.</li>
-            <li><strong>Missing provider states</strong> — verification fails because test data does not match interaction state.</li>
-            <li><strong>Contracts without coverage</strong> — happy-path only; edge cases still break in production.</li>
-          </ul>
-
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Orders UI publishes Pact contracts; Orders API verifies in CI before any production deploy.</li>
-            <li>Schemathesis fuzzes staging nightly from the canonical OpenAPI spec.</li>
-            <li>PactFlow bi-directional check compares consumer Pact to provider OpenAPI without live servers.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> storefront publishes Pact contracts for catalog and checkout APIs; the order service verifies against the broker on every main-branch build and blocks deploy when <code>can-i-deploy</code> fails against production consumer versions.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> runs Schemathesis nightly against staging using the canonical OpenAPI for partner EDI endpoints, catching schema drift before partners hit production.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> uses PactFlow bi-directional checks so mobile BFF consumer pacts are validated against the trips service OpenAPI without standing up both apps in one environment.</li>
+            <li><strong>Case study —</strong> Pact’s provider verification and broker <code>can-i-deploy</code> workflow is documented at <a href="https://docs.pact.io/" rel="noopener noreferrer" target="_blank">docs.pact.io</a>.</li>
           </ul>
 
-id="related-patterns">Related patterns</h2>
+          <h2 id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="openapi.html">OpenAPI Specification</a> — the contract format for provider-driven (Schemathesis, Dredd) contract testing.</li>
             <li><a href="api-versioning.html">API Versioning</a> — contract testing makes breaking change detection explicit rather than version-based.</li>
@@ -372,12 +365,6 @@ id="related-patterns">Related patterns</h2>
             <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
-<li><a href="#consumer-driven" class="toc__link">Consumer-driven (Pact)</a></li>
-            <li><a href="#provider-verification" class="toc__link">Provider verification</a></li>
-            <li><a href="#pact-broker" class="toc__link">Pact Broker</a></li>
-            <li><a href="#bidirectional" class="toc__link">Bi-directional contracts</a></li>
-            <li><a href="#openapi-contract-tests" class="toc__link">OpenAPI contract tests</a></li>
-            <li><a href="#why-integration-tests-fall-short" class="toc__link">vs integration tests</a></li>
           </ul>
         </nav>
       </aside>
