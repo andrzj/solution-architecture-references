@@ -122,31 +122,33 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Events flow through a broker (Kafka, RabbitMQ, AWS SNS/SQS, Google Pub/Sub) that durably stores and distributes them. EDA is not a single pattern but a family of patterns: event notification (fire and forget), event-carried state transfer (event carries enough data for consumers to act without querying the producer), and event sourcing (events as the system of record).</p>
+          <p>In <strong>event-driven architecture (EDA)</strong>, a service publishes a <em>domain event</em> when something meaningful happens instead of calling the next service synchronously and waiting.</p>
+          <p>Events flow through a broker — at <strong>Northwind Logistics</strong>, that broker is <strong>Apache Kafka</strong> — that durably stores and fans out messages. Producers append to topics such as <code>dispatch.load-assigned</code> and <code>shipment.delivered</code>; consumers in billing, driver notification, and analytics read at their own pace.</p>
+          <p>EDA is a family of patterns, not one design. Martin Fowler distinguishes <em>event notification</em> (signal only), <em>event-carried state transfer</em> (payload carries enough data to act without a callback), and <em>event sourcing</em> (the event log is the system of record). Northwind’s dispatch pipeline uses notification and state transfer on Kafka; Order at Meridian Commerce (a separate bounded context) may source state from events — see <a href="event-sourcing.html">Event Sourcing</a>.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Synchronous request-response coupling creates cascading failures — if the downstream service is slow or unavailable, the caller blocks or fails. EDA breaks this coupling: the producer emits an event and continues regardless of consumer availability. It also enables fan-out — a single event can trigger multiple independent consumers simultaneously without the producer knowing about them, making it easy to add new behaviors without modifying existing systems. High-throughput systems like payment processors, IoT pipelines, and analytics systems naturally model their workload as streams of events, making EDA the natural fit.</p>
-          <p>The pattern was formalized by Martin Fowler's distinction between event notification, event-carried state transfer, and event sourcing patterns.</p>
+          <p>Northwind’s dispatch service used to call billing, routing, and the driver app over HTTP inside one request. When billing slowed during month-end, loads stalled in the yard and drivers saw timeouts.</p>
+          <p>EDA breaks that coupling: dispatch publishes <code>LoadAssigned</code> and moves on. Billing invoices from the topic when it is ready; analytics replays the same stream for SLA dashboards without peeking into dispatch’s database.</p>
+          <p>Fan-out is the other payoff. One <code>ShipmentDelivered</code> event can trigger invoice generation, customer SMS, and warehouse metrics — Northwind adds a consumer without redeploying dispatch.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>High-throughput ingestion scenarios where producers must not block on slow consumers (IoT data, clickstream analytics, financial ticks).</li>
-            <li>Decoupling services that have different availability and scaling requirements.</li>
-            <li>Fan-out scenarios: one event must trigger multiple independent downstream actions (order placed → inventory, email, analytics, fraud check).</li>
-            <li>Audit trails and event logs are business requirements — events naturally provide an immutable history.</li>
-            <li>Integrating systems with different technology stacks where a shared event format (CloudEvents, Avro) serves as the lingua franca.</li>
+            <li>Adopt EDA when Northwind-scale producers must not block on slow consumers, such as peak dispatch bursts while billing catches up overnight.</li>
+            <li>Adopt EDA when services have different availability and scaling profiles, as dispatch (always on) versus analytics (batch-tolerant).</li>
+            <li>Adopt EDA when one domain fact must fan out to several independent reactions, like <code>LoadAssigned</code> reaching routing, billing, and driver notify.</li>
+            <li>Adopt EDA when audit or replay requirements favor an immutable log — Northwind replays Kafka topics after schema fixes.</li>
+            <li>Adopt EDA when integrating heterogeneous stacks where a shared envelope (CloudEvents headers, Avro payloads in Schema Registry) beats point-to-point RPC.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Operations that require immediate, synchronous confirmation — payment authorization, inventory reservation — are harder in async EDA (though possible with sagas/choreography).</li>
-            <li>Simple CRUD applications where the overhead of event infrastructure is not justified.</li>
-            <li>Small teams without operational experience running message brokers — Kafka especially has significant operational complexity.</li>
+            <li>Skip EDA for paths that need an immediate synchronous answer in the same HTTP response, such as card authorization before Northwind commits a load — use RPC or a saga, not fire-and-forget alone.</li>
+            <li>Skip EDA for small CRUD tools where a broker’s operational cost outweighs two services talking over REST.</li>
+            <li>Skip EDA until the team can run Kafka (or an equivalent) with consumer lag alerts, DLQs, and on-call playbooks — unmanaged brokers become silent data loss.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Producers publish events to topics in the broker. Consumers subscribe to topics using consumer groups for parallel processing. The broker persists events, enabling replay and late-joining consumers.</p>
+          <p>Northwind’s dispatch and shipment-tracking services publish to Kafka topics. Consumer groups parallelize billing and notification workers; retained segments let analytics replay last week’s <code>ShipmentDispatched</code> events after a bug fix. The diagram below uses neutral producer names — at Northwind, dispatch plays the Order service producer role, billing and driver notify map to Payment and Email consumers, and the analytics warehouse maps to the Analytics consumer.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     OS["Order service"] --> BRK["Message broker topics"]
@@ -185,53 +187,58 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Temporal decoupling — producers and consumers operate independently; consumers can lag or restart without data loss.</li>
-                <li>High scalability — consumer groups scale horizontally by adding partitions and instances.</li>
-                <li>Easy fan-out — add a new consumer without modifying producers.</li>
-                <li>Natural audit log — the event stream is an immutable history of what happened.</li>
-                <li>Backpressure handling — the broker absorbs load spikes, protecting consumers from being overwhelmed.</li>
+                <li>Northwind dispatch stays responsive when billing or analytics lag, because Kafka buffers between producers and consumers.</li>
+                <li>Consumer groups scale out by adding partitions and workers on the billing topic during month-end.</li>
+                <li>New reactions (for example a compliance export on <code>ShipmentDelivered</code>) ship as new consumers without changing dispatch code.</li>
+                <li>The retained topic is the operational audit trail for “which loads were assigned when.”</li>
+                <li>Peak Monday-morning dispatch spikes land in the broker instead of timing out downstream HTTP handlers.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Eventual consistency is the default — consumers may be behind the producer's current state.</li>
-                <li>Debugging distributed event flows requires distributed tracing and correlation IDs.</li>
-                <li>At-least-once delivery means consumers must be idempotent to handle duplicate events.</li>
-                <li>Event schema evolution is hard — changing an event's schema can break consumers.</li>
-                <li>Message broker operational complexity, especially Kafka (partition management, consumer group offsets, rebalancing).</li>
+                <li>Billing may invoice seconds after dispatch assigns a load — UIs and support tools must tolerate eventual consistency.</li>
+                <li>Tracing one load across five topics requires correlation IDs and OpenTelemetry, not grep in a monolith log.</li>
+                <li>Kafka’s default at-least-once delivery means Northwind’s billing consumer must dedupe on <code>loadId</code>.</li>
+                <li>Avro schema changes on <code>LoadAssigned</code> can break old consumers unless Schema Registry enforces compatibility.</li>
+                <li>Operating Kafka (partitions, rebalances, retention) is real platform work — Northwind funds a small streaming team.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Always include a correlation ID (trace ID) in every event to enable end-to-end tracing across services. Design all consumers to be idempotent — at-least-once delivery is the common guarantee, so duplicate events must be handled safely using a deduplication key. Use a schema registry (Confluent Schema Registry with Avro, or Protobuf) to enforce schema evolution rules and prevent breaking changes. Prefer choreography (services react to events autonomously) over orchestration (a central orchestrator tells services what to do) for loose coupling; use orchestration when the business process is complex, has compensation logic, or needs a single view of process state.</p>
-          <p>Implement a dead-letter queue for events that consistently fail processing.</p>
+          <p><strong>Envelope:</strong> Every Northwind event carries <code>correlationId</code>, <code>loadId</code>, and CloudEvents-style metadata so support can follow one shipment across dispatch, billing, and notify.</p>
+          <p><strong>Idempotency:</strong> Billing stores processed <code>eventId</code> keys — at-least-once delivery must not double-invoice the same <code>ShipmentDelivered</code>.</p>
+          <p><strong>Schema Registry:</strong> <code>LoadAssigned</code> and <code>ShipmentDispatched</code> use Avro with backward-compatible evolution; producers register schemas before deploy.</p>
+          <p><strong>Choreography vs orchestration:</strong> Load-to-delivery is choreographed off Kafka events. Northwind reserves Step Functions–style orchestration for rare compensation flows (cancel after partial billing).</p>
+          <p><strong>Dead letters:</strong> Poison messages on the billing consumer go to a DLQ topic with alerts — one bad payload must not stall the partition.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Non-idempotent consumers:</strong> At-least-once delivery causes duplicate side effects — orders processed twice, emails sent twice.</li>
-            <li><strong>Consumer lag growing unbounded:</strong> Consumers cannot keep up with producer rate; the broker fills up and events are dropped or the system slows down.</li>
-            <li><strong>Schema evolution breakage:</strong> A producer adds a required field or renames one; all consumers that haven't updated break silently.</li>
-            <li><strong>Missing dead-letter queues:</strong> A poison pill event blocks a consumer partition indefinitely, stalling all processing behind it.</li>
-            <li><strong>No correlation IDs:</strong> An event triggers five services but there is no way to trace which events are related to which original action.</li>
+            <li><strong>Duplicate billing:</strong> Billing applies <code>ShipmentDelivered</code> twice because the consumer is not idempotent on <code>loadId</code>.</li>
+            <li><strong>Unbounded lag:</strong> Analytics cannot keep up with dispatch publish rate; retention expires before the warehouse catches up.</li>
+            <li><strong>Breaking schema deploy:</strong> Dispatch adds a required Avro field without compatibility mode; notify consumers crash-loop.</li>
+            <li><strong>No DLQ:</strong> A malformed <code>LoadAssigned</code> blocks the billing partition until manual intervention.</li>
+            <li><strong>Missing correlation IDs:</strong> Ops cannot tie driver SMS failures back to the originating dispatch command.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are all consumers designed to be idempotent and handle duplicate events?</li>
-            <li>Is a correlation/trace ID included in every event envelope?</li>
-            <li>Is a schema registry used to enforce backward-compatible schema evolution?</li>
-            <li>Are dead-letter queues configured for all critical consumer groups?</li>
-            <li>Is consumer lag monitored with alerts for lag growing beyond a threshold?</li>
-            <li>Is there a clear policy on event retention period and replay capability?</li>
+            <li>Does every Northwind consumer dedupe or otherwise handle at-least-once delivery safely?</li>
+            <li>Does every published event include <code>correlationId</code> and domain identifiers such as <code>loadId</code>?</li>
+            <li>Are Avro schemas registered with backward-compatible evolution rules?</li>
+            <li>Do critical consumer groups have DLQs and paging when messages land there?</li>
+            <li>Are consumer lag and topic retention monitored against Northwind’s replay needs?</li>
+            <li>Is event retention documented so compliance knows how far back Kafka can be replayed?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
+          <p>Northwind’s dispatch-to-delivery story is one EDA thread:</p>
           <ul>
-            <li><strong>LinkedIn's activity feeds:</strong> User actions (connections, posts, likes) are published as events to Kafka; multiple consumers build different feed projections in real time.</li>
-            <li><strong>Uber's surge pricing:</strong> Ride request events and driver location events feed a stream processing pipeline that computes real-time supply/demand ratios and adjusts pricing.</li>
-            <li><strong>E-commerce order processing:</strong> An OrderPlaced event fans out to inventory, payment, notification, fraud, and analytics services simultaneously without the order service knowing about any of them.</li>
+            <li><strong>Assignment:</strong> Dispatch commits a load and publishes <code>LoadAssigned</code> to Kafka; routing consumes it and publishes <code>RoutePlanned</code> without synchronous coupling.</li>
+            <li><strong>In transit:</strong> Shipment tracking emits <code>ShipmentDispatched</code> and <code>ShipmentDelivered</code> with event-carried state (driver, timestamps, geo) so billing does not query dispatch’s database.</li>
+            <li><strong>Fan-out:</strong> The same <code>ShipmentDelivered</code> triggers invoice creation, customer notification, and analytics ingestion through independent consumer groups.</li>
+            <li><strong>Replay:</strong> After a projector bug, analytics replays the <code>shipment.delivered</code> topic from a known offset to rebuild SLA dashboards.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

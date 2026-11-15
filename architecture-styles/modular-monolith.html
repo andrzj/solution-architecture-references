@@ -122,30 +122,31 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The result is a codebase that reads like a collection of services but deploys as a single unit, inheriting the operational simplicity of a monolith while retaining the design discipline that enables future service extraction.</p>
+          <p>A <strong>modular monolith</strong> is still one deployable, but internal <strong>modules</strong> behave like miniature services: each exposes a public API, owns its data, and hides implementation details. <strong>Meridian Commerce</strong> runs storefront checkout that way — <strong>Catalog</strong>, <strong>Order</strong>, and <strong>Payment</strong> modules compile into one application image even though teams treat them as separate bounded contexts.</p>
+          <p>Meridian gets monolith-style operations (one pipeline, one runtime) while practicing the boundaries they would need if Payment later becomes its own PCI-scoped service.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>The modular monolith emerged as a deliberate response to both the chaos of the "big ball of mud" monolith and the premature complexity of microservices. Teams repeatedly found that jumping directly to microservices before the domain was well understood led to wrong service boundaries that were expensive to change once they became network contracts. A modular monolith defers the expensive boundary-making decision while still forcing the discipline of thinking in terms of bounded contexts. Sam Newman and Martin Fowler both advocate modular monoliths as the preferred intermediate step: get the module boundaries right in a monolith first, then extract services only where operational pressure demands it.</p>
+          <p>Pure monoliths often collapse into shared tables and cross-imports. Microservices bought autonomy but turned every boundary debate into a versioning problem. The modular monolith sits between: learn the domain with cheap refactors, but enforce real seams before they harden on the wire.</p>
+          <p>Meridian stayed modular after Catalog and Order kept redefining “customer” differently from Payment’s bill-to model. Sam Newman and practitioners such as Shopify engineering describe the same intermediate step — nail module APIs in-process, extract services only when deploy or scale pressure leaves no choice.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>You want clean internal boundaries but are not ready (or do not need) to operate a distributed system.</li>
-            <li>The domain model is actively evolving and you expect module boundaries to shift — in-process refactoring is far cheaper than changing service contracts.</li>
-            <li>Team size is between 5 and 25 engineers and independent deployment is not yet a bottleneck.</li>
-            <li>You want a migration path to microservices — a well-modularized codebase makes future service extraction surgical rather than traumatic.</li>
-            <li>Organizational culture favors single-team ownership of the entire application.</li>
+            <li>Meridian wants Catalog, Order, and Payment separated in code but is not ready to run three clusters in production.</li>
+            <li>Checkout rules still change often, and Meridian would rather rename a module package than publish Payment API v2.</li>
+            <li>One platform team can own the shared Meridian deploy while feature teams own module folders and reviews.</li>
+            <li>Leadership wants a credible path to <a href="microservices.html">microservices</a> without freezing the wrong boundaries today.</li>
+            <li>Product culture favors one repo and one on-call rotation for the core storefront experience.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Multiple independent teams need to deploy on different schedules without coordination — at this point the deployment monolith becomes the bottleneck, not the code structure.</li>
-            <li>Components require different technology stacks or runtime environments.</li>
-            <li>Scaling requirements are highly heterogeneous — the image processing pipeline and the login endpoint should not have to scale together.</li>
+            <li>Catalog, Payment, and fraud teams must ship to production on different days and cannot share Meridian’s release window.</li>
+            <li>Payment must run on hardware or runtimes the rest of Meridian cannot share in one process.</li>
+            <li>Only the product-search tier needs aggressive horizontal scale while admin APIs stay quiet.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Modules communicate through explicit public interfaces. Each module may own logical schema namespaces in the shared database, enforced by convention and validated by architecture tests in CI.</p>
+          <p>Meridian modules call each other through facades and an in-process event bus; each module owns a schema namespace in the shared database, and CI architecture tests forbid sideways imports. The figure uses Orders and Inventory labels for the same layout Meridian implements as Order and Catalog inventory hooks.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     om["Orders module API"] <-->|"events"| bus["Internal event bus"]
@@ -182,51 +183,51 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Retains in-process call performance and ACID transactions.</li>
-                <li>Enforced boundaries prevent the "big ball of mud" while staying in one deployment unit.</li>
-                <li>Refactoring module boundaries is still cheap — no network contract changes.</li>
-                <li>Single CI/CD pipeline and one deployable artifact to monitor.</li>
-                <li>Easier developer onboarding — one repo, one run command, full debuggability.</li>
+                <li>Meridian checkout keeps fast in-process calls and single-database transactions across Order and Payment.</li>
+                <li>ArchUnit-style gates stop Catalog from importing Payment entities, which preserves extraction options.</li>
+                <li>Boundary moves stay refactors; Payment can rename aggregates without HTTP deprecation headers.</li>
+                <li>Platform ops still monitor one Meridian artifact during holiday peaks.</li>
+                <li>New hires clone one repo and reproduce full checkout flows on a laptop.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Still a deployment monolith — one failure can take down the entire application.</li>
-                <li>Requires discipline and tooling to keep boundaries from eroding over time.</li>
-                <li>Cannot independently scale a single module.</li>
-                <li>Technology homogeneity — all modules share the same runtime and language.</li>
+                <li>A bad Payment deploy still restarts Catalog and Order because they share the process.</li>
+                <li>Without CI enforcement, shortcut imports re-tangle modules within a few quarters.</li>
+                <li>Meridian cannot scale only Catalog search workers while leaving admin APIs idle.</li>
+                <li>Every module shares the same language runtime, so a niche Payment library choice applies globally.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Enforce boundaries with automated architecture tests run in CI — ArchUnit for Java/Kotlin, Dependency Cruiser for JavaScript/TypeScript, or NDepend for .NET can assert that no class in <code>orders.internal</code> is imported by <code>inventory.*</code>. Organize each module around a public facade or service interface and mark internal packages explicitly. Use an internal event bus (synchronous or in-memory async) for cross-module communication to keep modules loosely coupled without network overhead. Each module should own its own database schema namespace (e.g., <code>orders_*</code> tables) and never let another module issue DML against those tables directly.</p>
+          <p>Name modules after business capabilities — Catalog, Order, Payment — not after layers like <code>controllers</code> or <code>repositories</code>. Meridian documents each module’s public facade first, marks <code>internal</code> packages, and runs ArchUnit, Dependency Cruiser, or NDepend rules so Order cannot touch Payment’s persistence layer. Cross-module work uses an in-memory bus (for example <code>OrderPlaced</code>) instead of direct repository calls. Each module owns tables prefixed by schema (<code>catalog.*</code>, <code>orders.*</code>, <code>payment.*</code>); foreign keys never reach across namespaces without going through APIs.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Boundary erosion under deadline pressure:</strong> Developers take shortcuts by directly accessing another module's repository or entity class, slowly rebuilding the big ball of mud.</li>
-            <li><strong>Missing architecture tests in CI:</strong> Without automated enforcement, boundary violations accumulate unnoticed until the codebase is again fully entangled.</li>
-            <li><strong>Shared transaction leakage:</strong> Modules join database transactions across module boundaries, creating hidden coupling that prevents future extraction.</li>
-            <li><strong>Circular dependencies:</strong> Module A depends on Module B which depends on Module A — prevents clean extraction and indicates a missing abstraction.</li>
-            <li><strong>Overly coarse modules:</strong> Modules that grow too large become mini-monoliths themselves; periodically audit and split as needed.</li>
+            <li><strong>Deadline bypass:</strong> A Catalog engineer queries <code>payment_intents</code> directly; the next PCI audit finds hidden coupling.</li>
+            <li><strong>No architecture tests:</strong> Imports creep back until nobody knows which team owns checkout failures.</li>
+            <li><strong>Shared transactions:</strong> Order and Payment join one DB transaction, so extracting Payment later requires rewriting commit boundaries.</li>
+            <li><strong>Circular modules:</strong> Catalog calls Payment and Payment calls Catalog for pricing; extraction stalls on deadlock redesign.</li>
+            <li><strong>Coarse modules:</strong> “Commerce” becomes a second monolith inside the monolith, defeating the point of Meridian’s split.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have you identified the business capabilities that will map to modules (not technical layers)?</li>
-            <li>Is each module's public API defined and documented before internal implementation?</li>
-            <li>Do architecture tests run in CI to detect cross-module boundary violations?</li>
-            <li>Does each module own its own schema namespace in the database?</li>
-            <li>Is there a clear internal event bus strategy for cross-module async communication?</li>
-            <li>Is there a documented extraction strategy for when a module needs to become a service?</li>
+            <li>Did Meridian map modules from capabilities (Catalog, Order, Payment) rather than from technical tiers?</li>
+            <li>Is each module’s public API written down before internals merge?</li>
+            <li>Do CI jobs fail when a forbidden import appears across modules?</li>
+            <li>Does every module own a distinct schema namespace with no cross-module DML?</li>
+            <li>Is there a documented event catalog for asynchronous cross-module work?</li>
+            <li>Does the extraction plan name which module becomes a service first and what facade stays behind?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Shopify's "Component Rails":</strong> Shopify introduced modular boundaries into their monolith using Rails engines, enforcing module APIs before selectively extracting services.</li>
-            <li><strong>Mid-size SaaS platforms:</strong> A B2B SaaS with billing, user management, and core product modules that want clean boundaries but deploy on a shared Kubernetes pod.</li>
-            <li><strong>Greenfield products in regulated industries:</strong> Healthcare or finance startups that need audit trails and operational simplicity prefer a modular monolith before distributing the compliance surface area.</li>
+            <li><strong>Meridian Commerce storefront:</strong> Catalog, Order, and Payment share one deployable while PCI scope for cards stays inside the Payment module boundary.</li>
+            <li><strong>Shopify modular monolith:</strong> Component-style boundaries inside Rails preceded selective service extractions documented by Shopify Engineering.</li>
+            <li><strong>Regulated retail pilots:</strong> Teams keep audit-friendly monolith ops until compliance forces isolating Payment onto its own deployable.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

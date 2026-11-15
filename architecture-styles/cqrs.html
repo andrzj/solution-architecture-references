@@ -122,31 +122,33 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>CQRS (Command Query Responsibility Segregation) is an architectural pattern that divides a system's operations into two distinct models: <em>Commands</em> that change state (write model), and <em>Queries</em> that return data (read model). These models can use completely different data representations, storage technologies, and optimizations. The write model enforces domain invariants and maintains strong consistency; the read model is denormalized and optimized for specific query shapes.</p>
-          <p>Greg Young formalized CQRS as a natural extension of Bertrand Meyer's Command Query Separation principle (a method should either be a command that performs an action or a query that returns data, but not both). CQRS can be applied at different scales — from simple method separation within a single service to fully separated write and read databases with asynchronous projection updates.</p>
+          <p><strong>CQRS</strong> (Command Query Responsibility Segregation) splits <em>commands</em> that change state from <em>queries</em> that return data, often with separate models and stores for each side.</p>
+          <p>Greg Young extended Bertrand Meyer’s Command Query Separation from methods to systems: the write model enforces invariants; the read model is shaped for how screens and APIs actually ask questions.</p>
+          <p>At <strong>Meridian Commerce</strong>, the Catalog team accepts <code>PublishProduct</code> and <code>UpdatePrice</code> commands against a normalized Postgres write model, while shoppers hit OpenSearch and a Redis-backed facet cache built by projectors — not the same tables the merchandiser edits.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In traditional CRUD systems, the same model serves both reads and writes. This creates tension: the write model needs normalization and invariant enforcement; the read model needs denormalization and query performance. A customer dashboard view may join 10 tables — but the write model doesn't need those joins. Conversely, optimizing the write model for read queries degrades write performance and complicates domain logic.</p>
-          <p>CQRS resolves this by allowing each side to evolve independently. Read models (projections) can be rebuilt from scratch by replaying history; they can be optimized for specific UI shapes with no coupling to the write model. When combined with Event Sourcing, CQRS also enables temporal query capability — "what did this entity look like at 2pm yesterday?"</p>
+          <p>Meridian’s catalog search joined six tables on every browse request. Merchandisers adding attributes slowed checkout-style admin writes, and tuning indexes for search polluted the write schema.</p>
+          <p>CQRS let Catalog keep a strict <code>Product</code> aggregate for commands while search owned denormalized documents with synonyms, facets, and ranking boosts. Each side scales and deploys on its own cadence.</p>
+          <p>When Catalog pairs CQRS with event sourcing for Order (see <a href="event-sourcing.html">Event Sourcing</a>), the same domain events feed both search projections and fulfillment read models — one write path, many read shapes.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Read and write workloads have significantly different performance profiles (heavy-read, low-write systems, or write-intensive with complex aggregations).</li>
-            <li>The write model is a rich domain model with complex invariants that would be degraded by read optimization concerns.</li>
-            <li>Multiple distinct read models (dashboards, reports, mobile views) need different projections of the same underlying data.</li>
-            <li>Combined with Event Sourcing — CQRS + ES is the most natural and powerful pairing.</li>
-            <li>Scalability requirements: read replicas and caches for the read side, independent of write path scaling.</li>
+            <li>Apply CQRS when Meridian-style read traffic dominates and query shapes differ from write invariants, as catalog browse versus merchandising edits.</li>
+            <li>Apply CQRS when the write model is a rich domain model that should not absorb report-friendly denormalization.</li>
+            <li>Apply CQRS when multiple UIs need different projections of the same catalog truth — mobile cards, B2B CSV export, and ops dashboards.</li>
+            <li>Apply CQRS alongside event sourcing when domain events naturally feed projectors (Meridian’s Order stream updating catalog “bought together” hints).</li>
+            <li>Apply CQRS when you need to scale OpenSearch or Redis read tiers without touching Postgres write primaries.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Simple domains where a single CRUD model is sufficient — CQRS adds significant complexity for no benefit.</li>
-            <li>When immediate consistency after writes is required in the UI — async projection updates mean queries may return stale data briefly.</li>
-            <li>Small teams without the bandwidth to maintain two separate data models and projection update logic.</li>
+            <li>Skip CQRS for internal admin CRUD with a handful of fields — Meridian’s tax-code lookup does not warrant projectors.</li>
+            <li>Skip CQRS when the merchandising UI must show search-indexed fields in the same transaction as a command — async lag will confuse users unless you design optimistic UI.</li>
+            <li>Skip full physical CQRS until the team can own projection code, rebuild jobs, and drift alerts — logical CQRS inside one service is often enough first.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Commands go through the domain model which maintains write-side state. After processing, the write model publishes domain events that update read-side projections, which are optimized views consumed by queries.</p>
+          <p>Meridian’s catalog command API mutates Postgres and emits <code>ProductPublished</code> events. Projectors update OpenSearch documents and Redis facet sets; the storefront query API reads only those stores.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart LR
     C["Client"] -->|command| CH["Command handler"]
@@ -174,7 +176,7 @@
                  └───────────────────▶│   Read Store        │
                                       │ (Denormalized Views)│
                                       └────────────────────┘</code></pre></details>
-                      <figcaption id="typical-architecture-caption">CQRS: commands update the write model; projectors build denormalized read models for queries.</figcaption>
+                      <figcaption id="typical-architecture-caption">Meridian Catalog CQRS: commands persist to Postgres; projectors feed OpenSearch and Redis for storefront queries.</figcaption>
                     </figure>
 
 
@@ -183,53 +185,56 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Write and read models evolve independently — change a query projection without touching domain logic.</li>
-                <li>Read models can be database-technology-specific for query optimization (ElasticSearch, Redis, read replica).</li>
-                <li>Projections can be rebuilt at any time — derive new views from existing write history.</li>
-                <li>Simplifies the domain model by removing read-side complexity from domain objects.</li>
-                <li>Read side scales independently from write side.</li>
+                <li>Meridian changes search ranking in OpenSearch without refactoring the <code>Product</code> aggregate in Postgres.</li>
+                <li>Read stores pick the right engine — OpenSearch for full text, Redis for hot facet counts.</li>
+                <li>Projectors can rebuild catalog search from <code>ProductPublished</code> history after a mapping bug.</li>
+                <li>Domain commands stay focused on invariants instead of join-heavy DTOs for the storefront.</li>
+                <li>Black Friday scales query nodes independently from merchandising write traffic.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Eventual consistency between write and read models — UIs may show stale data after a command.</li>
-                <li>Significantly more code: command handlers, events, projectors, read models, query handlers.</li>
-                <li>Projection logic bugs can corrupt read models; requires rebuild strategy.</li>
-                <li>Debugging "why is my query returning wrong data?" requires tracing through projection logic.</li>
+                <li>A merchandiser may publish a SKU and see search lag seconds behind Postgres unless the UI optimistically updates.</li>
+                <li>Meridian maintains command handlers, events, projectors, and query APIs — more moving parts than one CRUD service.</li>
+                <li>A projector defect corrupts OpenSearch until ops run a full replay job.</li>
+                <li>“Wrong price on search” tickets require tracing command → event → projector, not one SQL query.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with logical CQRS (separate command and query objects in the same service against the same database) before jumping to physical CQRS with separate databases — most systems get 80% of the benefit from logical separation alone. When moving to physical CQRS, decide on synchronous projections (updated in the same transaction as the write) vs. asynchronous projections (updated via events after the write). Synchronous projections sacrifice decoupling for consistency; async projections are more scalable but require clients to handle eventual consistency.</p>
-          <p>Always include a projection rebuild mechanism — a command to replay all events and regenerate a projection from scratch.</p>
-          <p>Use optimistic concurrency on the write side (version numbers on aggregates) to prevent lost updates.</p>
+          <p><strong>Start logical:</strong> Meridian began with separate command and query services against one Postgres database before splitting OpenSearch off — most clarity comes from segregated handlers, not day-one polyglot storage.</p>
+          <p><strong>Projection timing:</strong> Catalog uses async projectors on Kafka for search; admin screens that need read-your-writes poll the write API or use synchronous projection to a small Redis cache for SKU detail.</p>
+          <p><strong>Rebuild path:</strong> A <code>RebuildCatalogSearch</code> job replays <code>ProductPublished</code> and <code>PriceChanged</code> from the outbox into a fresh OpenSearch index, then aliases cutover.</p>
+          <p><strong>Write concurrency:</strong> <code>Product</code> aggregates carry version numbers; conflicting <code>UpdatePrice</code> commands fail fast instead of silently overwriting.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Applying CQRS to everything:</strong> Using full CQRS for simple lookup tables or configuration data adds overhead with no benefit.</li>
-            <li><strong>No projection rebuild mechanism:</strong> A projection bug has been deploying for a week but there's no way to fix the corrupted read model without manual SQL.</li>
-            <li><strong>Stale read UX failures:</strong> User submits a command, immediately queries, and sees the old data — the UI needs to handle eventual consistency (optimistic updates or polling).</li>
-            <li><strong>Command handler with query logic:</strong> A command handler calls the read model to make a decision — violates the segregation and creates circular dependencies.</li>
-            <li><strong>Over-normalized write model:</strong> The write model becomes an ORM aggregate dump rather than a rich domain model, losing the key benefit of CQRS.</li>
+            <li><strong>CQRS everywhere:</strong> Meridian applies full projection stacks to tiny lookup tables and drowns in boilerplate.</li>
+            <li><strong>No rebuild:</strong> A bad projector deploys for a week; search prices drift with no replay lever.</li>
+            <li><strong>Stale admin UX:</strong> Merchandisers refresh and still see old titles because search lag was never communicated.</li>
+            <li><strong>Commands querying OpenSearch:</strong> <code>PublishProduct</code> checks the search index for duplicates — circular coupling breaks segregation.</li>
+            <li><strong>ORM write model:</strong> The “aggregate” is every column on <code>products</code> — invariants live only in controllers.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is there a genuine mismatch between write and read complexity that justifies separate models?</li>
-            <li>Can the UI handle eventual consistency (optimistic UI updates or polling after a command)?</li>
-            <li>Is there a projection rebuild strategy for when projection logic needs to be corrected?</li>
-            <li>Are command handlers free of query logic (no reading from read models to make write decisions)?</li>
-            <li>Is optimistic concurrency implemented on the write side to prevent lost updates?</li>
-            <li>Is a logical CQRS approach sufficient, or is physical separation (separate DBs) actually needed?</li>
+            <li>Is Meridian’s read shape materially different from write invariants, not merely “we like Elasticsearch”?</li>
+            <li>Can storefront and admin UIs tolerate or mask projection lag after commands?</li>
+            <li>Is there an documented rebuild procedure for each read model?</li>
+            <li>Do command handlers load state only from the write model, not from search indexes?</li>
+            <li>Does the write side use optimistic concurrency on catalog aggregates?</li>
+            <li>Would logical CQRS inside one service deliver enough benefit before operating separate databases?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
+          <p>Meridian Catalog runs one CQRS story end to end:</p>
           <ul>
-            <li><strong>Collaborative document editing:</strong> Write model enforces document structure and version invariants; multiple read projections (search index, activity feed, recent changes) are rebuilt from the same write events.</li>
-            <li><strong>E-commerce order management:</strong> Order write model enforces stock reservation invariants; read projections power order history (customer-facing), fulfillment dashboard (ops), and analytics (business intelligence) separately.</li>
-            <li><strong>Financial trading platform:</strong> Trade execution write model is simple and strongly consistent; read models power portfolio views, P&amp;L dashboards, and audit reports — each with different retention and format requirements.</li>
+            <li><strong>Write path:</strong> <code>PublishProduct</code> validates category rules in Postgres and emits <code>ProductPublished</code> to the catalog outbox.</li>
+            <li><strong>Search projection:</strong> A projector builds OpenSearch documents with synonyms, boost fields, and category breadcrumbs for the public API.</li>
+            <li><strong>Facet cache:</strong> A second projector maintains Redis sets for color and size filters that must answer in single-digit milliseconds.</li>
+            <li><strong>B2B export:</strong> A batch projector writes denormalized CSV snapshots for partners without slowing merchandising commands.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

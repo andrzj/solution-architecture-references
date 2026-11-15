@@ -122,32 +122,34 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p><em>Function-as-a-Service (FaaS)</em> — AWS Lambda, Google Cloud Functions, Azure Functions — is the compute primitive: each function invocation is independently isolated, stateless, and billed by duration and memory used (not uptime). <em>Backend-as-a-Service (BaaS)</em> extends the model to managed services for storage, authentication, and databases (DynamoDB, Firebase, Auth0) that eliminate the need to manage backend servers entirely.</p>
-          <p>The cloud provider allocates compute capacity automatically, scales to zero when idle, and scales to thousands of concurrent invocations under load — with no capacity planning required from the developer.</p>
+          <p><strong>Serverless architecture</strong> runs your code on managed, event-triggered compute instead of servers you size and patch yourself.</p>
+          <p><em>Function-as-a-Service (FaaS)</em> — AWS Lambda, Google Cloud Functions, Azure Functions — is the usual unit: each invocation is isolated, stateless, and billed for duration and memory, not idle uptime. <em>Backend-as-a-Service (BaaS)</em> covers the data and auth around it (DynamoDB, S3, API Gateway).</p>
+          <p><strong>RideRelay</strong>, a regional ride-hailing product, runs surge-pricing recalculation and partner webhooks on Lambda. Friday-night demand spikes spin up thousands of concurrent invocations; Sunday afternoon scales toward zero without an ops engineer resizing a fleet.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Traditional servers (and to a lesser extent containers) require paying for compute capacity even when idle. Intermittent or spiky workloads — nightly batch jobs, image thumbnailing, webhook processors, scheduled reports — pay for 24/7 compute to handle peak load that may last only minutes. Serverless eliminates this waste by billing only for actual execution time (often measured in milliseconds). It also removes the operational overhead of patching OS, managing runtime versions, configuring auto-scaling groups, and handling infrastructure failures.</p>
-          <p>For small teams and early-stage products, this dramatically reduces the cost and complexity of running production software. Serverless also naturally aligns with event-driven decomposition — each event type maps to a focused function with a single responsibility.</p>
+          <p>RideRelay’s first surge engine lived on a small ECS cluster that ran 24/7 to survive Friday peaks. Most hours the cluster idled, yet the company paid for it.</p>
+          <p>Serverless bills only when a function runs. EventBridge schedules and Kinesis or SQS bursts invoke Lambdas for surge math and Stripe webhook validation — no capacity planning when a concert lets out downtown.</p>
+          <p>The trade-off is control: Lambda’s 15-minute timeout, cold starts, and AWS-specific triggers are constraints RideRelay accepts on bursty, event-shaped work, not on the always-hot matching API (that stays on containers).</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Intermittent, spiky, or unpredictable workloads where paying for idle capacity is wasteful.</li>
-            <li>Event-driven pipelines: image/video processing triggered by uploads, ETL transformations, webhook handlers.</li>
-            <li>Scheduled jobs (cron-style triggers): nightly reports, data cleanup, status checks.</li>
-            <li>Microservices with very low traffic that don't warrant a persistent container process.</li>
-            <li>API backends where per-request billing and managed scaling are preferable to reserved capacity.</li>
+            <li>Use serverless when RideRelay-style workloads are intermittent or spiky and idle servers would waste budget.</li>
+            <li>Use serverless for event-shaped pipelines, including Kinesis-driven surge recalculation, S3 receipt archives, and HTTPS webhook handlers behind API Gateway.</li>
+            <li>Use serverless for scheduled jobs such as EventBridge rules that recompute zone multipliers every minute during peak hours.</li>
+            <li>Use serverless for low-traffic admin APIs where per-invocation billing beats a minimum container footprint.</li>
+            <li>Use serverless when the team wants the cloud provider to own patching, scaling, and AZ failover for stateless handlers.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Long-running compute tasks — FaaS execution limits (15 minutes on Lambda) preclude use for jobs requiring sustained computation.</li>
-            <li>Latency-sensitive paths where cold start delay (10ms–1s+ for JVM runtimes) is unacceptable.</li>
-            <li>High-throughput, consistently loaded workloads — at high invocation rates, reserved containers are cheaper than per-invocation billing.</li>
-            <li>Scenarios requiring shared mutable in-process state between invocations — functions are stateless by design.</li>
+            <li>Avoid serverless for jobs longer than Lambda’s 15-minute cap, such as full-day pricing backtests — RideRelay runs those on Batch or ECS instead.</li>
+            <li>Avoid serverless on user-facing paths where cold starts break tight latency SLOs — RideRelay keeps real-time matching on long-lived containers instead of Lambda.</li>
+            <li>Avoid serverless for steady high QPS where reserved Fargate or EC2 beats per-ms billing at scale.</li>
+            <li>Avoid serverless when handlers need shared in-process mutable state; RideRelay stores surge multipliers in DynamoDB, not static globals in Lambda.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Events from multiple sources trigger functions. Functions are stateless and invoke managed services for persistence. Orchestrators coordinate multi-step workflows.</p>
+          <p>RideRelay wires API Gateway, EventBridge, and Kinesis into focused Lambdas. State lives in DynamoDB and S3; Step Functions coordinate multi-step payout reconciliation when a webhook needs retries and compensation. The generic diagram maps to RideRelay as follows: HTTP API and SQS cover partner webhooks and retry queues, S3 holds pricing audit exports, EventBridge runs surge schedules, and the function fleet matches RideRelay’s surge workers.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     API["HTTP API"] & S3["S3 upload"] & SQS["Queue"] & EB["EventBridge"] --> FN["FaaS functions"]
@@ -176,53 +178,58 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Zero infrastructure management — no OS patching, no capacity planning, no scaling configuration.</li>
-                <li>Pay-per-invocation billing: idle functions cost nothing.</li>
-                <li>Automatic scaling from zero to massive concurrency in response to demand.</li>
-                <li>Rapid deployment — functions deploy in seconds with no cluster management.</li>
-                <li>Built-in high availability through cloud provider infrastructure.</li>
+                <li>RideRelay’s platform team does not patch OS images or resize autoscaling groups for surge Lambdas.</li>
+                <li>Idle nights cost near zero because functions scale to zero between ride events.</li>
+                <li>Friday peaks add concurrency automatically instead of pre-provisioned EC2 headroom.</li>
+                <li>Individual functions deploy in minutes, which suits rapid pricing experiments.</li>
+                <li>Multi-AZ availability is inherited from AWS rather than custom failover scripts.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Cold starts: new function instances take 10ms–2s+ to initialize (JVM runtimes worst); unacceptable for latency-sensitive user-facing endpoints.</li>
-                <li>Vendor lock-in: Lambda invocation model, IAM, step functions, and event source mappings are proprietary.</li>
-                <li>Execution limits: max 15 minutes (Lambda), 10 minutes (Cloud Functions) — cannot run long batch jobs.</li>
-                <li>Debugging and local development are harder — simulating the cloud runtime locally is imperfect.</li>
-                <li>High-traffic workloads can become expensive — per-invocation billing exceeds reserved container costs at sufficient scale.</li>
+                <li>Cold starts can delay webhook ACKs if RideRelay does not right-size runtimes or use provisioned concurrency on hot paths.</li>
+                <li>Lambda, EventBridge, and Step Functions APIs tie migration to another cloud to a rewrite, not a lift-and-shift.</li>
+                <li>The 15-minute ceiling blocks long batch pricing simulations inside FaaS.</li>
+                <li>Local dev and step-debugging lag behind container workflows unless RideRelay invests in SAM or similar tooling.</li>
+                <li>Sustained millions of invocations per hour can exceed Fargate cost — finance reviews monthly curves.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Minimize cold starts by keeping functions lean and dependencies small — use Lambda SnapStart (JVM) or keep runtimes in Python/Node where cold starts are under 100ms. Use provisioned concurrency for latency-sensitive functions that must be pre-warmed. Design functions to be idempotent — SQS and event sources guarantee at-least-once delivery, so duplicate invocations must be safe. Use Step Functions (AWS) or Durable Functions (Azure) for multi-step workflows rather than chaining functions directly — direct chaining produces invisible failure modes when intermediate functions fail.</p>
-          <p>Externalize all state to managed services (DynamoDB, S3, ElastiCache) — assume no local file system or in-memory state persists between invocations. Monitor cold start rates, error rates, and p99 duration per function — not aggregate metrics.</p>
+          <p><strong>Runtime choice:</strong> RideRelay’s surge worker uses Node 20 with minimal dependencies to keep cold starts short on bursty invocations; JVM functions use SnapStart only where the team accepts AWS-specific tuning.</p>
+          <p><strong>Idempotency:</strong> Stripe webhooks may redeliver; the handler keys idempotency on <code>event.id</code> in DynamoDB before updating payout state.</p>
+          <p><strong>Orchestration:</strong> Payout flows use Step Functions instead of Lambda→Lambda chains so failures surface in one workflow history.</p>
+          <p><strong>State externalization:</strong> Zone multipliers and webhook dedupe keys live in DynamoDB; nothing critical sits in <code>/tmp</code> or static fields.</p>
+          <p><strong>Observability:</strong> Each function exports p99 duration, error rate, and cold-start metrics per alias — aggregate dashboards hide surge regressions.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Thundering cold start herd:</strong> Deployment triggers thousands of simultaneous invocations to a new function version, all cold starting at once — use traffic shifting (canary deployments) to warm up gradually.</li>
-            <li><strong>Silent failures in async invocations:</strong> An SQS-triggered function throws an uncaught exception — messages go to DLQ silently and nobody notices; DLQ alerting and monitoring are mandatory.</li>
-            <li><strong>Lambda function chains replacing orchestration:</strong> Function A triggers Function B which triggers C — one failed step leaves the workflow in an unknown state with no visibility. Use Step Functions.</li>
-            <li><strong>Cost overrun from runaway invocations:</strong> A misconfigured event source mapping processes an infinite loop of messages, billing thousands of dollars overnight — set maximum concurrency limits.</li>
-            <li><strong>VPC cold start penalties:</strong> Functions inside a VPC for RDS access previously had 10–30s cold starts (now improved with hyperplane ENI reuse) — understand your cloud provider's current VPC cold start behavior.</li>
+            <li><strong>Cold-start herd on deploy:</strong> A new surge function version cold-starts across all zones at once — RideRelay uses weighted aliases to warm gradually.</li>
+            <li><strong>Silent DLQ growth:</strong> Webhook Lambda failures enqueue to SQS DLQ without paging — finance discovers missing payouts days later.</li>
+            <li><strong>Function chaining:</strong> Surge Lambda invokes payout Lambda invokes notify Lambda with no central state — Step Functions should own the saga.</li>
+            <li><strong>Runaway concurrency:</strong> A mis-tuned Kinesis iterator or EventBridge rule retriggers surge math in a loop — account-level concurrency caps limit blast radius.</li>
+            <li><strong>VPC latency:</strong> Lambdas in a VPC for legacy RDS access pay ENI setup cost — RideRelay keeps webhook handlers on public DynamoDB access where possible.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the workload event-driven and intermittent, or continuously loaded? (Serverless excels for the former.)</li>
-            <li>Are cold start latencies acceptable for the use case, or is pre-warming/provisioned concurrency needed?</li>
-            <li>Are all functions designed to be stateless and idempotent?</li>
-            <li>Are DLQs and alerting configured for async function invocations?</li>
-            <li>Are multi-step workflows using an orchestrator (Step Functions) rather than function chaining?</li>
-            <li>Has vendor lock-in been evaluated — are migration costs acceptable, or is abstraction (SAM, Serverless Framework, CloudEvents) required?</li>
+            <li>Is the RideRelay workload bursty or event-driven rather than continuously loaded at high QPS?</li>
+            <li>Are cold-start budgets acceptable, or is provisioned concurrency allocated for webhook ACK paths?</li>
+            <li>Are handlers stateless with dedupe keys for at-least-once event sources?</li>
+            <li>Do async triggers have DLQs with alerts before money-moving code runs?</li>
+            <li>Do multi-step flows use Step Functions (or equivalent) instead of opaque Lambda chains?</li>
+            <li>Has the team documented lock-in and a migration path if invocation rates outgrow FaaS economics?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
+          <p>RideRelay’s serverless slice covers pricing and integrations:</p>
           <ul>
-            <li><strong>Image resizing on upload:</strong> S3 upload triggers a Lambda function that generates multiple thumbnail sizes and stores them back to S3 — scales from 1 to 100,000 uploads without configuration changes.</li>
-            <li><strong>Nightly reporting job:</strong> EventBridge Scheduler triggers a Lambda each night to run a database query and email a report — zero cost during the day.</li>
-            <li><strong>API backend for a low-traffic product:</strong> API Gateway + Lambda powers a REST API with no idle costs and no servers to manage — ideal for MVPs and early-stage products.</li>
+            <li><strong>Surge recalculation:</strong> Kinesis ride-request and driver-location shards trigger a Lambda that writes zone multipliers to DynamoDB for the mobile app to read.</li>
+            <li><strong>Stripe webhooks:</strong> API Gateway forwards signed payment events to a Lambda that validates signatures, archives the body to S3, and starts a Step Functions payout workflow.</li>
+            <li><strong>Scheduled hygiene:</strong> EventBridge invokes a nightly Lambda that expires stale surge overrides and emails ops a summary — zero daytime compute cost.</li>
+            <li><strong>Partner callbacks:</strong> Low-traffic fleet-management webhooks run on Lambda with per-request billing instead of a dedicated microservice container.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

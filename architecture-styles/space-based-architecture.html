@@ -122,32 +122,32 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Space-Based Architecture (SBA), also known as the <em>tuple-space pattern</em> or <em>cloud architecture pattern</em>, is designed to eliminate the scalability limitations imposed by a central database. The pattern distributes both application logic and in-memory data storage across a set of <em>processing units</em> (PUs) — identical, self-contained deployable units that each carry their own in-memory copy of the data they need. All transactions operate against the in-memory grid; the database is removed from the synchronous request path and is only updated asynchronously.</p>
-          <p>Adding more processing units adds both compute capacity and distributed memory capacity simultaneously, enabling near-linear scaling. The term originates from the concept of "tuple spaces" (like JavaSpaces and GigaSpaces), where distributed objects are accessed by key in a shared virtual memory space rather than by location.</p>
+          <p><strong>Space-Based Architecture</strong> (SBA) — also called tuple-space or cloud architecture — removes the central database from the synchronous request path. Application logic and hot state live in identical <em>processing units</em> (PUs) that share a virtual in-memory space instead of round-tripping to disk on every read and write.</p>
+          <p><strong>RideRelay</strong> uses SBA for surge-time ride matching. When a stadium lets out, a very large crowd taps “Match” at once. A <em>messaging grid</em> routes each request to an available PU; the <em>processing grid</em> is those PUs running match scoring and offer logic; the <em>data grid</em> holds replicated in-memory copies of open driver slots, active offers, and zone surge multipliers on every unit. Completed trips drain to the system-of-record database through an async data writer — not through the match hot path.</p>
+          <p>Scale out by adding PUs: each new unit adds CPU and a slice of the distributed memory fabric. The idea traces to tuple spaces (JavaSpaces, GigaSpaces), where collaborators read and write entries by key in shared space rather than by server hostname.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In traditional web architectures, the application tier scales horizontally easily but the database tier doesn't — all requests ultimately hit the same database, making it the ceiling for scalability. Connection pools exhaust, lock contention grows, and query latency degrades under load. Caching layers (Redis, Memcached) help but still require a cache miss path to the database. Space-Based Architecture eliminates this ceiling: there is no shared database in the request path.</p>
-          <p>State lives in a distributed in-memory grid replicated across all processing units. This makes the architecture suitable for workloads that need to handle millions of concurrent users or transactions with sub-millisecond latency — high-frequency trading platforms, online gaming, real-time bidding, and ticket/reservation systems with extremely spiky load patterns.</p>
+          <p>Horizontally scaled app tiers hide the real bottleneck: every surge request still contends for the same database connections, row locks, and disk I/O. Caching trims median latency but cache misses and inventory writes still collapse into the RDBMS during spikes — exactly when RideRelay’s match API must stay responsive under spike load.</p>
+          <p>SBA answers spiky, key-oriented workloads — flash matching, bidding, ticketing — where working set size fits cluster RAM and stakeholders accept write-behind persistence for analytics and settlement. The database remains authoritative for history; it is no longer the throttle on live matching.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Extremely high-throughput, low-latency workloads where database I/O is the fundamental bottleneck.</li>
-            <li>Highly variable and spiky load (event ticket sales, flash sales) where elastic in-memory scaling is required.</li>
-            <li>Data that fits in aggregate in memory across the cluster and has high read/write locality per partition.</li>
-            <li>Trading platforms, gaming leaderboards, real-time bidding, online reservation systems.</li>
+            <li>Use SBA when database I/O or connection pools cap throughput during predictable spikes (concerts, holidays, playoff games).</li>
+            <li>Use it when match, bid, or reservation logic needs single-digit millisecond reads and writes against keys, not ad-hoc joins.</li>
+            <li>Use it when the hot working set fits in aggregate cluster memory with headroom for replication.</li>
+            <li>Use it when RideRelay-style dispatch can document eventual lag between grid state and billing exports.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Data volumes exceeding available RAM across the cluster — in-memory grids are expensive and limited by memory capacity.</li>
-            <li>Complex relational queries across many entities — in-memory grids favor key-based access; ad-hoc SQL queries are not their strength.</li>
-            <li>Applications requiring strong ACID guarantees across multiple entities — SBA typically sacrifices ACID for performance.</li>
-            <li>Standard web applications with moderate load — the architectural complexity is unjustified when a conventional database tier suffices.</li>
+            <li>Do not adopt SBA when cold data exceeds RAM — eviction turns every request into a database round trip and undoes the pattern.</li>
+            <li>Do not rely on it for cross-entity reporting SQL; grids excel at key lookup and entry processors, not warehouse-style queries.</li>
+            <li>Do not choose it when finance requires synchronous ACID across match and ledger in one transaction.</li>
+            <li>Do not pay grid operations cost for moderate traffic that a sized database tier and cache already sustain.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Requests are routed to any processing unit. Each PU has a local in-memory grid replica. The data grid replicates state across PUs. A messaging grid routes requests.</p>
-          <p>Asynchronous writers persist to the database.</p>
+          <p>The diagram below is RideRelay’s surge matching plane. The messaging grid load-balances incoming match RPCs onto processing units A–C. Each PU runs application logic against a local replica; replicas stay aligned through the in-memory data grid backbone sketched between units. A data writer batches durable rows to the system-of-record database asynchronously.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     MG["Messaging grid"] --> PU1["Processing unit A"]
@@ -189,54 +189,54 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Near-linear scalability — adding processing units adds both compute and memory capacity.</li>
-                <li>Extreme throughput and sub-millisecond latency — all reads/writes go to in-memory grid, not disk.</li>
-                <li>Database is removed from the hot path — no connection pool exhaustion or lock contention under load.</li>
-                <li>Elastic scaling — PUs can be added and removed dynamically in response to load.</li>
+                <li>RideRelay can add PUs before a known surge and gain both matchers and memory-backed slot inventory in one scaling action.</li>
+                <li>Match reads and offer writes hit local grid replicas instead of contending on shared database rows.</li>
+                <li>The messaging grid absorbs connection storms by spreading RPCs across healthy PUs without opening more DB pool slots.</li>
+                <li>Elastic shrink after the event returns cluster cost to baseline without redesigning the schema.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Data must fit in memory across the cluster — RAM is expensive and limits total data size.</li>
-                <li>Eventual consistency between the in-memory grid and the persistent database (write-behind).</li>
-                <li>Data replication overhead across PUs consumes network bandwidth and introduces replication latency.</li>
-                <li>High operational complexity — in-memory grid configuration, partition management, and failover are non-trivial.</li>
-                <li>Loss of a grid partition before write-behind persistence can result in data loss.</li>
+                <li>Open-driver and offer maps must fit in RAM — oversizing zones into the grid is expensive and brittle.</li>
+                <li>Finance dashboards trail live matching until the async data writer flushes trip facts to the RDBMS.</li>
+                <li>Cross-PU replication during a write storm can briefly expose stale slot counts unless entry processors are carefully scoped.</li>
+                <li>Grid topology, partition keys, and write-behind tuning demand senior ops attention beyond a typical CRUD stack.</li>
+                <li>A PU group that dies before write-behind drains can lose in-flight offers unless durability tiers are configured per object type.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Data grid options:</strong> Hazelcast IMDG and Apache Ignite are the leading open-source in-memory data grids. Oracle Coherence and GigaSpaces are commercial options used in high-frequency trading. Each supports distributed maps, entry processors (compute-to-data), continuous queries, and write-behind persistence. <strong>Data partitioning vs.</p>
-          <p>replication:</strong> For large datasets, <em>partition</em> data across PUs (each PU owns a key range) rather than replicating the full dataset to every PU — this reduces memory per node but makes all-node queries more expensive.</p>
-          <p><strong>Near-cache:</strong> A near-cache is a local L1 cache within each PU node that caches frequently accessed entries from the distributed grid, reducing network round-trips for hot data. <strong>Write-behind persistence:</strong> Batch asynchronous writes to the database to amortize I/O cost. Use write-through (synchronous) for data where durability is critical. Configure durability levels (in-memory only vs.</p>
-          <p>persisted) per data type based on the cost of re-derivation if lost.</p>
+          <p><strong>Three grids on one cluster:</strong> Run the messaging grid (request router or space-based executor), processing grid (stateless-ish PUs with embedded logic), and data grid (Hazelcast, Ignite, or commercial IMDG) as coordinated tiers. RideRelay keys offers by geohash prefix so each PU co-locates scoring with the partition it owns.</p>
+          <p><strong>Partition vs replicate:</strong> Replicate small, hot surge multipliers everywhere; partition large driver-location maps by zone so each PU holds only the shard it matches. Full replication on million-row maps will blow memory budgets.</p>
+          <p><strong>Near-cache and compute-to-data:</strong> Keep per-zone surge counters in a near-cache on each PU to avoid cross-node chatter; use entry processors to decrement open slots atomically inside the partition.</p>
+          <p><strong>Write-behind:</strong> Batch completed match events to Postgres for analytics and payouts. Keep in-flight offers on write-through or short TTL if re-deriving them from riders is costly.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Memory pressure and eviction:</strong> In-memory grids evict entries under memory pressure — if the wrong entries are evicted, processing units load data from the database on every request, defeating the architecture entirely.</li>
-            <li><strong>Replication lag under write storms:</strong> Very high write rates exceed the replication bandwidth between PUs, causing stale reads across the cluster.</li>
-            <li><strong>Write-behind backlog:</strong> Slow database persistence falls behind the in-memory write rate, growing an unbounded write-behind queue that eventually causes memory exhaustion.</li>
-            <li><strong>Cold start data loading:</strong> On cluster restart, all PUs must load data from the database into memory before serving traffic — large datasets cause long warm-up times.</li>
-            <li><strong>Split-brain under network partition:</strong> Two PU groups accept writes independently during a network split — reconciling conflicting in-memory states when the partition heals requires conflict resolution logic.</li>
+            <li><strong>Eviction under memory pressure:</strong> RideRelay evicts cold zone metadata; the next match misses the grid and hammers Postgres — restoring the pattern requires capacity planning, not bigger connection pools.</li>
+            <li><strong>Replication lag at kickoff:</strong> A stadium surge generates more driver ping updates than cross-PU bandwidth allows; matchers read neighboring PUs with stale “available” flags and double-book drivers.</li>
+            <li><strong>Write-behind backlog:</strong> The async data writer cannot keep pace with completed trips; the queue grows until grid nodes OOM or finance reports are hours late.</li>
+            <li><strong>Cold start after deploy:</strong> Every PU reloads zone inventory from the database before taking traffic — a full-cluster restart during peak blocks matching unless warm-up pipelines pre-fill the grid.</li>
+            <li><strong>Split-brain:</strong> A network partition lets two PU islands accept conflicting reservations for the same driver; healing requires version vectors or last-writer-wins rules documented in advance.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does the working dataset fit in the aggregate RAM of the planned cluster at 2–3x the current data size?</li>
-            <li>Is the access pattern key-based (suited for in-memory grid) rather than ad-hoc relational query?</li>
-            <li>Is eventual consistency between the in-memory grid and the persistent store acceptable?</li>
-            <li>Is there a cold-start strategy for loading data into the grid after a full cluster restart?</li>
-            <li>Are write-behind persistence lag and potential data loss on grid failure acceptable for the use case?</li>
-            <li>Has the team assessed Hazelcast/Ignite operational requirements, or is a simpler caching approach (Redis + DB) sufficient?</li>
+            <li>Does the surge-time working set fit planned cluster RAM with headroom above current peak open-offer volume?</li>
+            <li>Is matching keyed by zone, offer, or driver ID rather than arbitrary SQL?</li>
+            <li>Can billing and analytics tolerate minutes of lag behind live grid state?</li>
+            <li>Is there a warm-up runbook that hydrates the data grid before re-enabling the messaging grid?</li>
+            <li>Are write-behind lag alerts and durability levels defined per object (offer vs completed trip)?</li>
+            <li>Has the team compared grid operations cost against Redis-plus-DB for non-surge baseload?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>High-frequency trading platform:</strong> Order matching and position management must complete in microseconds. In-memory state eliminates disk I/O from the critical path; a write-behind journal persists trades asynchronously for settlement.</li>
-            <li><strong>Online ticket sales (flash sales):</strong> Ticket inventory lives in the in-memory grid across all processing units. When millions of users hit a sale simultaneously, inventory checks and reservations complete in memory — no database connection pool exhaustion at peak.</li>
-            <li><strong>Multiplayer gaming leaderboards:</strong> Score updates from millions of concurrent players are applied to in-memory leaderboard data structures with sub-millisecond latency; final rankings are periodically persisted.</li>
+            <li><strong>RideRelay stadium surge (messaging + processing + data grids):</strong> The messaging grid steers “Match” RPCs to PUs; each PU scores nearby drivers from its data-grid replica; accepted offers decrement slot counters via entry processors; the data writer persists trip starts for downstream billing.</li>
+            <li><strong>RideRelay airport queue flash:</strong> Holiday return traffic spikes concurrent matches; elastic PU count tracks queue depth while replicated surge multipliers stay consistent across units without a central Redis choke point.</li>
+            <li><strong>RideRelay post-surge reconcile:</strong> After load drops, write-behind drains to the warehouse; ops scale PUs down knowing the RDBMS never sat in the critical match path during the spike.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
