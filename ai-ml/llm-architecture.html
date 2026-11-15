@@ -97,159 +97,159 @@
           <p class="article-meta">Last updated: <time datetime="2025-01">January 2025</time></p>
 
           </div>
-          <div class="article-content">          <h2 id="what-it-is">What it is</h2>
-          <p><strong>LLM architecture</strong> is how you run transformer language models in production: tokenize prompts, run prefill and decode phases, manage the growing key-value (KV) cache, and stream tokens back to clients. It is the serving layer beneath chat, RAG, and agent features — distinct from choosing which model weights you call.</p>
-          <p>Meridian Commerce’s <strong>shopper copilot</strong> (product Q&amp;A, outfit suggestions, post-add-to-cart nudges) hits an LLM gateway that rate-limits mobile clients, routes traffic between Azure OpenAI chat completions and a vLLM pool for overflow, and streams responses over SSE. Peak holiday traffic is why Meridian owns this stack instead of naïvely pinning one request per GPU.</p>
-          <p>Autoregressive decode means each new token reuses prior KV activations; long RAG contexts plus chat history make inference memory-bandwidth heavy. vLLM’s <strong>PagedAttention</strong> stores KV cache in fixed-size pages (like virtual memory) to cut fragmentation (<a href="https://arxiv.org/abs/2309.06180" rel="noopener noreferrer" target="_blank">Kwon et al., PagedAttention</a>), and <strong>continuous batching</strong> schedules decode steps across concurrent shopper sessions so finished chats free GPU slots immediately (<a href="https://docs.vllm.ai/en/latest/" rel="noopener noreferrer" target="_blank">vLLM documentation</a>).</p>
+          <div class="article-content"> <h2 id="what-it-is">What it is</h2>
+ <p><strong>LLM architecture</strong> is how you run transformer language models in production: tokenize prompts, run prefill and decode phases, manage the growing key-value (KV) cache, and stream tokens back to clients. It is the serving layer beneath chat, RAG, and agent features — distinct from choosing which model weights you call.</p>
+ <p>An e-commerce retailer’s <strong>shopper copilot</strong> (product Q&amp;A, outfit suggestions, post-add-to-cart nudges) hits an LLM gateway that rate-limits mobile clients, routes traffic between Azure OpenAI chat completions and a vLLM pool for overflow, and streams responses over SSE. Peak holiday traffic is why the team owns this stack instead of naïvely pinning one request per GPU.</p>
+ <p>Autoregressive decode means each new token reuses prior KV activations; long RAG contexts plus chat history make inference memory-bandwidth heavy. vLLM’s <strong>PagedAttention</strong> stores KV cache in fixed-size pages (like virtual memory) to cut fragmentation (<a href="https://arxiv.org/abs/2309.06180" rel="noopener noreferrer" target="_blank">Kwon et al., PagedAttention</a>), and <strong>continuous batching</strong> schedules decode steps across concurrent shopper sessions so finished chats free GPU slots immediately (<a href="https://docs.vllm.ai/en/latest/" rel="noopener noreferrer" target="_blank">vLLM documentation</a>).</p>
 
-          <h2 id="why-it-exists">Why it exists</h2>
-          <p>Meridian’s first copilot prototype called a single GPU with static batching: Black Friday threads queued behind one power user pasting entire care guides, time-to-first-token missed latency targets, and GPUs sat half-empty between bursts.</p>
-          <p>LLM serving needs iteration-level scheduling, not batch-at-end classification serving. The diagram’s <em>Prefill worker</em> ingests the fat RAG prompt; <em>Decode workers</em> stream short recommendation blurbs; the <em>KV cache manager</em> tracks pages per session; optional <em>tensor-parallel GPU group</em> shards a larger catalog-tuned model when Azure capacity is throttled.</p>
-          <p>Azure OpenAI covers baseline copilot traffic with managed scale; vLLM on Meridian’s GPU fleet handles burst routing and keeps PII-heavy prompts inside the VPC when policy requires it — same OpenAI-compatible request shape on both sides (<a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/switching-endpoints" rel="noopener noreferrer" target="_blank">Azure OpenAI endpoints</a>).</p>
+ <h2 id="why-it-exists">Why it exists</h2>
+ <p>The team's first copilot prototype called a single GPU with static batching: Black Friday threads queued behind one power user pasting entire care guides, time-to-first-token missed latency targets, and GPUs sat half-empty between bursts.</p>
+ <p>LLM serving needs iteration-level scheduling, not batch-at-end classification serving. The diagram’s <em>Prefill worker</em> ingests the fat RAG prompt; <em>Decode workers</em> stream short recommendation blurbs; the <em>KV cache manager</em> tracks pages per session; optional <em>tensor-parallel GPU group</em> shards a larger catalog-tuned model when Azure capacity is throttled.</p>
+ <p>Azure OpenAI covers baseline copilot traffic with managed scale; vLLM on The team's GPU fleet handles burst routing and keeps PII-heavy prompts inside the VPC when policy requires it — same OpenAI-compatible request shape on both sides (<a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/switching-endpoints" rel="noopener noreferrer" target="_blank">Azure OpenAI endpoints</a>).</p>
 
-          <h2 id="when-to-use">When to use</h2>
-          <ul>
-            <li>Meridian-scale concurrent shopper chats where one-GPU-one-session wastes HBM and misses latency SLOs.</li>
-            <li>Copilot prompts with long catalog RAG context (retrieved chunks + transcript) where KV cache sizing dominates capacity planning.</li>
-            <li>Hybrid routing: Azure OpenAI primary, vLLM warm standby or overflow with identical chat-completions schemas.</li>
-            <li>Open-weight models (e.g., Llama-family) that must run in Meridian’s region for data residency.</li>
-            <li>Token streaming UX — outfit picks that render word-by-word in the mobile storefront.</li>
-          </ul>
+ <h2 id="when-to-use">When to use</h2>
+ <ul>
+ <li>Large-scale concurrent shopper chats where one-GPU-one-session wastes HBM and misses latency SLOs.</li>
+ <li>Copilot prompts with long catalog RAG context (retrieved chunks + transcript) where KV cache sizing dominates capacity planning.</li>
+ <li>Hybrid routing: Azure OpenAI primary, vLLM warm standby or overflow with identical chat-completions schemas.</li>
+ <li>Open-weight models (e.g., Llama-family) that must run in The team's region for data residency.</li>
+ <li>Token streaming UX — outfit picks that render word-by-word in the mobile storefront.</li>
+ </ul>
 
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>Low-volume internal tools where Azure OpenAI alone is simpler than operating GPU schedulers.</li>
-            <li>Tasks with no generation path — embedding-only catalog indexing belongs in the vector pipeline, not decode workers.</li>
-            <li>Small models that fit one GPU without paging when traffic never overlaps.</li>
-          </ul>
+ <h2 id="when-not-to-use">When not to use</h2>
+ <ul>
+ <li>Low-volume internal tools where Azure OpenAI alone is simpler than operating GPU schedulers.</li>
+ <li>Tasks with no generation path — embedding-only catalog indexing belongs in the vector pipeline, not decode workers.</li>
+ <li>Small models that fit one GPU without paging when traffic never overlaps.</li>
+ </ul>
 
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Read the diagram top-down as a copilot request: the mobile client → <em>LLM gateway</em> (auth, quotas) → <em>Prefill worker</em> (tokenize + build KV for retrieved catalog chunks) → <em>Decode workers</em> with continuous batching → <em>KV cache manager</em> (paged blocks per session) → <em>Response streaming</em> (SSE). Heavy catalog models optionally flow through the <em>tensor-parallel GPU group</em>.</p>
-          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart TB
-    client["Client / chat / RAG app"]
-    gw["LLM gateway&lt;br/&gt;auth, limits, routing"]
-    prefill["Prefill worker&lt;br/&gt;tokenize, build KV cache"]
-    decode["Decode workers&lt;br/&gt;continuous batching"]
-    kvm["KV cache manager&lt;br/&gt;paged attention"]
-    stream["Response streaming&lt;br/&gt;SSE / WebSocket"]
-    tp["Tensor-parallel GPU group&lt;br/&gt;optional sharding"]
-    client --> gw
-    gw --> prefill
-    gw --> decode
-    prefill --> kvm
-    decode --> kvm
-    kvm --> stream
-    decode --> tp
-    prefill --> tp</div>
-            <details class="architecture-diagram__fallback">
-              <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>
+ <h2 id="typical-architecture">Typical architecture</h2>
+ <p>Read the diagram top-down as a copilot request: the mobile client → <em>LLM gateway</em> (auth, quotas) → <em>Prefill worker</em> (tokenize + build KV for retrieved catalog chunks) → <em>Decode workers</em> with continuous batching → <em>KV cache manager</em> (paged blocks per session) → <em>Response streaming</em> (SSE). Heavy catalog models optionally flow through the <em>tensor-parallel GPU group</em>.</p>
+ <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <div class="architecture-diagram__render mermaid">flowchart TB
+ client["Client / chat / RAG app"]
+ gw["LLM gateway&lt;br/&gt;auth, limits, routing"]
+ prefill["Prefill worker&lt;br/&gt;tokenize, build KV cache"]
+ decode["Decode workers&lt;br/&gt;continuous batching"]
+ kvm["KV cache manager&lt;br/&gt;paged attention"]
+ stream["Response streaming&lt;br/&gt;SSE / WebSocket"]
+ tp["Tensor-parallel GPU group&lt;br/&gt;optional sharding"]
+ client --> gw
+ gw --> prefill
+ gw --> decode
+ prefill --> kvm
+ decode --> kvm
+ kvm --> stream
+ decode --> tp
+ prefill --> tp</div>
+ <details class="architecture-diagram__fallback">
+ <summary>View text diagram</summary>
+ <pre class="architecture-diagram__canvas"><code>
  ┌────────────────────────────────────────────────────────────┐
- │                    CLIENT / APPLICATION                     │
- │  Chat UI · API consumer · RAG pipeline · Agent framework   │
+ │ CLIENT / APPLICATION │
+ │ Chat UI · API consumer · RAG pipeline · Agent framework │
  └───────────────────────────┬────────────────────────────────┘
-                             │  HTTP / WebSocket / SSE
-                             ▼
+ │ HTTP / WebSocket / SSE
+ ▼
  ┌────────────────────────────────────────────────────────────┐
- │                   LLM GATEWAY / PROXY                       │
- │  Rate limiting · Auth · Prompt logging · Cost tracking      │
- │  Request routing (model selection, tenant isolation)        │
+ │ LLM GATEWAY / PROXY │
+ │ Rate limiting · Auth · Prompt logging · Cost tracking │
+ │ Request routing (model selection, tenant isolation) │
  └────────────────┬────────────────────────────────┬──────────┘
-                  │ Prefill req                     │ Generation req
-                  ▼                                 ▼
- ┌─────────────────────────┐     ┌──────────────────────────┐
- │   PREFILL WORKER        │     │   DECODE WORKER(S)        │
- │   (compute-intensive)   │     │   (memory-BW intensive)   │
- │   Tokenize prompt       │     │   Autoregressive decode   │
- │   Compute KV cache      │     │   Continuous batching     │
- │   [GPU: high FLOPs]     │     │   Paged KV cache          │
- └──────────┬──────────────┘     │   [GPU: high HBM BW]     │
-            │  KV cache transfer │                           │
-            └────────────────────┘
-                  │
-                  ▼
+ │ Prefill req │ Generation req
+ ▼ ▼
+ ┌─────────────────────────┐ ┌──────────────────────────┐
+ │ PREFILL WORKER │ │ DECODE WORKER(S) │
+ │ (compute-intensive) │ │ (memory-BW intensive) │
+ │ Tokenize prompt │ │ Autoregressive decode │
+ │ Compute KV cache │ │ Continuous batching │
+ │ [GPU: high FLOPs] │ │ Paged KV cache │
+ └──────────┬──────────────┘ │ [GPU: high HBM BW] │
+ │ KV cache transfer │ │
+ └────────────────────┘
+ │
+ ▼
  ┌────────────────────────────────────────────────────────────┐
- │              KV CACHE MANAGER (PagedAttention)              │
- │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐  │
- │  │ Page │ │ Page │ │ Page │ │ Page │ │ Page │ │ Page │  │
- │  │  0   │ │  1   │ │  2   │ │  3   │ │  4   │ │  5   │  │
- │  │[req A│ │[req A│ │[req B│ │[req B│ │ FREE │ │ FREE │  │
- │  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘  │
+ │ KV CACHE MANAGER (PagedAttention) │
+ │ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ │
+ │ │ Page │ │ Page │ │ Page │ │ Page │ │ Page │ │ Page │ │
+ │ │ 0 │ │ 1 │ │ 2 │ │ 3 │ │ 4 │ │ 5 │ │
+ │ │[req A│ │[req A│ │[req B│ │[req B│ │ FREE │ │ FREE │ │
+ │ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ │
  └────────────────────────────────────────────────────────────┘
-                  │  token stream
-                  ▼
+ │ token stream
+ ▼
  ┌────────────────────────────────────────────────────────────┐
- │                 RESPONSE STREAMING                          │
- │  Server-Sent Events (SSE) · Streamed token-by-token         │
+ │ RESPONSE STREAMING │
+ │ Server-Sent Events (SSE) · Streamed token-by-token │
  └────────────────────────────────────────────────────────────┘
 
  TENSOR PARALLEL (multi-GPU):
- ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
- │  GPU 0   │  │  GPU 1   │  │  GPU 2   │  │  GPU 3   │
- │ Attn H0  │  │ Attn H1  │  │ Attn H2  │  │ Attn H3  │
- │ MLP shard│  │ MLP shard│  │ MLP shard│  │ MLP shard│
- └──────────┘  └──────────┘  └──────────┘  └──────────┘
-     └─────────────────────────────────────┘
-              NVLink / InfiniBand AllReduce
+ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+ │ GPU 0 │ │ GPU 1 │ │ GPU 2 │ │ GPU 3 │
+ │ Attn H0 │ │ Attn H1 │ │ Attn H2 │ │ Attn H3 │
+ │ MLP shard│ │ MLP shard│ │ MLP shard│ │ MLP shard│
+ └──────────┘ └──────────┘ └──────────┘ └──────────┘
+ └─────────────────────────────────────┘
+ NVLink / InfiniBand AllReduce
 </code></pre>
-            </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Meridian shopper copilot: gateway → prefill/decode workers → paged KV cache → streamed SSE responses; optional tensor-parallel GPUs for large catalog models.</figcaption>
-          </figure>
+ </details>
+ <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">LLM serving path: gateway → prefill/decode workers → paged KV cache → streamed SSE responses; optional tensor-parallel GPUs for large catalog models.</figcaption>
+ </figure>
 
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>vLLM continuous batching keeps Meridian GPUs full during drop-day traffic instead of serializing one copilot thread per card.</li>
-                <li>PagedAttention raises concurrent session count when every shopper carries a fat RAG prefix.</li>
-                <li>Gateway dual-routing preserves UX when Azure throttles — failover to private vLLM without app rewrites.</li>
-                <li>Prefix caching on static copilot system prompts trims prefill cost for repeat mobile opens.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Meridian SRE owns GPU drivers, vLLM upgrades, and KV fragmentation tuning — not just REST integrations.</li>
-                <li>Warm GPU fleets cost money on quiet Tuesday mornings compared with pure pay-per-token APIs.</li>
-                <li>Model rollovers need blue/green engine deploys so copilot sessions do not die mid-stream.</li>
-                <li>One shopper pasting a huge care guide can still inflate tail latency for neighbors on shared decode workers.</li>
-              </ul>
-            </div>
-          </div>
+ <h2 id="pros-and-cons">Pros and cons</h2>
+ <div class="pros-cons">
+ <div class="pros-cons__col pros-cons__col--pros">
+ <h3>Pros</h3>
+ <ul>
+ <li>vLLM continuous batching keeps GPUs full during drop-day traffic instead of serializing one copilot thread per card.</li>
+ <li>PagedAttention raises concurrent session count when every shopper carries a fat RAG prefix.</li>
+ <li>Gateway dual-routing preserves UX when Azure throttles — failover to private vLLM without app rewrites.</li>
+ <li>Prefix caching on static copilot system prompts trims prefill cost for repeat mobile opens.</li>
+ </ul>
+ </div>
+ <div class="pros-cons__col pros-cons__col--cons">
+ <h3>Cons</h3>
+ <ul>
+ <li>The team SRE owns GPU drivers, vLLM upgrades, and KV fragmentation tuning — not just REST integrations.</li>
+ <li>Warm GPU fleets cost money on quiet Tuesday mornings compared with pure pay-per-token APIs.</li>
+ <li>Model rollovers need blue/green engine deploys so copilot sessions do not die mid-stream.</li>
+ <li>One shopper pasting a huge care guide can still inflate tail latency for neighbors on shared decode workers.</li>
+ </ul>
+ </div>
+ </div>
 
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Gateway:</strong> Meridian’s copilot API enforces shopper auth, per-device rate limits, and prompt logging with redacted payment fields before prefill. Routes pick Azure vs. vLLM from health, cost, and data-class flags.</p>
-          <p><strong>Prefill vs. decode:</strong> Catalog RAG makes prefill compute-heavy (many retrieved tokens); decode stays relatively short for shopper replies. Separate pools or disaggregated workers let Meridian scale each phase independently.</p>
-          <p><strong>vLLM ops:</strong> Run with OpenAI-compatible <code>/v1/chat/completions</code>, cap <code>max_tokens</code> for mobile snippets, and set <code>max_model_len</code> from worst-case context (system + RAG + history). Monitor KV cache usage and batch size in vLLM metrics.</p>
-          <p><strong>Context budget:</strong> Copilot truncates oldest transcript turns before dropping retrieved catalog chunks; Azure and vLLM paths share the same token budget logic.</p>
+ <h2 id="implementation-notes">Implementation notes</h2>
+ <p><strong>Gateway:</strong> The team's copilot API enforces shopper auth, per-device rate limits, and prompt logging with redacted payment fields before prefill. Routes pick Azure vs. vLLM from health, cost, and data-class flags.</p>
+ <p><strong>Prefill vs. decode:</strong> Catalog RAG makes prefill compute-heavy (many retrieved tokens); decode stays relatively short for shopper replies. Separate pools or disaggregated workers lets operators scale each phase independently.</p>
+ <p><strong>vLLM ops:</strong> Run with OpenAI-compatible <code>/v1/chat/completions</code>, cap <code>max_tokens</code> for mobile snippets, and set <code>max_model_len</code> from worst-case context (system + RAG + history). Monitor KV cache usage and batch size in vLLM metrics.</p>
+ <p><strong>Context budget:</strong> Copilot truncates oldest transcript turns before dropping retrieved catalog chunks; Azure and vLLM paths share the same token budget logic.</p>
 
-          <h2 id="common-failure-modes">Common failure modes</h2>
+ <h2 id="common-failure-modes">Common failure modes</h2>
+ <ul>
+ <li><strong>KV cache exhaustion:</strong> Flash drop exhausts paged blocks; new sessions get HTTP 429 unless operators shed load or spills to Azure-only routing.</li>
+ <li><strong>OOM at load:</strong> Shipping a bigger catalog-tuned checkpoint without re-sizing tensor-parallel width prevents the model from loading — capacity planning must include CUDA overhead.</li>
+ <li><strong>Head-of-line blocking:</strong> Unlimited <code>max_tokens</code> lets one user generate an essay; cap generation length for copilot and prioritize interactive SSE sessions.</li>
+ <li><strong>Cross-node tensor parallel:</strong> Sharding vLLM across Ethernet-heavy nodes makes AllReduce dominate; keep TP inside NVLink pairs.</li>
+ </ul>
+
+ <h2 id="decision-checklist">Decision checklist</h2>
+ <ul class="checklist">
+ <li>What are The team's p50/p95 targets for time-to-first-token and tokens/sec on mobile copilot?</li>
+ <li>What is the worst-case prompt size (system + RAG chunks + history) in tokens?</li>
+ <li>Does vLLM capacity cover Azure overflow, or only residency-sensitive traffic?</li>
+ <li>Are prefill and decode pools sized from measured traces, not guesswork?</li>
+ <li>Is there a blue/green path for vLLM model and tokenizer updates?</li>
+ <li>Do gateway logs correlate shopper session IDs across Azure and vLLM backends?</li>
+ </ul>
+
+ <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>KV cache exhaustion:</strong> Flash drop exhausts paged blocks; new sessions get HTTP 429 unless Meridian sheds load or spills to Azure-only routing.</li>
-            <li><strong>OOM at load:</strong> Shipping a bigger catalog-tuned checkpoint without re-sizing tensor-parallel width prevents the model from loading — capacity planning must include CUDA overhead.</li>
-            <li><strong>Head-of-line blocking:</strong> Unlimited <code>max_tokens</code> lets one user generate an essay; cap generation length for copilot and prioritize interactive SSE sessions.</li>
-            <li><strong>Cross-node tensor parallel:</strong> Sharding vLLM across Ethernet-heavy nodes makes AllReduce dominate; keep TP inside NVLink pairs.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>What are Meridian’s p50/p95 targets for time-to-first-token and tokens/sec on mobile copilot?</li>
-            <li>What is the worst-case prompt size (system + RAG chunks + history) in tokens?</li>
-            <li>Does vLLM capacity cover Azure overflow, or only residency-sensitive traffic?</li>
-            <li>Are prefill and decode pools sized from measured traces, not guesswork?</li>
-            <li>Is there a blue/green path for vLLM model and tokenizer updates?</li>
-            <li>Do gateway logs correlate shopper session IDs across Azure and vLLM backends?</li>
-          </ul>
-
-          <h2 id="example-use-cases">Example use cases</h2>
-          <p>Meridian’s <strong>shopper copilot</strong> end-to-end:</p>
-          <ul>
-            <li><strong>Browse assist:</strong> “Waterproof trail shoes under $120?” — gateway → prefill with retrieved catalog chunks → decode streams three SKU cards with short rationales over SSE.</li>
-            <li><strong>Cart nudge:</strong> After add-to-cart, copilot pulls care-guide chunks; KV cache pages hold the RAG prefix while decode emits a one-line leather-care tip.</li>
-            <li><strong>Peak routing:</strong> Azure OpenAI serves steady traffic; when quota pressure rises, gateway shifts new sessions to vLLM on Meridian GPUs without changing the mobile SDK.</li>
-            <li><strong>Residency path:</strong> EU shoppers whose prompts may include address hints stay on EU vLLM; US traffic uses Azure US regions — same prompt templates, different backend target.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce shopper copilot</strong> end-to-end across gateway, RAG prefill, and streamed decode.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Browse assist:</strong> “Waterproof trail shoes under $120?” — gateway → prefill with retrieved catalog chunks → decode streams three SKU cards with short rationales over SSE.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Cart nudge:</strong> After add-to-cart, copilot pulls care-guide chunks; KV cache pages hold the RAG prefix while decode emits a one-line leather-care tip.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Peak routing:</strong> Azure OpenAI serves steady traffic; when quota pressure rises, gateway shifts new sessions to vLLM on Meridian GPUs without changing the mobile SDK.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Residency path:</strong> EU shoppers whose prompts may include address hints stay on EU vLLM; US traffic uses Azure US regions — same prompt templates, different backend target.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

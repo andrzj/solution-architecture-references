@@ -121,117 +121,116 @@
           </div>
         </div>
         <div class="article-content">
-                    <h2 id="what-it-is">What it is</h2>
-          <p><strong>Clean Architecture</strong> organizes code as concentric rings so business rules sit at the center and every outer layer depends inward. The <em>Dependency Rule</em> is the constraint: source code dependencies may only point toward higher-level policy — never toward frameworks, UI, or databases.</p>
-          <p>At <strong>Northwind Logistics</strong>, the <code>dispatch-scheduling</code> service applies Clean Architecture to <strong>shipment scheduling</strong>. Inner <strong>Entities</strong> such as <code>Shipment</code>, <code>PickupWindow</code>, and <code>CarrierCommitment</code> encode carrier cutoffs and hazmat holds. <strong>Use Case Interactors</strong> such as <code>SchedulePickupInteractor</code> and <code>RescheduleForWeatherInteractor</code> orchestrate those entities through gateway interfaces. <strong>Interface Adapters</strong> translate FieldOps HTTP, Routing Kafka events, and Postgres JDBC — but inner rings never import those types.</p>
-          <p>Nothing in an inner circle may know about an outer circle. That compile-time boundary keeps Spring controllers and JPA mappings from leaking into rules that must stay stable across framework upgrades.</p>
+ <h2 id="what-it-is">What it is</h2>
+ <p><strong>Clean Architecture</strong> organizes code as concentric rings so business rules sit at the center and every outer layer depends inward. The <em>Dependency Rule</em> is the constraint: source code dependencies may only point toward higher-level policy — never toward frameworks, UI, or databases.</p>
+ <p>A <strong>dispatch-scheduling</strong> service is a common fit. Inner <strong>Entities</strong> such as <code>Shipment</code>, <code>PickupWindow</code>, and <code>CarrierCommitment</code> encode carrier cutoffs and hazmat holds. <strong>Use Case Interactors</strong> such as <code>SchedulePickupInteractor</code> and <code>RescheduleForWeatherInteractor</code> orchestrate those entities through gateway interfaces. <strong>Interface Adapters</strong> translate mobile operations HTTP, routing Kafka events, and Postgres JDBC — but inner rings never import those types.</p>
+ <p>Nothing in an inner circle may know about an outer circle. That compile-time boundary keeps Spring controllers and JPA mappings from leaking into rules that must stay stable across framework upgrades.</p>
 
-          <h2 id="why-it-exists">Why it exists</h2>
-          <p>Robert C. Martin observed that many codebases treat the framework as the architectural center — the Spring Boot application or the Rails app — when the framework is only a delivery mechanism. Business logic drifts into controllers, services bend to ORM constraints, and tests require spinning up the whole stack.</p>
-          <p>Northwind hit that wall when scheduling rules had to run through FieldOps REST, a nightly CLI rebalancer, and async <code>RouteReoptimized</code> replays from Routing. Carrier SLA logic duplicated across adapters until the dispatch team recentralized it in interactors and entities. Clean Architecture makes the business rules the center and treats frameworks as plugins.</p>
-          <p>The goals match Hexagonal Architecture — testable domain, swappable UI, swappable database, swappable externals — with explicit ring names: Entities, Use Cases, Gateways, and Presenters.</p>
+ <h2 id="why-it-exists">Why it exists</h2>
+ <p>Robert C. Martin observed that many codebases treat the framework as the architectural center — the Spring Boot application or the Rails app — when the framework is only a delivery mechanism. Business logic drifts into controllers, services bend to ORM constraints, and tests require spinning up the whole stack.</p>
+ <p>Teams hit that wall when scheduling rules had to run through a mobile ops REST API, a nightly CLI rebalancer, and async <code>RouteReoptimized</code> replays from a routing service. Carrier SLA logic duplicated across adapters until the dispatch team recentralized it in interactors and entities. Clean Architecture makes the business rules the center and treats frameworks as plugins.</p>
+ <p>The goals match Hexagonal Architecture — testable domain, swappable UI, swappable database, swappable externals — with explicit ring names: Entities, Use Cases, Gateways, and Presenters.</p>
 
-          <h2 id="when-to-use">When to use</h2>
+ <h2 id="when-to-use">When to use</h2>
+ <ul>
+ <li>Apply Clean Architecture when scheduling invariants must survive framework and infrastructure churn without rewriting business rules.</li>
+ <li>Apply it when the same interactors must serve multiple delivery mechanisms, such as a mobile ops REST API, internal CLI tools, and Kafka-driven replays.</li>
+ <li>Apply it when the dispatch team practices TDD and needs interactors and entities runnable with in-memory gateways only.</li>
+ <li>Apply it when carrier commitments and hazmat rules must be auditable apart from Postgres schemas or Kafka topic layouts.</li>
+ <li>Apply it when ArchUnit or equivalent can enforce the Dependency Rule in CI for a long-lived service.</li>
+ </ul>
+
+ <h2 id="when-not-to-use">When not to use</h2>
+ <ul>
+ <li>Skip the pattern for CRUD-only endpoints where interactors would delegate straight to repositories with no scheduling rules to protect.</li>
+ <li>Skip it for throwaway pilots where ring ceremony slows learning more than it prevents real coupling.</li>
+ <li>Skip it until the team understands dependency inversion, because rings without enforcement become folder labels rather than boundaries.</li>
+ </ul>
+
+ <h2 id="typical-architecture">Typical architecture</h2>
+ <p>A dispatch-scheduling service maps naturally to four rings. The diagram shows how Frameworks and Drivers sit outside Interface Adapters, Use Cases, and Entities — the Dependency Rule is the only structural rule that matters.</p>
+
+ <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <div class="architecture-diagram__render mermaid">flowchart TB
+ FW["Frameworks and drivers"] --> AD["Interface adapters"]
+ AD --> UC["Use cases"]
+ UC --> EN["Entities"]
+ FW -.- note1["Dependencies point inward only"]</div>
+ <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>┌─────────────────────────────────────────────┐
+ │ Frameworks &amp; Drivers (outermost) │
+ │ (Spring, Express, Postgres, React, Kafka) │
+ │ ┌───────────────────────────────────────┐ │
+ │ │ Interface Adapters │ │
+ │ │ (Controllers, Presenters, Gateways) │ │
+ │ │ ┌─────────────────────────────────┐ │ │
+ │ │ │ Use Cases (Interactors) │ │ │
+ │ │ │ ┌───────────────────────────┐ │ │ │
+ │ │ │ │ Entities │ │ │ │
+ │ │ │ │ (Domain Objects, │ │ │ │
+ │ │ │ │ Business Rules) │ │ │ │
+ │ │ │ └───────────────────────────┘ │ │ │
+ │ │ └─────────────────────────────────┘ │ │
+ │ └───────────────────────────────────────┘ │
+ └─────────────────────────────────────────────┘
+ Dependencies only point INWARD →</code></pre></details>
+ <figcaption id="typical-architecture-caption">Clean Architecture rings: outer frameworks depend on inner domain entities, never the reverse.</figcaption>
+ </figure>
+
+
+ <h2 id="pros-and-cons">Pros and cons</h2>
+ <div class="pros-cons">
+ <div class="pros-cons__col pros-cons__col--pros">
+ <h3>Pros</h3>
+ <ul>
+ <li>Carrier cutoff and hazmat rules live in Entities and interactors that run without Postgres, Kafka, or Spring on the classpath.</li>
+ <li>The dispatch team can swap ORM mappings or move from REST callbacks to gRPC without touching <code>SchedulePickupInteractor</code>.</li>
+ <li>Named roles — Interactor, Gateway, Presenter — give code review a shared vocabulary when mobile ops and routing both call scheduling.</li>
+ <li>One <code>RescheduleForWeatherInteractor</code> can serve storm dashboards, batch replan jobs, and integration tests with different outer adapters.</li>
+ <li>The layout reinforces SOLID, especially Dependency Inversion, when multiple squads touch the same service repository.</li>
+ </ul>
+ </div>
+ <div class="pros-cons__col pros-cons__col--cons">
+ <h3>Cons</h3>
+ <ul>
+ <li>Each scheduling flow tends to need Input Port, Output Port, Interactor, and request/response models — ceremony that hurts thin CRUD paths.</li>
+ <li>Layer mapping between HTTP DTOs and domain objects adds work when no invariant sits between them.</li>
+ <li>The Presenter pattern feels awkward for synchronous REST unless the team standardizes on returning response models from interactors.</li>
+ <li>Many small classes remain hard to navigate without a package convention such as <code>scheduling.usecases.*</code> and architecture tests that guard imports.</li>
+ </ul>
+ </div>
+ </div>
+
+ <h2 id="implementation-notes">Implementation notes</h2>
+ <p><strong>Model scheduling as use cases:</strong> Define <code>SchedulePickupInputPort</code> that HTTP controllers call. <code>SchedulePickupInteractor</code> accepts a plain <code>SchedulePickupRequest</code>, loads or creates a <code>Shipment</code> entity, enforces <code>CarrierCommitment</code> windows, and calls <code>ShipmentRepository</code> and <code>CarrierCapacityGateway</code> interfaces declared in the use case ring.</p>
+ <p><strong>Keep entities framework-free:</strong> <code>Shipment</code> and <code>PickupWindow</code> have no JPA, Jackson, or Lombok infrastructure annotations. Persistence adapters in the outer ring map rows to entities at the repository boundary.</p>
+ <p><strong>Wire at the composition root:</strong> A Spring <code>@Configuration</code> module binds Postgres <code>ShipmentRepositoryImpl</code> and in-memory fakes for CI. Inner packages never reference <code>org.springframework</code>.</p>
+ <p><strong>Pragmatic presenters:</strong> Many teams let interactors return <code>SchedulePickupResponse</code> directly to controllers instead of pushing through an Output Port — slightly less pure, far easier for mobile and ops APIs.</p>
+
+ <h2 id="common-failure-modes">Common failure modes</h2>
+ <ul>
+ <li><strong>HTTP DTOs in interactors:</strong> Passing <code>SchedulePickupHttpRequest</code> into the use case ring couples scheduling rules to the web framework.</li>
+ <li><strong>JPA on <code>Shipment</code>:</strong> Hibernate annotations on entities break the Dependency Rule at the core and invite lazy-load surprises in domain code.</li>
+ <li><strong>Anemic interactors:</strong> <code>GetShipmentByIdInteractor</code> that only calls the repository adds rings without protecting any scheduling invariant.</li>
+ <li><strong>Repositories in the wrong ring:</strong> Concrete <code>PostgresShipmentRepository</code> living beside interactors lets infrastructure imports creep inward.</li>
+ <li><strong>No architecture tests:</strong> Without ArchUnit, the <code>domain</code> package slowly accumulates Kafka and Spring imports until rings are fiction.</li>
+ </ul>
+
+ <h2 id="decision-checklist">Decision checklist</h2>
+ <ul class="checklist">
+ <li>Can you run every scheduling interactor test with in-memory gateways and no database?</li>
+ <li>Are <code>Shipment</code>, <code>PickupWindow</code>, and related entities free of framework imports?</li>
+ <li>Do request and response models contain only plain data, not HTTP framework or Kafka types?</li>
+ <li>Are gateway interfaces defined in the use case layer, not under <code>infrastructure</code>?</li>
+ <li>Does CI enforce the Dependency Rule with ArchUnit or an equivalent tool?</li>
+ <li>Is there one composition root that wires adapters without inner-ring <code>@Autowired</code>?</li>
+ </ul>
+
+ <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Apply Clean Architecture when Northwind’s scheduling invariants must survive framework and infrastructure churn without rewriting business rules.</li>
-            <li>Apply it when the same interactors must serve multiple delivery mechanisms, such as FieldOps REST, internal CLI tools, and Kafka-driven replays.</li>
-            <li>Apply it when the dispatch team practices TDD and needs interactors and entities runnable with in-memory gateways only.</li>
-            <li>Apply it when carrier commitments and hazmat rules must be auditable apart from Postgres schemas or Kafka topic layouts.</li>
-            <li>Apply it when ArchUnit or equivalent can enforce the Dependency Rule in CI for a long-lived service.</li>
-          </ul>
-
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>Skip the pattern for CRUD-only endpoints where interactors would delegate straight to repositories with no scheduling rules to protect.</li>
-            <li>Skip it for throwaway pilots where ring ceremony slows learning more than it prevents real coupling.</li>
-            <li>Skip it until the team understands dependency inversion, because rings without enforcement become folder labels rather than boundaries.</li>
-          </ul>
-
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Northwind maps <code>dispatch-scheduling</code> to four rings. The diagram shows how Frameworks and Drivers sit outside Interface Adapters, Use Cases, and Entities — the Dependency Rule is the only structural rule that matters.</p>
-
-                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-                      <div class="architecture-diagram__render mermaid">flowchart TB
-    FW["Frameworks and drivers"] --> AD["Interface adapters"]
-    AD --> UC["Use cases"]
-    UC --> EN["Entities"]
-    FW -.- note1["Dependencies point inward only"]</div>
-                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>┌─────────────────────────────────────────────┐
-          │  Frameworks &amp; Drivers (outermost)            │
-          │  (Spring, Express, Postgres, React, Kafka)  │
-          │  ┌───────────────────────────────────────┐  │
-          │  │  Interface Adapters                    │  │
-          │  │  (Controllers, Presenters, Gateways)  │  │
-          │  │  ┌─────────────────────────────────┐  │  │
-          │  │  │  Use Cases (Interactors)         │  │  │
-          │  │  │  ┌───────────────────────────┐  │  │  │
-          │  │  │  │   Entities                 │  │  │  │
-          │  │  │  │   (Domain Objects,         │  │  │  │
-          │  │  │  │    Business Rules)         │  │  │  │
-          │  │  │  └───────────────────────────┘  │  │  │
-          │  │  └─────────────────────────────────┘  │  │
-          │  └───────────────────────────────────────┘  │
-          └─────────────────────────────────────────────┘
-            Dependencies only point INWARD →</code></pre></details>
-                      <figcaption id="typical-architecture-caption">Clean Architecture rings: outer frameworks depend on inner domain entities, never the reverse.</figcaption>
-                    </figure>
-
-
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>Northwind’s carrier cutoff and hazmat rules live in Entities and interactors that run without Postgres, Kafka, or Spring on the classpath.</li>
-                <li>The dispatch team can swap ORM mappings or move from REST callbacks to gRPC without touching <code>SchedulePickupInteractor</code>.</li>
-                <li>Named roles — Interactor, Gateway, Presenter — give code review a shared vocabulary when FieldOps and Routing both call scheduling.</li>
-                <li>One <code>RescheduleForWeatherInteractor</code> can serve storm dashboards, batch replan jobs, and integration tests with different outer adapters.</li>
-                <li>The layout reinforces SOLID, especially Dependency Inversion, when multiple squads touch the same service repository.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Each Northwind scheduling flow tends to need Input Port, Output Port, Interactor, and request/response models — ceremony that hurts thin CRUD paths.</li>
-                <li>Layer mapping between FieldOps DTOs and domain objects adds work when no invariant sits between them.</li>
-                <li>The Presenter pattern feels awkward for synchronous REST unless the team standardizes on returning response models from interactors.</li>
-                <li>Many small classes remain hard to navigate without a package convention such as <code>scheduling.usecases.*</code> and architecture tests that guard imports.</li>
-              </ul>
-            </div>
-          </div>
-
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Model Northwind scheduling as use cases:</strong> Define <code>SchedulePickupInputPort</code> that FieldOps controllers call. <code>SchedulePickupInteractor</code> accepts a plain <code>SchedulePickupRequest</code>, loads or creates a <code>Shipment</code> entity, enforces <code>CarrierCommitment</code> windows, and calls <code>ShipmentRepository</code> and <code>CarrierCapacityGateway</code> interfaces declared in the use case ring.</p>
-          <p><strong>Keep entities framework-free:</strong> <code>Shipment</code> and <code>PickupWindow</code> have no JPA, Jackson, or Lombok infrastructure annotations. Persistence adapters in the outer ring map rows to entities at the repository boundary.</p>
-          <p><strong>Wire at the composition root:</strong> Northwind’s Spring <code>@Configuration</code> module binds Postgres <code>ShipmentRepositoryImpl</code> and in-memory fakes for CI. Inner packages never reference <code>org.springframework</code>.</p>
-          <p><strong>Pragmatic presenters:</strong> Many Northwind teams let interactors return <code>SchedulePickupResponse</code> directly to controllers instead of pushing through an Output Port — slightly less pure, far easier for FieldOps APIs.</p>
-
-          <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul>
-            <li><strong>FieldOps DTOs in interactors:</strong> Passing <code>SchedulePickupHttpRequest</code> into the use case ring couples scheduling rules to the web framework.</li>
-            <li><strong>JPA on <code>Shipment</code>:</strong> Hibernate annotations on entities break the Dependency Rule at the core and invite lazy-load surprises in domain code.</li>
-            <li><strong>Anemic interactors:</strong> <code>GetShipmentByIdInteractor</code> that only calls the repository adds rings without protecting any scheduling invariant.</li>
-            <li><strong>Repositories in the wrong ring:</strong> Concrete <code>PostgresShipmentRepository</code> living beside interactors lets infrastructure imports creep inward.</li>
-            <li><strong>No architecture tests:</strong> Without ArchUnit, Northwind’s <code>domain</code> package slowly accumulates Kafka and Spring imports until rings are fiction.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Can Northwind run every scheduling interactor test with in-memory gateways and no database?</li>
-            <li>Are <code>Shipment</code>, <code>PickupWindow</code>, and related entities free of framework imports?</li>
-            <li>Do request and response models contain only plain data, not FieldOps or Kafka types?</li>
-            <li>Are gateway interfaces defined in the use case layer, not under <code>infrastructure</code>?</li>
-            <li>Does CI enforce the Dependency Rule with ArchUnit or an equivalent tool?</li>
-            <li>Is there one composition root that wires adapters without inner-ring <code>@Autowired</code>?</li>
-          </ul>
-
-          <h2 id="example-use-cases">Example use cases</h2>
-          <p>Northwind’s shipment scheduling story runs through one Clean Architecture layout:</p>
-          <ul>
-            <li><strong>Entities:</strong> <code>Shipment</code>, <code>PickupWindow</code>, and <code>CarrierCommitment</code> enforce cutoffs, hazmat pairing, and freeze windows without knowing Postgres or Kafka.</li>
-            <li><strong>Interactors:</strong> <code>SchedulePickupInteractor</code> and <code>RescheduleForWeatherInteractor</code> orchestrate entities and call <code>ShipmentRepository</code> and <code>WeatherAlertGateway</code> interfaces.</li>
-            <li><strong>Adapters:</strong> FieldOps REST controllers, Routing event consumers, and JDBC repositories sit in the outer ring and map DTOs or rows at the boundary.</li>
-            <li><strong>Shared rules:</strong> The same interactors power storm rebalancing CLI jobs and FieldOps mobile scheduling without duplicating carrier logic.</li>
+            <li><strong>Illustrative scenario —</strong> At <strong>Northwind Logistics</strong>, the <code>dispatch-scheduling</code> service applies Clean Architecture to shipment scheduling. <code>Shipment</code>, <code>PickupWindow</code>, and <code>CarrierCommitment</code> entities enforce cutoffs, hazmat pairing, and freeze windows without knowing Postgres or Kafka.</li>
+            <li><strong>Illustrative scenario —</strong> Northwind hit coupling when scheduling rules had to run through FieldOps REST, a nightly CLI rebalancer, and async <code>RouteReoptimized</code> replays from Routing — carrier SLA logic duplicated until the team recentralized it in interactors.</li>
+            <li><strong>Illustrative scenario —</strong> <code>SchedulePickupInteractor</code> and <code>RescheduleForWeatherInteractor</code> orchestrate entities and call <code>ShipmentRepository</code> and <code>WeatherAlertGateway</code> interfaces declared in the use case ring.</li>
+            <li><strong>Illustrative scenario —</strong> FieldOps REST controllers, Routing event consumers, and JDBC repositories sit in the outer ring; the same interactors power storm rebalancing CLI jobs and FieldOps mobile scheduling without duplicating carrier logic.</li>
           </ul>
 
 <h2 id="related-patterns">Related patterns</h2>

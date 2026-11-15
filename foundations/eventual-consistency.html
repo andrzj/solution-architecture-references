@@ -121,144 +121,144 @@
           </div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p><strong>Eventual consistency</strong> means replicas may disagree for a while, but if writes stop, every copy converges to the same state. It does not say how long convergence takes, and any single read might lag the latest write. Different clients can see different values at the same moment.</p>
-          <p>Amazon's Dynamo paper made the trade-off mainstream: accept writes locally, replicate in the background, and live with brief divergence instead of waiting for global agreement on every request. That pattern powers carts, caches, and global scale when stale beats unavailable.</p>
+ <h2 id="what-it-is">What it is</h2>
+ <p><strong>Eventual consistency</strong> means replicas may disagree for a while, but if writes stop, every copy converges to the same state. It does not say how long convergence takes, and any single read might lag the latest write. Different clients can see different values at the same moment.</p>
+ <p>Amazon's Dynamo paper made the trade-off mainstream: accept writes locally, replicate in the background, and live with brief divergence instead of waiting for global agreement on every request. That pattern powers carts, caches, and global scale when stale beats unavailable.</p>
 
-          <h2 id="why-it-exists">Why it exists</h2>
-          <p>Strong consistency needs coordination—read paths must confirm they have the newest write, which adds cross-replica round trips, fails when peers are down, and gets expensive across regions. At web scale, paying that cost on every read is often worse than tolerating temporary mismatch.</p>
-          <p>Eventual consistency lets each replica serve independently while anti-entropy or gossip catches up later. DNS is the familiar example: a record change can take hours to spread, yet resolvers answer instantly from local state billions of times per day.</p>
+ <h2 id="why-it-exists">Why it exists</h2>
+ <p>Strong consistency needs coordination—read paths must confirm they have the newest write, which adds cross-replica round trips, fails when peers are down, and gets expensive across regions. At web scale, paying that cost on every read is often worse than tolerating temporary mismatch.</p>
+ <p>Eventual consistency lets each replica serve independently while anti-entropy or gossip catches up later. DNS is the familiar example: a record change can take hours to spread, yet resolvers answer instantly from local state billions of times per day.</p>
 
-          <h2 id="when-to-use">When to use</h2>
+ <h2 id="when-to-use">When to use</h2>
+ <ul>
+ <li>Choose eventual consistency when profiles or preferences can show an old avatar for a short time without harm.</li>
+ <li>Choose it for social counters and rankings where approximate totals are acceptable.</li>
+ <li>Choose it for shopping carts and session blobs where availability matters more than perfect contents.</li>
+ <li>Choose it for metrics and analytics that are approximate by nature.</li>
+ <li>Choose it for CDN and edge caches that are intentionally TTL-stale.</li>
+ <li>Choose it for telemetry streams where each reading is a time-stamped fact, not an authoritative balance.</li>
+ </ul>
+
+ <h2 id="when-not-to-use">When not to use</h2>
+ <ul>
+ <li>Do not use eventual consistency for balances, payments, or ledger lines where stale reads cause real money errors.</li>
+ <li>Do not use it for inventory with oversell risk when two nodes might both think one unit remains.</li>
+ <li>Do not use it for permissions or authorization where a revoked grant must disappear quickly.</li>
+ <li>Do not use it for workflows where two readers could make conflicting irreversible decisions on divergent data.</li>
+ </ul>
+
+ <h2 id="typical-architecture">Typical architecture</h2>
+ <p>Replicas accept writes locally and sync asynchronously. When concurrent writes collide, you need an explicit merge strategy—the diagram walks from divergent replicas to resolution options.</p>
+ <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <div class="architecture-diagram__render mermaid">flowchart TB
+ CA["Client A write x=1"] --> R1["Replica 1 x=1"]
+ CB["Client B write x=2"] --> R2["Replica 2 x=2"]
+ R1 <-->|"async replication"| R2
+ R1 & R2 --> X{{"Conflict: x=1 or x=2?"}}
+ X --> LWW["Last-write-wins"]
+ X --> VC["Vector clocks"]
+ X --> CRDT["CRDT merge"]
+ X --> App["Application merge"]</div>
+ <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Client A Client B
+ │ │
+ │ write key="x", val=1 │ write key="x", val=2
+ ▼ ▼
+ ┌──────────┐ ┌──────────┐
+ │ Replica 1│ │ Replica 2│
+ │ x = 1 │ │ x = 2 │
+ └─────┬────┘ └────┬─────┘
+ │ async replication │
+ ◄───────────────────────►
+ │ │
+ ┌────┴──────────────────────┐
+ │ Conflict: x = 1 or 2? │
+ └────┬──────────────────────┘
+ │
+ ▼ Resolution Strategies:
+ ┌──────────────────────────────────────────────────┐
+ │ 1. Last-Write-Wins (LWW) │
+ │ Each write tagged with a wall-clock timestamp. │
+ │ Higher timestamp wins on conflict. │
+ │ Risk: clock skew can lose a valid write. │
+ ├──────────────────────────────────────────────────┤
+ │ 2. Vector Clocks │
+ │ Each node maintains a version counter per key. │
+ │ [node1:3, node2:1] > [node1:2, node2:1] │
+ │ Detects concurrent writes; application │
+ │ resolves or merges ("siblings" in Riak). │
+ ├──────────────────────────────────────────────────┤
+ │ 3. CRDTs (Conflict-free Replicated Data Types) │
+ │ Data structures with merge operations that │
+ │ are: commutative, associative, idempotent. │
+ │ No conflict = guaranteed convergence. │
+ │ Examples: G-Counter, OR-Set, LWW-Register │
+ └──────────────────────────────────────────────────┘
+ 
+ Session guarantees (weaker than strong consistency,
+ stronger than pure eventual):
+ • Read-your-writes: a client always sees its own writes
+ • Monotonic reads: a client never reads an older value
+ after seeing a newer one
+ • Monotonic writes: a client's writes are applied in order
+ • Writes-follow-reads: a write that follows a read will
+ be applied after the value that was read
+ </code></pre></details>
+ <figcaption id="typical-architecture-caption">Replica divergence under concurrent writes: eventual consistency needs an explicit conflict resolution strategy.</figcaption>
+ </figure>
+
+
+ <h2 id="pros-and-cons">Pros and cons</h2>
+ <div class="pros-cons">
+ <div class="pros-cons__col pros-cons__col--pros">
+ <h3>Pros</h3>
+ <ul>
+ <li>Local reads and writes without quorum waits—latency stays low at scale.</li>
+ <li>Replicas keep serving through partitions and partial outages.</li>
+ <li>Throughput grows with replica count instead of hitting a coordination ceiling.</li>
+ <li>Multi-region deployments can favor local writes with async cross-region catch-up.</li>
+ </ul>
+ </div>
+ <div class="pros-cons__col pros-cons__col--cons">
+ <h3>Cons</h3>
+ <ul>
+ <li>Users can see different answers at once—confusing or dangerous depending on data.</li>
+ <li>Concurrent writes need merge rules (LWW, vector clocks, CRDTs, or app logic).</li>
+ <li>No bound on staleness—"eventual" can stretch to seconds under load.</li>
+ <li>Developers must label which operations are safe on possibly stale reads.</li>
+ </ul>
+ </div>
+ </div>
+
+ <h2 id="implementation-notes">Implementation notes</h2>
+ <p><strong>Last-write-wins (LWW):</strong> Tag writes with timestamps; highest timestamp wins on merge. Simple and common in Cassandra and DynamoDB, but clock skew can drop the "losing" write with no error to the client. Hybrid logical clocks reduce but do not remove that risk. LWW is tolerable when conflicts are rare and writes are sparse.</p>
+ <p><strong>CRDTs:</strong> Data structures whose merge is commutative and deterministic—G-Counters for distributed counts, OR-Sets for add/remove sets. Good for collaborative state and counters where LWW would lose increments.</p>
+ <p><strong>Session guarantees:</strong> Many products pair eventual storage with read-your-writes or sticky routing so a user who just saved does not see their old profile on refresh. That does not help other clients, but it removes the worst UX bugs.</p>
+
+ <h2 id="common-failure-modes">Common failure modes</h2>
+ <ul>
+ <li><strong>LWW and skew:</strong> Faster clock wins; a valid write vanishes without an error.</li>
+ <li><strong>Unbounded eventual:</strong> Replication backlog turns "milliseconds" into seconds under peak write rate.</li>
+ <li><strong>Broken read-your-writes:</strong> Load balancer sends the next read to a cold replica—users think save failed.</li>
+ <li><strong>LWW counters:</strong> Concurrent increments collapse to one winner instead of summing—use CRDT counters instead.</li>
+ </ul>
+
+ <h2 id="decision-checklist">Decision checklist</h2>
+ <ul class="checklist">
+ <li>Which entities must be strongly consistent vs eventually consistent?</li>
+ <li>What merge strategy applies: LWW, vector clocks, CRDTs, or custom?</li>
+ <li>Do interactive paths offer session guarantees where UX needs them?</li>
+ <li>What is the worst-case convergence time under peak load, and is it acceptable?</li>
+ <li>Are financial, medical, or legal writes excluded from eventual stores?</li>
+ <li>Have replication and partition behavior been chaos-tested?</li>
+ <li>Is the consistency choice recorded in an ADR with use-case rationale?</li>
+ </ul>
+
+ <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Choose eventual consistency when profiles or preferences can show an old avatar for a short time without harm.</li>
-            <li>Choose it for social counters and rankings where approximate totals are acceptable.</li>
-            <li>Choose it for shopping carts and session blobs where availability matters more than perfect contents.</li>
-            <li>Choose it for metrics and analytics that are approximate by nature.</li>
-            <li>Choose it for CDN and edge caches that are intentionally TTL-stale.</li>
-            <li>Choose it for telemetry streams where each reading is a time-stamped fact, not an authoritative balance.</li>
-          </ul>
-
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>Do not use eventual consistency for balances, payments, or ledger lines where stale reads cause real money errors.</li>
-            <li>Do not use it for inventory with oversell risk when two nodes might both think one unit remains.</li>
-            <li>Do not use it for permissions or authorization where a revoked grant must disappear quickly.</li>
-            <li>Do not use it for workflows where two readers could make conflicting irreversible decisions on divergent data.</li>
-          </ul>
-
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Replicas accept writes locally and sync asynchronously. When concurrent writes collide, you need an explicit merge strategy—the diagram walks from divergent replicas to resolution options.</p>
-                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-                      <div class="architecture-diagram__render mermaid">flowchart TB
-    CA["Client A write x=1"] --> R1["Replica 1 x=1"]
-    CB["Client B write x=2"] --> R2["Replica 2 x=2"]
-    R1 <-->|"async replication"| R2
-    R1 & R2 --> X{{"Conflict: x=1 or x=2?"}}
-    X --> LWW["Last-write-wins"]
-    X --> VC["Vector clocks"]
-    X --> CRDT["CRDT merge"]
-    X --> App["Application merge"]</div>
-                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Client A                    Client B
-             │                            │
-             │ write key="x", val=1       │ write key="x", val=2
-             ▼                            ▼
-          ┌──────────┐             ┌──────────┐
-          │ Replica 1│             │ Replica 2│
-          │ x = 1    │             │ x = 2    │
-          └─────┬────┘             └────┬─────┘
-                │   async replication   │
-                ◄───────────────────────►
-                │                       │
-           ┌────┴──────────────────────┐
-           │   Conflict: x = 1 or 2?   │
-           └────┬──────────────────────┘
-                │
-                ▼ Resolution Strategies:
-           ┌──────────────────────────────────────────────────┐
-           │ 1. Last-Write-Wins (LWW)                         │
-           │    Each write tagged with a wall-clock timestamp. │
-           │    Higher timestamp wins on conflict.             │
-           │    Risk: clock skew can lose a valid write.       │
-           ├──────────────────────────────────────────────────┤
-           │ 2. Vector Clocks                                  │
-           │    Each node maintains a version counter per key. │
-           │    [node1:3, node2:1] > [node1:2, node2:1]       │
-           │    Detects concurrent writes; application         │
-           │    resolves or merges ("siblings" in Riak).       │
-           ├──────────────────────────────────────────────────┤
-           │ 3. CRDTs (Conflict-free Replicated Data Types)   │
-           │    Data structures with merge operations that    │
-           │    are: commutative, associative, idempotent.     │
-           │    No conflict = guaranteed convergence.          │
-           │    Examples: G-Counter, OR-Set, LWW-Register     │
-           └──────────────────────────────────────────────────┘
-          
-          Session guarantees (weaker than strong consistency,
-          stronger than pure eventual):
-            • Read-your-writes: a client always sees its own writes
-            • Monotonic reads: a client never reads an older value
-              after seeing a newer one
-            • Monotonic writes: a client's writes are applied in order
-            • Writes-follow-reads: a write that follows a read will
-              be applied after the value that was read
-                    </code></pre></details>
-                      <figcaption id="typical-architecture-caption">Replica divergence under concurrent writes: eventual consistency needs an explicit conflict resolution strategy.</figcaption>
-                    </figure>
-
-
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>Local reads and writes without quorum waits—latency stays low at scale.</li>
-                <li>Replicas keep serving through partitions and partial outages.</li>
-                <li>Throughput grows with replica count instead of hitting a coordination ceiling.</li>
-                <li>Multi-region deployments can favor local writes with async cross-region catch-up.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Users can see different answers at once—confusing or dangerous depending on data.</li>
-                <li>Concurrent writes need merge rules (LWW, vector clocks, CRDTs, or app logic).</li>
-                <li>No bound on staleness—"eventual" can stretch to seconds under load.</li>
-                <li>Developers must label which operations are safe on possibly stale reads.</li>
-              </ul>
-            </div>
-          </div>
-
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Last-write-wins (LWW):</strong> Tag writes with timestamps; highest timestamp wins on merge. Simple and common in Cassandra and DynamoDB, but clock skew can drop the "losing" write with no error to the client. Hybrid logical clocks reduce but do not remove that risk. LWW is tolerable when conflicts are rare and writes are sparse.</p>
-          <p><strong>CRDTs:</strong> Data structures whose merge is commutative and deterministic—G-Counters for distributed counts, OR-Sets for add/remove sets. Good for collaborative state and counters where LWW would lose increments.</p>
-          <p><strong>Session guarantees:</strong> Many products pair eventual storage with read-your-writes or sticky routing so a user who just saved does not see their old profile on refresh. That does not help other clients, but it removes the worst UX bugs.</p>
-
-          <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul>
-            <li><strong>LWW and skew:</strong> Faster clock wins; a valid write vanishes without an error.</li>
-            <li><strong>Unbounded eventual:</strong> Replication backlog turns "milliseconds" into seconds under peak write rate.</li>
-            <li><strong>Broken read-your-writes:</strong> Load balancer sends the next read to a cold replica—users think save failed.</li>
-            <li><strong>LWW counters:</strong> Concurrent increments collapse to one winner instead of summing—use CRDT counters instead.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Which entities must be strongly consistent vs eventually consistent?</li>
-            <li>What merge strategy applies: LWW, vector clocks, CRDTs, or custom?</li>
-            <li>Do interactive paths offer session guarantees where UX needs them?</li>
-            <li>What is the worst-case convergence time under peak load, and is it acceptable?</li>
-            <li>Are financial, medical, or legal writes excluded from eventual stores?</li>
-            <li>Have replication and partition behavior been chaos-tested?</li>
-            <li>Is the consistency choice recorded in an ADR with use-case rationale?</li>
-          </ul>
-
-          <h2 id="example-use-cases">Example use cases</h2>
-          <ul>
-            <li>Amazon's Dynamo-style cart—items may flicker, but the cart stays writable during faults.</li>
-            <li>Global DNS—records propagate slowly; queries stay fast everywhere.</li>
-            <li>Social like counts—off-by-one briefly is cheaper than blocking the feed.</li>
-            <li>CDN edges—article fixes roll out over minutes while users still get instant pages.</li>
+            <li><strong>Illustrative scenario —</strong> At <strong>Meridian Commerce</strong>, the shopping cart is eventually consistent — items may flicker across replicas during faults, but the cart stays writable so checkout does not hard-fail on a partition.</li>
+            <li><strong>Illustrative scenario —</strong> Meridian’s catalog CDN caches product images and list prices with TTL staleness; the checkout BFF re-reads authoritative price from Inventory before payment capture.</li>
+            <li><strong>Illustrative scenario —</strong> <code>OrderPlaced</code> events reach Fulfillment seconds after Payment accepts capture — warehouse pick lists converge without locking Order and Fulfillment in one distributed transaction.</li>
+            <li><strong>Illustrative scenario —</strong> Meridian’s merchandising CMS tolerates nightly deploy downtime; editors accept minutes of lag on draft previews while the customer-facing catalog prioritizes read availability over immediate consistency with the CMS.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

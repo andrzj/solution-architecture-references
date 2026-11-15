@@ -121,128 +121,122 @@
           </div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>In <strong>event sourcing</strong>, the system of record is an append-only log of <em>domain events</em>, not a row that gets overwritten in place.</p>
-          <p>Instead of updating <code>orders.status</code> to <code>SHIPPED</code>, <strong>Meridian Commerce</strong> appends <code>OrderPlaced</code>, <code>PaymentConfirmed</code>, and <code>OrderShipped</code> to an <code>Order</code> aggregate stream. Current order state is computed by replaying those events (often from a snapshot plus tail events).</p>
-          <p>Greg Young popularized the pattern alongside CQRS. Fulfillment dashboards and customer “where is my order?” views are <em>projections</em> built from the same stream — they are not authoritative copies of truth.</p>
+ <h2 id="what-it-is">What it is</h2>
+ <p>In <strong>event sourcing</strong>, the system of record is an append-only log of <em>domain events</em>, not a row that gets overwritten in place.</p>
+ <p>Instead of updating <code>order.status</code> to <code>SHIPPED</code>, the application appends <code>OrderPlaced</code>, <code>PaymentConfirmed</code>, and <code>OrderShipped</code> to that aggregate's stream. Current state is computed by replaying those events (often from a snapshot plus tail events).</p>
+ <p>Greg Young popularized the pattern alongside CQRS. Read models such as fulfillment dashboards and customer order-status views are <em>projections</em> built from the same stream — they are not authoritative copies of truth. The event store must guarantee append-only writes and ordered reads per stream.</p>
 
-          <h2 id="why-it-exists">Why it exists</h2>
-          <p>Meridian’s support team kept asking “who changed this order to cancelled?” UPDATE statements in Postgres erased the story; audit tables lagged production schema.</p>
-          <p>Event sourcing makes the history the product: every transition is an immutable fact. Compliance can replay <code>PaymentConfirmed</code> events; engineering can rebuild a new “delayed shipment” read model from five years of streams without retroactive ETL.</p>
-          <p>Temporal questions become mechanical — replay events until timestamp T to see what the customer was promised before a warehouse outage.</p>
+ <h2 id="why-it-exists">Why it exists</h2>
+ <p>Traditional state-based persistence discards the history of how an entity reached its current state. In an accounting system, knowing that an account has a balance of $500 is less useful than knowing the sequence of credits and debits that produced that balance. Event Sourcing preserves this full audit trail naturally, without separate audit tables. It also enables temporal queries ("what was the state of this order at 3pm on Tuesday?") by replaying events up to a point in time.</p>
+ <p>Critically, new read models can be built at any time by replaying the full event history — you can ask questions today about data that was collected years ago, as long as the events were captured. This is a powerful capability for analytics, compliance, and product evolution.</p>
 
-          <h2 id="when-to-use">When to use</h2>
+ <h2 id="when-to-use">When to use</h2>
+ <ul>
+ <li>Audit and compliance requirements mandate a complete, tamper-proof history of all state changes.</li>
+ <li>The domain models events as first-class concepts (accounting ledgers, order fulfillment, user action tracking).</li>
+ <li>Temporal queries are needed — "show me the state of this entity at any point in time."</li>
+ <li>New read models may be needed in the future based on events already collected.</li>
+ <li>Used in combination with CQRS where events naturally drive read-side projection updates.</li>
+ </ul>
+
+ <h2 id="when-not-to-use">When not to use</h2>
+ <ul>
+ <li>Simple CRUD with no audit requirements — the event store overhead is unjustified when current state is all you need.</li>
+ <li>High-frequency entity updates (millions of events per aggregate) — replay becomes expensive without aggressive snapshotting.</li>
+ <li>Teams without event sourcing experience — the operational and conceptual complexity is high, and mistakes are hard to reverse in an append-only store.</li>
+ <li>GDPR/right-to-erasure requirements conflict with immutable event stores unless event encryption and key deletion strategies are carefully designed.</li>
+ </ul>
+
+ <h2 id="typical-architecture">Typical architecture</h2>
+ <p>Aggregates are loaded by replaying their event stream. Commands produce new events appended to the stream. Projectors consume the event stream to update read models.</p>
+ <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <div class="architecture-diagram__render mermaid">flowchart TB
+ CMD["Command"] --> AGG["Aggregate replays events"]
+ AGG <-->|"append"| ES[("Event store per aggregate")]
+ ES --> SUB["Subscribers"]
+ SUB --> PROJ["Projectors"]
+ PROJ --> V1["Orders view DB"]
+ PROJ --> V2["Analytics DB"]
+ PROJ --> V3["Search index"]</div>
+ <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code> Command
+ │
+ ┌────▼─────────────┐
+ │ Aggregate │
+ │ Load: replay │◀─── Event Store (stream per aggregate)
+ │ events → state │ [OrderPlaced v1]
+ │ Apply command │ [PaymentConfirmed v2]
+ │ Emit new event │ [OrderShipped v3]
+ └────┬─────────────┘ │
+ │ Append new event │ Subscribe
+ └─────────────────────────┘
+ │
+ ┌───────────▼──────────┐
+ │ Projectors │
+ │ (build read models) │
+ └───────────┬──────────┘
+ │
+ ┌─────────────────┼──────────────┐
+ │ │ │
+ ┌──────▼───┐ ┌─────────▼──┐ ┌───────▼──┐
+ │ Orders │ │ Analytics │ │ Search │
+ │ View DB │ │ DB │ │ Index │
+ └──────────┘ └────────────┘ └──────────┘</code></pre></details>
+ <figcaption id="typical-architecture-caption">Event sourcing: state is derived by replaying an append-only event stream into read models.</figcaption>
+ </figure>
+
+
+ <h2 id="pros-and-cons">Pros and cons</h2>
+ <div class="pros-cons">
+ <div class="pros-cons__col pros-cons__col--pros">
+ <h3>Pros</h3>
+ <ul>
+ <li>Complete audit trail with zero extra code — the event store is the audit log.</li>
+ <li>Temporal queries — reconstruct any entity's state at any point in time.</li>
+ <li>New read models can be retroactively built from historical event streams.</li>
+ <li>Debugging production issues by replaying events in a test environment.</li>
+ <li>Natural fit with domain events and DDD aggregate design.</li>
+ </ul>
+ </div>
+ <div class="pros-cons__col pros-cons__col--cons">
+ <h3>Cons</h3>
+ <ul>
+ <li>High operational complexity: event store management, projection rebuilds, snapshotting strategy.</li>
+ <li>Event schema evolution is hard — events are immutable and persist forever, requiring upcasters to transform old event versions.</li>
+ <li>GDPR compliance is challenging — deleting personal data from an immutable event store requires encryption with key deletion.</li>
+ <li>Replay performance degrades for long-lived aggregates without periodic snapshots.</li>
+ <li>Steep learning curve — most developers lack event sourcing experience.</li>
+ </ul>
+ </div>
+ </div>
+
+ <h2 id="implementation-notes">Implementation notes</h2>
+ <p>Use a dedicated event store (EventStoreDB, Axon Server) or build on top of an append-only Kafka topic or PostgreSQL table with a stream-per-aggregate partition key. Implement snapshots for aggregates that accumulate hundreds of events — periodically save current state alongside a pointer to the last event, and start replay from the snapshot. Design event schemas carefully and version them from day one. Use <em>upcasters</em> to transparently transform old event versions to the current schema when replaying.</p>
+ <p>For GDPR compliance, encrypt personal data fields within events using a per-user encryption key; deleting the key renders the data unreadable without deleting the event. Always include aggregate version (sequence number) in the event to enable optimistic concurrency — reject commands that conflict with an already-appended event at the same version.</p>
+
+ <h2 id="common-failure-modes">Common failure modes</h2>
+ <ul>
+ <li><strong>No snapshotting strategy:</strong> An order aggregate with 10,000 events takes 2 seconds to load — snapshotting should have been designed from the start.</li>
+ <li><strong>Breaking event schema changes:</strong> Renaming a field in an event breaks all projectors and replayers reading old events — upcasters were never implemented.</li>
+ <li><strong>Storing commands as events:</strong> Events should represent things that happened ("OrderShipped"), not commands ("ShipOrder") — conflating the two breaks the temporal semantics.</li>
+ <li><strong>Over-fine event granularity:</strong> An event for every field change on every form submission creates huge streams that are meaningless from a domain perspective.</li>
+ <li><strong>Missing idempotent projectors:</strong> Projectors that don't handle duplicate event delivery create inconsistent read models when events are redelivered.</li>
+ </ul>
+
+ <h2 id="decision-checklist">Decision checklist</h2>
+ <ul class="checklist">
+ <li>Are events in the past tense, representing domain facts ("OrderPlaced"), not commands or current state?</li>
+ <li>Is a snapshotting strategy defined for aggregates that will accumulate many events?</li>
+ <li>Are event schemas versioned and upcasters implemented for schema evolution?</li>
+ <li>Is there a GDPR compliance strategy (encrypted PII with key deletion) if personal data is in events?</li>
+ <li>Are all projectors idempotent to handle duplicate event delivery?</li>
+ <li>Is there a mechanism to rebuild projections from scratch (full replay)?</li>
+ </ul>
+
+ <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Use event sourcing when Meridian-style audit requires a tamper-evident narrative of order and payment transitions, not only current status.</li>
-            <li>Use event sourcing when the domain thinks in events first — checkout, capture, ship, return — not in silent column updates.</li>
-            <li>Use event sourcing when product needs “state as of time T” for disputes or SLA investigations.</li>
-            <li>Use event sourcing when future read models (fraud scoring, partner feeds) must be derived from history already collected.</li>
-            <li>Use event sourcing with CQRS so Order write streams feed catalog, fulfillment, and analytics projectors asynchronously.</li>
-          </ul>
-
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>Skip event sourcing for Meridian’s static reference data where history adds no business value.</li>
-            <li>Skip event sourcing when a single aggregate would accumulate huge event rates without a snapshot strategy — replay cost dominates.</li>
-            <li>Skip event sourcing until the team can operate an event store, upcasters, and projection rebuilds — mistakes in append-only logs are painful to undo.</li>
-            <li>Skip event sourcing for PII-heavy streams unless Meridian implements field-level encryption and key-deletion erasure policies compatible with GDPR.</li>
-          </ul>
-
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Meridian’s <code>Order</code> aggregate loads from its stream in EventStoreDB (or an append-only Postgres table), applies commands, appends new events, and publishes to projectors that maintain SQL views, search indexes, and ops dashboards.</p>
-                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-                      <div class="architecture-diagram__render mermaid">flowchart TB
-    CMD["Command"] --> AGG["Aggregate replays events"]
-    AGG <-->|"append"| ES[("Event store per aggregate")]
-    ES --> SUB["Subscribers"]
-    SUB --> PROJ["Projectors"]
-    PROJ --> V1["Orders view DB"]
-    PROJ --> V2["Analytics DB"]
-    PROJ --> V3["Search index"]</div>
-                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>  Command
-               │
-          ┌────▼─────────────┐
-          │  Aggregate        │
-          │  Load: replay     │◀─── Event Store (stream per aggregate)
-          │  events → state  │      [OrderPlaced v1]
-          │  Apply command   │      [PaymentConfirmed v2]
-          │  Emit new event  │      [OrderShipped v3]
-          └────┬─────────────┘           │
-               │ Append new event        │ Subscribe
-               └─────────────────────────┘
-                                          │
-                              ┌───────────▼──────────┐
-                              │  Projectors           │
-                              │  (build read models)  │
-                              └───────────┬──────────┘
-                                          │
-                        ┌─────────────────┼──────────────┐
-                        │                 │              │
-                 ┌──────▼───┐   ┌─────────▼──┐  ┌───────▼──┐
-                 │ Orders   │   │ Analytics  │  │ Search   │
-                 │ View DB  │   │ DB         │  │ Index    │
-                 └──────────┘   └────────────┘  └──────────┘</code></pre></details>
-                      <figcaption id="typical-architecture-caption">Meridian Order aggregate: append-only event stream feeds projectors that materialize customer, ops, and analytics views.</figcaption>
-                    </figure>
-
-
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>Meridian’s event store is the audit log — support does not maintain a parallel <code>order_audit</code> table.</li>
-                <li>Replay to timestamp T answers “what did we promise the customer before the carrier scan failed?”</li>
-                <li>New partner integrations can consume historical <code>OrderShipped</code> events without backfilling warehouses.</li>
-                <li>Engineers reproduce production order timelines in staging by copying streams.</li>
-                <li><code>Order</code> aggregates align with DDD — commands emit past-tense domain facts.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Meridian operates EventStoreDB (or equivalent), snapshot jobs, and full replay drills — not trivial platform work.</li>
-                <li>Immutable events demand upcasters when <code>OrderPlaced</code> schema evolves — you cannot ALTER old rows.</li>
-                <li>GDPR erasure needs encrypted PII and key deletion, not DELETE FROM events.</li>
-                <li>Long-lived orders without snapshots slow load times as streams grow.</li>
-                <li>Most hires have not shipped event-sourced systems before — ramp time is real.</li>
-              </ul>
-            </div>
-          </div>
-
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Store choice:</strong> Meridian uses EventStoreDB for Order streams with expected-version concurrency; Kafka remains the integration bus to fulfillment, not the authoritative per-order stream.</p>
-          <p><strong>Snapshots:</strong> After every 200 events (or nightly for hot orders), Meridian persists aggregate state plus stream position so reload replays only the tail.</p>
-          <p><strong>Schema evolution:</strong> <code>OrderPlaced</code> v2 adds optional fields; upcasters map v1→v2 during replay so projectors read one shape.</p>
-          <p><strong>Privacy:</strong> Ship-to names encrypt with per-customer keys; erasure deletes keys while events remain for non-PII analytics.</p>
-          <p><strong>Projectors:</strong> Fulfillment and customer-history projectors dedupe on <code>(streamId, eventNumber)</code> because at-least-once delivery happens on the bus.</p>
-
-          <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul>
-            <li><strong>No snapshots:</strong> A marketplace return loop appends thousands of events; checkout latency suffers on every load.</li>
-            <li><strong>Breaking renames:</strong> Meridian renames <code>lineItems</code> without an upcaster; nightly replays fail silently.</li>
-            <li><strong>Command-shaped events:</strong> The log stores <code>ShipOrder</code> instead of <code>OrderShipped</code>, blurring what actually happened.</li>
-            <li><strong>UI field churn:</strong> One event per form keystroke bloats streams without domain meaning.</li>
-            <li><strong>Non-idempotent projectors:</strong> Redelivered <code>PaymentConfirmed</code> double-counts revenue in ops dashboards.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Do Meridian events use past-tense domain facts rather than imperative command names?</li>
-            <li>Is snapshot frequency defined for long-running Order aggregates?</li>
-            <li>Are schema versions and upcasters tested in CI replay fixtures?</li>
-            <li>Is there a documented GDPR approach for personal data inside streams?</li>
-            <li>Do all projectors handle duplicate delivery safely?</li>
-            <li>Can ops trigger a full projection rebuild from the Order event store?</li>
-          </ul>
-
-          <h2 id="example-use-cases">Example use cases</h2>
-          <p>Meridian’s <code>Order</code> aggregate is the reference story:</p>
-          <ul>
-            <li><strong>Placement:</strong> <code>PlaceOrder</code> appends <code>OrderPlaced</code> with line items and pricing snapshot at commit time.</li>
-            <li><strong>Payment:</strong> <code>PaymentConfirmed</code> records processor references; the aggregate rejects ship commands until this event exists.</li>
-            <li><strong>Fulfillment:</strong> <code>OrderShipped</code> and <code>OrderDelivered</code> extend the same stream; customer tracking UI is a projector, not source of truth.</li>
-            <li><strong>Disputes:</strong> Support replays the stream to Tuesday 3pm to show promised delivery before granting a credit.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Banking ledger:</strong> Account balances are computed by replaying all debit and credit events — the event log is the regulatory record of truth.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>GitHub commit history:</strong> A repository's state at any point in time is the accumulated application of all commits since the beginning — a form of event sourcing.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Collaborative document editor (Google Docs):</strong> Every keystroke is an operation event; the current document state is the result of replaying all operations, enabling conflict resolution and operational transformation.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
