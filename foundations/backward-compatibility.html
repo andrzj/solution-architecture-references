@@ -122,33 +122,34 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The converse — a new client working with an old server — is <strong>forward compatibility</strong>.</p>
-          <p>Both are required for truly independent deployment in a microservices or distributed system environment.</p>
-          <p>Postel's Law, also known as the Robustness Principle, encapsulates the spirit of compatible API design: "Be conservative in what you send, be liberal in what you accept." APIs should be strict about what they produce (never remove or rename fields that consumers depend on) and lenient about what they consume (tolerate unknown fields, missing optional fields, and value variations). This principle directly enables backward and forward compatibility by ensuring both producer and consumer can evolve independently without requiring synchronized deployments.</p>
+          <p><strong>Backward compatibility</strong> means a new version of a producer still satisfies existing consumers built against an older contract.</p>
+          <p><strong>Forward compatibility</strong> is the mirror image: an older server tolerates a newer client (unknown fields, optional data).</p>
+          <p><strong>Northwind Logistics</strong> runs the FieldOps mobile app against <code>GET /v1/drivers/{id}</code>. Drivers keep older app builds on their phones. When the driver API team ships a new service version, responses must still include fields those builds parse — or changes must be additive only.</p>
+          <p><strong>Postel’s Law</strong> (the Robustness Principle): be conservative in what you send, liberal in what you accept. Northwind’s API gateway strips nothing consumers rely on; clients ignore fields they do not yet understand.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In monolithic systems, all code is deployed together — compatibility between components is a build-time concern, not a runtime one. In distributed systems, microservices, mobile applications, and third-party API integrations, different versions of producer and consumer run simultaneously and must interoperate. A mobile app cannot be force-updated the moment a backend API changes. A downstream microservice may not be ready to deploy at the same time as an upstream service.</p>
-          <p>Breaking changes in an API that does not maintain backward compatibility force all consumers to update simultaneously — a coordinated deployment that is expensive, risky, and at odds with independent team velocity.</p>
-          <p>Backward compatibility is foundational to continuous delivery and zero-downtime deployments. Blue-green deployments, canary releases, and rolling updates all require that the new version of a service interoperates with both old and new clients during the transition period. Without backward compatibility, any deployment window involves a hard cutover where old and new versions cannot coexist — effectively requiring maintenance windows.</p>
+          <p>In a monolith, one deploy updates producers and consumers together. Northwind’s driver API, dispatch service, and FieldOps app ship on different cadences.</p>
+          <p>A breaking rename on the driver API can blank out contact info in FieldOps until every user updates — a failure mode you cannot fix from the server alone.</p>
+          <p>Compatible contracts also enable rolling deploys: during a canary, old and new API pods must serve both lagging mobile builds and the latest beta.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Public APIs — any API consumed by third-party clients or mobile apps where you cannot control the upgrade cycle of all consumers.</li>
-            <li>Microservices communicating over the network — services must interoperate across independent deployment cycles.</li>
-            <li>Event schemas in event-driven systems — events published to a message bus may be consumed by multiple services at different versions.</li>
-            <li>Database schemas in systems with multiple consumers — changing a column name in a shared database breaks all services that reference the old name.</li>
-            <li>Any API that will exist long enough for consumers to build on it — practically all production APIs.</li>
+            <li>Yes: mobile or third-party clients you cannot force-upgrade (FieldOps, partner TMS integrations).</li>
+            <li>Yes: HTTP or gRPC between Northwind microservices with independent release trains.</li>
+            <li>Yes: Kafka/Avro events where multiple consumers read at different schema revisions.</li>
+            <li>Yes: shared database columns touched by more than one service — treat schema like a public API.</li>
+            <li>Yes: any production endpoint you expect another team to build on for longer than one sprint.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Internal, tightly coupled systems deployed atomically as a single unit — when all code is always deployed together, backward compatibility has no runtime value (though it is still good practice for libraries).</li>
-            <li>Early-stage APIs with no external consumers — rapid iteration may require breaking changes; use a pre-v1 signal (<code>v0</code>, beta label) to set expectations.</li>
-            <li>APIs with a small, controlled set of consumers who can all be updated simultaneously under a migration plan — though even here, the expand-contract pattern reduces deployment risk.</li>
+            <li>No: a single deployable unit where all callers rebuild every release — runtime compat matters less (libraries may still semver).</li>
+            <li>No: explicit <code>v0</code> or beta APIs with no external dependents — document that breaks are allowed.</li>
+            <li>No: a tiny, coordinated consumer set with a written migration window — still prefer expand-contract to shrink blast radius.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The <strong>expand-contract pattern</strong> (also called parallel change) is the canonical technique for making breaking changes backward-compatibly, particularly for database schema migrations. It proceeds in three phases: Expand (add the new column/field/endpoint alongside the old), Migrate (update all consumers to use the new), and Contract (remove the old once all consumers have migrated). This allows zero-downtime migration with no synchronized deployment required.</p>
+          <p>The <strong>expand–contract</strong> pattern (parallel change) is how Northwind makes breaking database or API shifts without a flag day. Expand: add <code>first_name</code> and <code>last_name</code> beside legacy <code>full_name</code>. Migrate: dual-write, move FieldOps and dispatch readers. Contract: drop <code>full_name</code> only when telemetry shows zero use.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     s1["Safe: optional fields"] --> s2["Safe: new endpoints"]
@@ -217,55 +218,56 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Enables independent deployment — services and consumers can be upgraded on different schedules without coordinated cutover.</li>
-                <li>Reduces deployment risk — no synchronized "big bang" deployment required when a producer changes its API.</li>
-                <li>Supports continuous delivery — every commit can be deployed without requiring consumer readiness.</li>
-                <li>Enables API longevity — well-designed backward-compatible APIs can serve consumers for years without forcing migrations.</li>
+                <li>FieldOps and dispatch can ship without locking to the same release train as the driver API.</li>
+                <li>Rollbacks and canaries avoid “stop the world” upgrades when a field disappears.</li>
+                <li>Teams deploy smaller batches because consumers are not blockers on every PR.</li>
+                <li>Partners trust Northwind’s public TMS hooks when deprecations are announced, not surprise breaks.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>API surface accumulates debt — additive-only evolution means old, suboptimal fields live forever, increasing cognitive load for new consumers.</li>
-                <li>Multiple versions increase maintenance cost — running v1 and v2 simultaneously requires supporting two code paths.</li>
-                <li>Expand-contract migrations add operational complexity — the three-phase process requires careful tracking of which consumers have migrated.</li>
-                <li>Forward compatibility is harder — consumers must be written to tolerate unknown fields, which requires discipline and is easy to forget.</li>
+                <li>Legacy fields linger — driver payloads accumulate aliases and deprecated columns.</li>
+                <li>Supporting <code>/v1</code> and <code>/v2</code> in parallel doubles handlers and tests.</li>
+                <li>Expand–contract needs a migration tracker; otherwise dual-write phases never end.</li>
+                <li>Clients must ignore unknown JSON keys — easy to forget in strongly typed mobile models.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Consumer-driven contract testing (Pact):</strong> The most robust way to ensure backward compatibility is to test it automatically in CI. Pact is a consumer-driven contract testing framework: each consumer service defines a "contract" — a specification of the exact requests it makes and responses it expects. The provider service's CI pipeline runs these consumer contracts against its latest code to verify it does not break any consumer. This inverts the typical integration test model: instead of the provider testing against its own assumptions, it tests against its consumers' actual requirements.</p>
-          <p>Breaking changes are caught before deployment, not after.</p>
-          <p><strong>Semantic versioning for APIs:</strong> Follow semver conventions: MAJOR version increments signal breaking changes (v1 → v2), MINOR increments add backward-compatible features (v1.1), PATCH increments fix bugs without changing the API contract. Publish a deprecation policy — for example, "we will maintain the previous major version for 12 months after a new major is released." Communicate deprecation via API response headers (<code>Deprecation: true</code>, <code>Sunset: Sat, 01 Jan 2026 00:00:00 GMT</code>) and via documentation.</p>
-          <p><strong>Protobuf field number discipline:</strong> Protocol Buffers use field numbers — not field names — as the wire identity of each field. This means a field can be renamed without breaking compatibility (the number stays the same). However, if a field number is reused for a different field, deserialization will produce corrupted data. The rule is absolute: once a field number is used, it is permanently reserved, even if the field is removed.</p>
-          <p>Use the <code>reserved</code> keyword to document retired field numbers and names: <code>reserved 3, 4; reserved "old_name";</code>.</p>
+          <p><strong>Pact in CI:</strong> FieldOps defines the driver response shape it needs; the driver API provider verification job runs on every PR. Northwind caught a proposed <code>email</code> rename because the contract still expected <code>email_address</code>.</p>
+          <p><strong>Semver and policy:</strong> Breaking driver API changes bump major path (<code>/v2/...</code>). Additive fields are minor documentation updates. Publish how long <code>v1</code> stays after <code>v2</code> GA. Return <code>Deprecation</code> and <code>Sunset</code> headers on aging routes so FieldOps telemetry can plan upgrades.</p>
+          <p><strong>Protobuf discipline:</strong> If Northwind moves driver events to gRPC, field numbers are the wire identity. Rename freely; never reuse numbers. Mark retired slots with <code>reserved</code> so a future engineer does not recycle them.</p>
+          <p><strong>Schema registry:</strong> Avro changes for <code>DriverStatusChanged</code> go through registry compatibility checks before merge — incompatible writer schemas fail the build.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Renaming a field "for clarity":</strong> A developer renames <code>user_id</code> to <code>userId</code> (snake_case to camelCase) without providing the old name as an alias. All consumers that read <code>user_id</code> receive <code>null</code> instead of an error — a silent data loss that may not surface in testing.</li>
-            <li><strong>Making an optional field required:</strong> Adding a validation that a previously optional field is now required causes all clients that don't send the field to receive 400 Bad Request errors — potentially breaking all existing integrations simultaneously.</li>
-            <li><strong>Removing an enum value:</strong> A service removes a status enum value it no longer produces. A consumer that has a database constraint or switch statement on that value may fail — or worse, silently ignore records with the removed status.</li>
-            <li><strong>Skipping the contract phase:</strong> The expand phase adds a new column, consumers migrate to it, but no one removes the old column. Months later, a new developer does not know which column is canonical and starts writing to the old one again — reintroducing the problem the migration was supposed to solve.</li>
+            <li><strong>Silent rename:</strong> <code>driver_id</code> becomes <code>driverId</code> in JSON with no alias — FieldOps shows empty IDs without a hard error.</li>
+            <li><strong>New required field:</strong> <code>home_terminal</code> becomes mandatory — older app builds get 400 on every fetch.</li>
+            <li><strong>Enum shrink:</strong> Removing <code>ON_BREAK</code> breaks FieldOps switches and downstream reports.</li>
+            <li><strong>Stuck expand phase:</strong> Both <code>full_name</code> and split names stay forever; writers disagree on canonical source.</li>
+            <li><strong>No contract tests:</strong> Integration tests mock ideal responses; production clients still break.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is this API change additive only (new fields, new endpoints, new optional params)? If not, it is a breaking change requiring a new major version.</li>
-            <li>Have all existing consumers been audited to confirm none of them depend on the field or behavior being removed or changed?</li>
-            <li>Is consumer-driven contract testing (Pact or equivalent) in place to automatically catch breaking changes in CI before deployment?</li>
-            <li>For database schema changes: are we following expand-contract (add new, migrate consumers, remove old) rather than direct rename/removal?</li>
-            <li>For serialization formats (Protobuf, Avro): have we followed schema evolution rules (never reuse field numbers, only add with defaults)?</li>
-            <li>Is there a published deprecation policy and timeline for old API versions, communicated to all consumers?</li>
-            <li>Are deprecation headers (<code>Deprecation</code>, <code>Sunset</code>) included in responses from deprecated API versions?</li>
+            <li>Is the driver API change additive-only? If not, is there a new major version path?</li>
+            <li>Did you search FieldOps, dispatch, and partner repos for usages of fields you remove or tighten?</li>
+            <li>Does CI run provider verification against consumer Pact files (or equivalent)?</li>
+            <li>For DB changes on the driver store, are you in expand, migrate, or contract — with an owner for contract?</li>
+            <li>For Protobuf/Avro, did registry compatibility pass on the PR?</li>
+            <li>Is there a written deprecation window for FieldOps and external TMS consumers?</li>
+            <li>Do deprecated Northwind endpoints emit <code>Deprecation</code> / <code>Sunset</code> headers?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
+          <p>Northwind’s driver profile work follows one thread:</p>
           <ul>
-            <li>Stripe has maintained backward compatibility on their v1 API for over a decade — fields are never removed, only deprecated with ample migration time. This stability is a competitive advantage: developers trust that code written against Stripe's API today will still work in five years.</li>
-            <li>A mobile banking app backend uses expand-contract for every database schema change — the iOS app version deployed 6 months ago and the current version must both work against the same database, making direct column renames impossible.</li>
-            <li>A company using Kafka for inter-service events uses Confluent Schema Registry with Avro. All schemas are validated against the registry's backward compatibility rules before publishing — a schema change that would break existing consumers is rejected at build time.</li>
-            <li>A team adopts Pact contract testing after a production incident where a backend rename of <code>email_address</code> to <code>email</code> broke the mobile app for 2 hours. Contract tests would have caught the breaking change before the PR was merged.</li>
+            <li><strong>Additive response:</strong> Optional <code>preferred_language</code> ships; old FieldOps builds ignore it.</li>
+            <li><strong>Expand–contract names:</strong> Split <code>full_name</code> while dual-writing until FieldOps release notes say all fleets are on the new build.</li>
+            <li><strong>Major version:</strong> <code>/v2/drivers/{id}</code> introduces redesigned status enums; <code>v1</code> keeps old values until sunset headers say otherwise.</li>
+            <li><strong>Pact gate:</strong> A PR that drops <code>email_address</code> fails provider verification until FieldOps publishes an updated consumer contract.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

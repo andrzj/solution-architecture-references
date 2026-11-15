@@ -122,31 +122,31 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The central goal of domain modeling is to make the code speak the language of the business. When a developer can read the code and recognize the business concepts directly — an Order that contains OrderLines, a Product with a Price (value object), a domain event OrderPlaced — the model serves as living documentation and the gap between the business and the code shrinks significantly.</p>
+          <p>Domain modeling is how you represent business concepts and rules in code—orders, accounts, prescriptions—not as anonymous rows and DTOs, but as types the business already talks about. A developer reading <code>Order.place()</code> or <code>Money</code> as a value object should recognize the same language domain experts use in workshops.</p>
+          <p>Done well, the model is executable documentation: invariants live on aggregates, side effects surface as domain events, and infrastructure stays at the edges.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Systems without explicit domain models tend toward the Anemic Domain Model antipattern: objects that are pure data bags (getters and setters) with all business logic scattered across service classes and procedure-style code. This makes the domain logic invisible, difficult to test, and impossible to communicate to non-technical stakeholders. Business rules become hidden in layers of infrastructure and service code, making the system fragile and the codebase resistant to change.</p>
-          <p>A rich domain model centralizes business rules in the entities and value objects that represent domain concepts. When the business rule "an Order cannot be cancelled after it has shipped" lives in the Order aggregate's cancel() method — rather than scattered across three service classes — it is discoverable, testable, and maintainable. Domain modeling is ultimately a strategy for long-term maintainability through high cohesion.</p>
+          <p>Without an explicit model, logic drifts into service classes around anemic data objects. Rules like "cancel only before ship" hide in three procedural services, become hard to test, and vanish from conversation with the business. Every change risks breaking a rule nobody remembered was there.</p>
+          <p>Co-locating rules on the types they govern makes behavior discoverable. When <code>Order.cancel()</code> enforces shipping state, you can unit-test the rule without spinning up HTTP or SQL. That cohesion pays off over years of evolving regulation and product rules.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When building systems with complex business rules that will evolve over years — the domain model is the primary investment in long-term maintainability.</li>
-            <li>When working closely with domain experts and the ubiquitous language is well-established or actively being developed.</li>
-            <li>When building event-sourced systems — domain events are a natural fit for event sourcing.</li>
-            <li>When operating in a regulated industry where business rules must be auditable and traceable in code.</li>
-            <li>When building microservices — aggregates provide natural transaction and consistency boundaries that map well to service boundaries.</li>
+            <li>Long-lived products with non-trivial business rules that will keep changing.</li>
+            <li>Teams pairing with domain experts and investing in a ubiquitous language.</li>
+            <li>Event-sourced or event-heavy designs where domain events are first-class facts.</li>
+            <li>Regulated domains where rules must be traceable in code and reviews.</li>
+            <li>Microservices where aggregate boundaries hint at consistency and transaction limits (not automatic service cuts).</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Do not apply a rich domain model to simple CRUD systems — a thin service layer over a database is appropriate when there are no complex business rules.</li>
-            <li>Do not force DDD tactical patterns onto an anemic model — the result is ceremony without substance.</li>
-            <li>Do not use DDD aggregates as the sole driver of service decomposition; they define consistency boundaries, not deployment units.</li>
+            <li>Simple CRUD with little invariant surface—a thin service over tables is enough.</li>
+            <li>DDD patterns pasted onto an anemic core (entities that are only bags of fields).</li>
+            <li>Treating every aggregate as its own microservice without checking operational cost.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>A typical rich domain model structures its building blocks in layers. The domain layer contains only pure business logic with no infrastructure dependencies. The application layer orchestrates use cases using domain objects and coordinates persistence via repository interfaces. Infrastructure provides concrete implementations.</p>
+          <p>The domain layer holds pure business logic. Application code orchestrates use cases and talks to persistence through repository interfaces; infrastructure implements those interfaces. The diagram sketches one aggregate and how behavior stays inside its boundary.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     O["Order entity aggregate root"]
@@ -193,57 +193,56 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Business rules are co-located with the objects they govern, making them discoverable and testable without infrastructure.</li>
-                <li>Value objects (immutable, equality by value) eliminate an entire class of bugs from mutable shared state.</li>
-                <li>Domain events provide a natural integration mechanism between aggregates without coupling.</li>
-                <li>Aggregates provide clear transaction boundaries that map naturally to service and storage boundaries.</li>
-                <li>The ubiquitous language reduces communication errors between developers and domain experts.</li>
+                <li>Rules sit next to the concepts they protect—easy to find, test, and change.</li>
+                <li>Immutable value objects cut down shared-mutation bugs.</li>
+                <li>Domain events integrate contexts without reaching inside another aggregate.</li>
+                <li>Aggregates clarify where one transaction must succeed or fail as a unit.</li>
+                <li>Shared vocabulary with domain experts reduces mistranslation in requirements.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Higher upfront investment in design and modeling compared to simple CRUD architectures.</li>
-                <li>ORM mapping of rich aggregates can be complex — lazy loading and aggregate boundary enforcement require careful configuration.</li>
-                <li>Domain modeling skills are not uniformly distributed across engineering teams; adoption requires education.</li>
-                <li>Can produce over-engineered solutions in simple domains where CRUD would suffice.</li>
+                <li>More design time up front than table-first CRUD.</li>
+                <li>ORMs and aggregates fight unless boundaries and loading are deliberate.</li>
+                <li>Skill spread varies; teams need coaching to avoid cargo-cult DDD.</li>
+                <li>Easy to over-model simple domains with layers nobody needed.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Entities vs Value Objects:</strong> An entity is an object with a unique identity that persists over time — an Order is still the same Order even after its status changes. A value object is defined entirely by its attributes and has no identity — two Money objects with the same amount and currency are interchangeable. Value objects should be immutable: "changing" a money value means creating a new one. Modeling primitive obsession (using raw strings and numbers instead of value objects) is one of the most common domain modeling mistakes and produces anemic code with scattered validation.</p>
-          <p><strong>Aggregate design:</strong> An aggregate is a cluster of entities and value objects treated as a single unit for data changes and invariant enforcement. Every aggregate has a root entity — the only entry point for mutations. External objects hold references only to aggregate roots, never to internal entities. Aggregate boundaries are defined by business invariants: everything that must always be consistent must be inside one aggregate.</p>
-          <p>Keep aggregates small — large aggregates become contention bottlenecks.</p>
-          <p><strong>Event Storming:</strong> Event Storming (Alberto Brandolini) is the most effective technique for collaborative domain modeling. Stakeholders and developers use sticky notes to map domain events (things that happened), commands (things that cause events), aggregates (what handles commands), and policies (automated reactions to events) on a timeline. The output is a shared understanding of the domain model that informs bounded context boundaries and aggregate design.</p>
-          <p><strong>Domain services:</strong> When an operation belongs to the domain but does not naturally fit within a single aggregate (e.g., a funds transfer that affects two accounts), model it as a domain service — a stateless operation expressed in the ubiquitous language. Do not confuse domain services with application services; a domain service contains business logic, an application service orchestrates the use case and coordinates persistence.</p>
+          <p><strong>Entities vs value objects:</strong> Entities have identity that outlives attribute changes—this order is still order #42 after status moves to SHIPPED. Value objects are defined only by their data—two <code>Money(10, USD)</code> instances are interchangeable. Prefer immutability on values; "change" means replace. Replacing raw strings with <code>OrderId</code>, <code>Email</code>, and <code>Money</code> concentrates validation instead of scattering it in controllers.</p>
+          <p><strong>Aggregate design:</strong> An aggregate is the consistency cluster: one root is the only entry for writes, and invariants that must hold together stay inside. Reference other aggregates by id, not by navigable object graphs. Keep aggregates small—fat roots that own catalog, customer, and inventory become lock magnets.</p>
+          <p><strong>Event Storming:</strong> Sticky notes for events, commands, aggregates, and policies on a timeline surface where language splits and where boundaries should fall. It is the fastest way to align developers and experts before coding structure.</p>
+          <p><strong>Domain services:</strong> Use when the rule genuinely spans aggregates (e.g., transferring between two accounts) but still belongs in domain language—not for orchestration or SQL, which stay in application services.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Anemic Domain Model:</strong> Aggregates with only getters and setters, all business logic in service classes — the most common failure mode and the one DDD is specifically designed to avoid.</li>
-            <li><strong>Large aggregates:</strong> An Order aggregate that contains Customer, Product catalog, and Inventory creates massive contention and violates single responsibility.</li>
-            <li><strong>Repositories returning internal entities:</strong> Exposing OrderLine outside the Order aggregate boundary, allowing external code to bypass the aggregate's invariant enforcement.</li>
-            <li><strong>Domain events used as DTOs:</strong> Treating domain events as mere data transfer objects rather than meaningful business facts with their own ubiquitous language names.</li>
-            <li><strong>No domain events:</strong> Aggregates that mutate state but never publish events, making integration with other aggregates and contexts require polling or tight coupling.</li>
+            <li><strong>Anemic model:</strong> Entities are structs; every rule sits in <code>OrderService</code>.</li>
+            <li><strong>God aggregate:</strong> One root owns customer, catalog, and stock—contention and unclear ownership.</li>
+            <li><strong>Leaky repository:</strong> Returning <code>OrderLine</code> to callers who bypass <code>Order</code> invariants.</li>
+            <li><strong>Events as wire DTOs:</strong> Names and payloads shaped for integration, not for what the business said happened.</li>
+            <li><strong>Silent aggregates:</strong> State changes with no events, forcing other contexts to poll or couple tightly.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have we identified the business invariants that define each aggregate's boundaries — the consistency rules that must always hold?</li>
-            <li>Are primitive types (strings, integers) replaced by value objects at the domain boundary (e.g., OrderId instead of String, Money instead of BigDecimal)?</li>
-            <li>Are value objects immutable in the implementation language?</li>
-            <li>Are all mutations to an aggregate routed through the aggregate root — never directly to child entities?</li>
-            <li>Does each significant domain operation produce a domain event that other aggregates and contexts can react to?</li>
-            <li>Is the domain layer free of infrastructure dependencies (no database calls, no HTTP clients, no framework annotations)?</li>
-            <li>Have we conducted or reviewed an Event Storming session with domain experts before finalizing the model?</li>
-            <li>Are aggregates small enough that a single database transaction on one aggregate will not become a contention bottleneck?</li>
+            <li>Which invariants define each aggregate boundary?</li>
+            <li>Are primitives at the edge replaced with value types where meaning matters?</li>
+            <li>Are value objects immutable in this language/runtime?</li>
+            <li>Do all writes go through the aggregate root?</li>
+            <li>Do meaningful operations publish domain events others can subscribe to?</li>
+            <li>Is the domain layer free of DB, HTTP, and framework leakage?</li>
+            <li>Did domain experts participate in Event Storming (or equivalent) before locking the model?</li>
+            <li>Will a single aggregate transaction stay small enough under peak load?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>An e-commerce platform models Order as an aggregate with OrderLines as child entities and Money as a value object, enforcing the invariant "order total must not exceed customer credit limit" inside the aggregate.</li>
-            <li>A banking system models Account as an aggregate, with every debit and credit producing a TransactionRecorded domain event that feeds the ledger and reporting contexts.</li>
-            <li>A healthcare system models Prescription as an aggregate root, with Medication as a value object and a DrugInteractionChecker domain service that validates prescriptions against the patient's medication history.</li>
+            <li>E-commerce <code>Order</code> aggregate with <code>OrderLine</code> children and <code>Money</code>—credit limit enforced inside <code>place()</code>, not in a generic checkout service.</li>
+            <li>Banking <code>Account</code>—each debit or credit emits <code>TransactionRecorded</code> for ledger and reporting contexts.</li>
+            <li>Healthcare <code>Prescription</code> root with <code>Medication</code> values and a domain service checking interactions against patient history.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

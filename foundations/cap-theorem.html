@@ -122,30 +122,30 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>In a distributed database you cannot fully guarantee consistency, availability, and partition tolerance at the same time. When the network splits, you choose whether to stop serving some requests (CP) or answer with possibly stale data (AP). For example, a shopping cart can stay available across regions while order payment may require a CP store.</p>
-          
+          <p>CAP is the shorthand for a constraint on distributed data stores: you cannot simultaneously promise that every read is up to date (<strong>consistency</strong>), that every request gets a response (<strong>availability</strong>), and that the system keeps working when the network fails (<strong>partition tolerance</strong>). Partitions happen in real deployments, so the practical fork is what you do when nodes cannot talk: refuse some requests (CP) or keep answering with data that might be stale (AP).</p>
+          <p>A regional shopping cart can lean AP—users keep adding items even if replicas lag—while capturing payment often needs CP behavior so two nodes never disagree about whether money moved.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Before CAP, engineers often assumed that building distributed data systems was primarily an engineering challenge — make nodes communicate reliably enough and you could have everything. CAP formalized the theoretical limit: no matter how well-engineered the system, there are inescapable trade-offs in the face of network failures. This changed how engineers approach database selection and distributed system design, moving the conversation from "which database is best?" to "what consistency model does this use case require?"</p>
-          <p>Understanding CAP prevents the common mistake of selecting a distributed database assuming it provides strong consistency while also being highly available — and then being surprised by partition-related failures or stale data in production. It forces the design conversation to explicitly confront the system's behavior during failures, not just during normal operation.</p>
+          <p>Before CAP was widely understood, teams treated distributed databases like bigger single-node databases: add replication, hope the network cooperates, and assume strong consistency plus high availability. Eric Brewer's formulation (later proved by Gilbert and Lynch) made the limit explicit. The question stops being "which database is fastest?" and becomes "what must this data do when the network splits?"</p>
+          <p>CAP also surfaces a recurring production surprise: picking a store marketed as "consistent" and "always on," then learning that under partition either writes stall or reads return old values. Naming CP vs AP behavior up front forces failure-mode design, not just happy-path throughput.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When selecting a database or data store for a distributed system — CAP classification helps narrow the candidates.</li>
-            <li>When defining the consistency requirements for a particular use case — financial transactions vs social media feeds have very different needs.</li>
-            <li>When designing the partition-failure behavior of a system — what should the system do when nodes cannot reach each other?</li>
-            <li>When communicating with stakeholders about the inherent constraints of distributed data systems and why "just make it always consistent AND always available" is not possible.</li>
+            <li>Narrowing database candidates for a multi-node or multi-region system.</li>
+            <li>Writing down consistency requirements per use case—ledger lines vs like counts do not belong in the same bucket.</li>
+            <li>Defining partition behavior: error, degrade, or read stale data by design.</li>
+            <li>Explaining to stakeholders why "always consistent and always available" is not a checkbox feature.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>CAP is a binary model — it does not capture the spectrum of partial consistency guarantees (read-your-writes, monotonic reads, causal consistency) that real systems offer. Use PACELC for a more nuanced analysis.</li>
-            <li>Do not apply CAP to single-node systems — partition tolerance is irrelevant when there is only one node (though you then have no fault tolerance).</li>
-            <li>Do not use CAP as a substitute for measuring actual system behavior under your specific failure modes — it is a framework for thinking, not a performance specification.</li>
+            <li>CAP is coarse—it ignores read-your-writes, causal, and other middle ground. Pair it with <a href="pacelc-theorem.html">PACELC</a> for latency and normal-operation trade-offs.</li>
+            <li>Single-node databases are a different problem; partition tolerance only matters once there are multiple independent failure domains.</li>
+            <li>Do not treat CP/AP labels as a substitute for chaos tests on your actual topology and failure modes.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The CAP triangle below illustrates the three classifications and real-world systems that exemplify each. Note that CA systems — which sacrifice partition tolerance — are only truly achievable as single-node systems or systems where the network is considered fully reliable (a rare assumption in practice).</p>
+          <p>The triangle below maps the three properties to common store families. CA (consistent plus available, without partition tolerance) is realistic for one machine or a tightly coupled cluster—not for geo-distributed replicas.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     C["Consistency"]
@@ -204,53 +204,53 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros of understanding CAP</h3>
               <ul>
-                <li>Forces explicit discussion of consistency requirements before database selection, not after production incidents.</li>
-                <li>Prevents unrealistic expectations about distributed system behavior during network failures.</li>
-                <li>Provides a shared vocabulary for engineers, architects, and stakeholders to discuss fundamental trade-offs.</li>
-                <li>Guides partition failure behavior design — teams that understand CAP define clear "partition protocols" for their systems.</li>
+                <li>Surfaces consistency needs before the datastore is chosen, not after the first split-brain incident.</li>
+                <li>Sets realistic expectations when marketing slides promise "fully consistent, always online" globally.</li>
+                <li>Gives architects and product owners a shared vocabulary for partition trade-offs.</li>
+                <li>Encourages documented partition protocols instead of improvised on-call behavior.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Limitations of CAP</h3>
               <ul>
-                <li>CAP is binary — it does not capture the rich spectrum of partial consistency guarantees real systems provide.</li>
-                <li>CAP only applies during network partitions — it says nothing about latency trade-offs in normal operation (see PACELC).</li>
-                <li>The formal definition of "consistency" in CAP (linearizability) is stricter than most applications require, making many real-world trade-offs invisible.</li>
-                <li>Often misapplied as "pick any two" as a marketing claim rather than a rigorous framework for failure analysis.</li>
+                <li>Only two coarse buckets—real systems expose a spectrum of consistency levels per operation.</li>
+                <li>Describes behavior during partitions, not steady-state latency (PACELC covers that gap).</li>
+                <li>Uses linearizability for "C," which is stricter than many business rules actually need.</li>
+                <li>Often reduced to vendor slogans ("pick two") without tying choices to concrete failure scenarios.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>CP systems:</strong> Systems that prioritize consistency over availability during a partition will refuse to serve requests from isolated nodes rather than risk returning stale data. ZooKeeper uses the Zab consensus protocol to ensure all nodes agree before a write is acknowledged; during a partition, the minority partition will not serve writes. etcd uses Raft for the same purpose. These systems are appropriate for leader election, configuration management, and distributed locks — where consistency is critical and brief unavailability is acceptable.</p>
-          <p><strong>AP systems:</strong> Systems that prioritize availability during partitions will serve requests from all nodes, accepting that different nodes may have different views of the data at any moment. Cassandra uses a tunable consistency model (QUORUM, ONE, ALL) and defaults to eventual consistency. Amazon DynamoDB is designed as an AP system by default. These are appropriate for user-facing applications where some stale data is tolerable but timeouts are not — shopping carts, social media feeds, user preferences.</p>
-          <p><strong>Tunable consistency:</strong> Many modern systems (Cassandra, MongoDB, CouchDB) allow tuning the consistency vs availability trade-off per operation. Writing with QUORUM and reading with QUORUM in Cassandra provides strong consistency at the cost of reduced availability and increased latency. Writing with ONE provides high availability but risks reading stale data. This flexibility means CAP classification is not always binary — systems sit at a configurable point along the spectrum.</p>
+          <p><strong>CP systems:</strong> During a partition, isolated minorities stop accepting writes (and sometimes reads) rather than serve data that might be wrong. ZooKeeper and etcd use consensus (Zab and Raft) so acknowledged writes are agreed cluster-wide; minority sides go quiet. Reach for these when correctness beats brief outage—locks, leader election, cluster config.</p>
+          <p><strong>AP systems:</strong> Every reachable replica keeps serving traffic; replicas may diverge until replication catches up. Cassandra's tunable levels (ONE, QUORUM, ALL) and DynamoDB's default AP posture target feeds, carts, and preferences where availability and latency matter more than strict global agreement.</p>
+          <p><strong>Tunable consistency:</strong> Many stores let you raise consistency per read or write. QUORUM/QUORUM in Cassandra approximates strong behavior at higher latency; ONE favors speed and accepts stale reads. The CAP label is a default posture, not a fixed setting—document the level you use for each critical path.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Choosing AP but expecting CP behavior:</strong> Selecting Cassandra for financial data with the assumption that it will "usually" be consistent — and then discovering split-brain scenarios in production.</li>
-            <li><strong>Treating partition tolerance as optional:</strong> Designing for the CA quadrant with a distributed system, then being unprepared for the network partitions that will inevitably occur.</li>
-            <li><strong>Ignoring the consistency model:</strong> Not specifying the consistency level when querying a tunable-consistency database, accepting the default which may be weaker than the use case requires.</li>
-            <li><strong>Misapplying to single-node systems:</strong> Using CAP to argue for eventually-consistent databases in contexts where a single RDBMS with ACID transactions is simpler and entirely appropriate.</li>
+            <li><strong>AP store, CP expectations:</strong> Running ledger logic on Cassandra with "it is usually consistent" assumptions until split replicas disagree in production.</li>
+            <li><strong>Ignoring partitions:</strong> Treating a geo-distributed cluster as CA and having no runbook when links fail.</li>
+            <li><strong>Default consistency levels:</strong> Shipping with ONE or eventual defaults on paths that need quorum or linearizable reads.</li>
+            <li><strong>CAP on a monolith database:</strong> Justifying distributed NoSQL where a single PostgreSQL instance would be simpler and strongly consistent.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have we defined the consistency requirement for this use case: linearizable, sequential, causal, or eventual?</li>
-            <li>What is the acceptable behavior during a network partition — refuse requests (CP) or serve potentially stale data (AP)?</li>
-            <li>Does the database we are evaluating match our consistency/availability requirements, not just our performance requirements?</li>
-            <li>If using a tunable-consistency system, have we specified the consistency level for each operation explicitly?</li>
-            <li>Is the data being stored financial, transactional, or safety-critical in a way that makes eventual consistency unacceptable?</li>
-            <li>Have we considered PACELC to understand the latency trade-offs in addition to the partition behavior?</li>
-            <li>Have we stress-tested the system under simulated network partitions (chaos engineering) to validate its actual behavior against our assumptions?</li>
+            <li>Which consistency level does this path need: linearizable, sequential, causal, or eventual?</li>
+            <li>On partition, do we fail closed (CP) or serve possibly stale data (AP)?</li>
+            <li>Does the evaluated store match that behavior under test, not only on the datasheet?</li>
+            <li>For tunable stores, is the read/write level specified per operation in code and docs?</li>
+            <li>Is this data financial, safety-critical, or inventory that cannot tolerate divergence?</li>
+            <li>Have we read PACELC for latency when the network is healthy?</li>
+            <li>Have we chaos-tested partitions and measured what clients actually see?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>A payment processor selects a CP database (PostgreSQL with synchronous replication) because consistency is non-negotiable — returning stale balance data could result in overdrafts.</li>
-            <li>A social media platform's "like count" feature uses an AP store (Cassandra) because showing a count of 1,003 vs 1,004 is less harmful than a timeout.</li>
-            <li>A distributed configuration service uses ZooKeeper (CP) because all nodes must agree on the current configuration — a split configuration causes split-brain behavior in the application cluster.</li>
-            <li>A shopping cart service uses DynamoDB (AP) because losing a cart item briefly due to eventual consistency is preferable to the cart timing out entirely during a partition.</li>
+            <li>Payments on PostgreSQL with synchronous replication—stale balance reads are unacceptable; brief write unavailability during partition is acceptable.</li>
+            <li>Like counts in Cassandra—off-by-one for seconds beats timing out the page.</li>
+            <li>Cluster configuration in ZooKeeper—every node must see the same config; a split brain in config data breaks the fleet.</li>
+            <li>Shopping carts in DynamoDB—brief item flicker is tolerable; an unavailable cart during a network blip is not.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

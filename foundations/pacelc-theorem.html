@@ -122,12 +122,12 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The acronym stands for: in case of <strong>P</strong>artition, choose between <strong>A</strong>vailability and <strong>C</strong>onsistency; <strong>E</strong>lse (during normal operation), choose between <strong>L</strong>atency and <strong>C</strong>onsistency. This makes PACELC a more complete model for practical database selection decisions than CAP alone.</p>
-          <p>The key insight is that even when the network is fully healthy, a distributed system must decide whether to wait for confirmation from all replicas before responding (low latency/eventual consistency) or to ensure all replicas agree before acknowledging a write (higher latency/strong consistency). This is a meaningful trade-off in every distributed database operation, not just during the rare partition events that CAP focuses on.</p>
+          <p><strong>PACELC</strong> extends CAP: on <strong>P</strong>artition, choose <strong>A</strong>vailability or <strong>C</strong>onsistency; <strong>E</strong>lse (healthy network), choose <strong>L</strong>atency or <strong>C</strong>onsistency. A ride-sharing driver-location store might take PA/EL — locations 500 ms stale beat timeouts under high write rates; a trading ledger needs PC/EC even when every quorum write costs microseconds.</p>
+          <p>Partitions are rare in well-run data centers; the latency–consistency decision hits every replicated write. PACELC surfaces that everyday trade-off when two databases share the same CAP label but diverge in normal operation.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>CAP's focus on partition scenarios, while theoretically important, does not capture the day-to-day trade-offs that matter most to system designers. Network partitions are relatively rare events in well-operated data centers. The latency/consistency trade-off in normal operation, however, affects every single database operation and directly impacts user-facing response times. PACELC gives architects the framework to have a complete conversation about a database's behavior both during failures and during normal operation.</p>
-          <p>PACELC also clarifies the difference between systems that appear similar under CAP but behave very differently in practice. Both Cassandra and DynamoDB are classified as AP under CAP — but under PACELC, Cassandra is PA/EL (highly available, low latency, high consistency sacrifice) while systems like PNUTS/Yahoo are PA/EC (available during partition, but strongly consistent in normal operation). These are fundamentally different systems for different use cases.</p>
+          <p>CAP forces the partition conversation but is silent on latency while the network is healthy — yet that is when most user-facing SLOs are won or lost. PACELC links failure behavior and steady-state behavior so database selection covers both.</p>
+          <p>It also splits databases that look alike under CAP. Cassandra and DynamoDB are both AP, yet default to PA/EL (fast, eventually consistent writes). PNUTS/Yahoo-style designs stay PA/EC — available under partition but quorum-consistent when connected. Picking between them without PACELC is guesswork.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -210,15 +210,14 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>The EL trade-off in practice:</strong> In a PA/EL system like Cassandra with consistency level ONE, a write is acknowledged as soon as a single replica confirms it. Other replicas are updated asynchronously. This means reads of recently written data from a different replica may return the previous value — eventual consistency. The benefit is that writes complete at local latency (sub-millisecond for in-region), making the system extremely fast for high-throughput write workloads.</p>
-          <p>The EC alternative would be QUORUM writes — waiting for a majority of replicas, which adds latency but guarantees that a subsequent QUORUM read will always see the latest write.</p>
-          <p><strong>Global distribution amplifies the trade-off:</strong> In a multi-region database (e.g., DynamoDB global tables, CockroachDB multi-region, Cassandra multi-DC), the EL/EC trade-off becomes dramatically more consequential. Cross-region replication typically adds 50–200 ms of round-trip latency. A strongly consistent (EC) multi-region write therefore costs hundreds of milliseconds per operation — which is completely unacceptable for user-facing APIs but may be acceptable for financial settlement or order fulfillment processes.</p>
-          <p><strong>Practical database selection workflow:</strong> Start with the question "can this use case tolerate stale reads?" If yes, PA/EL databases are candidates. If no, consider PC/EC. Then ask "how often do we expect network partitions, and what should happen during one?" If the service must stay available, eliminate PC options. Finally, apply operational, cost, and query capability filters to the remaining candidates.</p>
+          <p><strong>The EL trade-off in practice:</strong> Cassandra at consistency level ONE acknowledges after one replica — ideal for session or telemetry writes at local latency, with stale reads possible from other replicas. QUORUM on the same cluster shifts to EC: higher latency, but a QUORUM read sees the latest write.</p>
+          <p><strong>Global distribution amplifies the trade-off:</strong> Multi-region DynamoDB, CockroachDB, or Cassandra multi-DC pay a cross-region round trip on quorum writes. That overhead is often fine for settlement batches but painful for latency-sensitive interactive APIs.</p>
+          <p><strong>Practical selection workflow:</strong> Ask whether stale reads are acceptable (PA/EL vs stricter). Then define partition behavior (must stay up → avoid PC). Filter remaining candidates on operations, cost, and query needs — and document the PACELC posture in an ADR.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
             <li><strong>Using EL for financial data:</strong> Selecting DynamoDB or Cassandra at default consistency for balance or inventory data, then discovering that concurrent writes produce lost-update anomalies.</li>
-            <li><strong>Using EC for user-facing reads:</strong> Configuring PostgreSQL with synchronous multi-region replication for a read-heavy user profile service — adding 150 ms to every page load.</li>
+            <li><strong>Using EC for user-facing reads:</strong> Configuring PostgreSQL with synchronous multi-region replication for a read-heavy user profile service — adding cross-region latency to every page load.</li>
             <li><strong>Not benchmarking the EC overhead:</strong> Assuming strong consistency is "good enough" for performance without measuring the actual latency penalty of quorum writes at the expected throughput.</li>
             <li><strong>Ignoring the P behavior in SLA planning:</strong> Building on a PC database without planning for the availability hit during partition events — which will occur and will result in downtime.</li>
           </ul>
@@ -227,7 +226,7 @@
           <ul class="checklist">
             <li>Is this use case tolerant of stale reads? (If no, eliminate EL databases from consideration.)</li>
             <li>What is the acceptable write latency target — and have we measured the overhead of quorum writes at the expected throughput?</li>
-            <li>Is the deployment single-region or multi-region? Multi-region makes the EL/EC latency difference 10–100× larger.</li>
+            <li>Is the deployment single-region or multi-region? Cross-region quorum and replication usually add far more latency than same-AZ calls.</li>
             <li>What should happen during a network partition — must the service stay available, or can it refuse requests?</li>
             <li>Have we tested the chosen database under simulated partition conditions (chaos engineering) to validate its actual behavior?</li>
             <li>For tunable-consistency databases, is the consistency level configured per-operation, and is it appropriate for each operation type?</li>
