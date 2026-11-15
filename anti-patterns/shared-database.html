@@ -104,15 +104,26 @@
         </div>
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
-          <p>The <strong>shared database</strong> anti-pattern places multiple services’ logic against a single database schema (or a tightly coupled set of schemas). Services are “independent” only at the deployment layer; at the persistence layer they remain one coupled application. Schema changes require multi-team coordination, transactions span service boundaries through the database, and no team can evolve its domain data model safely on its own.</p>
+          <p>The <strong>shared database</strong> anti-pattern lets multiple services read and write the same tables as if they were one application. Deployments look separate; persistence is not. Martin Fowler’s <a href="https://martinfowler.com/bliki/IntegrationDatabase.html" target="_blank" rel="noopener noreferrer">Integration Database</a> describes the same idea: the RDBMS becomes the integration bus.</p>
+          <p>At <strong>Meridian Commerce</strong>, Order, Payment, Inventory, and Reporting still share <code>meridian_core.orders</code> and related line-item tables. When <strong>Northwind Logistics</strong> onboarded merchant shipments, its label service gained write access to the same schema for freight metadata — four teams, one migration queue.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Teams reach for a shared database to avoid data synchronization, duplicate storage, or short-term delivery pressure (“we’ll split the data later”). ORM models and SQL views make cross-service reads deceptively easy. The database becomes the hidden integration bus—faster initially than events or APIs, but far more expensive to unwind.</p>
+          <p>Shared tables feel faster than duplicating data or standing up CDC. Meridian’s split from a modular monolith left the Postgres instance in place; JOINs and foreign keys still look cheaper than events on a roadmap. Northwind’s integration added another writer instead of subscribing to <code>OrderPlaced</code>.</p>
+          <p>Shared NuGet/npm ORM packages that map the whole enterprise schema make the problem worse: every service “owns” the same entity graph.</p>
           <h2 id="when-to-use">How it manifests</h2>
-          <ul><li>Several services have read/write access to the same tables or views.</li><li>Schema migrations require a multi-team change advisory board for routine ALTERs.</li><li>Foreign keys or triggers tie rows owned by different business capabilities.</li><li>Services use shared ORM packages that embed the full enterprise schema.</li></ul>
+          <ul>
+            <li>Meridian Payment and Inventory both UPDATE <code>orders.payment_status</code> and <code>orders.fulfillment_state</code> without a single write owner.</li>
+            <li>A nullable column for Payment capture requires coordinated deploys of Order, Shipment batch jobs, and Northwind’s label worker.</li>
+            <li>Reporting runs heavy SQL against primary OLTP tables, pinning locks during checkout peaks.</li>
+            <li>Schema CAB meetings gate routine ALTERs because any change can break a peer service’s queries.</li>
+          </ul>
           <h2 id="when-not-to-use">How to recognize it early</h2>
-          <ul><li>A read replica used strictly for analytics with no writer access is not this anti-pattern.</li><li>A deliberately shared operational datastore with a single owning team (true modular monolith) is a different architecture choice.</li></ul>
+          <ul>
+            <li>Meridian’s analytics replica is <em>read-only</em> with no application writers — that is a reporting pattern, not shared-database coupling.</li>
+            <li>A modular monolith with one team owning one schema is a valid modular-monolith choice, not this anti-pattern.</li>
+            <li>Northwind FieldOps reading a curated mart fed by CDC is integration done at the warehouse layer, not shared OLTP access.</li>
+          </ul>
           <h2 id="typical-architecture">Typical manifestation</h2>
-          <p>Services remain logically independent only above the JDBC connection string.</p>
+          <p>Meridian and Northwind services stay independent only above the JDBC connection string.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     order["Order service"]
@@ -137,25 +148,29 @@
           </figure>
           <h2 id="pros-and-cons">Consequences and remediation</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Consequences</h3><ul><li>Coupled release trains for schema and application changes.</li><li>Blast-radius incidents: one slow query or lock affects all services.</li><li>Unable to scale or partition data per domain.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Remediation</h3><ul><li>Database per service with clear write ownership.</li><li>CDC or domain events to replicate read models across contexts.</li><li>Anti-corruption layers at API boundaries during migration.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros"><h3>Consequences</h3><ul><li>Meridian’s Black Friday deploy window requires Payment, Order, Inventory, and Northwind label services in one train.</li><li>A long-running reporting query stalls checkout writes on the shared primary.</li><li>Neither team can shard or archive orders independently.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--cons"><h3>Remediation</h3><ul><li><a href="../data-architecture/database-per-service.html">Database per service</a> — Order owns order rows; Payment owns captures in its own store.</li><li><a href="../integration/change-data-capture.html">CDC</a> and domain events feed Reporting and Northwind read models without shared writes.</li><li>Strangler extraction on <code>orders</code> with anti-corruption layers at each new boundary.</li></ul></div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Migrate incrementally: stop new cross-table writes first, then move writers behind service-owned schemas. Use strangler fig on the busiest tables. Pair every extraction with contract tests on emitted events. Track coupling metrics: count of cross-service FKs and shared migrations per month.</p>
+          <p>Meridian froze new cross-table writers first, then moved Payment off direct <code>orders</code> updates behind <code>PaymentCaptured</code> events. Northwind stopped mutating Meridian tables and consumes the same stream to build its shipment aggregate. Dual-write periods need a field-level source of truth matrix; CDC contract tests catch schema drift before BI and FieldOps break.</p>
           
           <h2 id="common-failure-modes">Escalation patterns</h2>
-          <ul><li><strong>Dual-write periods:</strong> Two services write the same logical entity during migration—define source of truth per field.</li><li><strong>Reporting exceptions:</strong> BI teams bypass services with direct SQL, re-coupling analytics to operational schemas—provide curated marts instead.</li></ul>
+          <ul><li><strong>Dual-write limbo:</strong> Payment and Order both write capture status during migration — incidents when states disagree.</li><li><strong>BI exception:</strong> Finance adds a read-only JDBC user that becomes a shadow writer via ad-hoc “fix” scripts.</li><li><strong>Northwind shortcut:</strong> Label service writes freight fields on Meridian’s rows instead of owning <code>shipment</code> data.</li></ul>
           <h2 id="decision-checklist">Diagnostic checklist</h2>
-          <ul class="checklist"><li>Does each table have exactly one owning write service?</li><li>Can you deploy service A without migrating schemas owned by service B?</li><li>Are cross-context reads served from replicas or events—not primary OLTP tables?</li></ul>
+          <ul class="checklist"><li>Does every Meridian/Northwind table have exactly one owning write service?</li><li>Can Payment ship without Inventory migrating the same schema?</li><li>Are cross-context reads served from events, APIs, or marts — not shared primary tables?</li></ul>
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul><li><strong>Distributed order flow:</strong> Order, Payment, and Shipment services shared an <code>orders</code> table; a nullable column added for payments broke shipment batch jobs until all three deployed together.</li></ul>
+          <p>Meridian and Northwind on one shared <code>orders</code> table:</p>
+          <ul>
+            <li><strong>Anti-pattern:</strong> Payment adds <code>capture_reference</code> NULLable; Northwind’s nightly label batch expects NOT NULL legacy columns; three services deploy in a single maintenance window.</li>
+            <li><strong>Fix:</strong> Order owns <code>orders</code>; Payment stores captures separately and publishes events; Reporting and Northwind subscribe via CDC into their own databases — per <a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">database per service</a>.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="distributed-monolith.html">Distributed Monolith</a></li><li><a href="../data-architecture/database-per-service.html">Database per Service</a></li><li><a href="../integration/change-data-capture.html">Change Data Capture</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://martinfowler.com/bliki/IntegrationDatabase.html" target="_blank" rel="noopener noreferrer">Integration Database antipattern</a></li>
             <li><a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">Database per service</a></li>
-            <li><a href="https://martinfowler.com/ieeeSoftware/whenUseAndWhenNot.pdf" target="_blank" rel="noopener noreferrer">When to use and not use patterns — Martin Fowler</a></li>
+            <li><a href="https://martinfowler.com/articles/microservice-trade-offs.html" target="_blank" rel="noopener noreferrer">Microservice trade-offs — Martin Fowler</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
