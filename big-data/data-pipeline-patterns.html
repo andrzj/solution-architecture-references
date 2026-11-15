@@ -102,26 +102,30 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
+          <p><strong>Data pipeline patterns</strong> are reusable design choices for moving and refining data at scale: layered lakehouse layouts (medallion bronze, silver, gold), idempotent writes, incremental processing with checkpoints, orchestration, and quality validation between stages. They turn fragile one-off ETL into repeatable mechanics that survive retries, schema change, and operational scrutiny.</p>
+          <p>Patterns compose—raw append-only landing, contracted cleaning, business aggregates, expectation suites on promotion—not as dogma but as defaults teams can adopt when reliability matters more than the shortest path to a single report.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Data pipelines fail: upstream sources change schemas, API calls return partial data, clusters time out mid-job. Without explicit patterns for idempotency, incremental processing, and quality validation, teams end up with pipelines that corrupt data when re-run, fail silently when quality degrades, and produce incorrect results when processing is not idempotent. Formalising these patterns as design standards dramatically reduces the frequency and impact of pipeline failures.</p>
+          <p>Pipelines fail in predictable ways: APIs return partial pages, clusters restart mid-partition, upstream columns appear overnight, and someone reruns yesterday’s job without clearing duplicates. Without shared patterns, each team reinvents watermarks, merge semantics, and quarantine flows—and still ships subtle data corruption.</p>
+          <p>Documented patterns (medallion layering, partition overwrite, merge upserts, orchestrator sensors, Great Expectations gates) give reviewers a checklist and give operators known recovery steps when freshness or quality SLAs break.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Building medallion or multi-layer lakehouse pipelines with many upstream sources.</li>
-            <li>Teams need repeatable patterns for idempotency, incremental loads, and backfills.</li>
-            <li>Regulatory or SLA requirements demand lineage and quality gates between layers.</li>
-            <li>Multiple batch and streaming jobs must share contracts on schema and freshness.</li>
+            <li>You operate lakehouse or warehouse pipelines with multiple sources and downstream consumers depending on consistent grains.</li>
+            <li>Teams need standard answers for idempotency, incremental loads, backfills, and late-arriving events.</li>
+            <li>Compliance or product SLAs require provable lineage and blocking quality gates between layers.</li>
+            <li>Batch and streaming jobs must honor the same schema contracts and freshness definitions.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>A single short-lived ETL script with one owner and no downstream consumers.</li>
-            <li>Managed SaaS sync (Fivetran-style) fully owns orchestration and you only consume tables.</li>
+            <li>A throwaway script with one author and no recurring schedule does not justify medallion overhead.</li>
+            <li>A managed sync product owns extract, load, and basic typing and your team only models in the warehouse.</li>
+            <li>Data volume and consumer count are so small that a single table plus cron satisfies every requirement.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Medallion layering, idempotent transforms, incremental checkpoints, and orchestrated quality checks chain together from source ingest through business-ready serving tables.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     medallion_architecture_d["MEDALLION ARCHITECTURE (Delta Lake / Databricks standard)"]
@@ -248,7 +252,7 @@ DATA QUALITY (GREAT EXPECTATIONS)
   Use Data Docs to publish HTML quality reports to S3 for stakeholders.
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Medallion architecture (Bronze/Silver/Gold), idempotent pipelines, incremental processing with watermarks and checkpointing, orchestration tools (Airflow, Prefect, Dagster), data quality with Great Expectations, and lineage tracking.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Raw bronze landings flow through validated silver and aggregated gold tables with idempotent writes and orchestrated quality checks between layers.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -256,40 +260,43 @@ DATA QUALITY (GREAT EXPECTATIONS)
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Medallion's Bronze layer preserves raw data permanently — any transformation error can be corrected by re-running from Bronze without re-fetching from the source.</li>
-                <li>Idempotent pipelines are safe to retry: a failed job does not require manual cleanup before re-running, reducing mean time to recovery.</li>
-                <li>Incremental processing dramatically reduces compute cost — processing only yesterday's data instead of full history each day.</li>
-                <li>Data quality gates at Silver entry prevent bad data from propagating to serving layer and corrupting downstream reports.</li>
+                <li>Immutable bronze retention lets teams fix transformation bugs by replaying from raw history without re-extracting sources.</li>
+                <li>Idempotent partition overwrite or merge semantics make retries safe after transient cluster or network failures.</li>
+                <li>Incremental watermarks and change feeds cut daily compute to new or changed rows instead of full-history scans.</li>
+                <li>Quality suites at silver boundaries stop corrupt batches before they reach metrics consumers.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Medallion adds storage cost — data exists at Bronze, Silver, and Gold; for high-volume pipelines this can triple storage requirements.</li>
-                <li>Orchestrators add operational overhead — Airflow / Dagster schedulers must be provisioned, monitored, and upgraded separately.</li>
-                <li>Incremental processing requires careful checkpoint management — a corrupted checkpoint causes gaps or duplicates in the output.</li>
-                <li>Data quality suite maintenance: as schemas evolve, expectation suites must be updated to avoid false failures.</li>
+                <li>Three logical layers multiply storage unless retention and compaction policies are enforced.</li>
+                <li>Orchestrator clusters (Airflow, Dagster, Prefect) add another system to patch, monitor, and capacity-plan.</li>
+                <li>Checkpoint corruption or clock-skewed watermarks create duplicate or missing slices until manually repaired.</li>
+                <li>Expectation libraries require maintenance whenever schemas or business rules evolve.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Schema evolution:</strong> Bronze layer should accept schema evolution liberally (new columns added, nullable columns) to prevent ingestion from breaking when upstream adds fields. Silver enforces a strict schema contract; schema changes at Silver must go through a migration process (add column, backfill, remove old column). Use Delta Lake's schema evolution (<code>mergeSchema</code>) for additive changes and explicit schema migration jobs for breaking changes.</p>
-          <p><strong>Late-arriving data:</strong> For batch pipelines processing yesterday's data, late-arriving events (records with yesterday's timestamp arriving today) may fall outside the processing window. Two approaches: (1) reprocess the previous N days on each run (idempotent overwrite); (2) use a grace period — include records up to 48 hours before the watermark. Choose based on how late data can arrive and how much reprocessing cost is acceptable.</p>
+          <p><strong>Schema evolution:</strong> Allow additive changes at bronze ingestion; enforce contracted types and names at silver. Plan explicit migration jobs for breaking changes instead of silent casts downstream.</p>
+          <p><strong>Idempotency:</strong> Prefer partition-scoped overwrite or <code>MERGE</code> keyed on business identifiers; avoid blind append on retry.</p>
+          <p><strong>Late-arriving data:</strong> Either overlap processing windows with idempotent overwrites or maintain a grace interval in the watermark; document the maximum lateness the pipeline guarantees.</p>
+          <p><strong>Orchestration choice:</strong> DAG-centric tools fit stable schedules; asset-centric tools (Dagster) shine when lineage and data-aware scheduling are first-class requirements.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Non-idempotent INSERT INTO on retry:</strong> When a pipeline fails after partial write and is retried, INSERT INTO duplicates records; always use MERGE or partitioned overwrite.</li>
-            <li><strong>No data quality gate:</strong> Bad data in Bronze (nulls in required fields, corrupted records from upstream API) flows through to Gold and corrupts business metrics before anyone notices.</li>
+            <li><strong>Append-only retries:</strong> Re-running a failed job that used <code>INSERT</code> duplicates facts in silver or gold.</li>
+            <li><strong>Skipped quality gate:</strong> Invalid bronze batches propagate to executive metrics because checks only log warnings.</li>
+            <li><strong>Stale checkpoints:</strong> A manually edited or restored checkpoint replays the wrong window and double-counts events.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the Bronze layer append-only with no in-place updates to raw data?</li>
-            <li>Are writes to Silver idempotent (partitioned overwrite or MERGE, not INSERT INTO)?</li>
-            <li>Is there an incremental processing pattern with a persisted, recoverable checkpoint?</li>
-            <li>Are Great Expectations (or equivalent) quality checks run before data is written to Silver or Gold?</li>
-            <li>Is there a data quality alerting pipeline (alert on failures, not just logs)?</li>
+            <li>Is bronze append-only with raw payloads preserved for replay?</li>
+            <li>Do silver and gold writes use idempotent overwrite or merge semantics?</li>
+            <li>Is the incremental watermark or change-feed cursor stored durably and recoverable?</li>
+            <li>Do blocking quality expectations run before data promotes to downstream layers?</li>
+            <li>Do quality failures page an owner instead of only writing to logs?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>

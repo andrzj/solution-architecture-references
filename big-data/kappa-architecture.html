@@ -102,28 +102,30 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The key insight is that a replayable log with long retention (days, weeks, or indefinitely via compaction or tiered storage) gives you the same ability to reprocess historical data as an HDFS batch layer, without requiring a separate batch processing engine and the dual code path it implies.</p>
+          <p><strong>Kappa Architecture</strong> is a stream-first design for analytical and operational data products: one processing codebase reads an immutable event log, maintains serving views for live queries, and replays the same log when logic or schemas change. Jay Kreps proposed it as a simpler alternative to Lambda Architecture, arguing that a durable, replayable log can stand in for a separate batch “truth” layer when retention and reprocessing mechanics are designed deliberately.</p>
+          <p>The central idea is that long-retained, ordered logs (days, months, or longer via compaction or tiered storage) let you rebuild history by resetting consumer offsets, much as batch jobs re-scan HDFS—without maintaining parallel batch and speed implementations of the same business rules.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Lambda Architecture's biggest operational burden is the dual code path: the same computation must be written twice — once for the batch layer (Spark, Hadoop) and once for the speed layer (Spark Streaming, Storm). These implementations inevitably drift apart: a bug is fixed in one but not the other, libraries diverge, edge cases are handled differently. Kappa eliminates this by using a single stream processing engine for both real-time processing and historical reprocessing.</p>
+          <p>Lambda Architecture separates batch accuracy from stream freshness, but that split forces two code paths for one definition of truth. The batch job and the stream job diverge over time: bug fixes land in one place first, libraries age differently, and edge cases get handled inconsistently. Operations pay twice—for scheduling, monitoring, and incident response—whenever metrics disagree between layers.</p>
+          <p>Kappa collapses those paths when the organization already invests in stream processing and log infrastructure. Reprocessing becomes an operational procedure (new consumer group, parallel run, cutover) rather than a second platform. Kreps framed this in <em>Questioning the Lambda Architecture</em> after building Kafka-centric systems at LinkedIn.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>New systems where streaming expertise is available and the team prefers operational simplicity.</li>
-            <li>Use cases where business logic changes frequently — updating a single stream processor is far simpler than updating two.</li>
-            <li>Systems where full historical reprocessing is occasional (triggered by logic changes) rather than continuous.</li>
-            <li>When Kafka (or an equivalent replayable log) is already in the stack — it provides the reprocessing capability that makes Kappa viable.</li>
+            <li>You are building a new system and the team can own stream processing, log retention, and stateful jobs end to end.</li>
+            <li>Business rules change often, and you want a single place to version, test, and deploy transformations.</li>
+            <li>Full-history replay is infrequent (for example after a bug fix or model change) rather than a continuous batch recompute.</li>
+            <li>An immutable, replayable log such as Apache Kafka (or an equivalent) is already part of the platform.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Workloads requiring complex multi-pass batch algorithms (ML training over full history, graph algorithms) — stream processing has limited state model compared to full Spark batch.</li>
-            <li>When data volume exceeds practical Kafka retention costs (though Kafka Tiered Storage and solutions like WarpStream address this).</li>
-            <li>When migrating an existing Lambda system — the migration cost may outweigh the simplicity benefit unless the dual code path is causing real operational problems.</li>
+            <li>Workloads need multi-pass batch algorithms—large-scale ML training, graph iterations, or ad-hoc SQL over full history—that stream state models handle poorly.</li>
+            <li>Retention for the entire history you must replay is economically impractical without tiered storage or archival replay paths.</li>
+            <li>You inherit a mature Lambda deployment and migration cost outweighs relief from dual-code-path drift unless that drift is already causing production pain.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Producers append events to a durable log; stream jobs project aggregates or entity state into a serving store; applications query that store. When processing logic changes, a new job replays from the earliest required offset into a isolated store until cutover.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     kappa_architecture["KAPPA ARCHITECTURE"]
@@ -204,7 +206,7 @@ KAPPA VS LAMBDA COMPARISON
   Best for               Legacy batch + add stream  New builds, agile teams
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Jay Kreps' Kappa Architecture: stream-only processing using a replayable immutable log (Kafka), reprocessing via new consumer groups, comparison with Lambda Architecture, and when single-pipeline simplicity is the right choice.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Events flow through a replayable log into stream processors and a serving store; reprocessing replays the log in parallel until queries can cut over.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -212,40 +214,42 @@ KAPPA VS LAMBDA COMPARISON
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Single codebase — business logic is implemented once, in the stream processor; no batch/stream divergence.</li>
-                <li>Simpler infrastructure: one processing engine, one event log, one serving store.</li>
-                <li>Reprocessing with zero downtime: run new job in parallel, cut over when caught up, discard old.</li>
-                <li>Kafka Tiered Storage enables virtually unlimited log retention at low cost, removing the main historical objection to Kappa.</li>
+                <li>One implementation of business logic reduces drift between “batch truth” and “stream approximation.”</li>
+                <li>Operations center on a single processing engine, one log, and one serving tier instead of synchronized batch and speed stacks.</li>
+                <li>Parallel reprocessing and store cutover can refresh history without taking live queries offline.</li>
+                <li>Tiered log storage and compaction patterns can extend retention affordably when full replay is a requirement.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Reprocessing is slow: replaying months of data through a streaming pipeline takes time proportional to total data volume, not just recent data.</li>
-                <li>Stream processing has limited support for multi-pass algorithms (PageRank, iterative ML training) — batch Spark is required for these.</li>
-                <li>Kafka long retention at scale is expensive; Tiered Storage mitigates this but adds operational complexity.</li>
-                <li>Exactly-once semantics and stateful stream processing have a learning curve; incorrect checkpoint configuration leads to data loss or duplicates.</li>
+                <li>Replay duration grows with retained volume; large backfills stress compute and downstream stores.</li>
+                <li>Iterative graph or ML jobs still belong in batch engines; Kappa does not remove that need.</li>
+                <li>Long log retention has storage and operations cost even when tiered off hot disks.</li>
+                <li>Stateful streaming with exactly-once semantics demands careful checkpointing; mistakes surface as duplicates or gaps after replay.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Consumer group isolation:</strong> Each stream processing job (including reprocessing runs) must use a distinct Kafka consumer group. This allows v1 (live) and v2 (reprocessing) to read the same topic independently without interfering with each other's offsets. Never reuse consumer group IDs between different versions of a job.</p>
-          <p><strong>Serving store versioning:</strong> During reprocessing, write to a separate serving store namespace (<code>results_v2</code>). Switch the query layer to the new store only after v2 has fully caught up with the live offset. This avoids serving stale or partially-reprocessed data to users.</p>
+          <p><strong>Consumer group isolation:</strong> Give each live or reprocessing job its own consumer group so offsets do not collide. Run the new version from the required starting offset while the previous version continues serving until the replay reaches the live tail.</p>
+          <p><strong>Serving store versioning:</strong> Write replay output to a separate namespace or table suffix until lag is zero and spot checks match expectations; only then repoint readers. Treat partial replay as non-authoritative for customer-facing queries.</p>
+          <p><strong>Retention policy:</strong> Document the oldest offset you must be able to seek to for compliance or rebuild SLAs, and size retention, compaction, and tiered storage to match—not default broker limits.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Insufficient Kafka retention:</strong> With default 7-day retention, a reprocessing job started after data has been purged cannot replay the full history — the architecture loses its core reprocessing capability.</li>
-            <li><strong>No exactly-once semantics:</strong> Without idempotent producers, transactional writes, and proper offset management, reprocessing may produce duplicates in the serving store.</li>
+            <li><strong>Insufficient log retention:</strong> Data ages off the log before a replay starts, so the architecture cannot fulfill its rebuild promise.</li>
+            <li><strong>Shared consumer groups:</strong> A reprocessing job steals or resets offsets and corrupts live consumption progress.</li>
+            <li><strong>Weak delivery guarantees:</strong> Replays without idempotent writes or transactional sinks duplicate rows in materialized views.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is Kafka (or equivalent replayable log) configured with sufficient retention for full history reprocessing?</li>
-            <li>Does each stream processing job use a distinct consumer group?</li>
-            <li>Is exactly-once semantics configured in the stream processor?</li>
-            <li>Is the serving store versioned so reprocessing and live results are isolated until cutover?</li>
-            <li>Are multi-pass algorithms (if any) handled separately by a batch pipeline rather than forced into streaming?</li>
+            <li>Does retention (including tiered or archived segments) cover the full history you must be able to replay?</li>
+            <li>Does every job version use a dedicated consumer group and documented starting offset?</li>
+            <li>Are producers and sinks configured for the delivery semantics you claim (at-least-once vs exactly-once)?</li>
+            <li>Can queries cut over to a replayed store only after lag and correctness checks pass?</li>
+            <li>Are multi-pass or training workloads routed to batch paths instead of forced into stream state?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
