@@ -121,121 +121,113 @@
           </div>
         </div>
         <div class="article-content">
-                    <h2 id="what-it-is">What it is</h2>
-          <p><strong>Hexagonal Architecture</strong> (ports and adapters) isolates the application core behind explicit interfaces. <em>Ports</em> are the contracts the core exposes or requires; <em>adapters</em> are the concrete REST clients, databases, and vendor SDKs that plug into those ports.</p>
-          <p><strong>Northwind Payment</strong> uses hexagonal layout inside the Payment bounded context. The core owns <code>PaymentIntent</code> capture rules and refund invariants. <strong>Primary ports</strong> such as <code>CapturePayment</code> and <code>RefundCapture</code> are what Billing and dispatch call. <strong>Secondary ports</strong> such as <code>CardProcessorPort</code>, <code>LedgerPort</code>, and <code>FraudScreeningPort</code> describe what the core needs from the outside world. Adapters implement those ports — a card processor SDK wrapper, a Postgres ledger repository, and in-memory fakes for unit tests.</p>
-          <p>The domain never imports adapter code. Infrastructure depends on port interfaces declared alongside the core — a direct application of the Dependency Inversion Principle.</p>
+ <h2 id="what-it-is">What it is</h2>
+ <p>The domain interacts with the outside world only through well-defined interfaces called <em>ports</em>. Actual implementations — REST controllers, database repositories, email clients, message queue consumers — are <em>adapters</em> that plug into those ports.</p>
+ <p>Primary ports (or "driving" ports) represent the application's use cases and are called by external actors like HTTP clients or CLI tools. Secondary ports (or "driven" ports) represent infrastructure the application depends on, such as persistence, messaging, and external APIs. The key rule: the domain and application core depend on ports (abstractions), never on concrete adapters (infrastructure). This is a direct application of the Dependency Inversion Principle.</p>
 
-          <h2 id="why-it-exists">Why it exists</h2>
-          <p>Layered architectures still let vendor SDKs and ORM types leak into “domain services” because nothing structurally forbids it. Northwind learned that when Billing imported the card processor’s Java client directly: capture retries, idempotency keys, and PCI boundaries mixed with HTTP controllers.</p>
-          <p>Hexagonal Architecture draws a hard line: the Payment hexagon compiles without the processor SDK. Tests exercise <code>CapturePayment</code> through primary ports with stubbed <code>CardProcessorPort</code> implementations, so CI validates capture rules without sandbox credentials or network calls.</p>
-          <p>Swapping processors or adding a backup acquirer becomes an adapter problem — the core’s vocabulary stays <code>PaymentIntent</code>, not provider-specific charge objects.</p>
+ <h2 id="why-it-exists">Why it exists</h2>
+ <p>Traditional layered architectures still allow business logic to leak into controllers and repositories because there is no structural enforcement against it. Hexagonal Architecture provides that enforcement: the domain layer is not allowed to import infrastructure code. The primary benefit is testability — the entire domain can be tested with fast, in-memory fakes (implementing the secondary ports) without spinning up databases, message brokers, or HTTP servers. This leads to test suites that run in seconds rather than minutes, giving developers rapid feedback.</p>
+ <p>It also dramatically simplifies infrastructure swaps: changing from PostgreSQL to DynamoDB means writing a new adapter, not touching the domain. Cockburn framed it as allowing the application to be driven equally by tests, users, and programs — all through ports.</p>
 
-          <h2 id="when-to-use">When to use</h2>
+ <h2 id="when-to-use">When to use</h2>
+ <ul>
+ <li>Business logic is complex enough to warrant isolation from infrastructure concerns.</li>
+ <li>Fast, in-process unit tests of domain logic are a priority.</li>
+ <li>The application may need to swap or support multiple infrastructure backends (e.g., multiple notification channels, pluggable storage backends).</li>
+ <li>The team practices TDD — hexagonal is the natural structural home for test-driven domain modeling.</li>
+ <li>Long-lived codebases where infrastructure evolves (cloud migrations, framework upgrades) but business rules stay stable.</li>
+ </ul>
+
+ <h2 id="when-not-to-use">When not to use</h2>
+ <ul>
+ <li>Simple CRUD applications with little business logic — the overhead of ports and adapters adds structure without value when there's no domain to protect.</li>
+ <li>Prototype or throwaway code where speed of initial creation matters more than long-term maintainability.</li>
+ <li>Very small teams new to the pattern may find the indirection confusing before the benefits materialize.</li>
+ </ul>
+
+ <h2 id="typical-architecture">Typical architecture</h2>
+ <p>The hexagon represents the application core. Left-side adapters drive the application (REST, CLI, tests). Right-side adapters are driven by the application (database, email, message broker).</p>
+ <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <div class="architecture-diagram__render mermaid">flowchart LR
+ REST["REST"] & CLI["CLI"] & TEST["Tests"] --> PP["Primary ports"]
+ PP --> CORE["Application core"]
+ CORE --> SP["Secondary ports"]
+ SP --> PG["PostgreSQL"] & MQ["Message broker"] & PAY["Stripe"]</div>
+ <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code> [REST Controller] [CLI] [Test]
+ │ │ │
+ (Primary Adapters — Driving)
+ │ │ │
+ ┌─────▼──────────────▼──────▼──────┐
+ │ Primary Ports │
+ │ ┌────────────────────────────┐ │
+ │ │ Application Core │ │
+ │ │ (Domain + Use Cases) │ │
+ │ └────────────────────────────┘ │
+ │ Secondary Ports │
+ └──┬───────────┬──────────┬─────────┘
+ │ │ │
+ (Secondary Adapters — Driven)
+ │ │ │
+ [PostgreSQL [RabbitMQ [Stripe
+ Adapter] Adapter] Adapter]</code></pre></details>
+ <figcaption id="typical-architecture-caption">Hexagonal (ports and adapters): driving adapters call in; the core calls driven adapters through ports.</figcaption>
+ </figure>
+
+
+ <h2 id="pros-and-cons">Pros and cons</h2>
+ <div class="pros-cons">
+ <div class="pros-cons__col pros-cons__col--pros">
+ <h3>Pros</h3>
+ <ul>
+ <li>Domain logic is fully testable without any infrastructure — tests run in milliseconds.</li>
+ <li>Infrastructure is replaceable: swap the database adapter without touching domain code.</li>
+ <li>Forces explicit modeling of what the application does (ports) vs. how it does it (adapters).</li>
+ <li>Makes it possible to run the application from tests, a CLI, or HTTP with no code changes to the core.</li>
+ <li>Natural alignment with DDD — the domain hexagon maps to a bounded context.</li>
+ </ul>
+ </div>
+ <div class="pros-cons__col pros-cons__col--cons">
+ <h3>Cons</h3>
+ <ul>
+ <li>Boilerplate — every infrastructure dependency requires a port interface plus at least one adapter implementation.</li>
+ <li>More files and indirection; can feel over-engineered for simple domains.</li>
+ <li>Risk of anemic domain models if use cases are modeled as orchestration scripts rather than rich domain behavior.</li>
+ <li>Learning curve — developers unfamiliar with dependency inversion may struggle to identify what belongs in the core vs. adapters.</li>
+ </ul>
+ </div>
+ </div>
+
+ <h2 id="implementation-notes">Implementation notes</h2>
+ <p>Define secondary port interfaces in the domain package — not in the infrastructure package. This forces infrastructure code to depend on the domain, not the reverse. Create an in-memory adapter for each secondary port to use in unit tests, and a real adapter for production use. Map between domain objects and infrastructure DTOs at the adapter boundary — never let ORM entities or API response DTOs leak into the domain.</p>
+ <p>Use dependency injection to wire adapters to ports at startup (composition root), keeping the domain free of any DI framework dependency. Group code by feature (vertical slice) rather than by layer to keep related ports and adapters discoverable together.</p>
+
+ <h2 id="common-failure-modes">Common failure modes</h2>
+ <ul>
+ <li><strong>Infrastructure leaking into the domain:</strong> JPA annotations, Spring annotations, or Kafka-specific types appearing in domain classes — the most common violation.</li>
+ <li><strong>Anemic domain model:</strong> All business logic ends up in use case interactors while domain objects are just data holders, missing the "rich domain" benefit.</li>
+ <li><strong>Port interface explosion:</strong> A separate interface for every single repository method, leading to dozens of rarely-reused port interfaces.</li>
+ <li><strong>Missing in-memory adapters:</strong> Tests use the real database adapter, making them slow and fragile; the primary testability benefit is lost.</li>
+ <li><strong>Adapter leakage in tests:</strong> Tests import adapter classes directly instead of using ports, breaking the abstraction.</li>
+ </ul>
+
+ <h2 id="decision-checklist">Decision checklist</h2>
+ <ul class="checklist">
+ <li>Are all secondary port interfaces defined in the domain/application layer, not in infrastructure?</li>
+ <li>Can you run a full domain test suite without starting a database, broker, or HTTP server?</li>
+ <li>Are in-memory adapter implementations available for all secondary ports?</li>
+ <li>Do adapters translate between infrastructure-specific types and domain types at the boundary?</li>
+ <li>Is there a composition root that wires adapters to ports, keeping the domain free of DI annotations?</li>
+ <li>Are domain objects free of all framework and infrastructure imports?</li>
+ </ul>
+
+ <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Use hexagonal layout when Northwind Payment rules are rich enough to justify isolation from processor SDKs and persistence frameworks.</li>
-            <li>Use it when fast unit tests of capture, refund, and idempotency logic are a priority for the Billing squad.</li>
-            <li>Use it when Northwind must support multiple processors or route traffic through primary and backup acquirer adapters.</li>
-            <li>Use it when Billing practices TDD and wants the Payment core drivable equally from tests, HTTP, and async invoice events.</li>
-            <li>Use it when PCI scope must stay in adapters while the core manipulates token references only.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Banking domain services:</strong> Account transfer logic tested entirely in memory, with a PostgreSQL adapter for production and an in-memory adapter for tests — the domain doesn't know or care.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Multi-channel notification service:</strong> A notification port with SMS, email, and push adapters; the domain calls the port, and the DI container wires the appropriate adapter per environment.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>E-commerce checkout:</strong> The checkout use case depends on a PaymentGatewayPort; in tests, a test double fulfills the port; in production, a Stripe adapter does.</li>
           </ul>
 
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>Skip ports and adapters for simple payment-status CRUD where no capture invariants exist.</li>
-            <li>Skip the pattern on short-lived experiments where adapter indirection slows validation.</li>
-            <li>Skip it until the team can tell primary (driving) ports from secondary (driven) ones, or every class becomes an “adapter.”</li>
-          </ul>
-
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The hexagon is Northwind Payment’s application core. Driving adapters on the left invoke primary ports; the core calls secondary ports that driven adapters implement on the right — as in the diagram below.</p>
-
-                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-                      <div class="architecture-diagram__render mermaid">flowchart LR
-    REST["REST"] & CLI["CLI"] & TEST["Tests"] --> PP["Primary ports"]
-    PP --> CORE["Application core"]
-    CORE --> SP["Secondary ports"]
-    SP --> PG["PostgreSQL"] & MQ["Message broker"] & PAY["Stripe"]</div>
-                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>  [REST Controller]  [CLI]  [Test]
-                   │              │      │
-             (Primary Adapters — Driving)
-                   │              │      │
-             ┌─────▼──────────────▼──────▼──────┐
-             │         Primary Ports             │
-             │  ┌────────────────────────────┐  │
-             │  │     Application Core       │  │
-             │  │   (Domain + Use Cases)     │  │
-             │  └────────────────────────────┘  │
-             │         Secondary Ports           │
-             └──┬───────────┬──────────┬─────────┘
-                │           │           │
-          (Secondary Adapters — Driven)
-                │           │           │
-          [PostgreSQL  [RabbitMQ   [Stripe
-           Adapter]    Adapter]    Adapter]</code></pre></details>
-                      <figcaption id="typical-architecture-caption">Hexagonal (ports and adapters): driving adapters call in; the core calls driven adapters through ports.</figcaption>
-                    </figure>
-
-
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>Northwind validates capture and refund rules in memory with stub <code>CardProcessorPort</code> implementations before sandbox deploys.</li>
-                <li>Replacing the primary acquirer means shipping a new adapter, not rewriting <code>PaymentIntent</code> behavior.</li>
-                <li>Ports force explicit conversation about what Payment does versus how it talks to processors and ledgers.</li>
-                <li>The same core runs under Billing HTTP, invoice event consumers, and CLI replay tools without code forks.</li>
-                <li>The hexagon maps cleanly to Northwind’s Payment bounded context and its published capture API.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Every external system needs a port interface plus at least one adapter — noticeable boilerplate for thin flows.</li>
-                <li>More packages and indirection can feel heavy when the domain is mostly pass-through to the processor.</li>
-                <li>Interactors that only orchestrate without rich <code>PaymentIntent</code> behavior recreate an anemic core.</li>
-                <li>New contributors must learn which types belong inside the hexagon versus in adapter modules.</li>
-              </ul>
-            </div>
-          </div>
-
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Declare secondary ports in the core package:</strong> Northwind defines <code>CardProcessorPort</code> next to <code>PaymentIntent</code>, not under <code>infrastructure.processor</code>, so adapter modules depend inward.</p>
-          <p><strong>Map at the adapter edge:</strong> The Stripe-style adapter translates provider charge IDs and failure codes into Northwind’s <code>CaptureResult</code> value objects. Processor DTOs never appear in the hexagon.</p>
-          <p><strong>Ship in-memory adapters for CI:</strong> <code>InMemoryCardProcessor</code> records calls for assertions; production wires the real SDK adapter at the composition root.</p>
-          <p><strong>Group by feature:</strong> Northwind keeps <code>payment/capture</code> ports, core, and adapters together so Billing engineers find capture logic in one vertical slice.</p>
-
-          <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul>
-            <li><strong>SDK types in the core:</strong> Importing the processor’s client or webhook DTO into <code>PaymentIntent</code> collapses the hexagon.</li>
-            <li><strong>Anemic core:</strong> All logic sits in a “service” class while entities are data bags — ports protect nothing.</li>
-            <li><strong>Port explosion:</strong> One interface per repository method creates dozens of ports nobody reuses.</li>
-            <li><strong>Integration tests only:</strong> CI hits the real sandbox adapter for every test, erasing the speed benefit.</li>
-            <li><strong>Tests import adapters:</strong> Specs new up <code>StripeCardProcessorAdapter</code> instead of the port, so refactors break tests for the wrong reason.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Are secondary port interfaces declared in Northwind Payment’s core package, not in infrastructure?</li>
-            <li>Can the capture and refund suite run without starting Postgres, the processor sandbox, or HTTP?</li>
-            <li>Does every secondary port have an in-memory adapter used in unit tests?</li>
-            <li>Do adapters translate provider types into domain types at the boundary?</li>
-            <li>Does a composition root wire adapters without DI annotations inside the hexagon?</li>
-            <li>Are domain types free of processor, ORM, and messaging imports?</li>
-          </ul>
-
-          <h2 id="example-use-cases">Example use cases</h2>
-          <p>Northwind Payment’s card processor integration follows one hexagonal map:</p>
-          <ul>
-            <li><strong>Primary ports:</strong> <code>CapturePayment</code> and <code>RefundCapture</code> are what Billing’s invoice service calls after dispatch confirms pickup.</li>
-            <li><strong>Core:</strong> <code>PaymentIntent</code> enforces idempotency keys, partial capture limits, and settlement state without importing SDK classes.</li>
-            <li><strong>Processor adapter:</strong> <code>CardProcessorPort</code> is implemented by a vendor adapter in production and <code>InMemoryCardProcessor</code> in CI.</li>
-            <li><strong>Ledger adapter:</strong> <code>LedgerPort</code> posts double-entry rows through a Postgres adapter while tests use an in-memory ledger.</li>
-            <li><strong>Swap path:</strong> Northwind pilots a backup acquirer by adding a second adapter and routing at the composition root — the hexagon unchanged.</li>
-          </ul>
-
-<h2 id="related-patterns">Related patterns</h2>
+          <h2 id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="clean-architecture.html">Clean Architecture</a> — Uncle Bob's concentric-ring formulation of similar dependency inversion principles.</li>
             <li><a href="onion-architecture.html">Onion Architecture</a> — Jeffrey Palermo's variant with explicit domain service and application service layers.</li>
@@ -244,9 +236,9 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://alistair.cockburn.us/hexagonal-architecture/" rel="noopener noreferrer" target="_blank">Hexagonal Architecture</a> — Alistair Cockburn's original article on ports and adapters.</li>
-            <li><a href="https://www.youtube.com/watch?v=th4AgBcrEHA" rel="noopener noreferrer" target="_blank">Hexagonal Architecture with Java and Spring</a> — Reflectoring.io video walkthrough of the pattern.</li>
-            <li><a href="https://reflectoring.io/spring-hexagonal/" rel="noopener noreferrer" target="_blank">Getting Started with Hexagonal Architecture in Spring</a> — Hands-on ports-and-adapters implementation guide.</li>
+            <li><a href="https://alistair.cockburn.us/hexagonal-architecture/" rel="noopener noreferrer" target="_blank">Hexagonal Architecture</a> — Alistair Cockburn's original article.</li>
+            <li><a href="https://www.youtube.com/watch?v=th4AgBcrEHA" rel="noopener noreferrer" target="_blank">Hexagonal Architecture with Java and Spring</a> — Reflectoring.io walkthrough.</li>
+            <li><a href="https://reflectoring.io/spring-hexagonal/" rel="noopener noreferrer" target="_blank">Getting Started with Hexagonal Architecture in Spring</a> — hands-on ports-and-adapters walkthrough.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

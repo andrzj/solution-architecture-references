@@ -121,111 +121,111 @@
           </div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>A <strong>monolith</strong> is one deployable application: every module runs in the same process and typically talks to one primary database through shared connection pools. At <strong>Northwind Logistics</strong>, the <strong>FieldOps</strong> driver and dispatch portal ships that way — load assignments, driver profiles, and proof-of-delivery screens all live in a single artifact behind one URL.</p>
-          <p>Because calls stay in-process, Northwind engineers debug FieldOps with one run configuration and keep multi-step updates inside ordinary database transactions instead of sagas across the network.</p>
+ <h2 id="what-it-is">What it is</h2>
+ <p>A <strong>monolith</strong> is one deployable application: every module runs in the same process and typically talks to one primary database through shared connection pools. A logistics dispatch portal, an internal admin console, or an early-stage SaaS product often ships this way — load assignments, user profiles, and reporting screens all live in a single artifact behind one URL.</p>
+ <p>Because calls stay in-process, engineers debug with one run configuration and keep multi-step updates inside ordinary database transactions instead of sagas across the network.</p>
 
-          <h2 id="why-it-exists">Why it exists</h2>
-          <p>Monoliths are the default shape of most new products. You avoid service discovery, cross-service versioning, and partial-failure debugging until the business and team topology justify that cost.</p>
-          <p>Northwind chose a FieldOps monolith first so dispatch could rename domain concepts and reshape module seams without publishing breaking HTTP contracts to mobile clients on every iteration. Martin Fowler’s <a href="https://martinfowler.com/bliki/MonolithFirst.html" rel="noopener noreferrer" target="_blank">MonolithFirst</a> argument matches that story: prove the domain in one unit, then extract only where autonomy or scale force it.</p>
+ <h2 id="why-it-exists">Why it exists</h2>
+ <p>Monoliths are the default shape of most new products. You avoid service discovery, cross-service versioning, and partial-failure debugging until the business and team topology justify that cost.</p>
+ <p>Teams often choose a monolith first so they can rename domain concepts and reshape module seams without publishing breaking HTTP contracts to mobile clients on every iteration. Martin Fowler’s <a href="https://martinfowler.com/bliki/MonolithFirst.html" rel="noopener noreferrer" target="_blank">MonolithFirst</a> argument matches that story: prove the domain in one unit, then extract only where autonomy or scale force it.</p>
 
-          <h2 id="when-to-use">When to use</h2>
+ <h2 id="when-to-use">When to use</h2>
+ <ul>
+ <li>One team (or tightly coupled teams) can ship on a shared release cadence without waiting on separate service pipelines.</li>
+ <li>Domain rules are still moving — module boundaries inside the monolith are cheaper to move than network API versions.</li>
+ <li>Operations wants a single deployable to monitor, roll back, and certificate-manage during early rollouts.</li>
+ <li>The organization has not yet invested in Kubernetes, a service mesh, or organization-wide distributed tracing for this product.</li>
+ <li>Peak load grows roughly with total portal traffic rather than one hot subsystem that must scale on its own.</li>
+ <li>The product is still being validated with early customers before paying the tax of running many small services in production.</li>
+ </ul>
+
+ <h2 id="when-not-to-use">When not to use</h2>
+ <ul>
+ <li>Dispatch, mobile, and partner teams must deploy on independent schedules and cannot share one release train.</li>
+ <li>One capability (for example map tile preprocessing or batch rating) needs CPU or memory profiles that differ sharply from the interactive portal.</li>
+ <li>Different subsystems must run on different languages or runtimes and cannot share one binary.</li>
+ <li>Policy requires cardholder or safety-critical code in a separate trust zone with network isolation from the main portal process.</li>
+ </ul>
+
+ <h2 id="typical-architecture">Typical architecture</h2>
+ <p>A well-structured monolith groups code by feature slices — orders, users, catalog, billing — while compiling to one deployable backed by a single primary database. The diagram shows that pattern with generic module names.</p>
+ <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <div class="architecture-diagram__render mermaid">flowchart TB
+ ord["Orders module"] & usr["Users module"] & prd["Products module"] --> dal["Shared data access layer"]
+ dal --> db[("Single PostgreSQL database")]</div>
+ <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>┌─────────────────────────────────────────────┐
+ │ Single Process / JVM / Runtime │
+ │ │
+ │ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
+ │ │ Orders │ │ Users │ │ Products │ │
+ │ │ Module │ │ Module │ │ Module │ │
+ │ └────┬─────┘ └────┬─────┘ └────┬─────┘ │
+ │ │ │ │ │
+ │ ┌────▼──────────────▼──────────────▼─────┐ │
+ │ │ Shared Data Access Layer │ │
+ │ └────────────────────┬───────────────────┘ │
+ └───────────────────────┼─────────────────────┘
+ │
+ ┌─────────▼─────────┐
+ │ Single Database │
+ │ (PostgreSQL) │
+ └───────────────────┘</code></pre></details>
+ <figcaption id="typical-architecture-caption">Monolith deployment: feature modules share one process and one primary database.</figcaption>
+ </figure>
+
+
+ <h2 id="pros-and-cons">Pros and cons</h2>
+ <div class="pros-cons">
+ <div class="pros-cons__col pros-cons__col--pros">
+ <h3>Pros</h3>
+ <ul>
+ <li>Developers run the whole application locally with one command and one debugger session.</li>
+ <li>In-process calls avoid network latency and serialization on hot request paths.</li>
+ <li>One CI/CD pipeline and one production artifact simplify rollback when a deploy misbehaves.</li>
+ <li>Assigning work and recording completion can stay in one ACID transaction instead of a distributed commit.</li>
+ <li>Production triage uses logs and breakpoints in one codebase instead of stitching traces across services.</li>
+ <li>Renaming a domain concept is a refactor inside the repo, not a coordinated API version bump.</li>
+ </ul>
+ </div>
+ <div class="pros-cons__col pros-cons__col--cons">
+ <h3>Cons</h3>
+ <ul>
+ <li>Every deploy restarts the whole application, so an unrelated change can still take critical flows offline.</li>
+ <li>An unhandled exception in one module can terminate the process and knock out all clients entirely.</li>
+ <li>Scaling out duplicates every module, even when only one subsystem (for example map rendering) is hot.</li>
+ <li>Without discipline, cross-module imports turn the codebase into a single tangled ball of mud.</li>
+ <li>The runtime and framework choice applies to every feature — you cannot run one slice on a different stack.</li>
+ </ul>
+ </div>
+ </div>
+
+ <h2 id="implementation-notes">Implementation notes</h2>
+ <p>Treat each feature area as a future service boundary: expose a small public API per module, ban direct SQL against another module’s tables, and prefer internal events for cross-module work. Run ArchUnit (Java), Dependency Cruiser (TypeScript), or similar checks in CI so modules cannot import each other’s internals. That <a href="modular-monolith.html">modular monolith</a> discipline keeps a single deployable while preserving a <em>strangler fig</em> path — peel off a module behind an HTTP facade only when release or scale pain proves it.</p>
+
+ <h2 id="common-failure-modes">Common failure modes</h2>
+ <ul>
+ <li><strong>Big ball of mud:</strong> Handlers in one module reach into another module’s repositories directly; every change risks breaking unrelated screens.</li>
+ <li><strong>Shared mutable tables:</strong> Two modules update the same row without a module API, so schema changes become organization-wide projects.</li>
+ <li><strong>God service:</strong> All business rules pile into one orchestrator class that nobody dares touch before peak season.</li>
+ <li><strong>Release train bottleneck:</strong> Mobile, operations, and billing teams queue on one pipeline and stop shipping mid-week fixes.</li>
+ <li><strong>Process-wide resource leaks:</strong> A caching mistake in one module grows heap for every instance and pages on-call for “mystery” restarts.</li>
+ </ul>
+
+ <h2 id="decision-checklist">Decision checklist</h2>
+ <ul class="checklist">
+ <li>Can stakeholders accept a single coordinated release for the application they all depend on?</li>
+ <li>Are service boundaries still likely to move as domain rules mature?</li>
+ <li>Is the team ready to operate containers, meshes, and distributed traces if you split the monolith tomorrow?</li>
+ <li>Does load rise with overall portal traffic rather than one subsystem alone?</li>
+ <li>Do CI architecture tests block new cross-module imports?</li>
+ <li>Is there a written plan for which module would extract first if autonomy becomes mandatory?</li>
+ </ul>
+
+ <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>One team (or tightly coupled teams) can ship FieldOps on a shared release cadence without waiting on separate service pipelines.</li>
-            <li>Northwind’s logistics rules are still moving — module boundaries inside the monolith are cheaper to move than network API versions.</li>
-            <li>Operations wants a single deployable to monitor, roll back, and certificate-manage during early FieldOps rollouts.</li>
-            <li>The organization has not yet invested in Kubernetes, a service mesh, or organization-wide distributed tracing for this product.</li>
-            <li>Peak load grows roughly with total portal traffic rather than one hot subsystem that must scale on its own.</li>
-            <li>Northwind is validating FieldOps with fleets before paying the tax of running many small services in production.</li>
-          </ul>
-
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>Dispatch, mobile, and partner teams must deploy on independent schedules and cannot share a FieldOps release train.</li>
-            <li>One capability (for example map tile preprocessing or batch rating) needs CPU or memory profiles that differ sharply from the interactive portal.</li>
-            <li>Different subsystems must run on different languages or runtimes and cannot share one binary.</li>
-            <li>Policy requires cardholder or safety-critical code in a separate trust zone with network isolation from the main portal process.</li>
-          </ul>
-
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Northwind’s FieldOps monolith groups code by feature slices — dispatch, fleet, and customer-facing flows — while compiling to one deployable backed by PostgreSQL. The diagram shows the same pattern with generic module names.</p>
-                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-                      <div class="architecture-diagram__render mermaid">flowchart TB
-    ord["Orders module"] & usr["Users module"] & prd["Products module"] --> dal["Shared data access layer"]
-    dal --> db[("Single PostgreSQL database")]</div>
-                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>┌─────────────────────────────────────────────┐
-          │              Single Process / JVM / Runtime  │
-          │                                             │
-          │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-          │  │  Orders  │  │  Users   │  │ Products │  │
-          │  │  Module  │  │  Module  │  │  Module  │  │
-          │  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
-          │       │              │              │        │
-          │  ┌────▼──────────────▼──────────────▼─────┐ │
-          │  │         Shared Data Access Layer        │ │
-          │  └────────────────────┬───────────────────┘ │
-          └───────────────────────┼─────────────────────┘
-                                  │
-                        ┌─────────▼─────────┐
-                        │   Single Database  │
-                        │   (PostgreSQL)     │
-                        └───────────────────┘</code></pre></details>
-                      <figcaption id="typical-architecture-caption">Monolith deployment: feature modules share one process and one primary database.</figcaption>
-                    </figure>
-
-
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>Northwind developers run all of FieldOps locally with one command and one debugger session.</li>
-                <li>In-process calls avoid network latency and serialization on hot dispatch paths.</li>
-                <li>One CI/CD pipeline and one production artifact simplify rollback when a FieldOps deploy misbehaves.</li>
-                <li>Assigning a load and recording delivery can stay in one ACID transaction instead of a distributed commit.</li>
-                <li>Production triage uses logs and breakpoints in one codebase instead of stitching traces across services.</li>
-                <li>Renaming a dispatch concept is a refactor inside the repo, not a coordinated API version bump.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Every FieldOps deploy restarts the whole portal, so an unrelated change can still take dispatch offline.</li>
-                <li>An unhandled exception in one module can terminate the process and knock out mobile clients entirely.</li>
-                <li>Scaling out duplicates every module, even when only map rendering is hot.</li>
-                <li>Without discipline, cross-module imports turn FieldOps into a single tangled codebase.</li>
-                <li>The runtime and framework choice applies to every feature — you cannot run one slice on a different stack.</li>
-              </ul>
-            </div>
-          </div>
-
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Treat each FieldOps feature area as a future service boundary: expose a small public API per module, ban direct SQL against another module’s tables, and prefer internal events for cross-module work. Northwind runs ArchUnit (Java), Dependency Cruiser (TypeScript), or similar checks in CI so dispatch cannot import fleet internals. That <a href="modular-monolith.html">modular monolith</a> discipline keeps a single deployable while preserving a <em>strangler fig</em> path — peel off a module behind an HTTP facade only when release or scale pain proves it.</p>
-
-          <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul>
-            <li><strong>Big ball of mud:</strong> Dispatch handlers reach into fleet repositories directly; every FieldOps change risks breaking unrelated screens.</li>
-            <li><strong>Shared mutable tables:</strong> Two modules update the same shipment row without a module API, so schema changes become company-wide projects.</li>
-            <li><strong>God service:</strong> All business rules pile into one orchestrator class that nobody dares touch before peak season.</li>
-            <li><strong>Release train bottleneck:</strong> Mobile, dispatch, and billing teams queue on one FieldOps pipeline and stop shipping mid-week fixes.</li>
-            <li><strong>Process-wide resource leaks:</strong> A caching mistake in map tiles grows heap for every pod and pages on-call for “mystery” restarts.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Can Northwind’s FieldOps stakeholders accept a single coordinated release for the portal they all depend on?</li>
-            <li>Are service boundaries still likely to move as logistics rules mature?</li>
-            <li>Is the team ready to operate containers, meshes, and distributed traces if you split FieldOps tomorrow?</li>
-            <li>Does load rise with overall portal traffic rather than one subsystem alone?</li>
-            <li>Do CI architecture tests block new cross-module imports?</li>
-            <li>Is there a written plan for which module would extract first if autonomy becomes mandatory?</li>
-          </ul>
-
-          <h2 id="example-use-cases">Example use cases</h2>
-          <ul>
-            <li><strong>Northwind FieldOps portal:</strong> One deployable serves dispatch consoles and driver mobile clients until partner APIs or fleet scale force selective extraction.</li>
-            <li><strong>Shopify monolith era:</strong> Years of commerce logic lived in a single Rails app before modules became services where independence paid off.</li>
-            <li><strong>Basecamp / Hey:</strong> Product teams returned to a monolith after distributed integration slowed feature work more than it helped isolation.</li>
+            <li><strong>Illustrative scenario — Northwind FieldOps:</strong> One deployable serves dispatch consoles and driver mobile clients until partner APIs or fleet scale force selective extraction.</li>
+            <li><strong>Case study —</strong> <strong>Shopify monolith era:</strong> Years of commerce logic lived in a single Rails app before modules became services where independence paid off.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Basecamp / Hey:</strong> Product teams returned to a monolith after distributed integration slowed feature work more than it helped isolation.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

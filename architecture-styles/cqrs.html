@@ -121,120 +121,119 @@
           </div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p><strong>CQRS</strong> (Command Query Responsibility Segregation) splits <em>commands</em> that change state from <em>queries</em> that return data, often with separate models and stores for each side.</p>
-          <p>Greg Young extended Bertrand Meyer’s Command Query Separation from methods to systems: the write model enforces invariants; the read model is shaped for how screens and APIs actually ask questions.</p>
-          <p>At <strong>Meridian Commerce</strong>, the Catalog team accepts <code>PublishProduct</code> and <code>UpdatePrice</code> commands against a normalized Postgres write model, while shoppers hit OpenSearch and a Redis-backed facet cache built by projectors — not the same tables the merchandiser edits.</p>
+ <h2 id="what-it-is">What it is</h2>
+ <p><strong>CQRS</strong> (Command Query Responsibility Segregation) splits <em>commands</em> that change state from <em>queries</em> that return data, often with separate models and stores for each side.</p>
+ <p>Greg Young extended Bertrand Meyer’s Command Query Separation from methods to systems: the write model enforces invariants; the read model is shaped for how screens and APIs actually ask questions.</p>
+ <p>In a retail catalog, the merchandising API accepts <code>PublishProduct</code> and <code>UpdatePrice</code> commands against a normalized Postgres write model, while shoppers hit OpenSearch and a Redis-backed facet cache built by projectors — not the same tables the merchandiser edits.</p>
 
-          <h2 id="why-it-exists">Why it exists</h2>
-          <p>Meridian’s catalog search joined six tables on every browse request. Merchandisers adding attributes slowed checkout-style admin writes, and tuning indexes for search polluted the write schema.</p>
-          <p>CQRS let Catalog keep a strict <code>Product</code> aggregate for commands while search owned denormalized documents with synonyms, facets, and ranking boosts. Each side scales and deploys on its own cadence.</p>
-          <p>When Catalog pairs CQRS with event sourcing for Order (see <a href="event-sourcing.html">Event Sourcing</a>), the same domain events feed both search projections and fulfillment read models — one write path, many read shapes.</p>
+ <h2 id="why-it-exists">Why it exists</h2>
+ <p>Catalog search often joined six tables on every browse request. Merchandisers adding attributes slowed checkout-style admin writes, and tuning indexes for search polluted the write schema.</p>
+ <p>CQRS lets the catalog team keep a strict <code>Product</code> aggregate for commands while search owns denormalized documents with synonyms, facets, and ranking boosts. Each side scales and deploys on its own cadence.</p>
+ <p>When catalog pairs CQRS with event sourcing for orders (see <a href="event-sourcing.html">Event Sourcing</a>), the same domain events feed both search projections and fulfillment read models — one write path, many read shapes.</p>
 
-          <h2 id="when-to-use">When to use</h2>
+ <h2 id="when-to-use">When to use</h2>
+ <ul>
+ <li>Apply CQRS when read traffic dominates and query shapes differ from write invariants, as catalog browse versus merchandising edits.</li>
+ <li>Apply CQRS when the write model is a rich domain model that should not absorb report-friendly denormalization.</li>
+ <li>Apply CQRS when multiple UIs need different projections of the same catalog truth — mobile cards, B2B CSV export, and ops dashboards.</li>
+ <li>Apply CQRS alongside event sourcing when domain events naturally feed projectors (an order stream updating catalog “bought together” hints).</li>
+ <li>Apply CQRS when you need to scale OpenSearch or Redis read tiers without touching Postgres write primaries.</li>
+ </ul>
+
+ <h2 id="when-not-to-use">When not to use</h2>
+ <ul>
+ <li>Skip CQRS for internal admin CRUD with a handful of fields — a tax-code lookup does not warrant projectors.</li>
+ <li>Skip CQRS when the merchandising UI must show search-indexed fields in the same transaction as a command — async lag will confuse users unless you design optimistic UI.</li>
+ <li>Skip full physical CQRS until the team can own projection code, rebuild jobs, and drift alerts — logical CQRS inside one service is often enough first.</li>
+ </ul>
+
+ <h2 id="typical-architecture">Typical architecture</h2>
+ <p>A catalog command API mutates Postgres and emits <code>ProductPublished</code> events. Projectors update OpenSearch documents and Redis facet sets; the storefront query API reads only those stores.</p>
+ <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <div class="architecture-diagram__render mermaid">flowchart LR
+ C["Client"] -->|command| CH["Command handler"]
+ CH --> WS[("Write store")]
+ WS --> EV["Domain events"]
+ EV --> PR["Projector"]
+ PR --> RS[("Read store")]
+ C -->|query| RS</div>
+ <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code> ┌──────────┐ Command ┌─────────────────┐
+ │ Client │──────────────▶│ Command Handler │
+ └──────────┘ │ (Domain Logic) │
+ │ └────────┬─────────┘
+ │ │ Persist + Event
+ │ ┌────────▼─────────┐
+ │ │ Write Store │
+ │ │ (Normalized DB) │
+ │ └────────┬─────────┘
+ │ │ Domain Events
+ │ ┌────────▼─────────┐
+ │ │ Event Projector │
+ │ │ (async/sync) │
+ │ └────────┬─────────┘
+ │ │ Updates
+ │ Query ┌─────────▼──────────┐
+ └───────────────────▶│ Read Store │
+ │ (Denormalized Views)│
+ └────────────────────┘</code></pre></details>
+ <figcaption id="typical-architecture-caption">CQRS topology: commands persist to the write store; projectors feed denormalized read stores for query APIs.</figcaption>
+ </figure>
+
+
+ <h2 id="pros-and-cons">Pros and cons</h2>
+ <div class="pros-cons">
+ <div class="pros-cons__col pros-cons__col--pros">
+ <h3>Pros</h3>
+ <ul>
+ <li>Teams change search ranking in OpenSearch without refactoring the <code>Product</code> aggregate in Postgres.</li>
+ <li>Read stores pick the right engine — OpenSearch for full text, Redis for hot facet counts.</li>
+ <li>Projectors can rebuild catalog search from <code>ProductPublished</code> history after a mapping bug.</li>
+ <li>Domain commands stay focused on invariants instead of join-heavy DTOs for the storefront.</li>
+ <li>Black Friday scales query nodes independently from merchandising write traffic.</li>
+ </ul>
+ </div>
+ <div class="pros-cons__col pros-cons__col--cons">
+ <h3>Cons</h3>
+ <ul>
+ <li>A merchandiser may publish a SKU and see search lag seconds behind Postgres unless the UI optimistically updates.</li>
+ <li>You maintain command handlers, events, projectors, and query APIs — more moving parts than one CRUD service.</li>
+ <li>A projector defect corrupts OpenSearch until ops run a full replay job.</li>
+ <li>“Wrong price on search” tickets require tracing command → event → projector, not one SQL query.</li>
+ </ul>
+ </div>
+ </div>
+
+ <h2 id="implementation-notes">Implementation notes</h2>
+ <p><strong>Start logical:</strong> Many teams begin with separate command and query services against one Postgres database before splitting OpenSearch off — most clarity comes from segregated handlers, not day-one polyglot storage.</p>
+ <p><strong>Projection timing:</strong> Async projectors on a broker feed search; admin screens that need read-your-writes poll the write API or use synchronous projection to a small Redis cache for SKU detail.</p>
+ <p><strong>Rebuild path:</strong> A <code>RebuildCatalogSearch</code> job replays <code>ProductPublished</code> and <code>PriceChanged</code> from the outbox into a fresh OpenSearch index, then aliases cutover.</p>
+ <p><strong>Write concurrency:</strong> <code>Product</code> aggregates carry version numbers; conflicting <code>UpdatePrice</code> commands fail fast instead of silently overwriting.</p>
+
+ <h2 id="common-failure-modes">Common failure modes</h2>
+ <ul>
+ <li><strong>CQRS everywhere:</strong> Full projection stacks on tiny lookup tables drown teams in boilerplate.</li>
+ <li><strong>No rebuild:</strong> A bad projector deploys for a week; search prices drift with no replay lever.</li>
+ <li><strong>Stale admin UX:</strong> Merchandisers refresh and still see old titles because search lag was never communicated.</li>
+ <li><strong>Commands querying OpenSearch:</strong> <code>PublishProduct</code> checks the search index for duplicates — circular coupling breaks segregation.</li>
+ <li><strong>ORM write model:</strong> The “aggregate” is every column on <code>products</code> — invariants live only in controllers.</li>
+ </ul>
+
+ <h2 id="decision-checklist">Decision checklist</h2>
+ <ul class="checklist">
+ <li>Is the read shape materially different from write invariants, not merely “we like Elasticsearch”?</li>
+ <li>Can storefront and admin UIs tolerate or mask projection lag after commands?</li>
+ <li>Is there an documented rebuild procedure for each read model?</li>
+ <li>Do command handlers load state only from the write model, not from search indexes?</li>
+ <li>Does the write side use optimistic concurrency on catalog aggregates?</li>
+ <li>Would logical CQRS inside one service deliver enough benefit before operating separate databases?</li>
+ </ul>
+
+ <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Apply CQRS when Meridian-style read traffic dominates and query shapes differ from write invariants, as catalog browse versus merchandising edits.</li>
-            <li>Apply CQRS when the write model is a rich domain model that should not absorb report-friendly denormalization.</li>
-            <li>Apply CQRS when multiple UIs need different projections of the same catalog truth — mobile cards, B2B CSV export, and ops dashboards.</li>
-            <li>Apply CQRS alongside event sourcing when domain events naturally feed projectors (Meridian’s Order stream updating catalog “bought together” hints).</li>
-            <li>Apply CQRS when you need to scale OpenSearch or Redis read tiers without touching Postgres write primaries.</li>
-          </ul>
-
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>Skip CQRS for internal admin CRUD with a handful of fields — Meridian’s tax-code lookup does not warrant projectors.</li>
-            <li>Skip CQRS when the merchandising UI must show search-indexed fields in the same transaction as a command — async lag will confuse users unless you design optimistic UI.</li>
-            <li>Skip full physical CQRS until the team can own projection code, rebuild jobs, and drift alerts — logical CQRS inside one service is often enough first.</li>
-          </ul>
-
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Meridian’s catalog command API mutates Postgres and emits <code>ProductPublished</code> events. Projectors update OpenSearch documents and Redis facet sets; the storefront query API reads only those stores.</p>
-                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-                      <div class="architecture-diagram__render mermaid">flowchart LR
-    C["Client"] -->|command| CH["Command handler"]
-    CH --> WS[("Write store")]
-    WS --> EV["Domain events"]
-    EV --> PR["Projector"]
-    PR --> RS[("Read store")]
-    C -->|query| RS</div>
-                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>  ┌──────────┐    Command     ┌─────────────────┐
-            │  Client  │──────────────▶│  Command Handler │
-            └──────────┘               │  (Domain Logic)  │
-                 │                     └────────┬─────────┘
-                 │                              │ Persist + Event
-                 │                     ┌────────▼─────────┐
-                 │                     │   Write Store     │
-                 │                     │  (Normalized DB)  │
-                 │                     └────────┬─────────┘
-                 │                              │ Domain Events
-                 │                     ┌────────▼─────────┐
-                 │                     │  Event Projector   │
-                 │                     │  (async/sync)      │
-                 │                     └────────┬─────────┘
-                 │                              │ Updates
-                 │ Query              ┌─────────▼──────────┐
-                 └───────────────────▶│   Read Store        │
-                                      │ (Denormalized Views)│
-                                      └────────────────────┘</code></pre></details>
-                      <figcaption id="typical-architecture-caption">Meridian Catalog CQRS: commands persist to Postgres; projectors feed OpenSearch and Redis for storefront queries.</figcaption>
-                    </figure>
-
-
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>Meridian changes search ranking in OpenSearch without refactoring the <code>Product</code> aggregate in Postgres.</li>
-                <li>Read stores pick the right engine — OpenSearch for full text, Redis for hot facet counts.</li>
-                <li>Projectors can rebuild catalog search from <code>ProductPublished</code> history after a mapping bug.</li>
-                <li>Domain commands stay focused on invariants instead of join-heavy DTOs for the storefront.</li>
-                <li>Black Friday scales query nodes independently from merchandising write traffic.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>A merchandiser may publish a SKU and see search lag seconds behind Postgres unless the UI optimistically updates.</li>
-                <li>Meridian maintains command handlers, events, projectors, and query APIs — more moving parts than one CRUD service.</li>
-                <li>A projector defect corrupts OpenSearch until ops run a full replay job.</li>
-                <li>“Wrong price on search” tickets require tracing command → event → projector, not one SQL query.</li>
-              </ul>
-            </div>
-          </div>
-
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Start logical:</strong> Meridian began with separate command and query services against one Postgres database before splitting OpenSearch off — most clarity comes from segregated handlers, not day-one polyglot storage.</p>
-          <p><strong>Projection timing:</strong> Catalog uses async projectors on Kafka for search; admin screens that need read-your-writes poll the write API or use synchronous projection to a small Redis cache for SKU detail.</p>
-          <p><strong>Rebuild path:</strong> A <code>RebuildCatalogSearch</code> job replays <code>ProductPublished</code> and <code>PriceChanged</code> from the outbox into a fresh OpenSearch index, then aliases cutover.</p>
-          <p><strong>Write concurrency:</strong> <code>Product</code> aggregates carry version numbers; conflicting <code>UpdatePrice</code> commands fail fast instead of silently overwriting.</p>
-
-          <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul>
-            <li><strong>CQRS everywhere:</strong> Meridian applies full projection stacks to tiny lookup tables and drowns in boilerplate.</li>
-            <li><strong>No rebuild:</strong> A bad projector deploys for a week; search prices drift with no replay lever.</li>
-            <li><strong>Stale admin UX:</strong> Merchandisers refresh and still see old titles because search lag was never communicated.</li>
-            <li><strong>Commands querying OpenSearch:</strong> <code>PublishProduct</code> checks the search index for duplicates — circular coupling breaks segregation.</li>
-            <li><strong>ORM write model:</strong> The “aggregate” is every column on <code>products</code> — invariants live only in controllers.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Is Meridian’s read shape materially different from write invariants, not merely “we like Elasticsearch”?</li>
-            <li>Can storefront and admin UIs tolerate or mask projection lag after commands?</li>
-            <li>Is there an documented rebuild procedure for each read model?</li>
-            <li>Do command handlers load state only from the write model, not from search indexes?</li>
-            <li>Does the write side use optimistic concurrency on catalog aggregates?</li>
-            <li>Would logical CQRS inside one service deliver enough benefit before operating separate databases?</li>
-          </ul>
-
-          <h2 id="example-use-cases">Example use cases</h2>
-          <p>Meridian Catalog runs one CQRS story end to end:</p>
-          <ul>
-            <li><strong>Write path:</strong> <code>PublishProduct</code> validates category rules in Postgres and emits <code>ProductPublished</code> to the catalog outbox.</li>
-            <li><strong>Search projection:</strong> A projector builds OpenSearch documents with synonyms, boost fields, and category breadcrumbs for the public API.</li>
-            <li><strong>Facet cache:</strong> A second projector maintains Redis sets for color and size filters that must answer in single-digit milliseconds.</li>
-            <li><strong>B2B export:</strong> A batch projector writes denormalized CSV snapshots for partners without slowing merchandising commands.</li>
+            <li><strong>Illustrative scenario —</strong> At <strong>Meridian Commerce</strong>, the Catalog team accepts <code>PublishProduct</code> and <code>UpdatePrice</code> commands against Postgres while shoppers query OpenSearch and a Redis facet cache built by projectors.</li>
+            <li><strong>Illustrative scenario —</strong> Meridian’s catalog search joined six tables on every browse request until CQRS split a strict <code>Product</code> write aggregate from denormalized search documents with synonyms and ranking boosts.</li>
+            <li><strong>Illustrative scenario —</strong> <code>PublishProduct</code> validates category rules in Postgres, emits <code>ProductPublished</code> to the outbox, and projectors build OpenSearch documents and Redis facet sets for the storefront.</li>
+            <li><strong>Illustrative scenario —</strong> Meridian’s Order event stream feeds a catalog “bought together” projector; a batch projector writes B2B CSV snapshots without slowing merchandising commands.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

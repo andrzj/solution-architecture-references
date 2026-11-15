@@ -54,7 +54,15 @@ All `h2` elements live in `.article-content` and use stable `id` attributes for 
 | 11 | `related-patterns` | Related patterns |
 | 12 | `further-reading` | Further reading |
 
-**Writing order (lead with the decision):** In *What it is*, state the pattern in plain language first, then one concrete example. *When to use* / *When not to use* are bullet lists. *Implementation notes* are practical, not marketing copy.
+**Writing order (lead with the decision):** In *What it is*, state the pattern in plain language first. *When to use* / *When not to use* are bullet lists. *Implementation notes* are practical, not marketing copy.
+
+**Fictional running examples (Northwind, Meridian, RideRelay, etc.):** Do **not** use site-wide fictional company names from *What it is* through *Decision checklist*, in *Typical architecture* prose, or in diagram figcaptions. Those sections must stay generic and teach the pattern for any team. You may use short, generic illustrations (“an e-commerce checkout BFF,” “a logistics dispatch API”) where they clarify the idea.
+
+Put named fictional scenarios **only** in *Example use cases*, framed clearly as illustrations (e.g. “Illustrative scenario — …”). Anti-pattern articles that rename sections (e.g. “How it manifests”) follow the same rule: no fictional names until *Example use cases* / *Real-world examples*.
+
+**Example use cases labels:** Use **Illustrative scenario —** for fictional running examples (Northwind, Meridian, RideRelay, FieldOps) and other composite teaching stories. Use **Case study —** for well-known public implementations at real companies or products (e.g. Netflix, Amazon, Uber, Shopify, GitHub, Google Docs, Stripe)—only where the example is accurate and widely documented.
+
+**What it is openings:** The first paragraph under *What it is* must define the pattern or topic in plain language (name the concept and what it is). Do not start mid-thought with “The result is…”, “The ‘micro’ in…”, or a dangling “It/This” that referred to removed company-specific setup text.
 
 ### Typical architecture (diagram)
 

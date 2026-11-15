@@ -98,156 +98,157 @@
 
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
-          
-          <p>At <strong>RideRelay</strong>, a <strong>training pipeline</strong> is the automated DAG that turns historical trip and demand signals into a versioned <strong>zone-level demand-forecast</strong> model — the same way CI/CD turns commits into deployable artifacts. Each run records data snapshots, hyperparameters, and evaluation metrics so ops can reproduce or compare any prior forecast model.</p>
-          <p>The workflow is expressed as containerized steps (ingest → validate → preprocess → train → evaluate → register). Frameworks such as Kubeflow Pipelines, Airflow with ML operators, Metaflow, or SageMaker Pipelines implement that graph; RideRelay’s pipeline is the orchestration layer around business logic, distinct from <a href="model-training-pipelines.html">Model Training at Scale</a>, which focuses on multi-GPU distributed training mechanics.</p>
+ 
+ <p>At a ride-hailing product, a <strong>training pipeline</strong> is the automated DAG that turns historical trip and demand signals into a versioned <strong>zone-level demand-forecast</strong> model — the same way CI/CD turns commits into deployable artifacts. Each run records data snapshots, hyperparameters, and evaluation metrics so ops can reproduce or compare any prior forecast model.</p>
+ <p>The workflow is expressed as containerized steps (ingest → validate → preprocess → train → evaluate → register). Frameworks such as Kubeflow Pipelines, Airflow with ML operators, Metaflow, or SageMaker Pipelines implement that graph; The pipeline's is the orchestration layer around business logic, distinct from <a href="model-training-pipelines.html">Model Training at Scale</a>, which focuses on multi-GPU distributed training mechanics.</p>
 
-          <h2 id="why-it-exists">Why it exists</h2>
-          <p>RideRelay’s first demand models lived in notebooks. When the company opened new cities, analysts reran cells manually, disagreed on feature windows, and could not explain which data build produced Friday’s surge-pricing forecast. Scheduled retraining became mandatory: the forecast must refresh on new trips, events, and weather without someone babysitting a laptop job.</p>
-          <p>Daily runs over a rolling 90-day window are too many steps to trigger by hand. The pipeline fires on cron or when the warehouse lands a complete day of trip facts; validation gates abort before GPU time is spent on empty partitions or schema drift from a bad ingest. Experiment tracking (MLflow, Weights &amp; Biases) attaches to each run so the team remembers which horizon and loss settings beat production — not only who ran a notebook last.</p>
+ <h2 id="why-it-exists">Why it exists</h2>
+ <p>The product’s first demand models lived in notebooks. When the company opened new cities, analysts reran cells manually, disagreed on feature windows, and could not explain which data build produced Friday’s surge-pricing forecast. Scheduled retraining became mandatory: the forecast must refresh on new trips, events, and weather without someone babysitting a laptop job.</p>
+ <p>Daily runs over a rolling 90-day window are too many steps to trigger by hand. The pipeline fires on cron or when the warehouse lands a complete day of trip facts; validation gates abort before GPU time is spent on empty partitions or schema drift from a bad ingest. Experiment tracking (MLflow, Weights &amp; Biases) attaches to each run so the team remembers which horizon and loss settings beat production — not only who ran a notebook last.</p>
 
-          <h2 id="when-to-use">When to use</h2>
-          <ul>
-            <li>RideRelay’s demand forecast (or sibling models) must retrain daily or weekly as trip distributions and events shift.</li>
-            <li>Several data scientists share one model family and need identical containers, seeds, and data snapshots.</li>
-            <li>Finance or ops require an audit trail linking each registered artifact to data version, code SHA, and metrics.</li>
-            <li>Retraining chains validation, training, evaluation gates, and registry promotion — not a single <code>fit()</code> call.</li>
-            <li>RideRelay is standardizing MLOps and wants training to follow the same promote/rollback discipline as app deploys.</li>
-          </ul>
+ <h2 id="when-to-use">When to use</h2>
+ <ul>
+ <li>The product’s demand forecast (or sibling models) must retrain daily or weekly as trip distributions and events shift.</li>
+ <li>Several data scientists share one model family and need identical containers, seeds, and data snapshots.</li>
+ <li>Finance or ops require an audit trail linking each registered artifact to data version, code SHA, and metrics.</li>
+ <li>Retraining chains validation, training, evaluation gates, and registry promotion — not a single <code>fit()</code> call.</li>
+ <li>The product is standardizing MLOps and wants training to follow the same promote/rollback discipline as app deploys.</li>
+ </ul>
 
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>RideRelay is still exploring forecast horizons and features every day — a rigid DAG slows that iteration.</li>
-            <li>One-off backfill training that will never repeat — pipeline setup cost is not justified.</li>
-            <li>A tiny team with no platform support yet — start with a scripted retrain before Kubeflow-level orchestration.</li>
-          </ul>
+ <h2 id="when-not-to-use">When not to use</h2>
+ <ul>
+ <li>The product is still exploring forecast horizons and features every day — a rigid DAG slows that iteration.</li>
+ <li>One-off backfill training that will never repeat — pipeline setup cost is not justified.</li>
+ <li>A tiny team with no platform support yet — start with a scripted retrain before Kubeflow-level orchestration.</li>
+ </ul>
 
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>RideRelay’s demand-forecast pipeline follows the staged flow below: cron or a “day closed” event starts ingest from the feature store and warehouse; validation must pass before preprocessing and train/val/test splits; training emits metrics to experiment tracking; evaluation gates block registry promotion; an approved artifact triggers the serving rollout path.</p>
-          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart TB
-    schedule_cron_event_new["Schedule (cron) / Event (new data) / API"]
-    step_1_data_ingestion_am["STEP 1: DATA INGESTION &amp;amp; VALIDATION"]
-    step_1_data_ingestion_a["│  STEP 1: DATA INGESTION &amp;amp; VALIDATION"]
-    pull_from_feature_store["Pull from feature store / data warehouse"]
-    schema_validation_row_co["Schema validation · Row count checks"]
-    fail_abort_pipeline_aler["FAIL → abort pipeline, alert on-call"]
-    step_2_preprocessing_amp["STEP 2: PREPROCESSING &amp;amp; SPLIT"]
-    step_2_preprocessing_am["│  STEP 2: PREPROCESSING &amp;amp; SPLIT"]
-    schedule_cron_event_new --> step_1_data_ingestion_am
-    step_1_data_ingestion_am --> step_1_data_ingestion_a
-    step_1_data_ingestion_a --> pull_from_feature_store
-    pull_from_feature_store --> schema_validation_row_co
-    schema_validation_row_co --> fail_abort_pipeline_aler
-    fail_abort_pipeline_aler --> step_2_preprocessing_amp
-    step_2_preprocessing_amp --> step_2_preprocessing_am</div>
-            <details class="architecture-diagram__fallback">
-              <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>
+ <h2 id="typical-architecture">Typical architecture</h2>
+ <p>The product’s demand-forecast pipeline follows the staged flow below: cron or a “day closed” event starts ingest from the feature store and warehouse; validation must pass before preprocessing and train/val/test splits; training emits metrics to experiment tracking; evaluation gates block registry promotion; an approved artifact triggers the serving rollout path.</p>
+ <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <div class="architecture-diagram__render mermaid">flowchart TB
+ schedule_cron_event_new["Schedule (cron) / Event (new data) / API"]
+ step_1_data_ingestion_am["STEP 1: DATA INGESTION &amp;amp; VALIDATION"]
+ step_1_data_ingestion_a["│ STEP 1: DATA INGESTION &amp;amp; VALIDATION"]
+ pull_from_feature_store["Pull from feature store / data warehouse"]
+ schema_validation_row_co["Schema validation · Row count checks"]
+ fail_abort_pipeline_aler["FAIL → abort pipeline, alert on-call"]
+ step_2_preprocessing_amp["STEP 2: PREPROCESSING &amp;amp; SPLIT"]
+ step_2_preprocessing_am["│ STEP 2: PREPROCESSING &amp;amp; SPLIT"]
+ schedule_cron_event_new --> step_1_data_ingestion_am
+ step_1_data_ingestion_am --> step_1_data_ingestion_a
+ step_1_data_ingestion_a --> pull_from_feature_store
+ pull_from_feature_store --> schema_validation_row_co
+ schema_validation_row_co --> fail_abort_pipeline_aler
+ fail_abort_pipeline_aler --> step_2_preprocessing_amp
+ step_2_preprocessing_amp --> step_2_preprocessing_am</div>
+ <details class="architecture-diagram__fallback">
+ <summary>View text diagram</summary>
+ <pre class="architecture-diagram__canvas"><code>
  TRIGGER
  ┌────────────────────────────────────────────┐
- │  Schedule (cron) / Event (new data) / API   │
+ │ Schedule (cron) / Event (new data) / API │
  └──────────────────────┬─────────────────────┘
-                        │
-                        ▼
+ │
+ ▼
  ┌──────────────────────────────────────────────────────────┐
- │  STEP 1: DATA INGESTION &amp; VALIDATION                      │
- │  ┌────────────────────────────────────────────────────┐  │
- │  │ Pull from feature store / data warehouse           │  │
- │  │ Schema validation · Row count checks               │  │
- │  │ Statistical distribution validation (Great Expect.) │  │
- │  │ FAIL → abort pipeline, alert on-call               │  │
- │  └────────────────────────────────────────────────────┘  │
+ │ STEP 1: DATA INGESTION &amp; VALIDATION │
+ │ ┌────────────────────────────────────────────────────┐ │
+ │ │ Pull from feature store / data warehouse │ │
+ │ │ Schema validation · Row count checks │ │
+ │ │ Statistical distribution validation (Great Expect.) │ │
+ │ │ FAIL → abort pipeline, alert on-call │ │
+ │ └────────────────────────────────────────────────────┘ │
  └──────────────────────────┬───────────────────────────────┘
-                            │ validated dataset artifact
-                            ▼
+ │ validated dataset artifact
+ ▼
  ┌──────────────────────────────────────────────────────────┐
- │  STEP 2: PREPROCESSING &amp; SPLIT                            │
- │  Train / Validation / Test split (stratified)             │
- │  Encoding · Normalization · Imputation                    │
+ │ STEP 2: PREPROCESSING &amp; SPLIT │
+ │ Train / Validation / Test split (stratified) │
+ │ Encoding · Normalization · Imputation │
  └──────────────────────────┬───────────────────────────────┘
-                            │
-                            ▼
+ │
+ ▼
  ┌──────────────────────────────────────────────────────────┐
- │  STEP 3: DISTRIBUTED TRAINING                             │
- │  ┌──────────────────┐  ┌──────────────────┐              │
- │  │   GPU Node 0     │  │   GPU Node 1     │  ...         │
- │  │   (data shard)   │  │   (data shard)   │              │
- │  └────────┬─────────┘  └────────┬─────────┘              │
- │           └──────── AllReduce ──┘                         │
- │  Experiment tracked: params, metrics, artifacts           │
+ │ STEP 3: DISTRIBUTED TRAINING │
+ │ ┌──────────────────┐ ┌──────────────────┐ │
+ │ │ GPU Node 0 │ │ GPU Node 1 │ ... │
+ │ │ (data shard) │ │ (data shard) │ │
+ │ └────────┬─────────┘ └────────┬─────────┘ │
+ │ └──────── AllReduce ──┘ │
+ │ Experiment tracked: params, metrics, artifacts │
  └──────────────────────────┬───────────────────────────────┘
-                            │ model artifact + metrics
-                            ▼
+ │ model artifact + metrics
+ ▼
  ┌──────────────────────────────────────────────────────────┐
- │  STEP 4: EVALUATION &amp; GATING                              │
- │  Metrics vs. baseline thresholds                          │
- │  Bias checks · Fairness evaluation                        │
- │  FAIL → reject model, notify team                         │
+ │ STEP 4: EVALUATION &amp; GATING │
+ │ Metrics vs. baseline thresholds │
+ │ Bias checks · Fairness evaluation │
+ │ FAIL → reject model, notify team │
  └──────────────────────────┬───────────────────────────────┘
-                            │ approved model
-                            ▼
+ │ approved model
+ ▼
  ┌──────────────────────────────────────────────────────────┐
- │  STEP 5: MODEL REGISTRY                                   │
- │  Register model with version, lineage, metrics, tags      │
- │  Trigger deployment pipeline (staging → canary → prod)    │
+ │ STEP 5: MODEL REGISTRY │
+ │ Register model with version, lineage, metrics, tags │
+ │ Trigger deployment pipeline (staging → canary → prod) │
  └──────────────────────────────────────────────────────────┘
 </code></pre>
-            </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
+ </details>
+ <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+ </figure>
 
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>RideRelay can replay any forecast run with the same trip snapshot, code tag, and config — essential for incident review and regulatory asks.</li>
-                <li>Ingest validation stops training when trip facts are missing or zone IDs drift, before bad weights reach surge pricing.</li>
-                <li>Every scheduled run logs metrics to a searchable history — no more “which notebook was production last Tuesday?”</li>
-                <li>Overnight refresh keeps zone demand models aligned with events and seasonality without manual triggers.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Containerizing ingest, validation, train, and eval steps is real platform work before the first automated forecast ships.</li>
-                <li>Failures deep in the DAG are harder to debug than a single notebook cell — correlate logs across steps and clusters.</li>
-                <li>Researchers may still train ad hoc during experiments, risking divergence from the production DAG unless merges are enforced.</li>
-                <li>GPU steps for large horizons burn budget if autoscaling and “refresh vs tune” modes are not separated.</li>
-              </ul>
-            </div>
-          </div>
+ <h2 id="pros-and-cons">Pros and cons</h2>
+ <div class="pros-cons">
+ <div class="pros-cons__col pros-cons__col--pros">
+ <h3>Pros</h3>
+ <ul>
+ <li>The platform can replay any forecast run with the same trip snapshot, code tag, and config — essential for incident review and regulatory asks.</li>
+ <li>Ingest validation stops training when trip facts are missing or zone IDs drift, before bad weights reach surge pricing.</li>
+ <li>Every scheduled run logs metrics to a searchable history — no more “which notebook was production last Tuesday?”</li>
+ <li>Overnight refresh keeps zone demand models aligned with events and seasonality without manual triggers.</li>
+ </ul>
+ </div>
+ <div class="pros-cons__col pros-cons__col--cons">
+ <h3>Cons</h3>
+ <ul>
+ <li>Containerizing ingest, validation, train, and eval steps is real platform work before the first automated forecast ships.</li>
+ <li>Failures deep in the DAG are harder to debug than a single notebook cell — correlate logs across steps and clusters.</li>
+ <li>Researchers may still train ad hoc during experiments, risking divergence from the production DAG unless merges are enforced.</li>
+ <li>GPU steps for large horizons burn budget if autoscaling and “refresh vs tune” modes are not separated.</li>
+ </ul>
+ </div>
+ </div>
 
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Containerize each RideRelay step (ingest, Great Expectations validation, preprocess, train, evaluate) with pinned deps and an image tag tied to git SHA. Keep training code out of shared “kitchen sink” environments so local, CI, and cluster runs match.</p>
-          <p>Make validation a hard gate on trip and weather tables: expected row counts per city, zone ID schema, and distribution checks on requests-per-zone. Failures should page data platform, not register a model.</p>
-          <p>Split <strong>refresh mode</strong> (nightly retrain with frozen hyperparameters on the latest 90 days) from <strong>tune mode</strong> (quarterly sweeps over horizon and regularization). Demand forecasting at RideRelay rarely needs full search every night.</p>
-          <p>Point-in-time joins from the feature store must respect forecast labels — no future trips in training rows for a given zone-hour. Fit scalers on the train split only after the temporal split.</p>
+ <h2 id="implementation-notes">Implementation notes</h2>
+ <p>Containerize each pipeline step (ingest, Great Expectations validation, preprocess, train, evaluate) with pinned deps and an image tag tied to git SHA. Keep training code out of shared “kitchen sink” environments so local, CI, and cluster runs match.</p>
+ <p>Make validation a hard gate on trip and weather tables: expected row counts per city, zone ID schema, and distribution checks on requests-per-zone. Failures should page data platform, not register a model.</p>
+ <p>Split <strong>refresh mode</strong> (nightly retrain with frozen hyperparameters on the latest 90 days) from <strong>tune mode</strong> (quarterly sweeps over horizon and regularization). Demand forecasting on this path rarely needs full search every night.</p>
+ <p>Point-in-time joins from the feature store must respect forecast labels — no future trips in training rows for a given zone-hour. Fit scalers on the train split only after the temporal split.</p>
 
-          <h2 id="common-failure-modes">Common failure modes</h2>
+ <h2 id="common-failure-modes">Common failure modes</h2>
+ <ul>
+ <li><strong>Leakage in zone features:</strong> Fitting normalization on all cities before holdout inflates offline MAPE; fit only on training zones and time ranges.</li>
+ <li><strong>Unpinned seeds:</strong> Prophet, XGBoost, or PyTorch forecasts differ run-to-run, hiding real regressions when comparing to production.</li>
+ <li><strong>Bad-day training:</strong> A partial warehouse load passes row-count checks but under-represents airport zones — evaluation gates on segment MAPE catch this.</li>
+ <li><strong>Registry clutter:</strong> Registering every nightly attempt without MAPE/wMAPE gates makes rollback ambiguous during a pricing incident.</li>
+ </ul>
+
+ <h2 id="decision-checklist">Decision checklist</h2>
+ <ul class="checklist">
+ <li>Does every production pipeline step ship as a versioned container linked to a git SHA?</li>
+ <li>Does validation abort on schema or distribution failure before the train step starts?</li>
+ <li>Are data snapshot ID, hyperparameters, and metrics logged for every run?</li>
+ <li>Does evaluation block registry unless holdout MAPE beats production baselines (overall and key zones)?</li>
+ <li>Are preprocess fits applied only after train/val/test temporal splits?</li>
+ <li>Is the trigger documented — daily cron, “warehouse day closed” event, or manual tune?</li>
+ </ul>
+
+ <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Leakage in zone features:</strong> Fitting normalization on all cities before holdout inflates offline MAPE; fit only on training zones and time ranges.</li>
-            <li><strong>Unpinned seeds:</strong> Prophet, XGBoost, or PyTorch forecasts differ run-to-run, hiding real regressions when comparing to production.</li>
-            <li><strong>Bad-day training:</strong> A partial warehouse load passes row-count checks but under-represents airport zones — evaluation gates on segment MAPE catch this.</li>
-            <li><strong>Registry clutter:</strong> Registering every nightly attempt without MAPE/wMAPE gates makes rollback ambiguous during a pricing incident.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Does every RideRelay pipeline step ship as a versioned container linked to a git SHA?</li>
-            <li>Does validation abort on schema or distribution failure before the train step starts?</li>
-            <li>Are data snapshot ID, hyperparameters, and metrics logged for every run?</li>
-            <li>Does evaluation block registry unless holdout MAPE beats production baselines (overall and key zones)?</li>
-            <li>Are preprocess fits applied only after train/val/test temporal splits?</li>
-            <li>Is the trigger documented — daily cron, “warehouse day closed” event, or manual tune?</li>
-          </ul>
-
-          <h2 id="example-use-cases">Example use cases</h2>
-          <ul>
-            <li><strong>RideRelay demand forecast:</strong> Nightly pipeline ingests 90 days of zone trip counts and weather from the feature store, validates, retrains the horizon model, promotes to the registry when MAPE improves, and hands off to serving for surge and driver positioning.</li>
-            <li><strong>Event-driven refresh:</strong> When a stadium event is added to RideRelay’s calendar, an API trigger reruns training with augmented event features before the first surge window.</li>
-            <li><strong>Contrast with training at scale:</strong> RideRelay’s <a href="model-training-pipelines.html">distributed GPU pipeline</a> trains a separate rider-matching ranker; demand forecasting stays on this lighter orchestrated DAG.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> orchestrates nightly demand-forecast retraining from the feature store through registry promotion.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay demand forecast:</strong> Nightly pipeline ingests 90 days of zone trip counts and weather from the feature store, validates, retrains the horizon model, promotes to the registry when MAPE improves, and hands off to serving for surge and driver positioning.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Event-driven refresh:</strong> When a stadium event is added to RideRelay’s calendar, an API trigger reruns training with augmented event features before the first surge window.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Contrast with training at scale:</strong> RideRelay’s <a href="model-training-pipelines.html">distributed GPU pipeline</a> trains a separate rider-matching ranker; demand forecasting stays on this lighter orchestrated DAG.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

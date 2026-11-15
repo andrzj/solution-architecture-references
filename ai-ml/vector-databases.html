@@ -98,162 +98,162 @@
 
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
-          <p>A <strong>vector database</strong> stores embedding vectors and answers <em>approximate nearest neighbor (ANN)</em> queries: given a query embedding, return the IDs whose vectors are closest in cosine or dot-product space. It is the retrieval engine behind RAG and semantic catalog search.</p>
-          <p>Meridian Commerce maintains a <strong>catalog embedding index</strong>: every product description chunk, care guide section, and FAQ paragraph is embedded and stored with metadata (<code>sku</code>, <code>category</code>, <code>region</code>, <code>in_stock</code>). Shopper copilot and the support assistant both query the same collection with different filters.</p>
-          <p>The diagram’s <strong>write path</strong> runs <em>Documents / Items / Events</em> → <em>Embedding model</em> (768/1536-d floats) → <em>Vector database</em> with an <em>ANN index</em> (HNSW in the fallback sketch). The <strong>read path</strong> embeds the query with the same model, ANN-searches top-K, applies <em>metadata filters</em>, and returns IDs, scores, and payload for downstream RAG or search APIs.</p>
+ <p>A <strong>vector database</strong> stores embedding vectors and answers <em>approximate nearest neighbor (ANN)</em> queries: given a query embedding, return the IDs whose vectors are closest in cosine or dot-product space. It is the retrieval engine behind RAG and semantic catalog search.</p>
+ <p>An e-commerce retailer maintains a <strong>catalog embedding index</strong>: every product description chunk, care guide section, and FAQ paragraph is embedded and stored with metadata (<code>sku</code>, <code>category</code>, <code>region</code>, <code>in_stock</code>). Shopper copilot and the support assistant both query the same collection with different filters.</p>
+ <p>The diagram’s <strong>write path</strong> runs <em>Documents / Items / Events</em> → <em>Embedding model</em> (768/1536-d floats) → <em>Vector database</em> with an <em>ANN index</em> (HNSW in the fallback sketch). The <strong>read path</strong> embeds the query with the same model, ANN-searches top-K, applies <em>metadata filters</em>, and returns IDs, scores, and payload for downstream RAG or search APIs.</p>
 
-          <h2 id="why-it-exists">Why it exists</h2>
-          <p>Meridian’s OpenSearch keyword index missed paraphrases (“breathable summer dress”) and could not feed the copilot’s RAG context without brittle join queries against Postgres. Embeddings encode meaning; ANN retrieves in single-digit milliseconds at catalog scale.</p>
-          <p>Support RAG and shopper copilot share one indexing investment: nightly catalog exports and help-center articles land in the same vector store with different metadata namespaces. When merchandising publishes new SKUs, projectors re-embed changed chunks — the same operational pattern as Lewis-style retrieval corpora, but tuned for commerce facets.</p>
-          <p>Meridian keeps transactional truth in Postgres and search faceting in OpenSearch; the vector index is a specialized read model for similarity, not a system of record.</p>
+ <h2 id="why-it-exists">Why it exists</h2>
+ <p>The team's OpenSearch keyword index missed paraphrases (“breathable summer dress”) and could not feed the copilot’s RAG context without brittle join queries against Postgres. Embeddings encode meaning; ANN retrieves in single-digit milliseconds at catalog scale.</p>
+ <p>Support RAG and shopper copilot share one indexing investment: nightly catalog exports and help-center articles land in the same vector store with different metadata namespaces. When merchandising publishes new SKUs, projectors re-embed changed chunks — the same operational pattern as Lewis-style retrieval corpora, but tuned for commerce facets.</p>
+ <p>Retailers keep transactional truth in Postgres and search faceting in OpenSearch; the vector index is a specialized read model for similarity, not a system of record.</p>
 
-          <h2 id="when-to-use">When to use</h2>
-          <ul>
-            <li>Meridian catalog and help RAG where each copilot or support turn needs top-K chunks within a tight retrieval latency budget.</li>
-            <li>Semantic “find similar products” widgets that go beyond keyword match on titles.</li>
-            <li>Duplicate listing detection — near-identical descriptions from marketplace sellers.</li>
-            <li>Filtered retrieval: in-stock, shippable-to-DE, adult-category exclusions via payload indexes.</li>
-            <li>Shared embedding index serving both Azure-hosted and vLLM generation paths with identical retrieval results.</li>
-          </ul>
+ <h2 id="when-to-use">When to use</h2>
+ <ul>
+ <li>A product catalog and help RAG where each copilot or support turn needs top-K chunks within a tight retrieval latency budget.</li>
+ <li>Semantic “find similar products” widgets that go beyond keyword match on titles.</li>
+ <li>Duplicate listing detection — near-identical descriptions from marketplace sellers.</li>
+ <li>Filtered retrieval: in-stock, shippable-to-DE, adult-category exclusions via payload indexes.</li>
+ <li>Shared embedding index serving both Azure-hosted and vLLM generation paths with identical retrieval results.</li>
+ </ul>
 
-          <h2 id="when-not-to-use">When not to use</h2>
-          <ul>
-            <li>Authoritative inventory counts or price — vectors are eventually consistent projections, not ACID ledgers.</li>
-            <li>Tiny pilot corpora (&lt;50k chunks) where pgvector beside existing Postgres may suffice.</li>
-            <li>Exact SKU lookup by primary key — use Catalog’s SQL or OpenSearch term queries instead of ANN.</li>
-          </ul>
+ <h2 id="when-not-to-use">When not to use</h2>
+ <ul>
+ <li>Authoritative inventory counts or price — vectors are eventually consistent projections, not ACID ledgers.</li>
+ <li>Tiny pilot corpora (&lt;50k chunks) where pgvector beside existing Postgres may suffice.</li>
+ <li>Exact SKU lookup by primary key — use Catalog’s SQL or OpenSearch term queries instead of ANN.</li>
+ </ul>
 
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Meridian’s catalog index mirrors the diagram: Kafka <code>ProductPublished</code> events trigger embed jobs; vectors land in HNSW collections with payload indexes on category and stock; copilot and support APIs embed the user utterance and call ANN + filter before LLM generation.</p>
-          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart TB
-    documents_items_events["Documents / Items / Events"]
-    embedding_model["EMBEDDING MODEL"]
-    768["768"]
-    1536["1536"]
-    item_float_768_or_float["item → float[768] or float[1536]"]
-    vector_database["VECTOR DATABASE"]
-    ann_index["ANN INDEX"]
-    hnsw_layer_2_o_o_o["HNSW:  Layer 2  o─────o─────o"]
-    documents_items_events --> embedding_model
-    embedding_model --> 768
-    768 --> 1536
-    1536 --> item_float_768_or_float
-    item_float_768_or_float --> vector_database
-    vector_database --> ann_index
-    ann_index --> hnsw_layer_2_o_o_o</div>
-            <details class="architecture-diagram__fallback">
-              <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>
+ <h2 id="typical-architecture">Typical architecture</h2>
+ <p>The team's catalog index mirrors the diagram: Kafka <code>ProductPublished</code> events trigger embed jobs; vectors land in HNSW collections with payload indexes on category and stock; copilot and support APIs embed the user utterance and call ANN + filter before LLM generation.</p>
+ <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <div class="architecture-diagram__render mermaid">flowchart TB
+ documents_items_events["Documents / Items / Events"]
+ embedding_model["EMBEDDING MODEL"]
+ 768["768"]
+ 1536["1536"]
+ item_float_768_or_float["item → float[768] or float[1536]"]
+ vector_database["VECTOR DATABASE"]
+ ann_index["ANN INDEX"]
+ hnsw_layer_2_o_o_o["HNSW: Layer 2 o─────o─────o"]
+ documents_items_events --> embedding_model
+ embedding_model --> 768
+ 768 --> 1536
+ 1536 --> item_float_768_or_float
+ item_float_768_or_float --> vector_database
+ vector_database --> ann_index
+ ann_index --> hnsw_layer_2_o_o_o</div>
+ <details class="architecture-diagram__fallback">
+ <summary>View text diagram</summary>
+ <pre class="architecture-diagram__canvas"><code>
  WRITE PATH (indexing)
  ┌──────────────────────────────────────────────────────────┐
- │  Documents / Items / Events                               │
+ │ Documents / Items / Events │
  └────────────────────────┬─────────────────────────────────┘
-                          │
-                          ▼
+ │
+ ▼
  ┌──────────────────────────────────────────────────────────┐
- │  EMBEDDING MODEL                                          │
- │  text-embedding-ada-002 / CLIP / custom model             │
- │  item → float[768] or float[1536]                        │
+ │ EMBEDDING MODEL │
+ │ text-embedding-ada-002 / CLIP / custom model │
+ │ item → float[768] or float[1536] │
  └────────────────────────┬─────────────────────────────────┘
-                          │ (id, vector, metadata)
-                          ▼
+ │ (id, vector, metadata)
+ ▼
  ┌──────────────────────────────────────────────────────────┐
- │              VECTOR DATABASE                              │
- │                                                           │
- │  ┌─────────────────────────────────────────────────────┐ │
- │  │              ANN INDEX                               │ │
- │  │  HNSW:  Layer 2  o─────o─────o                      │ │
- │  │         Layer 1  o──o──o──o──o──o                   │ │
- │  │         Layer 0  o-o-o-o-o-o-o-o-o-o                │ │
- │  │                                                      │ │
- │  │  IVF:  [centroid 0]→[v1,v2,v3...]                   │ │
- │  │        [centroid 1]→[v4,v5,v6...]                   │ │
- │  │        [centroid 2]→[v7,v8,v9...]                   │ │
- │  └─────────────────────────────────────────────────────┘ │
- │                                                           │
- │  ┌──────────────────┐  ┌──────────────────────────────┐  │
- │  │ Metadata Store   │  │  Payload / Attribute Index   │  │
- │  │ id → JSON attrs  │  │  (for pre-filtering)         │  │
- │  └──────────────────┘  └──────────────────────────────┘  │
+ │ VECTOR DATABASE │
+ │ │
+ │ ┌─────────────────────────────────────────────────────┐ │
+ │ │ ANN INDEX │ │
+ │ │ HNSW: Layer 2 o─────o─────o │ │
+ │ │ Layer 1 o──o──o──o──o──o │ │
+ │ │ Layer 0 o-o-o-o-o-o-o-o-o-o │ │
+ │ │ │ │
+ │ │ IVF: [centroid 0]→[v1,v2,v3...] │ │
+ │ │ [centroid 1]→[v4,v5,v6...] │ │
+ │ │ [centroid 2]→[v7,v8,v9...] │ │
+ │ └─────────────────────────────────────────────────────┘ │
+ │ │
+ │ ┌──────────────────┐ ┌──────────────────────────────┐ │
+ │ │ Metadata Store │ │ Payload / Attribute Index │ │
+ │ │ id → JSON attrs │ │ (for pre-filtering) │ │
+ │ └──────────────────┘ └──────────────────────────────┘ │
  └──────────────────────────────────────────────────────────┘
 
  READ PATH (query)
- ┌──────────────┐     ┌─────────────────┐     ┌────────────────────┐
- │  Query Text  │────▶│ Embed Query     │────▶│ ANN Search         │
- │  or Item ID  │     │ (same model)    │     │ top-K candidates   │
- └──────────────┘     └─────────────────┘     └─────────┬──────────┘
-                                                         │ filter
-                                                         ▼
-                                              ┌────────────────────┐
-                                              │ Metadata Filter    │
-                                              │ (pre or post)      │
-                                              └─────────┬──────────┘
-                                                        │
-                                                        ▼
-                                              ┌────────────────────┐
-                                              │ Results: top-K IDs │
-                                              │ + similarity scores│
-                                              │ + metadata         │
-                                              └────────────────────┘
+ ┌──────────────┐ ┌─────────────────┐ ┌────────────────────┐
+ │ Query Text │────▶│ Embed Query │────▶│ ANN Search │
+ │ or Item ID │ │ (same model) │ │ top-K candidates │
+ └──────────────┘ └─────────────────┘ └─────────┬──────────┘
+ │ filter
+ ▼
+ ┌────────────────────┐
+ │ Metadata Filter │
+ │ (pre or post) │
+ └─────────┬──────────┘
+ │
+ ▼
+ ┌────────────────────┐
+ │ Results: top-K IDs │
+ │ + similarity scores│
+ │ + metadata │
+ └────────────────────┘
 </code></pre>
-            </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Meridian catalog index: catalog and help content embed into HNSW-backed storage; queries run ANN search with metadata filters before copilot or support RAG (detail in text fallback).</figcaption>
-          </figure>
+ </details>
+ <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">A product catalog index: catalog and help content embed into HNSW-backed storage; queries run ANN search with metadata filters before copilot or support RAG (detail in text fallback).</figcaption>
+ </figure>
 
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>Meridian copilot retrieves semantically related catalog chunks even when shoppers never utter the official product name.</li>
-                <li>HNSW incremental inserts keep pace with hourly SKU updates without full index rebuilds each night.</li>
-                <li>Payload filters combine ANN with <code>in_stock</code> and region rules in one query — critical for lawful catalog answers.</li>
-                <li>One index feeds support RAG and browse similarity, amortizing embedding cost.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Large chunk counts and high-dimensional embeddings plus HNSW graph overhead dominate RAM; Meridian sizes clusters with deliberate headroom.</li>
-                <li>ANN misses the exact neighbor occasionally — unacceptable for compliance keywords unless hybrid BM25 backs retrieval.</li>
-                <li>Embedding model upgrades force full re-embed; shadow collections and alias cutover are mandatory.</li>
-                <li>Heavy <code>in_stock=true AND region=EU</code> pre-filters shrink candidate pools and hurt recall without partitioned collections.</li>
-              </ul>
-            </div>
-          </div>
+ <h2 id="pros-and-cons">Pros and cons</h2>
+ <div class="pros-cons">
+ <div class="pros-cons__col pros-cons__col--pros">
+ <h3>Pros</h3>
+ <ul>
+ <li>A product copilot retrieves semantically related catalog chunks even when shoppers never utter the official product name.</li>
+ <li>HNSW incremental inserts keep pace with hourly SKU updates without full index rebuilds each night.</li>
+ <li>Payload filters combine ANN with <code>in_stock</code> and region rules in one query — critical for lawful catalog answers.</li>
+ <li>One index feeds support RAG and browse similarity, amortizing embedding cost.</li>
+ </ul>
+ </div>
+ <div class="pros-cons__col pros-cons__col--cons">
+ <h3>Cons</h3>
+ <ul>
+ <li>Large chunk counts and high-dimensional embeddings plus HNSW graph overhead dominate RAM; size clusters with deliberate headroom with deliberate headroom.</li>
+ <li>ANN misses the exact neighbor occasionally — unacceptable for compliance keywords unless hybrid BM25 backs retrieval.</li>
+ <li>Embedding model upgrades force full re-embed; shadow collections and alias cutover are mandatory.</li>
+ <li>Heavy <code>in_stock=true AND region=EU</code> pre-filters shrink candidate pools and hurt recall without partitioned collections.</li>
+ </ul>
+ </div>
+ </div>
 
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Embeddings:</strong> Meridian indexes with the same Azure OpenAI embedding deployment used at query time (aligned with <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/use-your-data" rel="noopener noreferrer" target="_blank">Azure “use your data”</a> guidance). Store <code>embedding_model_version</code> on every point.</p>
-          <p><strong>HNSW tuning:</strong> Start <code>M=16</code>, <code>ef_construction=100</code>, tune <code>ef_search</code> against catalog golden queries (recall@10 on labeled “expected SKU set”).</p>
-          <p><strong>Metadata:</strong> Index <code>category_path</code>, <code>price_band</code>, and compliance flags for pre-filter; copilot passes shopper locale into the filter expression on every ANN call.</p>
-          <p><strong>Lifecycle:</strong> Keep raw chunk text in object storage; rebuild vectors into a shadow collection when dimensions or models change, then flip the alias used by RAG and search.</p>
+ <h2 id="implementation-notes">Implementation notes</h2>
+ <p><strong>Embeddings:</strong> Teams index with the same Azure OpenAI embedding deployment used at query time (aligned with <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/use-your-data" rel="noopener noreferrer" target="_blank">Azure “use your data”</a> guidance). Store <code>embedding_model_version</code> on every point.</p>
+ <p><strong>HNSW tuning:</strong> Start <code>M=16</code>, <code>ef_construction=100</code>, tune <code>ef_search</code> against catalog golden queries (recall@10 on labeled “expected SKU set”).</p>
+ <p><strong>Metadata:</strong> Index <code>category_path</code>, <code>price_band</code>, and compliance flags for pre-filter; copilot passes shopper locale into the filter expression on every ANN call.</p>
+ <p><strong>Lifecycle:</strong> Keep raw chunk text in object storage; rebuild vectors into a shadow collection when dimensions or models change, then flip the alias used by RAG and search.</p>
 
-          <h2 id="common-failure-modes">Common failure modes</h2>
+ <h2 id="common-failure-modes">Common failure modes</h2>
+ <ul>
+ <li><strong>Model mismatch:</strong> Staging embeds with a new model while production queries the old — ANN scores become noise. Namespace collections per model version.</li>
+ <li><strong>RAM underestimate:</strong> Black Friday growth fills HNSW RAM; pods OOM mid-query. Autoscale memory from observed graph size, not raw vector bytes alone.</li>
+ <li><strong>Filter starvation:</strong> Aggressive stock filters return three neighbors; copilot hallucinates gaps. Partition by region or widen <code>ef_search</code> when filters bite.</li>
+ <li><strong>Stale vectors:</strong> Discontinued SKUs remain searchable until tombstone deletes run on <code>ProductDelisted</code> events.</li>
+ </ul>
+
+ <h2 id="decision-checklist">Decision checklist</h2>
+ <ul class="checklist">
+ <li>Does every query path call the same embedding deployment as the indexer?</li>
+ <li>What recall@K does the product require for copilot vs. support, and is it measured weekly?</li>
+ <li>Is HNSW memory sized with graph overhead, and is there a shadow reindex playbook?</li>
+ <li>Do payload indexes cover every mandatory filter (region, stock, age gate)?</li>
+ <li>Is canonical chunk text retained for full re-embed on model change?</li>
+ <li>When should teams duplicate collections per locale vs. one global index with filters?</li>
+ </ul>
+
+ <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Model mismatch:</strong> Staging embeds with a new model while production queries the old — ANN scores become noise. Namespace collections per model version.</li>
-            <li><strong>RAM underestimate:</strong> Black Friday growth fills HNSW RAM; pods OOM mid-query. Autoscale memory from observed graph size, not raw vector bytes alone.</li>
-            <li><strong>Filter starvation:</strong> Aggressive stock filters return three neighbors; copilot hallucinates gaps. Partition by region or widen <code>ef_search</code> when filters bite.</li>
-            <li><strong>Stale vectors:</strong> Discontinued SKUs remain searchable until tombstone deletes run on <code>ProductDelisted</code> events.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Does every query path call the same embedding deployment as the indexer?</li>
-            <li>What recall@K does Meridian require for copilot vs. support, and is it measured weekly?</li>
-            <li>Is HNSW memory sized with graph overhead, and is there a shadow reindex playbook?</li>
-            <li>Do payload indexes cover every mandatory filter (region, stock, age gate)?</li>
-            <li>Is canonical chunk text retained for full re-embed on model change?</li>
-            <li>When should Meridian duplicate collections per locale vs. one global index with filters?</li>
-          </ul>
-
-          <h2 id="example-use-cases">Example use cases</h2>
-          <p>Meridian’s <strong>catalog embedding index</strong>:</p>
-          <ul>
-            <li><strong>Copilot RAG:</strong> “Gift for picky teenager who hikes” → embed query → ANN top-15 product-description chunks → filter <code>in_stock</code> + US ship → pass hits to LLM gateway.</li>
-            <li><strong>Similar items rail:</strong> PDP loads vector neighbors by SKU embedding, blended with OpenSearch for keyword tie-break.</li>
-            <li><strong>Support overlap:</strong> Same store holds care-guide chunks filtered to <code>content_type=policy</code> for the support assistant’s retrieval tier.</li>
-            <li><strong>Model migration:</strong> Merchandising adopts text-embedding-3-large; shadow index builds from stored chunk text; eval gates alias swap on recall@10.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce catalog embedding index</strong> backs shopper copilot and support RAG retrieval.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Copilot RAG:</strong> “Gift for picky teenager who hikes” → embed query → ANN top-15 product-description chunks → filter <code>in_stock</code> + US ship → pass hits to LLM gateway.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Similar items rail:</strong> PDP loads vector neighbors by SKU embedding, blended with OpenSearch for keyword tie-break.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Support overlap:</strong> Same store holds care-guide chunks filtered to <code>content_type=policy</code> for the support assistant’s retrieval tier.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Model migration:</strong> Merchandising adopts text-embedding-3-large; shadow index builds from stored chunk text; eval gates alias swap on recall@10.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
