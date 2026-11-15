@@ -101,7 +101,7 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Contract testing verifies that a service correctly implements the interface expectations of its consumers. A <strong>contract</strong> is a formal specification of the interactions between a consumer (caller) and a provider (API), capturing the requests the consumer makes and the responses it expects. Contract tests run independently against each service without requiring a live integrated environment.</p>
+          <p><strong>Contract Testing</strong> is the pattern to use when microservices deployed independently where integration tests are slow or flaky. Contract testing verifies that a service correctly implements the interface expectations of its consumers. A <strong>contract</strong> is a formal specification of the interactions between a consumer (caller) and a provider (API), capturing the requests the consumer makes and the responses it expects. Contract tests run independently against each service without requiring a live integrated environment.</p>
           <p>There are two main approaches:</p>
           <ul>
             <li><strong>Consumer-driven contract testing (CDCT)</strong> — consumers define the contract by writing tests that capture their expectations. The contract is published and the provider verifies it runs against the real provider. Pact is the dominant framework.</li>
@@ -111,7 +111,39 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>In microservices architectures, services are deployed independently. Integration tests that require multiple services to be running simultaneously are slow, fragile, expensive to maintain, and block independent deployment. Contract testing detects interface incompatibilities early — in CI, before deployment — without the overhead of full integration test environments. The question changes from "do all these services work together in a test environment?" to "does this service correctly implement the contract its consumers rely on?"</p>
 
-          <h2 id="consumer-driven">Consumer-driven contracts with Pact</h2>
+          
+          <h2 id="when-to-use">When to use</h2>
+          <ul>
+            <li>Microservices deployed independently where integration tests are slow or flaky.</li>
+            <li>Providers with multiple consumer teams who need breaking-change detection before deploy.</li>
+            <li>CI/CD with a <code>can-i-deploy</code> gate between contract verification and production.</li>
+            <li>APIs documented in OpenAPI that need automated verification against staging.</li>
+          </ul>
+
+          <h2 id="when-not-to-use">When not to use</h2>
+          <ul>
+            <li>Monoliths where consumer and provider ship together in one release artifact.</li>
+            <li>Prototypes with no stable interface and no external consumers.</li>
+            <li>When the organisation cannot maintain provider states or a Pact Broker.</li>
+          </ul>
+
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
+          <pre class="architecture-diagram__canvas"><code>Consumer CI                Pact Broker              Provider CI
+  |                             |                        |
+  |-- consumer tests (mock) --->| publish contract       |
+  |                             |<----- fetch contract --|
+  |                             |                        |-- verify against provider
+  |                             |<----- publish result --|
+  |                             |                        |
+  Deploy gate: can-i-deploy? ---+                        |</code></pre>
+          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show flow.</figcaption>
+          </figure>
+
+          <h2 id="implementation-notes">Implementation notes</h2>
+          <p>Pact, provider verification, bi-directional testing, and OpenAPI tools are covered in the following sections.</p>
+
+<h2 id="consumer-driven">Consumer-driven contracts with Pact</h2>
           <pre><code>// Consumer test (JavaScript, Pact)
 const { Pact } = require('@pact-foundation/pact');
 
@@ -273,7 +305,23 @@ before('orders &gt; GET /orders &gt; 200', (transaction, done) => {
             <li>Are contracts versioned by consumer version (not just latest) to support rollbacks?</li>
           </ul>
 
-          <h2 id="related-patterns">Related patterns</h2>
+          <h2 
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Exact-value contracts</strong> — Pact interactions assert literals instead of matchers, causing false breakages.</li>
+            <li><strong>Stale broker contracts</strong> — old consumer versions block provider deploys unnecessarily.</li>
+            <li><strong>Missing provider states</strong> — verification fails because test data does not match interaction state.</li>
+            <li><strong>Contracts without coverage</strong> — happy-path only; edge cases still break in production.</li>
+          </ul>
+
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li>Orders UI publishes Pact contracts; Orders API verifies in CI before any production deploy.</li>
+            <li>Schemathesis fuzzes staging nightly from the canonical OpenAPI spec.</li>
+            <li>PactFlow bi-directional check compares consumer Pact to provider OpenAPI without live servers.</li>
+          </ul>
+
+id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="openapi.html">OpenAPI Specification</a> — the contract format for provider-driven (Schemathesis, Dredd) contract testing.</li>
             <li><a href="api-versioning.html">API Versioning</a> — contract testing makes breaking change detection explicit rather than version-based.</li>
@@ -282,12 +330,12 @@ before('orders &gt; GET /orders &gt; 200', (transaction, done) => {
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li>Pact documentation — docs.pact.io</li>
-            <li>PactFlow Bi-Directional Contract Testing — pactflow.io/bi-directional-contract-testing</li>
-            <li>Schemathesis documentation — schemathesis.readthedocs.io</li>
-            <li>Dredd — dredd.readthedocs.io</li>
-            <li>Martin Fowler — Contract Testing — martinfowler.com/bliki/ContractTest.html</li>
-            <li>Ian Robinson — Consumer-Driven Contracts: A Service Evolution Pattern.</li>
+            <li><a href="https://docs.pact.io/" rel="noopener noreferrer" target="_blank">Pact documentation</a> — consumer-driven contract testing.</li>
+            <li><a href="https://pactflow.io/bi-directional-contract-testing" rel="noopener noreferrer" target="_blank">PactFlow Bi-Directional Contract Testing</a> — OpenAPI plus Pact verification.</li>
+            <li><a href="https://schemathesis.readthedocs.io/" rel="noopener noreferrer" target="_blank">Schemathesis documentation</a> — property-based OpenAPI testing.</li>
+            <li><a href="https://dredd.readthedocs.io/" rel="noopener noreferrer" target="_blank">Dredd</a> — transaction-level contract tests.</li>
+            <li><a href="https://martinfowler.com/bliki/ContractTest.html" rel="noopener noreferrer" target="_blank">Contract Testing — Martin Fowler</a> — overview of the practice.</li>
+            <li><a href="https://martinfowler.com/articles/consumerDrivenContracts.html" rel="noopener noreferrer" target="_blank">Consumer-Driven Contracts — Martin Fowler</a> — Ian Robinson on service evolution.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
@@ -301,16 +349,22 @@ before('orders &gt; GET /orders &gt; 200', (transaction, done) => {
           <ul class="toc__list">
             <li><a href="#what-it-is" class="toc__link">What it is</a></li>
             <li><a href="#why-it-exists" class="toc__link">Why it exists</a></li>
-            <li><a href="#consumer-driven" class="toc__link">Consumer-driven contracts (Pact)</a></li>
-            <li><a href="#provider-verification" class="toc__link">Provider verification</a></li>
-            <li><a href="#pact-broker" class="toc__link">Pact Broker &amp; can-i-deploy</a></li>
-            <li><a href="#bidirectional" class="toc__link">Bi-directional contracts</a></li>
-            <li><a href="#openapi-contract-tests" class="toc__link">OpenAPI contract tests</a></li>
-            <li><a href="#why-integration-tests-fall-short" class="toc__link">Why integration tests fall short</a></li>
+            <li><a href="#when-to-use" class="toc__link">When to use</a></li>
+            <li><a href="#when-not-to-use" class="toc__link">When not to use</a></li>
+            <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
             <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
+            <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
             <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
+<li><a href="#consumer-driven" class="toc__link">Consumer-driven (Pact)</a></li>
+            <li><a href="#provider-verification" class="toc__link">Provider verification</a></li>
+            <li><a href="#pact-broker" class="toc__link">Pact Broker</a></li>
+            <li><a href="#bidirectional" class="toc__link">Bi-directional contracts</a></li>
+            <li><a href="#openapi-contract-tests" class="toc__link">OpenAPI contract tests</a></li>
+            <li><a href="#why-integration-tests-fall-short" class="toc__link">vs integration tests</a></li>
           </ul>
         </nav>
       </aside>
