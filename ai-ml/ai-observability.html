@@ -104,15 +104,33 @@
         </div>
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
-          <p>It answers whether the system is <em>right</em>, not only whether it is <em>up</em>.</p>
+          <p><strong>AI observability</strong> is telemetry purpose-built for models: traces across retrieval and generation, versioned prompts and model IDs, quality and safety eval signals, cost and latency per feature — not just whether CPUs are busy. It answers whether the system is <em>right</em>, not only whether it is <em>up</em>.</p>
+          <p>At <strong>Northwind Logistics</strong>, observability centers on <strong>dispatch ML</strong> plus an <strong>LLM assist</strong> in FieldOps: a gradient-boosted model ranks carrier options for a load, while a copilot explains delays, drafts dispatcher notes, and suggests reschedule wording grounded in live shipment context. OpenTelemetry spans stitch routing scores, model calls, and prompt hashes so on-call can follow one <code>loadId</code> from the scheduling API through to the text shown to a dispatcher.</p>
+          <p><strong>Meridian Commerce</strong> runs a parallel posture on catalog RAG — different domain, same pattern of traced LLM calls and nightly golden-set evals — but Northwind dispatch is the reference story below because ML ranking and LLM explanation share one operational clock.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>A healthy GPU cluster can still produce wrong, toxic, or expensive outputs. Without AI-specific signals, teams discover regressions from user complaints rather than dashboards.</p>
+          <p>A healthy inference endpoint can still assign the wrong carrier, hallucinate a delivery time, or burn budget on verbose copilot replies. Traditional APM shows green while dispatchers lose trust in the assist panel.</p>
+          <p>Northwind learned that after a prompt tweak shortened ETA explanations but dropped grounding on <code>CarrierCommitment</code> facts. Support tickets rose before infrastructure alarms fired. AI observability closes that gap: trace attributes carry prompt version and retrieval IDs; sampled traffic runs automatic faithfulness and toxicity checks; offline evals compare prompt releases against a frozen golden set.</p>
+          <p>Without those signals, teams debate whether a regression came from routing data, the ranking model, or the LLM — and rollback becomes guesswork.</p>
+
           <h2 id="when-to-use">When to use</h2>
-          <ul><li>Production LLM features.</li><li>RAG with retrieval quality risk.</li><li>Frequently retrained classical ML.</li><li>Agent workflows with tool side effects.</li></ul>
+          <ul>
+            <li>Northwind-style production paths that combine classical ML scores with LLM-generated explanations or suggestions.</li>
+            <li>RAG or tool-using copilots where retrieval quality dominates answer quality.</li>
+            <li>Features that change often — prompt edits, model swaps, retrained rankers — and need diffable behavior.</li>
+            <li>Agent workflows with side effects (reschedule proposals, customer-visible messages) where quality regressions have operational impact.</li>
+            <li>Platforms that must attribute token cost and latency to a business feature such as dispatch assist, not only to a shared model deployment.</li>
+          </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
-          <ul><li>One-off notebook prototypes.</li></ul>
+          <ul>
+            <li>One-off notebook prototypes with no production traffic or privacy obligations.</li>
+            <li>Batch scoring jobs where wrong outputs are cheap to spot in downstream QA and never reach users directly.</li>
+            <li>When the organization lacks retention and redaction policy for prompts — turning on full prompt logging before privacy design is a liability, not observability.</li>
+          </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Instrument every model call; sample for human/l offline eval.</p>
+          <p>Northwind instruments every ranking inference and LLM call from the FieldOps assist service. OpenTelemetry exporters emit spans with <code>loadId</code>, <code>prompt.hash</code>, model name, retrieval chunk IDs, and token usage. A log store retains sampled prompts and completions with redaction; an online eval worker scores a fraction of traffic for JSON validity, groundedness against retrieved shipment facts, and toxicity. Dashboards and alerts tie those signals to release markers for prompts and ranker versions.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     app["App"]
@@ -129,22 +147,67 @@
               <pre class="architecture-diagram__canvas"><code>App ► OTel trace ► Log store ► Online eval ► Dashboards / alerts
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Instrument every model call; sample for human/l offline eval.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Northwind AI observability: OpenTelemetry traces from FieldOps into durable logs, sampled online evals, and dashboards keyed to prompt and model versions.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul><li>Catch quality regressions early.</li><li>Cost and latency visibility per feature.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul><li>Storage of prompts; privacy controls needed.</li><li>Eval design is domain-specific.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Northwind can pinpoint whether a bad ETA explanation came from retrieval, the ranker, or the LLM span in one trace.</li>
+                <li>Prompt and model version tags make before/after diffs possible on release day, not after a week of tickets.</li>
+                <li>Per-feature token and latency metrics show which copilot flows deserve caching or smaller models.</li>
+                <li>Golden-set evals catch safety and grounding regressions before dispatchers see them in production.</li>
+                <li>OpenTelemetry GenAI semantic conventions align LLM spans with the rest of Northwind’s platform traces.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Storing even sampled prompts demands retention limits, redaction, and access controls from day one.</li>
+                <li>Faithfulness and grounding metrics must be designed for logistics language — generic toxicity scores miss wrong carrier names.</li>
+                <li>Online eval workers add cost and complexity beside the inference path they monitor.</li>
+                <li>Too many dashboards without SLOs become vanity charts — token counts without quality thresholds waste attention.</li>
+                <li>Cross-vendor models complicate consistent span attributes unless the gateway normalizes metadata.</li>
+              </ul>
+            </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Version prompts and models; tag traces with prompt hash. Run lightweight automatic evals (faithfulness, toxicity, JSON validity) on sampled traffic. Correlate with business KPIs. Redact PII at ingest; set retention policies.</p>
-          
+          <p><strong>Trace shape:</strong> Northwind’s assist gateway creates a parent span per dispatcher action. Child spans cover feature-store reads for ranker inputs, the scoring RPC, retrieval of shipment and carrier snippets, and the LLM completion. Attributes follow OpenTelemetry GenAI conventions where possible — <code>gen_ai.request.model</code>, <code>gen_ai.usage.input_tokens</code>, and custom <code>loadId</code> / <code>prompt.version</code> fields.</p>
+          <p><strong>Versioning:</strong> Prompts and ranker artifacts live in git or a model registry; each request logs immutable hashes so engineers can diff traffic between <code>dispatch-copilot@2.4.0</code> and <code>@2.4.1</code> without guessing.</p>
+          <p><strong>Evals:</strong> A nightly job replays a golden set of real dispatch scenarios (sanitized) through the stack. Online sampling runs lighter checks — JSON schema validity for structured suggestions, embedding distance to retrieved commitment text, and toxicity — on a fraction of live traffic.</p>
+          <p><strong>Privacy:</strong> PII is stripped at ingest; raw prompts never land in the analytics tier. Retention differs by store: short for security investigation, longer for aggregated quality metrics without content.</p>
+          <p><strong>Meridian note:</strong> Catalog’s shopper assistant uses the same exporter pattern on product RAG; Northwind reuses the collector and dashboard templates but ships separate golden sets per domain.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul><li><strong>Logging PII:</strong> Compliance violations.</li><li><strong>Vanity metrics:</strong> Tracking tokens without quality.</li></ul>
+          <ul>
+            <li><strong>Logging PII:</strong> Dispatcher names and addresses appear in trace backends with no redaction, creating compliance exposure.</li>
+            <li><strong>Vanity metrics:</strong> Dashboards chart tokens per minute but omit groundedness, so cost rises unnoticed while quality falls.</li>
+            <li><strong>Unlabeled releases:</strong> Prompt changes deploy without version tags, making regressions non-reproducible.</li>
+            <li><strong>Missing retrieval context:</strong> RAG spans log completion tokens but not chunk IDs, so bad answers cannot be tied to stale index rows.</li>
+            <li><strong>Eval drift:</strong> Golden sets rot while production scenarios evolve; nightly green checks mask new failure modes.</li>
+          </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist"><li>Can you diff behavior between prompt versions?</li><li>Are retrieval scores logged for RAG?</li><li>Are safety evals on a fixed golden set nightly?</li></ul>
+          <ul class="checklist">
+            <li>Can Northwind diff copilot behavior between prompt versions using trace filters, not manual log grep?</li>
+            <li>Do ranker and LLM spans share <code>loadId</code> (or equivalent) with upstream HTTP and Kafka correlation IDs?</li>
+            <li>Are retrieval scores, chunk IDs, and ranker feature versions logged on the spans that need them?</li>
+            <li>Do safety and grounding evals run against a fixed golden set on a schedule, with alerts on regression?</li>
+            <li>Are prompts and completions redacted before long-term storage?</li>
+            <li>Do on-call runbooks name which dashboard ties to dispatch assist versus classical routing latency?</li>
+          </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul><li><strong>RAG assistant:</strong> Alert when groundedness score drops 10% after index migration.</li></ul>
+          <p>Northwind dispatch is the primary reference; Meridian illustrates the same observability kit in another domain:</p>
+          <ul>
+            <li><strong>Carrier ranking regression:</strong> Data drift on lane features triggers alerts on prediction distribution; traces show whether the LLM copilot started parroting stale ETAs from bad inputs or from its own prompt change.</li>
+            <li><strong>Prompt release for delay explanations:</strong> After shipping <code>dispatch-copilot@2.5.0</code>, groundedness evals on the golden set fail; rollback happens before FieldOps shifts see hallucinated cutoff times.</li>
+            <li><strong>Incident replay:</strong> Support exports a trace bundle for one <code>loadId</code> — ranker scores, retrieved <code>CarrierCommitment</code> rows, and the final explanation — to settle a dispatcher dispute without reproducing production data by hand.</li>
+            <li><strong>Meridian catalog RAG (secondary):</strong> Shopper assist traces retrieval and generation separately; index migration triggers groundedness alerts using the same collector Northwind uses, with catalog-specific golden questions.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="model-monitoring.html">Model Monitoring</a></li><li><a href="../observability/opentelemetry.html">OpenTelemetry</a></li><li><a href="rag-architecture.html">RAG Architecture</a></li></ul>
           <h2 id="further-reading">Further reading</h2>

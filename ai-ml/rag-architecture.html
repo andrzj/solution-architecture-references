@@ -98,32 +98,34 @@
 
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
-          
-          <p>The standard RAG pipeline operates in two phases. The <strong>indexing phase</strong> (offline) ingests documents, splits them into chunks of appropriate size, computes dense vector embeddings for each chunk using an embedding model, and stores those vectors in a vector database alongside the original chunk text. The <strong>querying phase</strong> (online) receives a user question, embeds the question using the same embedding model, performs an approximate nearest neighbor (ANN) search in the vector database to retrieve the most semantically similar chunks, constructs a prompt that includes both the retrieved context and the original question, and passes this augmented prompt to the LLM for generation.</p>
-          <p>Advanced RAG architectures extend this basic pattern in several ways: <strong>hybrid search</strong> combines dense vector search with traditional BM25 keyword search for better recall; <strong>re-ranking</strong> applies a cross-encoder model to the top-K retrieved chunks to more accurately score their relevance before passing them to the LLM; <strong>query decomposition</strong> breaks complex questions into sub-questions retrieved independently; and <strong>iterative retrieval</strong> (or agentic RAG) performs multiple retrieval steps interleaved with generation when a single retrieval round is insufficient.</p>
+          <p><strong>Retrieval-augmented generation (RAG)</strong> answers questions by retrieving relevant passages from an indexed corpus and conditioning the LLM on that evidence at inference time. Lewis et al. formalized the pattern as retrieve-then-generate: a retriever surfaces supporting documents, then a seq2seq generator produces the answer grounded in those passages (<a href="https://arxiv.org/abs/2005.11401" rel="noopener noreferrer" target="_blank">Lewis et al., 2020</a>).</p>
+          <p>At <strong>Meridian Commerce</strong>, the Customer Support assistant answers “Can I return this jacket after 45 days?” by retrieving chunks from policy PDFs, Zendesk macros, and resolved ticket threads — not by hoping the base model memorized Meridian’s return windows.</p>
+          <p>The diagram’s two halves match production RAG. The <strong>indexing pipeline</strong> (offline) flows from <em>Document Sources</em> through the <em>Document Processor</em> and <em>Chunking Strategy</em>, then through embedding and the vector database (see the text fallback for embedding, ANN index, and metadata). The <strong>query pipeline</strong> (online) embeds the shopper’s question, runs ANN search, optionally re-ranks, assembles a prompt with retrieved chunks, and calls the LLM — the same retrieve→augment→generate loop Azure OpenAI documents for grounding on your own data (<a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/use-your-data" rel="noopener noreferrer" target="_blank">Azure OpenAI “use your data”</a>).</p>
+          <p>Meridian adds <strong>hybrid search</strong> (dense vectors plus BM25 over policy titles), a cross-encoder <strong>re-ranker</strong> on the top-K hits, and metadata filters (region, product line) so agents only see authorized snippets.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>LLMs have a fixed knowledge cutoff date — they don't know about events that occurred after their training data was collected. They also don't have access to private enterprise data (internal documents, proprietary databases, customer records). Extending an LLM's knowledge by retraining or fine-tuning on new data is prohibitively expensive and time-consuming for most organizations. RAG provides a cost-effective alternative: the model's parametric knowledge stays fixed, but it is augmented at inference time with retrieved information that is always current.</p>
-          <p>LLMs also hallucinate — they generate plausible-sounding but factually incorrect statements when operating purely from their parametric memory, especially for specific facts, figures, and citations. RAG grounds generation in retrieved source documents, dramatically reducing hallucination on verifiable factual questions and providing the ability to cite sources. When the retrieval step returns relevant, accurate documents, the LLM acts more as a synthesizer and formatter of that information than as a memory recall mechanism.</p>
-          <p>Fine-tuning an LLM on domain-specific data changes the model's behavior broadly but doesn't give it the ability to provide specific, current answers with citations. Fine-tuning is most effective for adapting the model's style, format, and domain vocabulary, not for injecting large amounts of factual knowledge. RAG and fine-tuning are complementary: fine-tune for style and domain adaptation, use RAG for grounded knowledge retrieval.</p>
+          <p>Meridian’s support LLM once quoted a 30-day return policy that marketing had extended to 60 days — the model was confident and wrong. Policy PDFs, carrier SLAs, and SKU-specific warranty tables change weekly; retraining a chat model on every merchandising edit is not viable.</p>
+          <p>RAG keeps the generator’s weights stable while injecting fresh evidence per request, which is exactly the non-parametric memory Lewis et al. targeted for knowledge-intensive QA. When retrieval returns the right policy clause, the model synthesizes and cites; when retrieval misses, Meridian can abstain or escalate instead of inventing policy.</p>
+          <p>Fine-tuning still helps Meridian’s tone (“friendly, brief, no legalese”) and output shape, but factual answers about returns, recalls, and loyalty tiers belong in the indexed knowledge base, not in weights.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Question-answering over a large private document corpus (internal knowledge bases, documentation, legal documents, support tickets).</li>
-            <li>Applications that require up-to-date information beyond the LLM's training cutoff (news, recent research papers, product catalogs).</li>
-            <li>Use cases where citations and source attribution are required — RAG can return the exact passages that informed a response.</li>
-            <li>Reducing hallucination in factual question-answering by grounding the model's responses in retrieved evidence.</li>
-            <li>Cost-effective knowledge expansion for domain-specific applications without the expense of continuous full retraining.</li>
+            <li>Meridian-style Q&amp;A over private corpora: support playbooks, compliance addenda, and internal runbooks that must not leak into public model training.</li>
+            <li>Answers that must reflect <em>today’s</em> catalog and policy state — return windows, recall notices, shipping embargoes — without a model redeploy.</li>
+            <li>Experiences that require <strong>grounding citations</strong> (chunk IDs, article URLs) for QA auditing and chargeback disputes.</li>
+            <li>Reducing hallucinated policy language when agents paraphrase retrieved text instead of free-generating from parametric memory.</li>
+            <li>Incrementally onboarding new document sets (e.g., a acquired brand’s warranties) by re-indexing only the delta.</li>
           </ul>
 
-          <h2 id="when-not-to-use">When NOT to use</h2>
+          <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Tasks that are purely generative and don't require factual grounding — creative writing, summarization of provided text, code generation — where retrieval adds latency without benefit.</li>
-            <li>When the knowledge base is small enough (&lt;100 documents) to fit entirely in a long-context LLM's context window — full context may outperform retrieval.</li>
-            <li>When the query is highly ambiguous or requires multi-hop reasoning across many documents — retrieval quality degrades quickly for complex queries without sophisticated re-ranking and query decomposition.</li>
+            <li>Purely generative tasks with no factual lookup — marketing taglines, email rewrites of text the user already pasted — where retrieval only adds latency.</li>
+            <li>Tiny, static policy sets that fit comfortably in a long-context prompt with room for chat history; measure before building an index.</li>
+            <li>Multi-hop questions (“compare my last three orders’ return eligibility”) unless Meridian invests in query decomposition or tool calls beyond single-round ANN retrieval.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Meridian’s support RAG maps directly onto the diagram: SharePoint policies and Zendesk exports feed the offline processor and chunker; Azure OpenAI embeddings write to the catalog-backed vector index; live chats embed the question, retrieve, re-rank, then call chat completions with a grounded system prompt.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     document_sources["Document Sources"]
@@ -206,7 +208,7 @@
  └──────────────────────────────────────────────────────┘
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Meridian support RAG: offline document processor and chunker feed embeddings into the vector index; online path embeds the question, retrieves, optionally re-ranks, assembles a grounded prompt, and generates (see text fallback for full query pipeline).</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -214,53 +216,54 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Grounds LLM responses in retrieved factual evidence, substantially reducing hallucination for knowledge-intensive question-answering.</li>
-                <li>Enables LLMs to answer questions about private, proprietary, or recent data without retraining or fine-tuning the model.</li>
-                <li>Knowledge updates (new documents) are as simple as re-indexing the new content — no model retraining required.</li>
-                <li>Source attribution is a natural output — the retrieved chunks serve as citations, which is critical for trust, auditing, and compliance.</li>
+                <li>Meridian agents answer from retrieved policy clauses, cutting hallucinated return windows and warranty terms.</li>
+                <li>Legal publishes a revised EU refund addendum; support sees it after incremental indexing — no model fine-tune.</li>
+                <li>Each answer can attach chunk IDs and SharePoint links for dispute review and supervisor coaching.</li>
+                <li>Hybrid retrieval catches both SKU numbers (BM25) and paraphrased customer complaints (dense vectors).</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Retrieval quality is the primary determinant of RAG system quality — if the retrieval step returns irrelevant chunks, the LLM cannot generate a good answer regardless of its capabilities.</li>
-                <li>Chunking strategy significantly affects both retrieval precision and the coherence of retrieved context; there is no universally optimal chunking approach.</li>
-                <li>Adds latency to every request: embedding the query, performing ANN search, and (if re-ranking) scoring candidates all happen in the critical path before generation even begins.</li>
-                <li>Multi-hop reasoning questions that require synthesizing information across many documents are poorly served by single-round retrieval without query decomposition.</li>
+                <li>If ANN search returns the wrong macro, the LLM confidently misstates policy — retrieval quality dominates outcome.</li>
+                <li>Chunking 512-token slices through tables splits “45-day footwear exception” from its footnote; recall suffers.</li>
+                <li>Every chat pays embed + search + optional re-rank latency before the first token streams.</li>
+                <li>“Why was order 8842 ineligible?” needs Order data tools, not one vector lookup over PDFs alone.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Chunking strategy has an outsized impact on retrieval quality and is often underestimated. Fixed-size chunking (e.g., 512 tokens with 50-token overlap) is simple but can split sentences and break semantic coherence. Sentence-boundary or paragraph-boundary chunking preserves semantic units but produces variable-length chunks. Hierarchical chunking (storing both fine-grained and coarse-grained representations) supports a "small-to-big" retrieval strategy where small chunks are retrieved for precision but larger surrounding context is passed to the LLM.</p>
-          <p>The optimal chunk size is use-case dependent — experiment empirically using retrieval evaluation metrics (MRR, NDCG, recall@K) on a representative question set.</p>
-          <p>Embed both the query and the chunks using the same embedding model, and be aware that embedding models have their own context length limits (typically 512–8192 tokens). If chunks exceed the embedding model's context window, they will be silently truncated, degrading retrieval quality for long passages. Evaluate embedding models on your specific domain and language — general-purpose models may underperform on highly technical domains. Domain-specific fine-tuned embedding models (available for legal, medical, and code domains) often significantly outperform general-purpose embeddings.</p>
-          <p>Implement a retrieval evaluation framework before deploying to production. Create a "golden dataset" of 100-200 representative questions paired with the expected source documents. Measure recall@K (what fraction of expected source documents appear in the top-K retrieved chunks) and MRR (mean reciprocal rank) against this dataset for each configuration change. Without quantitative retrieval evaluation, teams end up guessing at chunk sizes, overlap, and embedding models rather than making evidence-based choices.</p>
-          <p>LlamaIndex and LangChain both include evaluation utilities for this purpose.</p>
+          <p><strong>Chunking:</strong> Meridian chunks help articles on section boundaries with modest overlap so recall notices stay whole. Hierarchical parent/child IDs let retrieval hit a precise span but pass surrounding context into <em>Prompt Assembly</em>.</p>
+          <p><strong>Embeddings:</strong> Index and query share one Azure OpenAI embedding deployment (same model version and dimensions); mismatched models break ANN semantics. Cap chunk length below the embedding model’s context limit so warranty tables are not silently truncated.</p>
+          <p><strong>Grounded generation:</strong> The assembled prompt follows Azure’s pattern — system instructions to answer only from supplied context, user question last — with <code>temperature</code> low for policy extracts (<a href="https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/prompt-engineering" rel="noopener noreferrer" target="_blank">Azure OpenAI prompt engineering</a>).</p>
+          <p><strong>Evaluation:</strong> Support maintains a golden question set with expected source doc IDs; CI tracks retrieval recall and answer faithfulness when chunking or embedding settings change.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Lost in the middle:</strong> LLMs are known to underweight information in the middle of a long context, attending more to the beginning and end. If the most relevant chunk is ranked fifth of ten and placed in the middle of the prompt, the model may ignore it. Reranking to surface the most relevant chunks first and limiting context to the top 3-5 chunks mitigates this.</li>
-            <li><strong>Semantic mismatch between query and indexed content:</strong> User questions use different vocabulary than the indexed documents (e.g., users ask about "heart attack" but documents use "myocardial infarction"). Hybrid search (combining dense retrieval with BM25 keyword matching) and query expansion techniques address vocabulary mismatch.</li>
-            <li><strong>Stale index:</strong> Documents are updated or deleted in the source system but the vector index is not updated accordingly, causing the LLM to cite outdated or retracted information. Implement incremental indexing with source change detection and TTL-based re-indexing for mutable document sources.</li>
-            <li><strong>Context window overflow:</strong> Retrieving too many chunks or overly large chunks fills the LLM's context window, truncating either the retrieved context or the original question. Always calculate the token count of the assembled prompt before sending to the LLM and implement a dynamic chunk count limit based on available context tokens.</li>
+            <li><strong>Lost in the middle:</strong> Ten policy chunks bury the footwear exception; Meridian re-ranks to three snippets and places the highest-scoring chunk first in the prompt.</li>
+            <li><strong>Vocabulary mismatch:</strong> Shoppers say “free delivery”; docs say “complimentary shipping.” Hybrid BM25 + dense retrieval plus synonym tables in the processor reduce misses.</li>
+            <li><strong>Stale index:</strong> A recalled blender SKU still appears in vectors after the safety bulletin is pulled; change-feed indexing and tombstone deletes on doc removal are required.</li>
+            <li><strong>Context overflow:</strong> Pasting entire warranty PDFs fills the context window; dynamic top-N and token budgeting before chat completions prevent silent truncation.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>What chunking strategy and chunk size will you use, and have you evaluated retrieval quality metrics against a golden dataset?</li>
-            <li>Which embedding model is appropriate for your domain — general-purpose or domain-fine-tuned?</li>
-            <li>Is hybrid search (dense + BM25) necessary to handle vocabulary mismatch in your corpus?</li>
-            <li>Do you need a re-ranking step, and have you measured its latency impact against the improvement in answer quality?</li>
-            <li>How will you handle document updates and deletions in the source — is incremental indexing implemented?</li>
-            <li>Is there a retrieval evaluation framework to objectively measure and improve retrieval quality over time?</li>
+            <li>Is chunk size validated on Meridian’s golden support questions (recall@K, not guesswork)?</li>
+            <li>Do indexing and query paths call the same embedding model version?</li>
+            <li>Is hybrid search required for SKU codes, regulation numbers, and policy section labels?</li>
+            <li>Does the cross-encoder re-ranker earn its p95 latency budget on supervisor-reviewed chats?</li>
+            <li>Are SharePoint/Zendesk updates reflected incrementally with delete semantics?</li>
+            <li>Can support auditors trace each answer to retrieved chunk IDs?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
+          <p>Meridian’s <strong>Customer Support assistant</strong> is the reference RAG story:</p>
           <ul>
-            <li><strong>Internal knowledge base assistant:</strong> Indexes Confluence pages, engineering runbooks, and Slack archives; answers employee questions about internal processes with citations to the exact pages, updated whenever documents are edited.</li>
-            <li><strong>Legal contract analysis:</strong> Ingests thousands of contracts; lawyers ask questions like "which contracts contain automatic renewal clauses with less than 30 days notice?"; retrieval surfaces the relevant contract sections; the LLM extracts and summarizes the relevant clause text.</li>
-            <li><strong>Technical support chatbot:</strong> Indexes product documentation, known issue articles, and support ticket histories; hybrid retrieval handles both precise keyword queries and semantically fuzzy user descriptions of problems; re-ranker ensures the most relevant articles are surfaced first.</li>
+            <li><strong>Indexing:</strong> Nightly jobs pull policy PDFs, carrier guides, and anonymized ticket resolutions through the document processor and chunker, embed with Azure OpenAI, and upsert into the vector database with <code>region</code> and <code>product_line</code> metadata.</li>
+            <li><strong>Live chat:</strong> “Can I exchange worn boots?” → query embedding → ANN top-20 → re-ranker → prompt assembly → grounded reply citing the footwear hygiene clause.</li>
+            <li><strong>Supervisor review:</strong> Escalations attach the same retrieved chunks agents saw, so QA scores grounding rather than prose polish alone.</li>
+            <li><strong>Recall spike:</strong> Compliance uploads a bulletin; incremental index within minutes; the assistant stops citing superseded return language from parametric memory.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -273,10 +276,10 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://arxiv.org/abs/2005.11401" rel="noopener noreferrer" target="_blank">Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks – Lewis et al. (original RAG paper)</a></li>
-            <li><a href="https://docs.llamaindex.ai/en/stable/" rel="noopener noreferrer" target="_blank">LlamaIndex Documentation – Building RAG Applications</a></li>
-            <li><a href="https://python.langchain.com/docs/use_cases/question_answering/" rel="noopener noreferrer" target="_blank">LangChain – Question Answering over Documents</a></li>
-            <li><a href="https://www.pinecone.io/learn/retrieval-augmented-generation/" rel="noopener noreferrer" target="_blank">Retrieval Augmented Generation – Pinecone Learning Center</a></li>
+            <li><a href="https://arxiv.org/abs/2005.11401" rel="noopener noreferrer" target="_blank">Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks – Lewis et al.</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/use-your-data" rel="noopener noreferrer" target="_blank">Azure OpenAI – Add your data / grounding patterns</a></li>
+            <li><a href="https://docs.llamaindex.ai/en/stable/" rel="noopener noreferrer" target="_blank">LlamaIndex – RAG evaluation utilities</a></li>
+            <li><a href="https://python.langchain.com/docs/use_cases/question_answering/" rel="noopener noreferrer" target="_blank">LangChain – Question answering over documents</a></li>
           </ul>
         </div>
         </div>
@@ -288,7 +291,7 @@
               <li><a href="#what-it-is">What it is</a></li>
               <li><a href="#why-it-exists">Why it exists</a></li>
               <li><a href="#when-to-use">When to use</a></li>
-              <li><a href="#when-not-to-use">When NOT to use</a></li>
+              <li><a href="#when-not-to-use">When not to use</a></li>
               <li><a href="#typical-architecture">Typical architecture</a></li>
               <li><a href="#pros-and-cons">Pros and cons</a></li>
               <li><a href="#implementation-notes">Implementation notes</a></li>

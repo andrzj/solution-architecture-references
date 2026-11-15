@@ -104,15 +104,25 @@
         </div>
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
-          
+          <p><strong>Meridian Commerce</strong> trains its product ranker through a declarative pipeline: snapshot labeled impressions, prepare point-in-time features from the offline store, train a learning-to-rank model, evaluate on held-out weeks, and register the artifact only if metrics beat the production baseline. Each step caches outputs so a hyperparameter tweak does not recompute the entire feature matrix.</p>
+          <p>The pipeline is the contract between data science and platform — not a one-off notebook — which matches Google’s guidance to make training repeatable and to version the data that produced each model.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Manual training runs are not reproducible and do not scale to large data or GPU clusters. Pipelines encode hyperparameters, data snapshots, and evaluation gates.</p>
+          <p>Meridian scientists used to run training on whichever laptop had a GPU; two “identical” rankers diverged because feature SQL and library versions differed. Offline NDCG could not be trusted when explaining a bad release.</p>
+          <p>Automated pipelines pin data snapshots, container images, and evaluation gates so Merchandising can promote or reject a run on evidence. That reduces the hidden pipeline debt Sculley et al. describe when ad hoc scripts become production without tests or lineage.</p>
           <h2 id="when-to-use">When to use</h2>
-          <ul><li>Deep learning at multi-GPU scale.</li><li>Frequent retraining from new data.</li><li>Need audit trail of training data version.</li><li>Hyperparameter search at scale.</li></ul>
+          <ul>
+            <li>Use a training pipeline when Meridian retrains ranking models on growing click and purchase logs more than occasionally.</li>
+            <li>Use it when feature prep is expensive and should be cached between training experiments.</li>
+            <li>Use it when registry promotion requires the same holdout protocol every time.</li>
+            <li>Use it when distributed training or GPU pools need queueing and retry semantics.</li>
+          </ul>
           <h2 id="when-not-to-use">When not to use</h2>
-          <ul><li>Tiny sklearn models on a laptop.</li></ul>
+          <ul>
+            <li>Skip a pipeline for a one-time exploratory fit on a sample CSV that will not reach production.</li>
+            <li>Skip orchestration when a small linear baseline trains in seconds and Merchandising only needs a sanity check.</li>
+          </ul>
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Declarative pipeline steps with cached artifacts.</p>
+          <p>Meridian’s ranker pipeline follows the diagram: <strong>Snapshot</strong> freezes an impression–label table; <strong>Prep</strong> joins features at event time; <strong>Train</strong> runs distributed boosting or neural ranker code; <strong>Eval</strong> computes NDCG and slice metrics; <strong>Register artifact</strong> writes to the model registry when gates pass.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     snapshot["Snapshot"]
@@ -133,25 +143,57 @@
           </figure>
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul><li>Reproducibility.</li><li>Parallel sweeps.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul><li>GPU cost management.</li><li>Debugging distributed failures.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3>
+              <ul>
+                <li>Meridian replays the exact ranking run that served Black Friday after an incident because snapshot ID and git SHA are stored with the artifact.</li>
+                <li>Cached prep lets scientists sweep learning rates without re-scanning the full lake.</li>
+                <li>Evaluation gates stop worse models from reaching the registry even when someone misreads a notebook chart.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3>
+              <ul>
+                <li>Pipeline YAML and container builds add upfront work before the first successful ranker promotion.</li>
+                <li>Spot GPU preemption can waste hours unless checkpointing and resume are built in.</li>
+                <li>Distributed training failures are harder to debug than single-machine notebooks.</li>
+              </ul>
+            </div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Pin data snapshots and library versions; store manifests with each artifact. Checkpoint frequently to object storage; use spot instances with preemptible handling. Gate promotion on holdout metrics and bias tests.</p>
+          <p><strong>Pin inputs:</strong> Meridian records impression table partition hash, feature store revision, and dependency lockfile on every run manifest.</p>
+          <p><strong>Point-in-time joins:</strong> Prep pulls user and SKU features as of impression time only — Google’s Rules of ML stress testing this before trusting offline metrics.</p>
+          <p><strong>Checkpoint object storage:</strong> Long neural ranker jobs write checkpoints every N steps and resume after preemption on spot GPUs.</p>
+          <p><strong>Promotion gate:</strong> Eval must beat production NDCG@10 on desktop and mobile slices and pass fairness checks on price bands before register step succeeds.</p>
           
           <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul><li><strong>Data leakage in splits:</strong> Inflated offline metrics.</li><li><strong>Checkpoint corruption:</strong> Lost weeks of GPU time.</li></ul>
+          <ul>
+            <li><strong>Data leakage in splits:</strong> Future clicks leaked into labels and inflated NDCG; enforce strict time-based splits and point-in-time feature joins.</li>
+            <li><strong>Stale cache reuse:</strong> A scientist changed feature SQL but the prep step reused cache; bump cache keys when transform version changes.</li>
+            <li><strong>Checkpoint corruption:</strong> Partial writes after preemption lost a day of GPU; verify checksums before resume and keep the prior checkpoint.</li>
+            <li><strong>Skipping eval:</strong> A run registered manually without slice metrics; block registry writes unless the eval step completes.</li>
+          </ul>
           <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist"><li>Is training data hash recorded with the model?</li><li>Can you rerun the exact pipeline for an incident?</li><li>Are GPUs autoscaled down when queue empty?</li></ul>
+          <ul class="checklist">
+            <li>Does every Meridian ranking artifact record the training data hash and feature revision?</li>
+            <li>Can operators re-trigger the same pipeline version and inputs for an incident replay?</li>
+            <li>Does the training cluster scale down when the pipeline queue is empty?</li>
+            <li>Do evaluation gates run automatically before registry promotion?</li>
+          </ul>
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul><li><strong>Vision classifier:</strong> Kubeflow pipeline trains on nightly labeled images; registers only if mAP improves.</li></ul>
+          <p>Meridian automated training for product ranking:</p>
+          <ul>
+            <li>At 02:00 UTC a scheduler starts the pipeline on yesterday’s impression snapshot from the lake.</li>
+            <li>Prep materializes training tensors from the offline feature store; train fits a new ranker on a GPU pool; eval compares to the registry’s production metrics.</li>
+            <li>A passing run registers <code>ranker/2025-03-12</code>; MLOps promotes it through staging shadow traffic before the storefront serving tier pulls the tag.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="training-pipelines.html">Training Pipelines</a></li><li><a href="mlops.html">MLOps</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
+            <li><a href="https://developers.google.com/machine-learning/guides/rules-of-ml" target="_blank" rel="noopener noreferrer">Rules of ML – Google</a></li>
             <li><a href="https://www.kubeflow.org/docs/components/pipelines/" target="_blank" rel="noopener noreferrer">Kubeflow Pipelines</a></li>
-            <li><a href="https://pytorch.org/tutorials/intermediate/ddp_tutorial.html" target="_blank" rel="noopener noreferrer">PyTorch distributed</a></li>
-            <li><a href="https://ml-ops.org/" target="_blank" rel="noopener noreferrer">MLOps community resources</a></li>
+            <li><a href="https://cloud.google.com/architecture/mlops-continuous-delivery-and-automation-pipelines-in-machine-learning" target="_blank" rel="noopener noreferrer">MLOps: Continuous delivery and automation pipelines – Google Cloud</a></li>
+            <li><a href="https://proceedings.neurips.cc/paper_files/paper/2015/file/86df7dcfd896fcaf2674f757a2463eba-Paper.pdf" target="_blank" rel="noopener noreferrer">Hidden Technical Debt in Machine Learning Systems – Sculley et al.</a></li>
+            <li><a href="https://pytorch.org/tutorials/intermediate/ddp_tutorial.html" target="_blank" rel="noopener noreferrer">PyTorch Distributed Data Parallel tutorial</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
