@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Shared Database — SA References</title>
-  <meta name="description" content="Multiple services directly accessing the same database, creating hidden coupling.">
+  <meta name="description" content="Shared database anti-pattern: multiple services coupling through one schema, migration deadlocks, and database-per-service remediation.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,115 +99,50 @@
             <span class="badge badge--primary">Anti-Patterns</span>
           </div>
           <h1 class="article-header__title">Shared Database</h1>
-          <p class="article-header__desc">Multiple services directly accessing the same database, creating hidden coupling.</p>
+          <p class="article-header__desc">Multiple microservices reading and writing the same database—recreating monolith coupling with higher operational cost.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>The <strong>Shared Database</strong> anti-pattern appears when two or more services or applications read and write the same database schema as if it were a shared integration layer. On paper the system is split into services. In practice, teams still coordinate through tables, views, and stored procedures that everyone owns and nobody owns at once.</p>
-          <p>Microsoft and others document this as integration through the database: the DB becomes the message bus, the contract repository, and the coupling point. It is one of the fastest ways to build a <a href="distributed-monolith.html">distributed monolith</a>.</p>
-
+<h2 id="what-it-is">What it is</h2>
+          <p><strong>Shared Database</strong> is the pattern to use when several services have read/write access to the same tables or views. The <strong>shared database</strong> anti-pattern places multiple services’ logic against a single database schema (or a tightly coupled set of schemas). Services are “independent” only at the deployment layer; at the persistence layer they remain one coupled application. Schema changes require multi-team coordination, transactions span service boundaries through the database, and no team can evolve its domain data model safely on its own.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Teams reach for a shared database for understandable reasons. A single schema is easy to query with SQL joins. Reporting wants one source of truth. Migrations from a legacy monolith often leave one database in place while code is split into deployable units. Short deadlines make “we will fix boundaries later” tempting.</p>
-          <p>The pain shows up later. Schema changes require cross-team agreement. One service’s migration can break another at runtime. Performance tuning becomes political: indexes that help one consumer hurt another. Independence—the main reason to adopt services—never arrives.</p>
-
-          <h2 id="when-to-use">When you see it</h2>
-          <ul>
-            <li>Multiple repositories deploy separately but connect to the same production database or schema.</li>
-            <li>Services bypass APIs and read “foreign” tables owned by another team.</li>
-            <li>Database triggers or batch jobs synchronize state that should be owned by a single boundary.</li>
-            <li>Release notes routinely say “deploy Service A and B together because of schema change X.”</li>
-            <li>ORM models for another team’s tables are copied or linked through a shared library.</li>
-          </ul>
-
-          <h2 id="when-not-to-use">When it is (briefly) acceptable</h2>
-          <ul>
-            <li>During a time-boxed strangler migration: one database only while you carve out true service-owned stores.</li>
-            <li>For read-only replicas or analytics sandboxes that never write back to the operational schema.</li>
-            <li>Inside a <strong>modular monolith</strong> where one team owns the entire database and deployment unit.</li>
-          </ul>
-          <p>Even then, treat shared access as debt with a written exit plan—not as the target architecture.</p>
-
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Each “service” talks to the same logical database. Cross-domain rules leak into SQL, and deployment independence is an illusion.</p>
+          <p>Teams reach for a shared database to avoid data synchronization, duplicate storage, or short-term delivery pressure (“we’ll split the data later”). ORM models and SQL views make cross-service reads deceptively easy. The database becomes the hidden integration bus—faster initially than events or APIs, but far more expensive to unwind.</p>
+          <h2 id="when-to-use">How it manifests</h2>
+          <ul><li>Several services have read/write access to the same tables or views.</li><li>Schema migrations require a multi-team change advisory board for routine ALTERs.</li><li>Foreign keys or triggers tie rows owned by different business capabilities.</li><li>Services use shared ORM packages that embed the full enterprise schema.</li></ul>
+          <h2 id="when-not-to-use">How to recognize it early</h2>
+          <ul><li>A read replica used strictly for analytics with no writer access is not this anti-pattern.</li><li>A deliberately shared operational datastore with a single owning team (true modular monolith) is a different architecture choice.</li></ul>
+          <h2 id="typical-architecture">Typical manifestation</h2>
+          <p>Services remain logically independent only above the JDBC connection string.</p>
           <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>  Client ──► API Gateway ──┬──► Order Service ────┐
-                           │                        │
-                           ├──► Inventory Service ─┼──►  SHARED OLTP DATABASE
-                           │                        │      (orders, stock,
-                           └──► Billing Service ─────┘       customers, …)
-                                        ▲
-                                        │
-                                 nightly ETL / reports
-                                        │
-                                   BI dashboards
-
-  Hidden coupling:
-  • Inventory UPDATE triggers order status change
-  • Billing JOINs orders + customers directly
-  • All teams share one migration pipeline</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Shared database anti-pattern: independently deployed services with one operational schema and cross-table dependencies.</figcaption>
+          <pre class="architecture-diagram__canvas"><code>Order Svc ──write──►┌─────────────────────┐◄──write── Inventory Svc
+  Billing Svc ─write──►│   SHARED DATABASE   │◄──write── Reporting Svc
+                      │ orders│inventory│users│
+                      └─────────────────────┘
+         joins across service boundaries in SQL views
+</code></pre>
+          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show flow.</figcaption>
           </figure>
-
-          <h2 id="pros-and-cons">Pros and cons</h2>
+          <h2 id="pros-and-cons">Consequences and remediation</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Why teams keep it</h3>
-              <ul>
-                <li>Fast to ship early: familiar SQL, existing DBAs, one backup strategy.</li>
-                <li>Ad-hoc reporting with joins across domains.</li>
-                <li>No need to design events or APIs for every read path yet.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Long-term costs</h3>
-              <ul>
-                <li>Cannot evolve schemas independently; every change is a multi-team release.</li>
-                <li>Blast radius of bad queries or locks spans the whole platform.</li>
-                <li>Ownership blur: nobody can enforce invariants at the service boundary.</li>
-                <li>Scaling write load on one domain stresses everyone on the same instance.</li>
-              </ul>
-            </div>
+            <div class="pros-cons__col pros-cons__col--pros"><h3>Consequences</h3><ul><li>Coupled release trains for schema and application changes.</li><li>Blast-radius incidents: one slow query or lock affects all services.</li><li>Unable to scale or partition data per domain.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--cons"><h3>Remediation</h3><ul><li>Database per service with clear write ownership.</li><li>CDC or domain events to replicate read models across contexts.</li><li>Anti-corruption layers at API boundaries during migration.</li></ul></div>
           </div>
-
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Remediate in small steps. Give each bounded context its own database (or schema with hard network isolation). Replace cross-table reads with APIs or replicated read models. Use change-data capture or domain events to publish facts other contexts need—do not grant them write access.</p>
-          <p>Where you must share data temporarily, use explicit views or replication consumers with contracts, not ad hoc table access. Track progress with architecture decision records so “temporary” does not become permanent.</p>
-
-          <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul>
-            <li><strong>Schema lock-in:</strong> fear of breaking consumers freezes migrations until emergency firefights.</li>
-            <li><strong>Silent cross-writes:</strong> two services update the same row without a single transactional owner.</li>
-            <li><strong>Reporting-driven OLTP abuse:</strong> heavy analytics queries run on the operational database.</li>
-            <li><strong>Shared ORM package:</strong> domain entities ship as a library, recreating compile-time monolith coupling.</li>
-          </ul>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Does each production service have credentials that can reach only its own schema?</li>
-            <li>Can any service deploy a schema change without another team’s code going live the same day?</li>
-            <li>Are cross-context reads served by APIs or materialized views—not direct table access?</li>
-            <li>Is there a dated plan to retire shared-database access left from the monolith?</li>
-          </ul>
-
+          <p>Migrate incrementally: stop new cross-table writes first, then move writers behind service-owned schemas. Use strangler fig on the busiest tables. Pair every extraction with contract tests on emitted events. Track coupling metrics: count of cross-service FKs and shared migrations per month.</p>
+          
+          <h2 id="common-failure-modes">Escalation patterns</h2>
+          <ul><li><strong>Dual-write periods:</strong> Two services write the same logical entity during migration—define source of truth per field.</li><li><strong>Reporting exceptions:</strong> BI teams bypass services with direct SQL, re-coupling analytics to operational schemas—provide curated marts instead.</li></ul>
+          <h2 id="decision-checklist">Diagnostic checklist</h2>
+          <ul class="checklist"><li>Does each table have exactly one owning write service?</li><li>Can you deploy service A without migrating schemas owned by service B?</li><li>Are cross-context reads served from replicas or events—not primary OLTP tables?</li></ul>
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul>
-            <li><strong>Retail split:</strong> Order and catalog services shared Postgres; a catalog price column rename broke checkout until both apps rolled back together.</li>
-            <li><strong>Healthcare SaaS:</strong> Scheduling and billing services read the same patient table; a privacy column addition violated billing’s assumptions and halted claims for a week.</li>
-          </ul>
-
+          <ul><li><strong>Distributed order flow:</strong> Order, Payment, and Shipment services shared an <code>orders</code> table; a nullable column added for payments broke shipment batch jobs until all three deployed together.</li></ul>
           <h2 id="related-patterns">Related patterns</h2>
-          <ul>
-            <li><a href="distributed-monolith.html">Distributed Monolith</a> — the usual outcome of shared data plus synchronous calls.</li>
-            <li><a href="../data-architecture/database-per-service.html">Database per Service</a> — the target pattern for service-owned data.</li>
-            <li><a href="../architecture-styles/modular-monolith.html">Modular Monolith</a> — when one team truly owns one database.</li>
-          </ul>
-
+          <ul><li><a href="distributed-monolith.html">Distributed Monolith</a></li><li><a href="../data-architecture/database-per-service.html">Database per Service</a></li><li><a href="../integration/change-data-capture.html">Change Data Capture</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/design-principles/microservices#data-ownership" target="_blank" rel="noopener noreferrer">Azure Architecture Center — Data ownership in microservices</a></li>
-            <li><a href="https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-decomposing-monoliths/decomposition-patterns.html" target="_blank" rel="noopener noreferrer">AWS — Decomposition patterns when breaking up monoliths</a></li>
-            <li><a href="https://martinfowler.com/bliki/IntegrationDatabase.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Integration Database</a></li>
+            <li><a href="https://martinfowler.com/bliki/IntegrationDatabase.html" target="_blank" rel="noopener noreferrer">Integration Database antipattern</a></li>
+            <li><a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">Database per service</a></li>
+            <li><a href="https://martinfowler.com/ieeeSoftware/whenUseAndWhenNot.pdf" target="_blank" rel="noopener noreferrer">When to use and not use patterns — Martin Fowler</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
@@ -219,16 +154,16 @@
           <div class="toc__title">On this page</div>
           <ul class="toc__list">
             <li><a href="#what-it-is" class="toc__link">What it is</a></li>
-            <li><a href="#why-it-exists" class="toc__link">Why it exists</a></li>
-            <li><a href="#when-to-use" class="toc__link">When to use</a></li>
-            <li><a href="#when-not-to-use" class="toc__link">When not to use</a></li>
-            <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
-            <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
-            <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
-            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
-            <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
-            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
-            <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
+            <li><a href="#why-it-exists" class="toc__link">Why it emerges</a></li>
+            <li><a href="#when-to-use" class="toc__link">How it manifests</a></li>
+            <li><a href="#when-not-to-use" class="toc__link">How to recognize it early</a></li>
+            <li><a href="#typical-architecture" class="toc__link">Typical manifestation</a></li>
+            <li><a href="#pros-and-cons" class="toc__link">Consequences and remediation</a></li>
+            <li><a href="#implementation-notes" class="toc__link">Detailed analysis</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Escalation patterns</a></li>
+            <li><a href="#decision-checklist" class="toc__link">Diagnostic checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Real-world examples</a></li>
+            <li><a href="#related-patterns" class="toc__link">Related anti-patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
           </ul>
         </nav>
