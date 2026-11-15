@@ -104,72 +104,95 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Active-Active Architecture is a key concept in cloud architecture. This article covers the core principles, implementation patterns, and best practices.</p>
-
+          <p><strong>Active-Active Architecture</strong> is the pattern to use when revenue-critical services with near-zero downtime targets and budget for duplicate capacity. An <strong>active-active</strong> deployment runs production traffic in multiple regions (or availability zones) at the same time, not merely keeping a warm standby idle. Each site has enough capacity to carry a meaningful share of load, and traffic management distributes requests across sites.</p>
+          <p>Active-active is the most expensive DR topology because you pay for full compute in each region, but it delivers the lowest RTO and often the lowest user-visible latency when paired with geo-aware routing.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Understanding active-active architecture is essential for building robust, scalable systems. The patterns and practices described here have emerged from real-world experience across many organizations.</p>
-
+          <p>Payment networks, ad exchanges, and collaboration tools cannot afford manual failover windows. Active-active keeps serving through single-region loss if traffic can shift automatically.</p>
+          <p>Products already scaling horizontally for performance often have stateless app tiers ready for active-active; the hard part is data, not compute.</p>
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When designing systems that require active-active architecture capabilities.</li>
-            <li>When evaluating architectural trade-offs in your specific context.</li>
-            <li>When onboarding team members to established practices.</li>
+            <li>Revenue-critical services with near-zero downtime targets and budget for duplicate capacity.</li>
+            <li>Globally distributed read-mostly APIs backed by databases that support multi-region reads and conflict-aware writes (Cassandra, DynamoDB, Spanner, Aurora Global).</li>
+            <li>Latency-sensitive workloads where users must hit a nearby region on every request.</li>
           </ul>
-
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>When the complexity overhead outweighs the benefit for your use case.</li>
-            <li>When simpler alternatives adequately solve the problem.</li>
+            <li>Stateful monoliths with a single-writer RDBMS — forcing active-active without redesign creates split-brain data corruption.</li>
+            <li>Low-traffic internal tools where warm standby meets RTO at a fraction of cost.</li>
           </ul>
-
           <h2 id="typical-architecture">Typical architecture</h2>
           <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>ACTIVE-ACTIVE ARCHITECTURE OVERVIEW:
-
-  ┌─────────────────────────────────────┐
-  │         Active-Active Architecture         │
-  │                                     │
-  │  Core principles and components     │
-  │  would be illustrated here          │
-  │                                     │
-  └─────────────────────────────────────┘
-</code></pre>
+          <pre class="architecture-diagram__canvas"><code>ACTIVE-ACTIVE TRAFFIC + DATA
+────────────────────────────────────────────
+  Global LB (latency / weighted)
+        ├──────────────┬──────────────┐
+        ▼              ▼              ▼
+   Region A         Region B        Region C
+   App tier         App tier        App tier
+        │              │              │
+        └──────┬───────┴───────┬──────┘
+               ▼               ▼
+        Multi-region DB   Event bus (global)
+        (leader / LWW / CRDT)</code></pre>
           <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
           </figure>
-
           <h2 id="pros-and-cons">Pros and cons</h2>
-          <h3>Advantages</h3>
-          <ul>
-            <li>Provides structured approach to solving common problems.</li>
-            <li>Enables consistent implementation across teams.</li>
-            <li>Draws on proven industry practices.</li>
-          </ul>
-          <h3>Trade-offs</h3>
-          <ul>
-            <li>Requires investment in tooling and process.</li>
-            <li>May introduce additional complexity in simple scenarios.</li>
-          </ul>
-
+          <div class="pros-cons">
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+            <li>Near-zero RTO when health checks remove a failed region automatically.</li>
+            <li>Horizontal capacity scales with user geography instead of one mega-region.</li>
+            <li>Chaos and load tests can drain a region without total outage.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+            <li>Write conflict resolution is an application concern — platform cannot hide it.</li>
+            <li>2×+ infrastructure cost versus single-region active-passive.</li>
+            <li>Requires mature observability to compare golden signals per region.</li>
+              </ul>
+            </div>
+          </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>When implementing active-active architecture, start with the core patterns and incrementally adopt more advanced techniques as your needs grow. Always validate against your specific requirements and constraints.</p>
-
+          <p>Implement <strong>idempotent APIs</strong> and design writes for eventual consistency or single-leader semantics per entity. Use correlation IDs across regions for tracing.</p>
+          <p>Automate traffic shifts: reduce weight to 0 for an unhealthy region in the load balancer or DNS policy; rehearse with synthetic failures monthly.</p>
+          <h2 id="common-failure-modes">Common failure modes</h2>
+          <ul>
+            <li><strong>Last-write-wins surprises:</strong> Two regions update the same cart concurrently; customer loses items — use entity-level versioning or merge semantics.</li>
+            <li><strong>Uneven traffic after failover:</strong> Remaining regions saturate because autoscaling lagged — pre-provision headroom or faster scaling policies.</li>
+          </ul>
+          <h2 id="decision-checklist">Decision checklist</h2>
+          <ul class="checklist">
+            <li>Is there a documented write ownership or conflict strategy per entity?</li>
+            <li>Can any single region loss be absorbed without breaching SLO?</li>
+            <li>Are deployments rolled out to all active regions with the same artifact version?</li>
+          </ul>
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>Global checkout:</strong> Three regions at 33% traffic each; DynamoDB transactions for inventory; automatic DNS shift when error rate > 5% in a region for 2 minutes.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="index.html">Cloud Architecture Overview</a> — Browse all cloud architecture articles.</li>
+            <li><a href="multi-region.html">Multi-Region Architecture</a> — Broader regional placement patterns.</li>
+            <li><a href="disaster-recovery.html">Disaster Recovery Patterns</a> — RTO/RPO comparison table.</li>
+            <li><a href="../foundations/eventual-consistency.html">Eventual Consistency</a> — Consistency models for multi-writer systems.</li>
           </ul>
-
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/" target="_blank" rel="noopener noreferrer">Martin Fowler's Architecture Guide</a></li>
-            <li><a href="https://aws.amazon.com/architecture/" target="_blank" rel="noopener noreferrer">AWS Architecture Center</a></li>
+            <li><a href="https://aws.amazon.com/blogs/architecture/disaster-recovery-dr-architecture-on-aws-part-iv-multi-site-active-active/" target="_blank" rel="noopener noreferrer">AWS — Multi-Site Active-Active</a></li>
+            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/" target="_blank" rel="noopener noreferrer">Patterns of Distributed Systems</a></li>
+            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected Framework</a></li>
           </ul>
         </div>
-        <nav class="article-nav" aria-label="Article navigation">
-          <a href="index.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Back</span><span class="article-nav__title">Cloud Architecture</span></a>
+                <nav class="article-nav" aria-label="Article navigation">
+          <a href="multi-region.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Multi-Region Architecture</span></a>
+          <a href="active-passive.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Active-Passive Architecture</span></a>
         </nav>
       </div>
       <aside class="article-aside">
-        <nav class="toc" aria-label="Table of contents">
+                <nav class="toc" aria-label="Table of contents">
           <div class="toc__title">On this page</div>
           <ul class="toc__list">
             <li><a href="#what-it-is" class="toc__link">What it is</a></li>
@@ -179,6 +202,9 @@
             <li><a href="#typical-architecture" class="toc__link">Typical architecture</a></li>
             <li><a href="#pros-and-cons" class="toc__link">Pros and cons</a></li>
             <li><a href="#implementation-notes" class="toc__link">Implementation notes</a></li>
+            <li><a href="#common-failure-modes" class="toc__link">Common failure modes</a></li>
+            <li><a href="#decision-checklist" class="toc__link">Decision checklist</a></li>
+            <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
           </ul>
