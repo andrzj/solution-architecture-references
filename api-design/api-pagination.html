@@ -100,29 +100,29 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Without pagination, a <code>GET /orders</code> endpoint might return millions of rows, causing multi-second response times, excessive memory use, and potential timeouts. Every collection endpoint that can grow unboundedly must be paginated.</p>
-          <p>The key design dimensions for a pagination strategy are: <strong>stability</strong> (does concurrent insertion/deletion corrupt the page sequence?), <strong>performance</strong> (is the database query efficient at large offsets?), <strong>bookmarkability</strong> (can a client return to an exact page?), and <strong>navigability</strong> (can the client jump to arbitrary pages or only navigate sequentially?).</p>
+          <p><strong>API pagination</strong> splits large collections into fixed-size pages so list endpoints return bounded payloads. Clients request a page size (often <code>limit</code>) and a position marker—<code>offset</code>, opaque <strong>cursor</strong>, or encoded sort-key tuple—and the server returns that slice plus navigation hints (<code>hasMore</code>, <code>nextCursor</code>, or <a href="https://www.rfc-editor.org/rfc/rfc8288" rel="noopener noreferrer" target="_blank">RFC 8288</a> <code>Link</code> headers).</p>
+          <p>Design trade-offs cluster around four dimensions: <strong>stability</strong> under concurrent inserts and deletes, <strong>query cost</strong> at depth, <strong>bookmarkability</strong> of a position, and <strong>navigability</strong> (sequential only vs jump to page <em>N</em>). Offset paging is simple but unstable and expensive at large offsets; <strong>keyset</strong> (cursor) paging seeks on indexed sort columns and scales.</p>
 
-          
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Unbounded collection responses overwhelm clients, databases, and networks. Pagination caps page size, bounds memory, and keeps latency predictable as data grows into millions of rows.</p>
+          <p>Unbounded <code>GET /orders</code> responses exhaust client memory, tie up connection pools, and force full-table scans. Pagination caps row count per round trip, keeps p95 latency predictable as tables grow to millions of rows, and gives databases a chance to use indexes instead of scanning discarded offset rows.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Every list endpoint that can grow without a fixed upper bound.</li>
-            <li>Infinite-scroll and "load more" mobile UIs (cursor or keyset pagination).</li>
-            <li>Admin grids that need stable ordering under concurrent writes (avoid naive offset).</li>
+            <li>Every collection endpoint without a hard upper bound on row count.</li>
+            <li>Infinite-scroll and “load more” UIs—prefer cursor or keyset over offset.</li>
+            <li>Admin or partner APIs where concurrent writes would shift offset-based pages.</li>
+            <li>GraphQL list fields—often modelled with the Relay connection pattern.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Small, bounded collections (configuration enums, &lt; 100 rows) where paging adds friction.</li>
-            <li>Real-time streams where consumers read events sequentially (Kafka, SSE) rather than random pages.</li>
-            <li>When clients require random access to page N of M on billion-row tables — consider search or export APIs instead of deep offset paging.</li>
+            <li>Small, bounded enumerations (&lt; 100 static values) where paging adds friction.</li>
+            <li>Event streams (Kafka, SSE, WebSocket feeds) where consumers read sequentially, not by page index.</li>
+            <li>“Page 4,201 of 4,201” on billion-row tables—offer search, filters, or async export instead of deep <code>OFFSET</code>.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Offset pagination is simple but costly at depth; cursor keyset seeks scale on indexed sort keys.</p>
+          <p>The API decodes the client’s position marker, builds a keyed <code>WHERE</code> clause on sort columns, and returns rows plus a next-page token. Offset paths scan skipped rows; cursor paths index-seek from the last seen tuple.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     off["Offset limit scans m plus n rows"]
@@ -141,10 +141,30 @@ Cursor (keyset) model:
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">LIMIT/OFFSET scans skipped rows versus decoded cursor using composite index seek.</figcaption>
           </figure>
 
-          <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Strategies (offset, cursor, keyset, tokens, Link header, Relay) and operational details follow below.</p>
+          <h2 id="pros-and-cons">Pros and cons</h2>
+          <div class="pros-cons">
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros (cursor / keyset)</h3>
+              <ul>
+                <li>Index seek cost stays near O(log&nbsp;N) regardless of list position.</li>
+                <li>Stable under concurrent inserts and deletes—no duplicate or skipped rows across pages.</li>
+                <li>Natural fit for infinite scroll and mobile “load more”.</li>
+                <li>Opaque cursors let you change encoding without breaking clients.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons (cursor / keyset)</h3>
+              <ul>
+                <li>No arbitrary “jump to page 50” without walking cursors or maintaining snapshots.</li>
+                <li>Exact total counts are expensive and stale on large tables.</li>
+                <li>Requires a stable, indexed sort key (often composite with tie-breaker <code>id</code>).</li>
+                <li>Backward pagination needs symmetric cursors or stored history.</li>
+              </ul>
+            </div>
+          </div>
 
-<h2 id="offset-limit">Offset/limit pagination</h2>
+          <h2 id="implementation-notes">Implementation notes</h2>
+          <h3 id="offset-limit">Offset/limit pagination</h3>
           <pre><code>GET /orders?offset=0&amp;limit=20   → rows 1–20
 GET /orders?offset=20&amp;limit=20  → rows 21–40
 GET /orders?offset=40&amp;limit=20  → rows 41–60
@@ -165,7 +185,7 @@ SQL equivalent:
           <p><strong>Problems:</strong> At offset 1,000,000, the database scans and discards a million rows before returning 20. As new records are inserted, records shift positions — a client on page 3 may see duplicates or skip rows compared to page 2. Total count (<code>SELECT COUNT(*)</code>) is expensive on large tables and may be inaccurate by the time the client reads it.</p>
           <p><strong>Use when:</strong> Small datasets (≤ 10,000 rows), user-visible "page N of M" navigation UIs (support portals, admin dashboards), when random page access is required.</p>
 
-          <h2 id="cursor-pagination">Cursor-based pagination</h2>
+          <h3 id="cursor-pagination">Cursor-based pagination</h3>
           <pre><code>First page:
 GET /orders?limit=20
 → {
@@ -189,7 +209,7 @@ SQL equivalent (keyset):
           <p>The cursor encodes the position of the last item seen (typically as an opaque Base64-encoded JSON blob). The server decodes the cursor and uses a keyset WHERE clause. This is O(log N) regardless of offset because it uses the index directly — no rows are scanned and discarded. New inserts don't shift existing positions.</p>
           <p><strong>Limitations:</strong> No random page access — you must traverse forward (and backward, if the API supports it). The cursor is opaque and non-bookmarkable in human-readable form. Requires a stable sort key (usually a unique ordered field or combination).</p>
 
-          <h2 id="keyset-pagination">Keyset pagination</h2>
+          <h3 id="keyset-pagination">Keyset pagination</h3>
           <p>Keyset pagination is the underlying database pattern for cursor-based APIs. Instead of <code>OFFSET N</code>, the WHERE clause uses the values of the sort columns from the last item seen:</p>
           <pre><code>-- Single sort key (simple):
 WHERE id > :last_seen_id ORDER BY id LIMIT 20
@@ -199,7 +219,7 @@ WHERE (created_at, id) < (:last_created_at, :last_id)
 ORDER BY created_at DESC, id DESC LIMIT 20</code></pre>
           <p>The composite key is necessary when <code>created_at</code> is not unique (two records created in the same millisecond). The tie-breaker (usually a unique <code>id</code>) ensures a total order. Ensure a composite index exists on <code>(created_at, id)</code> or the query will degrade to a full scan.</p>
 
-          <h2 id="page-tokens">Opaque page tokens</h2>
+          <h3 id="page-tokens">Opaque page tokens</h3>
           <p>An opaque page token (used by Google API Design Guide, Stripe, and others) is similar to a cursor but explicitly hides its encoding. The token is an opaque string from the client's perspective — its internal format may be an encrypted offset, a signed cursor JSON, or a pointer into a distributed query snapshot. This gives the server flexibility to change pagination implementation without a breaking change. Stripe, for example, encodes the last object's ID as the cursor internally but exposes it as an opaque <code>starting_after</code> parameter.</p>
           <pre><code>GET /v1/charges?limit=20
 → { "data": [...], "has_more": true, "url": "/v1/charges",
@@ -208,7 +228,7 @@ ORDER BY created_at DESC, id DESC LIMIT 20</code></pre>
 GET /v1/charges?limit=20&amp;starting_after=ch_abc123
 → next 20 charges</code></pre>
 
-          <h2 id="total-counts">Total count implications</h2>
+          <h3 id="total-counts">Total count implications</h3>
           <p><code>SELECT COUNT(*) FROM orders WHERE ...</code> is expensive on large tables without a covering index, and becomes stale immediately after execution. Avoid returning precise total counts unless the UX explicitly requires "Page 1 of 4,231". Instead:</p>
           <ul>
             <li>Return only <code>hasMore: boolean</code> (cursor model).</li>
@@ -217,7 +237,7 @@ GET /v1/charges?limit=20&amp;starting_after=ch_abc123
             <li>Set an explicit contract: "Total counts are approximate and may lag up to 30 seconds."</li>
           </ul>
 
-          <h2 id="link-header">RFC 5988 Link header</h2>
+          <h3 id="link-header">RFC 8288 Link header</h3>
           <pre><code>HTTP/1.1 200 OK
 Link: &lt;https://api.example.com/orders?cursor=abc&gt;; rel="next",
       &lt;https://api.example.com/orders&gt;; rel="first"
@@ -226,7 +246,7 @@ X-Total-Count: 1842
 [ ...items... ]</code></pre>
           <p>RFC 5988 (updated by RFC 8288) defines the <code>Link</code> HTTP header for expressing pagination links without modifying the JSON body. GitHub's API uses this pattern. It works well for body-agnostic clients and proxies. <code>rel</code> values: <code>next</code>, <code>prev</code>, <code>first</code>, <code>last</code>.</p>
 
-          <h2 id="graphql-relay">GraphQL Relay connection spec</h2>
+          <h3 id="graphql-relay">GraphQL Relay connection spec</h3>
           <pre><code>query {
   orders(first: 20, after: "cursor-abc") {
     edges {
@@ -247,39 +267,6 @@ X-Total-Count: 1842
 }</code></pre>
           <p>The Relay connection specification standardises cursor-based pagination in GraphQL. Every paginated list is a <em>connection</em> with: <code>edges</code> (array of { cursor, node }), <code>pageInfo</code> (hasNextPage, hasPreviousPage, startCursor, endCursor), and optionally <code>totalCount</code>. Arguments are <code>first</code>/<code>after</code> (forward) and <code>last</code>/<code>before</code> (backward). Most GraphQL clients and frameworks have built-in Relay connection support.</p>
 
-          <h2 id="pros-and-cons">Pros and cons</h2>
-          <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Pros</h3>
-              <ul>
-                <li>O(log N) performance regardless of position — no full table scans.</li>
-                <li>Stable under concurrent inserts/deletes — no skipped or duplicated items.</li>
-                <li>Natural fit for infinite scroll / "load more" UIs.</li>
-                <li>Scales to billions of rows.</li>
-              </ul>
-            </div>
-            <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Cons</h3>
-              <ul>
-                <li>Supports random page access ("jump to page 50").</li>
-                <li>Supports total count for "Page N of M" UIs.</li>
-                <li>Conceptually simple to implement and explain.</li>
-                <li>Works with any sort order, including non-unique fields.</li>
-              </ul>
-            </div>
-          </div>
-
-          <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist">
-            <li>Is pagination required for all collection endpoints that can grow unboundedly?</li>
-            <li>Is the maximum page size enforced server-side (e.g., limit ≤ 100)?</li>
-            <li>Is there a composite index on the sort columns used in keyset queries?</li>
-            <li>Are cursors opaque to clients (Base64-encoded or signed) to allow format changes?</li>
-            <li>Is total count avoided for large tables, or is it clearly documented as an estimate?</li>
-            <li>Does the pagination response include a <code>hasMore</code> / <code>nextCursor</code> to avoid the "last page" problem?</li>
-          </ul>
-
-          <h2 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
             <li><strong>Deep offset</strong> — <code>OFFSET 1000000</code> timeouts as tables grow.</li>
@@ -288,14 +275,25 @@ X-Total-Count: 1842
             <li><strong>Expensive COUNT(*)</strong> — total count on every page request stalls large tables.</li>
           </ul>
 
-          <h2 id="example-use-cases">Example use cases</h2>
-          <ul>
-            <li>Stripe-style cursor lists with <code>starting_after</code> for payment and customer resources.</li>
-            <li>GitHub <code>Link</code> header pagination for commits and issues.</li>
-            <li>GraphQL Relay connections with <code>first</code>/<code>after</code> on mobile feeds.</li>
+          <h2 id="decision-checklist">Decision checklist</h2>
+          <ul class="checklist">
+            <li>Is pagination required for all collection endpoints that can grow unboundedly?</li>
+            <li>Is the maximum page size enforced server-side (e.g., limit ≤ 100)?</li>
+            <li>Is there a composite index on the sort columns used in keyset queries?</li>
+            <li>Are cursors opaque to clients (Base64-encoded or signed) to allow format changes?</li>
+            <li>Is total count avoided for large tables, or is it clearly documented as an estimate?</li>
+            <li>Does the pagination response include <code>hasMore</code> / <code>nextCursor</code> to avoid the “last page” problem?</li>
           </ul>
 
-id="related-patterns">Related patterns</h2>
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> lists shipments with keyset paging on <code>(scheduled_at, id)</code>; drivers’ mobile apps pass <code>cursor</code> tokens only—no <code>OFFSET</code>—so new dispatches do not duplicate rows mid-scroll.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> exposes order history with opaque page tokens and <code>has_more</code> only; support portals use offset paging capped at 10k rows for “page N” navigation with estimated totals.</li>
+            <li><strong>Case study —</strong> Stripe lists charges with <code>starting_after</code> opaque cursors and documents that total counts are not returned on list endpoints.</li>
+            <li><strong>Case study —</strong> GitHub REST API paginates with <code>Link</code> headers (<code>rel="next"</code>) and per-page <code>per_page</code> limits.</li>
+          </ul>
+
+          <h2 id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="rest-api-design.html">REST API Design</a> — pagination is a core REST collection pattern.</li>
             <li><a href="filtering-sorting.html">API Filtering and Sorting</a> — sort keys determine which columns need keyset indexes.</li>
@@ -332,13 +330,6 @@ id="related-patterns">Related patterns</h2>
             <li><a href="#example-use-cases" class="toc__link">Example use cases</a></li>
             <li><a href="#related-patterns" class="toc__link">Related patterns</a></li>
             <li><a href="#further-reading" class="toc__link">Further reading</a></li>
-<li><a href="#offset-limit" class="toc__link">Offset/limit</a></li>
-            <li><a href="#cursor-pagination" class="toc__link">Cursor pagination</a></li>
-            <li><a href="#keyset-pagination" class="toc__link">Keyset pagination</a></li>
-            <li><a href="#page-tokens" class="toc__link">Page tokens</a></li>
-            <li><a href="#total-counts" class="toc__link">Total counts</a></li>
-            <li><a href="#link-header" class="toc__link">Link header</a></li>
-            <li><a href="#graphql-relay" class="toc__link">GraphQL Relay</a></li>
           </ul>
         </nav>
       </aside>

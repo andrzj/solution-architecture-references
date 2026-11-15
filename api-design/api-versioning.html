@@ -100,33 +100,34 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>API versioning is the practice of managing change in an API in a way that allows existing consumers to continue working while new consumers and existing consumers who opt in gain access to improvements. The core problem is that APIs are a contract between producers and consumers: once published, changes to that contract can silently break clients that were never designed to handle the new behaviour.</p>
-          <p>There are three primary versioning mechanisms for HTTP APIs, each with different trade-offs around discoverability, routing, and caching:</p>
+          <p><strong>API versioning</strong> is how you evolve an HTTP API’s contract without stranding existing clients. Published endpoints promise specific paths, fields, and behaviors; versioning introduces parallel contracts—or explicit negotiation—so old integrations keep working while new ones adopt improved shapes.</p>
+          <p>Common mechanisms differ in visibility and routing:</p>
           <ul>
-            <li><strong>URL path versioning</strong> — the version is embedded in the URI: <code>/v1/orders</code>, <code>/v2/orders</code>.</li>
-            <li><strong>Header versioning</strong> — the version is specified in a request header: <code>Accept: application/vnd.myapi.v2+json</code> (content negotiation) or a custom header: <code>API-Version: 2024-01-01</code>.</li>
-            <li><strong>Query parameter versioning</strong> — the version is a query param: <code>GET /orders?version=2</code>.</li>
+            <li><strong>URL path versioning</strong> embeds major revisions in the path, for example <code>/v1/orders</code> and <code>/v2/orders</code>.</li>
+            <li><strong>Header versioning</strong> selects representation via <code>Accept</code> vendor media types or custom headers such as <code>API-Version</code>.</li>
+            <li><strong>Query parameter versioning</strong> adds a version flag to the query string, for example <code>?version=2</code>.</li>
+            <li><strong>Date-based pinning</strong> fixes each consumer to an API behavior snapshot identified by a calendar date header.</li>
           </ul>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without versioning, any breaking change to an API immediately breaks all existing consumers. For internal services this can be managed with coordinated deployments, but for public APIs (third-party developers, mobile apps with old installs, partners) it is impossible to guarantee that all consumers upgrade simultaneously. Versioning buys time: the old version stays live while consumers migrate at their own pace.</p>
-          <p>The tension in API versioning is between the producer's desire to iterate quickly and the consumer's expectation of stability. Good versioning discipline reduces the frequency of breaking changes, communicates them clearly when unavoidable, and provides a structured sunset process.</p>
+          <p>Shipping a breaking change to an unversioned API forces every client to update immediately—unrealistic for mobile installs, partner batch jobs, and third-party plugins. Versioning keeps prior behaviors available while you publish migration guidance and sunset timelines.</p>
+          <p>Effective practice balances producer velocity with consumer stability: prefer additive, backward-compatible changes; reserve new major versions for true incompatibilities; and communicate deprecation with machine-readable headers.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Any public-facing API consumed by clients you do not fully control (third parties, mobile apps, partners).</li>
-            <li>Internal APIs where multiple teams consume the same service and cannot coordinate simultaneous upgrades.</li>
-            <li>Long-lived APIs where the data model or behaviour is expected to evolve significantly over time.</li>
+            <li>External or partner APIs where you cannot redeploy every consumer when the server changes.</li>
+            <li>Shared internal platforms consumed by many teams on independent release trains.</li>
+            <li>Long-lived product APIs whose models and authorization rules will evolve over years.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Purely internal monolith-to-monolith calls where code is deployed atomically — version the code, not the API.</li>
-            <li>Short-lived experimental APIs — add a clear "unstable" designation and a sunset date upfront; don't invest in a versioning scheme before the API design stabilises.</li>
+            <li>In-process or monolith calls deployed atomically with the callee—version the module, not the wire format.</li>
+            <li>Short experiments explicitly marked unstable with a published end date before the design settles.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Version via URL path, Accept headers, or pinned date headers; deprecate with Link and Sunset before 410.</p>
+          <p>Gateways route version selectors to the correct handler or adapter; deprecated routes return <code>Deprecation</code>, <code>Sunset</code>, and <code>Link</code> headers until they respond with <code>410 Gone</code>.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     path["URL path /v1 /v2"]
@@ -177,83 +178,80 @@ Deprecation + Sunset lifecycle:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>URL path versioning is the simplest to implement, test, and route at the gateway layer.</li>
-                <li>Header versioning keeps URLs stable and lets you version at a finer granularity than entire API surface.</li>
-                <li>Date-based versioning (Stripe-style) pins each consumer to the exact API behaviour they were built against — predictable and auditable.</li>
-                <li>Semantic versioning for APIs signals the nature of changes clearly to consumers.</li>
+                <li>Path versions are obvious in logs, easy to route at gateways, and simple to test with curl.</li>
+                <li>Header negotiation keeps URLs stable while still allowing multiple representations.</li>
+                <li>Date pinning gives each integrator a frozen behavior snapshot that audits cleanly for regulated domains.</li>
+                <li>SemVer-style labeling clarifies whether a release is compatible or requires migration work.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Maintaining multiple active versions in parallel increases operational overhead — N versions of handlers, tests, and documentation.</li>
-                <li>Header versioning is invisible in browser address bars and harder to test with simple curl commands.</li>
-                <li>Query parameter versioning pollutes URLs and is easily stripped by caches and proxies.</li>
-                <li>Version proliferation — without a strong sunset process, old versions accumulate indefinitely.</li>
-                <li>Consumer migration is slow — teams underestimate how long it takes to move consumers to a new version.</li>
+                <li>Every active version duplicates handlers, tests, docs, and operational monitoring surface.</li>
+                <li>Header-only versions are easy to omit in ad hoc tests and invisible in browser trials.</li>
+                <li>Query versioning complicates caching and may be stripped by intermediaries.</li>
+                <li>Without enforced sunsets, old versions linger and compound security and support debt.</li>
+                <li>Consumer migration often takes longer than teams plan, extending parallel-version cost.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <h3>Breaking vs non-breaking changes</h3>
-          <p>Understanding what constitutes a breaking change is foundational to versioning decisions:</p>
-          <p><strong>Breaking changes (require a new major version):</strong></p>
+          <p>Publish a written compatibility policy so reviewers classify diffs consistently.</p>
+          <p><strong>Breaking changes (typically require a new major version or date):</strong></p>
           <ul>
-            <li>Removing a field, endpoint, or parameter.</li>
-            <li>Renaming a field or changing its type.</li>
-            <li>Changing the meaning of an existing field.</li>
-            <li>Adding a required request parameter.</li>
-            <li>Changing authentication requirements.</li>
-            <li>Altering error codes or response structure consumers depend on.</li>
+            <li>Removing or renaming fields, endpoints, or parameters.</li>
+            <li>Changing a field’s type or documented meaning.</li>
+            <li>Introducing required request fields that old clients do not send.</li>
+            <li>Tightening authentication or authorization requirements.</li>
+            <li>Changing status codes or error envelopes that clients branch on.</li>
           </ul>
-          <p><strong>Non-breaking changes (backward compatible, no version bump needed):</strong></p>
+          <p><strong>Usually non-breaking when clients practice tolerant reading:</strong></p>
           <ul>
-            <li>Adding an optional field to a response (if clients use tolerant reading).</li>
-            <li>Adding a new optional request parameter.</li>
-            <li>Adding a new endpoint or resource type.</li>
-            <li>Adding a new enum value (though consumers must handle unknown values gracefully).</li>
+            <li>Adding optional response fields or optional request parameters.</li>
+            <li>Adding new routes or resource types without altering existing ones.</li>
+            <li>Adding enum values when clients treat unknown values as opaque.</li>
           </ul>
 
           <h3>Semantic versioning for APIs</h3>
-          <p>Apply SemVer concepts: <strong>MAJOR.MINOR.PATCH</strong>. MAJOR changes break backward compatibility and require a new URL version. MINOR changes add functionality in a backward-compatible manner (typically no version bump needed for consumers). PATCH changes are backward-compatible bug fixes.</p>
-          <p>Most public APIs only version on MAJOR — <code>/v1/</code>, <code>/v2/</code> — and communicate MINOR additions via changelog.</p>
+          <p>Map release labels to <strong>MAJOR.MINOR.PATCH</strong>: incompatible contract changes bump MAJOR and usually map to a new path prefix; MINOR adds compatible capability; PATCH fixes behavior without breaking documented contracts. Many public HTTP APIs expose only MAJOR in the URL and record MINOR additions in changelogs.</p>
 
           <h3>Date-based versioning (Stripe model)</h3>
-          <p>Stripe pins each API consumer to the version date at which they registered or last explicitly opted in. Every request from that consumer is transformed to match the behaviours of that date. The server maintains an internal transform layer that maps between historical versions and the current schema. This model is powerful but expensive to maintain: it requires a version manifest and transform functions for every breaking change ever made.</p>
+          <p>With date pinning, each account stores an API version date; the server applies forward and reverse transforms between that snapshot and the internal canonical model. The approach preserves integrator expectations across years but demands a maintained matrix of transforms for every breaking change.</p>
 
           <h3>Sunset header (RFC 8594)</h3>
-          <p>The <code>Sunset</code> HTTP response header announces when a resource will no longer be available. Return it in all responses from a deprecated version to give clients automated warning capability. Pair it with a <code>Deprecation</code> header (RFC 9745, draft) indicating when deprecation started and a <code>Link</code> header pointing to migration documentation. Monitoring systems can scan for these headers and alert developers.</p>
+          <p>Return <code>Sunset</code> on deprecated routes so automation knows the retirement instant. Combine with <code>Deprecation</code> (see <a href="https://www.rfc-editor.org/rfc/rfc9745.html" target="_blank" rel="noopener noreferrer">RFC 9745</a>) and a <code>Link</code> relation to migration docs. After the sunset time, respond with <code>410 Gone</code> instead of silent failures.</p>
 
           <h3>Versioning at the gateway</h3>
-          <p>An API gateway can route version prefixes to different service instances or different handlers in the same service. Use this to run v1 and v2 in parallel during migration windows. Consider feature flags as a lighter alternative: the same codebase serves multiple behaviours, toggled by version header, eliminating the need for multiple running instances.</p>
+          <p>Route <code>/v1/*</code> and <code>/v2/*</code> to distinct upstream clusters or adapters during migration. Feature flags inside one codebase can serve multiple behaviors when operational cost of separate deployments is too high—document which header or path selects each behavior.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Version 0 goes live as "temporary"</strong> — an unversioned API (<code>/orders</code> with no version prefix) accumulates consumers; introducing versioning later requires coordination with all existing consumers.</li>
-            <li><strong>No sunset enforcement</strong> — deprecated endpoints remain active indefinitely because no one tracks consumer migration; old versions never get removed.</li>
-            <li><strong>Treating all changes as non-breaking</strong> — adding a new required field to a response that serialisers deserialise into strict structs breaks consumers who fail on unknown fields — the opposite of tolerant reading.</li>
-            <li><strong>Versioning too granularly</strong> — per-endpoint versioning creates an explosion of versions with no coherent consumer story.</li>
-            <li><strong>Omitting migration guides</strong> — announcing a new version without documenting what changed and how to migrate leaves consumers unable to upgrade.</li>
+            <li><strong>Unversioned launch.</strong> Shipping <code>/orders</code> without a version prefix makes later segmentation a breaking announcement to every consumer.</li>
+            <li><strong>Perpetual deprecation.</strong> Old versions stay up because nobody tracks remaining traffic or enforces sunset dates.</li>
+            <li><strong>False compatibility.</strong> Strict client parsers treat new required response fields or renamed properties as hard failures.</li>
+            <li><strong>Version explosion.</strong> Per-endpoint version numbers confuse partners and dilute testing coverage.</li>
+            <li><strong>Migration vacuum.</strong> Releasing v2 without a diff guide and timelines stalls adoption and extends dual-operation cost.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the versioning strategy documented and communicated before the first public release?</li>
-            <li>Is there a formal definition of what constitutes a breaking change for this API?</li>
-            <li>Are Sunset and Deprecation headers returned for all deprecated endpoints?</li>
-            <li>Is there a migration guide published for each new major version?</li>
-            <li>Is there a process to track which consumers are still using deprecated versions?</li>
-            <li>Is there a maximum number of supported concurrent versions (e.g., N-2 policy)?</li>
-            <li>Are non-breaking additions documented in a changelog without requiring a version bump?</li>
-            <li>Is the versioning strategy enforced by automated tools (e.g., breaking-change detection in CI)?</li>
+            <li>Is the versioning mechanism chosen and documented before the first public release?</li>
+            <li>Does the team share a written definition of breaking versus additive change?</li>
+            <li>Do deprecated routes emit Sunset, Deprecation, and migration Link headers?</li>
+            <li>Is there a published migration guide for every new major version or date bump?</li>
+            <li>Are dashboards or logs tracking traffic to deprecated versions?</li>
+            <li>Is there a policy cap on concurrent supported versions (for example current plus one previous)?</li>
+            <li>Are additive changes recorded in a changelog without forcing a version bump?</li>
+            <li>Does CI detect breaking OpenAPI or schema diffs before merge?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Payment API evolution</strong> — Stripe uses date-based versioning, pinning each merchant to the API behaviour at the time they integrated; merchants can explicitly upgrade to a newer version date when ready.</li>
-            <li><strong>Social media API</strong> — Twitter's (now X) API used URL versioning (/1/, /1.1/, /2/); major versions introduced breaking authentication and data model changes that required developer migration.</li>
-            <li><strong>Internal platform API</strong> — a company's internal data platform API uses <code>/v1/</code> for the stable contract and runs <code>/v2/</code> in parallel for 3 months with automated alerts (Sunset headers) before decommissioning v1.</li>
+            <li><strong>Case study —</strong> <strong>Stripe:</strong> Stripe uses date-based API versions so each account pins behaviour to the version active at integration time and can upgrade explicitly when ready.</li>
+            <li><strong>Case study —</strong> <strong>GitHub REST:</strong> GitHub documents numbered major versions in the URL path (<code>/v3/</code>) and communicates breaking changes through release notes and sunset policies.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind data platform:</strong> <code>/v1/</code> serves the stable contract while <code>/v2/</code> runs in parallel; <code>Sunset</code> and <code>Deprecation</code> headers announce retirement before v1 is removed.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

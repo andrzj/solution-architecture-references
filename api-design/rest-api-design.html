@@ -101,33 +101,33 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>REST (Representational State Transfer) is an architectural style for distributed hypermedia systems described by Roy Fielding in his 2000 dissertation. A RESTful API exposes resources — conceptual entities — via a uniform interface built on standard HTTP methods, URIs, and status codes. Clients interact with resources by exchanging representations (typically JSON) without the server needing to store client session state.</p>
-          <p>The six constraints that define REST are: client-server separation, statelessness, cacheability, a uniform interface, a layered system, and (optionally) code-on-demand. In practice, most "REST" APIs are actually <em>RESTish</em> — they use HTTP verbs and JSON but stop short of full HATEOAS hypermedia links.</p>
-          <p>Key design dimensions include: how you name and structure resource URIs, which HTTP methods you expose, what status codes you return, how clients request partial data or page through collections, and how you evolve the API over time without breaking existing consumers.</p>
+          <p><strong>REST API design</strong> is the practice of exposing domain resources over HTTP using a uniform interface: nouns in URIs, semantics in methods and status codes, and state carried in representations (usually JSON) rather than on the server between requests. The approach comes from Roy Fielding’s REST architectural style for distributed hypermedia; production APIs often implement a pragmatic subset—resource-oriented URLs and standard verbs—without full hypermedia navigation.</p>
+          <p>REST’s defining constraints include client–server separation, statelessness, cacheability, a uniform interface, layered intermediaries, and optional code-on-demand. Teams apply them by modeling collections and items (<code>/orders</code>, <code>/orders/{id}</code>), honoring method safety and idempotency, returning meaningful status codes, and supporting conditional requests with validators such as <code>ETag</code>.</p>
+          <p>Day-to-day design work spans naming and URI shape, pagination and sparse field selection, consistent error bodies, versioning when contracts change, and documenting the surface in OpenAPI so consumers can integrate without reading server code.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Before REST became dominant, web services used SOAP/WSDL (heavy XML envelopes, strict contracts) or ad-hoc RPC styles (?action=getUser). REST leveraged the existing HTTP infrastructure — caches, CDNs, proxies, browsers — and gave developers a predictable mental model: every noun is a URL, and the verb is always an HTTP method.</p>
-          <p>The uniform interface reduces the learning curve for API consumers. When a developer encounters a new REST API, they can reasonably guess that <code>GET /orders</code> lists orders and <code>DELETE /orders/42</code> removes one. This predictability lowers integration cost significantly compared to custom protocols.</p>
+          <p>Early web services leaned on SOAP envelopes or RPC-style query parameters that did not align with how HTTP caches, proxies, and browsers already behaved. REST reused that infrastructure and gave integrators a shared mental model: resources are addressable, methods express intent, and representations are negotiable.</p>
+          <p>A uniform interface shortens onboarding for new consumers. Someone who has integrated one well-designed HTTP API can usually infer that listing a collection uses <code>GET</code> on a plural path and that removing an item uses <code>DELETE</code> on the item URI—reducing bespoke client logic compared with opaque RPC names.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Public-facing APIs consumed by external developers who expect standard HTTP conventions.</li>
-            <li>Browser-based clients and mobile apps that benefit from HTTP caching and standard tooling.</li>
-            <li>CRUD-heavy domains where resources map naturally to database entities.</li>
-            <li>Systems that need broad interoperability — REST works in any language with an HTTP library.</li>
-            <li>When discoverability and self-documentation via OpenAPI are priorities.</li>
+            <li>You expose a public or partner API where consumers expect conventional HTTP semantics and tooling.</li>
+            <li>Browser, mobile, or CDN clients benefit from standard caching headers and conditional GET behavior.</li>
+            <li>The domain is naturally resource-oriented—accounts, orders, assets—with CRUD-style lifecycles.</li>
+            <li>You need the broadest language and runtime interoperability via any HTTP client library.</li>
+            <li>You plan to publish an OpenAPI contract for documentation, mocks, and generated SDKs.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Real-time streaming</strong> — WebSockets or SSE are more appropriate than repeated polling.</li>
-            <li><strong>High-throughput internal service-to-service calls</strong> — gRPC with Protocol Buffers offers lower overhead and generated clients.</li>
-            <li><strong>Complex, nested queries</strong> — GraphQL gives clients precise field-level control that REST's flat resource model struggles with.</li>
-            <li><strong>Event-driven workflows</strong> — async messaging patterns (Kafka, SQS) decouple producers from consumers more effectively.</li>
+            <li><strong>Low-latency streaming.</strong> WebSockets or Server-Sent Events fit push and live feeds better than polling collections.</li>
+            <li><strong>Dense internal RPC.</strong> gRPC and binary payloads reduce overhead when both ends are under your control.</li>
+            <li><strong>Arbitrary client-shaped queries.</strong> GraphQL or dedicated query endpoints reduce over-fetching when UIs need many optional field combinations.</li>
+            <li><strong>Fire-and-forget workflows.</strong> Message queues and event buses decouple producers from consumers without synchronous HTTP chains.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Resources map to nouns; HTTP methods express semantics; ETags enable efficient conditional GETs.</p>
+          <p>Clients call a gateway or edge that authenticates and routes to stateless services; responses carry resource representations and cache validators so intermediaries and clients can avoid redundant downloads.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">sequenceDiagram
     participant Cl as Client
@@ -169,7 +169,7 @@ ETag conditional request:
   GET /products/7 + If-None-Match: "abc123"
   ← 304 Not Modified  (no body transmitted)</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Gateway-forwarded GET, resource hierarchy, method safety idempotency, ETag 304 flow.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">A conditional GET flow: gateway auth, resource fetch with ETag, then 304 when the representation is unchanged.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -177,61 +177,60 @@ ETag conditional request:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Leverages existing HTTP infrastructure — CDNs, proxies, caching layers work natively.</li>
-                <li>Universal tooling: every language, every platform has an HTTP client.</li>
-                <li>Stateless design simplifies horizontal scaling — any server can handle any request.</li>
-                <li>Well-understood by developers; vast documentation and community support.</li>
-                <li>OpenAPI spec ecosystem enables generated docs, SDKs, and mocks.</li>
-                <li>Uniform interface reduces cognitive load for API consumers.</li>
+                <li>HTTP caches, CDNs, and reverse proxies understand GET safety and cache headers without custom plugins.</li>
+                <li>Every mainstream language ships an HTTP stack, so client integration stays portable.</li>
+                <li>Stateless handlers simplify horizontal scale because any instance can serve any request.</li>
+                <li>Method and status semantics are widely documented in RFCs and platform style guides.</li>
+                <li>OpenAPI provides a single contract for docs, mocks, SDK generation, and contract tests.</li>
+                <li>Predictable URI and verb conventions lower cognitive load for new integrators.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Over-fetching and under-fetching: clients often receive too much data or must make multiple round trips.</li>
-                <li>No built-in query language — complex filters require custom conventions.</li>
-                <li>Versioning is painful; breaking changes require coordinated migration.</li>
-                <li>Chatty for deeply nested resources (N+1 round trips).</li>
-                <li>JSON is verbose compared to binary protocols like Protobuf.</li>
-                <li>HTTP/1.1 head-of-line blocking; mitigated by HTTP/2 but not always deployed.</li>
+                <li>Fixed resource shapes often over- or under-fetch compared with client-specific queries.</li>
+                <li>Filtering, sorting, and inclusion rules become ad hoc conventions unless you standardize them.</li>
+                <li>Breaking evolution requires explicit versioning and migration discipline.</li>
+                <li>Deep object graphs can force chatty N+1 HTTP sequences without batch or embed strategies.</li>
+                <li>JSON text payloads are larger than compact binary RPC encodings.</li>
+                <li>Legacy HTTP/1.1 deployments still exist; HTTP/2 and HTTP/3 reduce but do not eliminate coupling to transport choices.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <h3>Resource naming</h3>
-          <p>Use <strong>plural nouns</strong> for collections: <code>/orders</code>, <code>/users</code>, <code>/products</code>. Never use verbs in URIs (<code>/getOrder</code>, <code>/createUser</code> — those are RPC, not REST). Keep URIs lowercase, hyphenated for multi-word segments (<code>/line-items</code>), and hierarchical only when ownership is genuinely modelled (limit nesting to two levels).</p>
+          <p>Use <strong>plural nouns</strong> for collections (<code>/orders</code>, <code>/users</code>). Avoid verbs in paths (<code>/getOrder</code> signals RPC, not resources). Prefer lowercase paths, hyphens for multi-word segments (<code>/line-items</code>), and shallow hierarchies that reflect real containment—typically at most two levels of nesting.</p>
 
           <h3>Status codes</h3>
-          <p>Return semantically correct status codes — clients and infrastructure depend on them:</p>
+          <p>Status codes are part of the contract; middleware, monitors, and clients route retries and UX from them. Align common outcomes with these defaults:</p>
           <ul>
-            <li><code>200 OK</code> — successful GET, PUT, PATCH.</li>
-            <li><code>201 Created</code> — successful POST; include <code>Location</code> header pointing to the new resource.</li>
-            <li><code>204 No Content</code> — successful DELETE or PATCH with no response body.</li>
-            <li><code>400 Bad Request</code> — malformed input; include a structured error body.</li>
-            <li><code>401 Unauthorized</code> — missing or invalid credentials.</li>
-            <li><code>403 Forbidden</code> — authenticated but lacking permission.</li>
-            <li><code>404 Not Found</code> — resource does not exist.</li>
-            <li><code>409 Conflict</code> — optimistic concurrency collision or duplicate creation.</li>
-            <li><code>422 Unprocessable Entity</code> — syntactically valid but semantically invalid input.</li>
-            <li><code>429 Too Many Requests</code> — rate limit exceeded.</li>
+            <li><code>200 OK</code> indicates a successful read or update that returns a body.</li>
+            <li><code>201 Created</code> follows a successful create; include a <code>Location</code> header for the new resource.</li>
+            <li><code>204 No Content</code> marks success with no body, typical for DELETE or some PATCH operations.</li>
+            <li><code>400 Bad Request</code> signals malformed syntax; return a structured problem body.</li>
+            <li><code>401 Unauthorized</code> means authentication failed or is missing.</li>
+            <li><code>403 Forbidden</code> means the caller is authenticated but not permitted.</li>
+            <li><code>404 Not Found</code> means the targeted resource does not exist (or is not visible to the caller).</li>
+            <li><code>409 Conflict</code> covers version collisions, duplicates, or state conflicts.</li>
+            <li><code>422 Unprocessable Entity</code> means well-formed input that fails domain validation.</li>
+            <li><code>429 Too Many Requests</code> signals rate limiting; include retry guidance when possible.</li>
           </ul>
 
           <h3>Versioning strategies</h3>
-          <p><strong>URL path versioning</strong> (<code>/v1/orders</code>) is the most visible approach and the easiest to route. Use it for major breaking changes. <strong>Accept header versioning</strong> (<code>Accept: application/vnd.myapi.v2+json</code>) keeps URLs clean but is harder to test in a browser. <strong>Query parameter versioning</strong> (<code>?version=2</code>) is simple but pollutes URLs.</p>
-          <p>Most teams default to URL versioning for public APIs.</p>
+          <p><strong>URL path versioning</strong> (<code>/v1/orders</code>) is visible, easy to route at gateways, and simple to test. Reserve it for incompatible major changes. <strong>Accept header versioning</strong> (<code>Accept: application/vnd.example.v2+json</code>) keeps paths stable but is harder to exercise in a browser address bar. <strong>Query parameter versioning</strong> is easy to add but clutters URLs and may interact badly with caches—use sparingly. See <a href="api-versioning.html">API Versioning</a> for sunset and migration patterns.</p>
 
           <h3>Pagination</h3>
-          <p><strong>Offset/limit</strong> (<code>?offset=100&amp;limit=25</code>) is simple but suffers from the "moving window" problem — if rows are inserted during pagination, clients see duplicates or skip rows. <strong>Cursor-based pagination</strong> uses an opaque token encoding the position of the last seen item, making it stable against inserts and deletes. Return cursors in a <code>next</code> or <code>Link</code> header (RFC 5988). Use cursor pagination for any collection that mutates frequently.</p>
+          <p><strong>Offset/limit</strong> is straightforward but unstable when rows are inserted or deleted during traversal. <strong>Cursor-based pagination</strong> encodes position in an opaque token so pages stay consistent under churn. Expose continuation via a <code>next</code> field or <code>Link</code> header per <a href="https://www.rfc-editor.org/rfc/rfc8288.html" target="_blank" rel="noopener noreferrer">RFC 8288</a>. Prefer cursors for large or frequently mutating collections.</p>
 
           <h3>Partial responses</h3>
-          <p>Support a <code>fields</code> query parameter to allow clients to request sparse fieldsets: <code>GET /users/42?fields=id,name,email</code>. This reduces payload size and over-fetching without requiring GraphQL. Document the supported fields in your OpenAPI schema.</p>
+          <p>A <code>fields</code> (or sparse fieldset) parameter lets clients request subsets: <code>GET /users/42?fields=id,name,email</code>. Document allowed fields in OpenAPI so generators and validators stay aligned.</p>
 
           <h3>Conditional requests</h3>
-          <p>Return an <code>ETag</code> (a hash or version number of the resource) with every GET. Clients can send <code>If-None-Match: "abc123"</code> on subsequent requests; if the resource has not changed, return <code>304 Not Modified</code> with no body, saving bandwidth. Use <code>If-Match</code> for optimistic concurrency on PUT/PATCH — if the ETag no longer matches, return <code>412 Precondition Failed</code>.</p>
+          <p>Emit an <code>ETag</code> (or <code>Last-Modified</code>) on cacheable GET responses. Clients send <code>If-None-Match</code> to receive <code>304 Not Modified</code> when nothing changed. For writes, require <code>If-Match</code> against the current ETag and return <code>412 Precondition Failed</code> when the resource moved underneath the client.</p>
 
           <h3>Error bodies</h3>
-          <p>Adopt a consistent error schema. The RFC 9457 (Problem Details) standard provides a good baseline:</p>
+          <p>Standardize errors on <a href="https://www.rfc-editor.org/rfc/rfc9457.html" target="_blank" rel="noopener noreferrer">RFC 9457</a> Problem Details so clients parse <code>type</code>, <code>title</code>, <code>status</code>, and optional field-level extensions consistently:</p>
           <pre><code>{
   "type": "https://api.example.com/errors/validation",
   "title": "Validation failed",
@@ -245,35 +244,35 @@ ETag conditional request:
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Verb tunnelling through POST</strong> — using <code>POST /users/42/delete</code> instead of <code>DELETE /users/42</code> bypasses HTTP method semantics and breaks caches.</li>
-            <li><strong>Returning 200 for errors</strong> — wrapping errors in a 200 body (<code>{"success": false}</code>) defeats HTTP-aware middleware and monitoring.</li>
-            <li><strong>Inconsistent naming</strong> — mixing <code>userId</code>, <code>user_id</code>, and <code>UserID</code> in the same API forces clients to handle multiple styles.</li>
-            <li><strong>Unbounded collections</strong> — returning an entire table without pagination causes out-of-memory issues as data grows.</li>
-            <li><strong>Ignoring idempotency</strong> — a non-idempotent POST for resource creation means network retries can duplicate records; use idempotency keys.</li>
-            <li><strong>Breaking changes without versioning</strong> — removing a field or changing a field type in an existing response silently breaks consumers.</li>
-            <li><strong>Chatty sub-resource APIs</strong> — requiring 10 API calls to render a single screen degrades mobile performance.</li>
+            <li><strong>Verb tunneling via POST.</strong> Paths such as <code>POST /users/42/delete</code> hide DELETE semantics from caches and intermediaries.</li>
+            <li><strong>Success status on failures.</strong> Returning <code>200</code> with <code>{"success": false}</code> breaks monitors, retries, and client libraries that trust HTTP status.</li>
+            <li><strong>Mixed naming styles.</strong> Alternating <code>userId</code>, <code>user_id</code>, and <code>UserID</code> forces bespoke mapping in every SDK.</li>
+            <li><strong>Unpaginated collections.</strong> Dumping full tables balloons memory on servers and clients as data grows.</li>
+            <li><strong>Retry-sensitive POST.</strong> Creating resources without idempotency keys duplicates rows when clients retry after timeouts.</li>
+            <li><strong>Silent contract breaks.</strong> Removing or retyping response fields without a new version strand consumers on old builds.</li>
+            <li><strong>Chatty composition.</strong> Screens that require many sequential GETs punish high-latency mobile networks unless you offer aggregates or embeds.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are all URIs plural nouns with no verbs?</li>
-            <li>Are HTTP methods used according to their defined semantics (GET safe, PUT/DELETE idempotent)?</li>
-            <li>Are status codes semantically correct, not just 200 or 500?</li>
-            <li>Do error responses include a structured body with field-level details?</li>
-            <li>Is there a versioning strategy documented for breaking changes?</li>
-            <li>Are all collections paginated with a stable cursor mechanism?</li>
-            <li>Are ETags returned for cacheable resources?</li>
-            <li>Is an OpenAPI spec generated and kept in sync with the implementation?</li>
-            <li>Are idempotency keys supported for non-idempotent POST operations?</li>
-            <li>Is a <code>fields</code> parameter available for large resource types?</li>
+            <li>Do collection paths use plural nouns and avoid verb segments?</li>
+            <li>Are GET requests safe and PUT/DELETE (and designed PATCH) idempotent?</li>
+            <li>Does each outcome map to an appropriate status code—not only 200 and 500?</li>
+            <li>Do errors return RFC 9457 (or equivalent) bodies with actionable field detail?</li>
+            <li>Is there a documented versioning and sunset path for breaking changes?</li>
+            <li>Are large lists paginated with stable cursors where data changes during reads?</li>
+            <li>Do cacheable GET responses include ETag or Last-Modified validators?</li>
+            <li>Is the OpenAPI description the contract of record and checked in CI?</li>
+            <li>Do create and payment-style POST operations accept idempotency keys?</li>
+            <li>Can clients trim large resources via a documented sparse field parameter?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce platform</strong> — <code>GET /v1/products?category=shoes&amp;sort=-price&amp;cursor=eyJpZCI6MTAwfQ</code> returns a stable, sorted page of products with a cursor for the next page.</li>
-            <li><strong>Payment API</strong> — <code>POST /v1/payments</code> with an <code>Idempotency-Key: uuid</code> header ensures a network retry does not charge a customer twice.</li>
-            <li><strong>User management service</strong> — <code>PATCH /v1/users/42</code> with a JSON Merge Patch body updates only the supplied fields; <code>If-Match</code> prevents concurrent overwrites.</li>
-            <li><strong>Content delivery API</strong> — ETags on <code>GET /v1/articles/slug</code> let CDN edges and browser caches serve stale content and only revalidate when the article changes.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce catalog:</strong> <code>GET /v1/products?category=shoes&amp;sort=-price&amp;cursor=eyJpZCI6MTAwfQ</code> returns a stable, sorted page of products with a cursor for the next page.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian checkout payments:</strong> <code>POST /v1/payments</code> with an <code>Idempotency-Key</code> header ensures a network retry does not charge a customer twice, matching the idempotency pattern in payment integrations.</li>
+            <li><strong>Case study —</strong> <strong>GitHub REST API:</strong> Resource-oriented URLs, standard HTTP verbs, and <code>ETag</code> / <code>If-None-Match</code> conditional requests are documented in GitHub’s public REST reference.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Content delivery:</strong> ETags on <code>GET /v1/articles/{slug}</code> let CDN edges and browser caches revalidate with <code>304 Not Modified</code> when the article has not changed.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

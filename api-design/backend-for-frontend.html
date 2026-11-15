@@ -99,32 +99,32 @@
           <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>The Backend for Frontend (BFF) pattern, coined by Sam Newman, is an architectural pattern where you create a separate backend service for each distinct frontend or client type. Instead of a single general-purpose API consumed by all clients, each client type (mobile app, single-page web application, third-party partners, voice assistants) has its own dedicated backend that provides exactly the data shapes and protocols that client needs.</p>
-          <p>The BFF sits between the API gateway and the downstream microservices. It aggregates calls to multiple services, transforms data into the shape the UI needs, applies client-specific business rules, and returns a single, optimised response. The BFF is owned and deployed by the team that builds the corresponding frontend — creating end-to-end product team ownership.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p>The <strong>Backend for Frontend (BFF)</strong> pattern gives each major client experience its own backend service that shapes data and protocols for that UI. Instead of one generic API for web, mobile, and partners, a BFF sits behind the gateway (or alongside it), calls domain microservices, aggregates results, applies presentation rules, and returns a response tuned to one client class.</p>
+          <p>Sam Newman popularized the term in microservice literature: the team that ships the frontend also owns the BFF, so screen changes do not depend on every domain team publishing new endpoints. The BFF is an integration and adaptation layer—not a home for core business invariants.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>A single generic API inevitably serves no client well. Mobile clients operating on constrained networks need minimal, flat payloads; web dashboards need rich, aggregated data across multiple domains; third-party partners have entirely different authentication and data shape requirements. A team maintaining one API for all these consumers makes every change a negotiation and every response a compromise.</p>
-          <p>Without BFFs, frontend teams are blocked by backend teams whenever they need a new field or a different response shape. With BFFs, the product team owns the full vertical slice — frontend, BFF, and the integration with downstream services — enabling faster iteration.</p>
+          <p>A single REST surface forces compromises. Mobile needs small payloads and stable list cards; web dashboards need wide joins; partners need bulk exports and different auth. One API team becomes a bottleneck, and every client pays for fields others require. BFFs move composition next to the consumer, keep domain services focused on nouns and rules, and let product teams iterate vertically.</p>
+          <p>The cost is more deployable services, duplicated integration code if unmanaged, and frontend squads maintaining server runtimes—trade-offs that pay off when client divergence is real, not cosmetic.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Multiple distinct client types with meaningfully different data and protocol requirements (mobile vs web vs partner).</li>
-            <li>Frontend teams need to iterate independently of the core service teams.</li>
-            <li>Aggregation of multiple microservice calls is required to assemble a single screen view.</li>
-            <li>Per-client optimisation is needed: mobile needs smaller payloads, web needs richer data, partner needs bulk export formats.</li>
-            <li>Teams are structured around product verticals (each team owns a feature end-to-end).</li>
+            <li>Distinct client types with different payload, latency, or auth requirements.</li>
+            <li>Screens that fan out to multiple domain services and need one tailored response.</li>
+            <li>Product teams organized to own experience end-to-end (UI + BFF).</li>
+            <li>Per-channel optimizations: image sizing, caching TTL, offline bundles, partner scopes.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Single client type</strong> — if you only have one frontend, a BFF is just an extra layer with no benefit; the API can serve that client directly.</li>
-            <li><strong>Highly similar clients</strong> — if your mobile and web apps require essentially the same data, a BFF-per-client creates duplication without value; parameterise the single API instead.</li>
-            <li><strong>Small teams</strong> — the BFF model requires the frontend team to own backend code; if the team lacks backend skills, this creates a maintenance burden.</li>
+            <li>One client channel with stable needs—a shared API or modular monolith may suffice.</li>
+            <li>Mobile and web that consume identical resources—parameterized REST beats two BFFs.</li>
+            <li>Teams without capacity to run, test, and on-call backend services.</li>
+            <li>Using BFFs only to bypass domain design—fix bounded contexts first.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Per-client BFFs aggregate microservices behind the gateway with team-owned response shapes.</p>
+          <p>North-south traffic hits the gateway; each BFF fans in to domain services in parallel; optional GraphQL layer can serve multiple clients from one schema.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     gw["API Gateway auth TLS limits"]
@@ -136,37 +136,20 @@
     pbff --> svc</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>                    [API Gateway]
-                   (auth, rate limit, TLS)
-                  /         |          \
-                 /          |           \
-        [Mobile BFF]  [Web BFF]   [Partner BFF]
-         (owned by    (owned by    (owned by
-         mobile team) web team)    partner team)
-              |             |              |
-       ┌──────┴──────┐      │         ┌───┴───┐
-       ▼             ▼      ▼         ▼       ▼
-  [Users Svc]  [Orders Svc] [Products Svc] [Reports Svc]
+              <pre class="architecture-diagram__canvas"><code>[API Gateway] — TLS, auth, rate limits
+      |           |            |
+ [Mobile BFF] [Web BFF] [Partner BFF]
+      \           |            /
+       \          |           /
+        --> Domain services (users, orders, catalog)
 
-Mobile BFF optimisations:
-  - Aggregates user + 3 most recent orders in one call
-  - Returns minimal fields (id, name, status only)
-  - Caches product catalogue with short TTL
-  - Converts images to mobile-appropriate sizes/formats
+Mobile BFF: minimal fields, parallel fetch, short cache
+Web BFF: richer aggregates, admin filters
+Partner BFF: OAuth scopes, bulk/export shapes
 
-Web BFF optimisations:
-  - Returns full order history with line items
-  - Aggregates dashboard metrics from analytics service
-  - Supports richer filtering and sorting options
-  - Returns paginated data with cursor tokens
-
-GraphQL as BFF alternative:
-  Mobile Client → GraphQL BFF (shared)
-  Web Client    → GraphQL BFF (shared)
-  Each client requests exactly its required fields via query
-  BFF = single GraphQL server acting as aggregation layer</code></pre>
+Alternative: one GraphQL BFF — clients differ by query document</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Gateway to mobile, web, and partner BFFs fanning into domain services; GraphQL as shared aggregation alternative.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Per-channel BFFs aggregate domain services after gateway policies; GraphQL can consolidate flexible reads.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -174,82 +157,83 @@ GraphQL as BFF alternative:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Frontend teams own their full delivery pipeline — no blocking dependencies on backend teams for response shaping.</li>
-                <li>Optimised payloads per client — mobile gets what it needs; web gets what it needs; no compromise.</li>
-                <li>Isolates client-specific complexity (session management, push notifications, OAuth flows) away from core services.</li>
-                <li>Each BFF can be independently deployed and scaled according to its client's traffic patterns.</li>
-                <li>Simplifies downstream services — they expose clean domain APIs; BFFs handle composition.</li>
+                <li>Client-specific performance and UX without polluting core domain APIs.</li>
+                <li>Product teams unblock themselves for screen-driven changes.</li>
+                <li>Domain services stay narrower and more reusable across channels.</li>
+                <li>Independent scale and deploy cadence per channel.</li>
+                <li>Channel quirks (push registration, TV navigation) stay out of core services.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>BFF proliferation — each new channel (watch app, TV app, voice assistant) spawns another BFF; 10 BFFs × similar logic = significant duplication.</li>
-                <li>Cross-cutting logic (auth token exchange, retry policies) can drift between BFFs without a shared library.</li>
-                <li>Frontend teams must maintain backend code, including tests, deployments, and on-call responsibilities.</li>
-                <li>Increased infrastructure: N BFFs = N deployable services with their own CI/CD pipelines, containers, and monitoring.</li>
-                <li>Aggregation logic can become complex in the BFF, approaching the complexity of a general-purpose API.</li>
+                <li>Proliferation—each new device class can spawn another service.</li>
+                <li>Duplicated fan-out, retry, and auth code without shared libraries.</li>
+                <li>Frontend teams inherit backend operational duties.</li>
+                <li>Risk of re-implementing domain rules in the BFF.</li>
+                <li>More integration tests and contract surfaces to maintain.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <h3>Scope of the BFF</h3>
-          <p>A BFF should handle: aggregating calls to multiple downstream services for a single screen, response shaping and field filtering, caching strategies specific to the client's usage patterns, and client-specific authentication flows (e.g., mobile device registration, session token management). It should <em>not</em> contain core business logic (pricing rules, inventory management), which belongs in domain services.</p>
+          <h3>What belongs in the BFF</h3>
+          <p>Aggregate for one view, map DTOs to UI models, apply channel caching, orchestrate auth handshakes (device login, partner consent). Keep pricing, inventory invariants, and ledger rules in domain services.</p>
 
-          <h3>Shared library strategy</h3>
-          <p>As BFFs multiply, extract common concerns into shared libraries: downstream service clients, retry/circuit-breaker logic, logging middleware, and auth token validation. Version the shared libraries carefully — a breaking change in the common client library can break all BFFs simultaneously. Consider a monorepo to keep BFFs and shared libraries in sync.</p>
+          <h3>Parallel fan-out and resilience</h3>
+          <p>Call downstream services concurrently with a parent timeout; fail partial screens gracefully or return degraded data with explicit flags. Use circuit breakers and bulkheads so one slow dependency does not freeze every endpoint.</p>
 
-          <h3>GraphQL as a BFF</h3>
-          <p>GraphQL is a natural fit for the BFF role: the schema defines the available data graph, resolvers aggregate downstream service calls, and clients query exactly the fields they need. A single GraphQL BFF can serve both mobile and web clients with different query shapes rather than running two separate BFFs. Trade-off: the BFF becomes more complex to maintain (schema evolution, resolver optimisation), but the client-flexibility benefit is high. Apollo Federation extends this to multiple subgraph-owning teams.</p>
+          <h3>Shared libraries and contracts</h3>
+          <p>Extract generated clients, retry policies, and auth validators into versioned packages or an internal SDK. Pair with <a href="contract-testing.html">contract tests</a> so service response changes are caught before production BFF deploys.</p>
 
-          <h3>Team ownership model</h3>
-          <p>The BFF model works best when aligned with Conway's Law: the team that builds the web frontend owns the web BFF. This means the frontend team needs full-stack capability (JavaScript/TypeScript Node.js BFFs are a natural fit for web teams). Mobile teams typically own their BFF in the same language as their backend lingua franca (Node.js, Go, Java). Establish clear boundary contracts between the BFF and downstream services — the BFF must treat those services as external dependencies, not internal code to modify.</p>
+          <h3>GraphQL as a unified BFF</h3>
+          <p>One GraphQL server can serve web and mobile with different queries; resolvers perform the same aggregation REST BFFs would. Federation splits ownership when domains grow. See <a href="graphql.html">GraphQL</a> for execution and safety controls.</p>
 
-          <h3>BFF proliferation control</h3>
-          <p>To avoid a BFF-per-feature sprawl: (1) merge BFFs that serve very similar clients (e.g., iOS and Android into one "mobile BFF"), (2) promote a shared "experience API" for common functionality across BFFs, or (3) adopt GraphQL Federation so all client-specific queries route to a single shared supergraph. Set a policy: a new BFF must be justified by meaningfully different requirements, not just a different team preference.</p>
+          <h3>Controlling proliferation</h3>
+          <p>Merge similar clients (iOS + Android → mobile BFF). Require a written justification for new BFFs. Cap count via architecture review. Prefer experience APIs for shared read models before cloning services.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>BFF as a pass-through proxy</strong> — the BFF simply forwards requests with no aggregation or transformation; this is overhead without value; use the API gateway directly instead.</li>
-            <li><strong>Business logic migration</strong> — pricing, discount, and eligibility rules gradually migrate into BFFs; they become domain services in disguise without the governance.</li>
-            <li><strong>Synchronous fan-out without timeout</strong> — a BFF that calls 6 services sequentially will be as slow as the slowest service; use parallel calls with aggregate timeouts.</li>
-            <li><strong>No contract between BFF and downstream services</strong> — BFF breaks every time a downstream service changes its response shape; use contract testing.</li>
-            <li><strong>Undifferentiated BFFs</strong> — building a separate BFF for iOS and Android that contain identical logic; merge them into a single mobile BFF.</li>
+            <li><strong>Pass-through BFF</strong> — no aggregation; adds latency only.</li>
+            <li><strong>Domain logic creep</strong> — discounts and eligibility encoded only in the BFF.</li>
+            <li><strong>Sequential fan-out</strong> — latency sums across six synchronous calls.</li>
+            <li><strong>Untested downstream drift</strong> — silent breakage when services change JSON.</li>
+            <li><strong>Duplicate BFFs</strong> — separate iOS/Android services with identical handlers.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is there a genuinely different data requirement between client types that justifies a dedicated BFF?</li>
-            <li>Does the owning team have the skills to maintain backend code?</li>
-            <li>Are downstream service calls made in parallel where possible, not sequentially?</li>
-            <li>Is core business logic excluded from the BFF (in downstream domain services)?</li>
-            <li>Are contract tests in place between the BFF and each downstream service?</li>
-            <li>Is there a shared library for common infrastructure concerns (retry, auth, logging) across all BFFs?</li>
-            <li>Is GraphQL being considered as a single flexible BFF alternative to multiple BFFs?</li>
-            <li>Is there a policy to prevent uncontrolled BFF proliferation?</li>
+            <li>Is client divergence substantial enough to justify another service?</li>
+            <li>Does the owning team operate backends (CI, on-call, security patches)?</li>
+            <li>Are downstream calls parallelized with a bounded timeout?</li>
+            <li>Is domain logic forbidden in the BFF by explicit standards?</li>
+            <li>Are consumer-driven contracts tested per dependency?</li>
+            <li>Is there a shared client/retry library across BFFs?</li>
+            <li>Was GraphQL or a shared experience API evaluated before adding a BFF?</li>
+            <li>Is there a governance rule against unbounded BFF growth?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Streaming platform</strong> — mobile BFF returns compressed thumbnails, minimal metadata, and offline download tokens; web BFF returns full resolution images, extended credits, and social sharing metadata; TV BFF returns HDMI-optimised assets and remote-control-friendly navigation structures.</li>
-            <li><strong>Banking application</strong> — retail mobile BFF handles touch-ID auth flow and push notification registration; branch teller web BFF handles high-detail transaction history and account management; open banking partner BFF handles OAuth2 consent flows and bulk data exports.</li>
-            <li><strong>E-commerce</strong> — the web BFF aggregates product details, pricing, inventory, and reviews in a single call; the mobile BFF returns a stripped-down product card suitable for list rendering on small screens with a separate detail call on demand.</li>
+            <li><strong>Illustrative scenario —</strong> A streaming product’s TV BFF returns lean rows and deep-link tiles while the web BFF returns full cast lists and social metadata from the same catalog service.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> exposes OAuth-scoped bulk order export on the partner BFF while the mobile BFF returns three recent orders and avatar thumbnails sized for list views.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> runs separate driver and rider BFFs so location-heavy polling stays off the passenger app’s battery-sensitive code paths.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="api-gateway.html">API Gateway</a> — the gateway sits in front of BFFs and handles cross-cutting concerns.</li>
-            <li><a href="graphql.html">GraphQL</a> — a single GraphQL BFF can replace multiple REST BFFs.</li>
-            <li><a href="rest-api-design.html">REST API Design</a> — BFF exposes a REST API optimised for its client.</li>
+            <li><a href="api-gateway.html">API Gateway</a> — edge auth, TLS, and rate limiting before BFFs.</li>
+            <li><a href="graphql.html">GraphQL</a> — flexible single BFF surface.</li>
+            <li><a href="rest-api-design.html">REST API Design</a> — resource style exposed by many BFFs.</li>
+            <li><a href="api-authentication.html">API Authentication</a> — token exchange at the BFF boundary.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://samnewman.io/patterns/architectural/bff/" target="_blank" rel="noopener noreferrer">Sam Newman — Backends for Frontends (original pattern description, samnewman.io).</a></li>
-            <li><a href="https://samnewman.io/books/building_microservices/" target="_blank" rel="noopener noreferrer">Sam Newman — Building Microservices (2nd ed., chapter on user interfaces and BFFs).</a></li>
-            <li><a href="https://samnewman.io/patterns/architectural/bff/" rel="noopener noreferrer" target="_blank">Pattern: Backends for Frontends — Sam Newman</a> — original BFF pattern write-up.</li>
-            <li><a href="https://www.thoughtworks.com/radar" target="_blank" rel="noopener noreferrer">ThoughtWorks Technology Radar — BFF entries across multiple editions.</a></li>
+            <li><a href="https://samnewman.io/patterns/architectural/bff/" target="_blank" rel="noopener noreferrer">Sam Newman — Backends for Frontends pattern</a></li>
+            <li><a href="https://samnewman.io/books/building_microservices/" target="_blank" rel="noopener noreferrer">Sam Newman — <em>Building Microservices</em> (user interface / BFF chapter)</a></li>
+            <li><a href="https://microservices.io/patterns/apigateway.html" target="_blank" rel="noopener noreferrer">microservices.io — API Gateway pattern (BFF vs gateway)</a></li>
+            <li><a href="https://learn.microsoft.com/azure/architecture/patterns/backends-for-frontends" target="_blank" rel="noopener noreferrer">Azure Architecture Center — Backends for Frontends</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

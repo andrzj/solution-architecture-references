@@ -96,56 +96,51 @@
             <span class="badge badge--secondary">Advanced</span>
           </div>
           <h1 class="article-header__title">gRPC</h1>
-          <p class="article-header__desc">A high-performance, open-source RPC framework using Protocol Buffers and HTTP/2 — covering the four service types, generated stubs, gRPC-Web for browsers, load balancing challenges, and the health checking protocol.</p>
+          <p class="article-header__desc">gRPC RPC over HTTP/2 and Protobuf—unary and streaming call types, codegen, deadlines, health checks, and edge patterns per grpc.io documentation.</p>
           <div class="article-header__meta"><span>⏱ 14 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>gRPC (gRPC Remote Procedure Calls) is a high-performance, open-source RPC framework originally developed by Google and donated to the CNCF. It uses <strong>Protocol Buffers</strong> (Protobuf) as the Interface Definition Language (IDL) and serialisation format, and runs over <strong>HTTP/2</strong>, gaining multiplexed streams, header compression (HPACK), and binary framing.</p>
-          <p>You define services and message types in a <code>.proto</code> file. The <code>protoc</code> compiler generates strongly-typed client stubs and server skeletons in your language of choice (Go, Java, Python, C++, Node.js, Kotlin, Swift, and more). Callers invoke methods on the generated stub as if calling a local function; gRPC handles serialisation, connection management, retries, and metadata.</p>
-          <pre><code>// user_service.proto
+<h2 id="what-it-is">What it is</h2>
+          <p><strong>gRPC</strong> is a high-performance remote procedure call (RPC) framework: you define a service and messages in a <code>.proto</code> file, run the Protocol Buffers compiler to generate typed stubs, and exchange binary Protobuf payloads over <strong>HTTP/2</strong> (multiplexed streams, header compression, flow control). The <a href="https://grpc.io/docs/what-is-grpc/core-concepts/" target="_blank" rel="noopener noreferrer">gRPC core concepts</a> describe four call patterns—unary, server streaming, client streaming, and bidirectional streaming—on one connection.</p>
+          <p>From the caller’s perspective, a remote method looks like a local function; the framework handles serialization, metadata headers, status codes, deadlines, and optional TLS or mutual TLS. gRPC is a CNCF project widely used for internal microservice meshes, streaming pipelines, and mobile backends where JSON overhead is measurable.</p>
+          <pre><code>// user_service.proto (proto3)
 syntax = "proto3";
-
 package users.v1;
 
 service UserService {
   rpc GetUser(GetUserRequest) returns (User);
   rpc ListUsers(ListUsersRequest) returns (stream User);
-  rpc UploadAvatars(stream UploadRequest) returns (UploadResponse);
-  rpc Chat(stream ChatMessage) returns (stream ChatMessage);
 }
 
 message GetUserRequest { string user_id = 1; }
-
 message User {
   string id = 1;
   string name = 2;
-  string email = 3;
-  google.protobuf.Timestamp created_at = 4;
 }</code></pre>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Google had been using a form of RPC internally (Stubby) for decades. As the industry moved toward microservices, the need for a fast, language-agnostic, contract-first inter-service communication protocol became clear. REST + JSON works, but JSON parsing is CPU-intensive, there is no codegen, and HTTP/1.1 imposes serialisation overhead. gRPC solves these: Protobuf is 3–10× smaller and faster to serialise/deserialise than JSON, and HTTP/2 multiplexing eliminates head-of-line blocking between concurrent requests on the same connection.</p>
+          <p>REST over JSON is universal but pays parsing cost and lacks a first-class IDL across languages. Large organizations needed contract-first RPC with compact wire formats and generated clients—capabilities earlier internal stacks provided privately. gRPC standardizes that: one <code>.proto</code> drives servers and clients in Go, Java, Python, and others, with HTTP/2 allowing many concurrent RPCs per TCP connection without head-of-line blocking at the application layer.</p>
+          <p>It deliberately targets trusted networks and platform teams who can operate HTTP/2-aware proxies, health probes, and schema registries—not arbitrary browser clients without an adapter.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Internal service-to-service communication in a microservices architecture where latency and throughput matter.</li>
-            <li>Polyglot environments — gRPC generates idiomatic clients for 10+ languages from the same <code>.proto</code>.</li>
-            <li>Real-time bidirectional streaming (e.g., live telemetry, collaborative editing, gaming).</li>
-            <li>Mobile clients needing compact payloads on constrained networks.</li>
-            <li>When you want strong schema enforcement enforced at compile time across teams.</li>
+            <li>Low-latency, high-throughput service-to-service calls inside a VPC or mesh.</li>
+            <li>Polyglot microservices sharing one versioned <code>.proto</code> contract.</li>
+            <li>Streaming telemetry, chat, or bulk uploads (client/server/bidi streams).</li>
+            <li>Mobile or edge clients where smaller payloads matter on metered links.</li>
+            <li>Organizations enforcing deadlines, metadata propagation, and interceptors uniformly.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Public APIs consumed by arbitrary clients</strong> — REST/JSON remains the universal baseline; gRPC requires generated stubs or a manually crafted HTTP/2 client.</li>
-            <li><strong>Browser-native calls without gRPC-Web or a transcoding proxy</strong> — browsers cannot use the raw gRPC protocol; gRPC-Web or Connect adds a compatibility layer but has limitations.</li>
-            <li><strong>Simple request/response over plain HTTP/1.1 infrastructure</strong> — if your proxy, load balancer, or API gateway doesn't understand HTTP/2, gRPC will not work or will require significant configuration.</li>
-            <li><strong>Human-readable debugging</strong> — Protobuf binary is not legible without tooling; REST JSON is immediately inspectable with curl.</li>
+            <li>Public HTTP APIs for unknown clients—OpenAPI/REST remains the default interchange.</li>
+            <li>Browser-only integrations without gRPC-Web, Connect, or a transcoding gateway.</li>
+            <li>Infrastructure that terminates HTTP/1.1 only and cannot route HTTP/2 RPC streams fairly.</li>
+            <li>Debug-by-curl workflows without <code>grpcurl</code> or reflection in non-production environments.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Unary, server, client, and bidi streaming RPCs need HTTP/2-aware load balancing and grpc.health checks.</p>
+          <p>Clients invoke generated stubs; sidecars or L7 proxies balance per-stream RPCs; servers implement the generated interface and optional <code>grpc.health.v1</code> checks.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     unary["Unary request response"]
@@ -156,44 +151,20 @@ message User {
     lb["L7 HTTP/2 aware proxy or client-side LB"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Four gRPC service types:
+              <pre class="architecture-diagram__canvas"><code>Call patterns (gRPC):
+  Unary:           1 req  → 1 resp
+  Server stream:   1 req  → N resp
+  Client stream:   N req  → 1 resp
+  Bidi stream:     interleaved messages
 
-1. Unary RPC (request / response)
-   Client ──── GetUser(req) ────► Server
-   Client ◄─── User(resp) ──────  Server
+Load balancing:
+  L4 (TCP)     → sticky connection; poor stream spread
+  L7 (Envoy…)  → route per HTTP/2 stream
+  Client-side  → resolver picks backend per RPC
 
-2. Server Streaming
-   Client ──── ListUsers(req) ──► Server
-   Client ◄─── User stream ─────  Server (N messages)
-   Client ◄─── END ─────────────  Server
-
-3. Client Streaming
-   Client ──── Upload stream ───► Server (N messages)
-   Client ──── END ─────────────► Server
-   Client ◄─── UploadResponse ──  Server
-
-4. Bidirectional Streaming
-   Client ←──── ChatMessage stream ────► Server
-               (interleaved both ways)
-
-Load balancing challenge:
-  L4 LB (TCP)    → routes by connection, not request
-                 → all requests on one conn go to same pod
-  
-  L7 LB (HTTP/2) → routes per RPC stream
-                 → requires HTTP/2-aware proxy (Envoy, Nginx, Traefik)
-  
-  Client-side LB → stub resolves DNS, picks backend per call
-                 → needs service discovery integration
-
-Health check protocol (grpc.health.v1):
-  service Health {
-    rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
-    rpc Watch(HealthCheckRequest) returns (stream HealthCheckResponse);
-  }
-  Status: SERVING | NOT_SERVING | SERVICE_UNKNOWN</code></pre>
+Health: grpc.health.v1.Health/Check + Watch</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Four gRPC call patterns, L7 vs L4 load balancing, client-side LB, health Check/Watch RPC.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Four RPC patterns; HTTP/2-aware load balancing and standard health RPCs for orchestrators.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -201,92 +172,88 @@ Health check protocol (grpc.health.v1):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Protobuf serialisation is compact (binary) and fast — typically 3–10× smaller than equivalent JSON.</li>
-                <li>HTTP/2 multiplexing: many concurrent RPCs over one TCP connection with no head-of-line blocking.</li>
-                <li>Codegen from <code>.proto</code> provides type-safe clients in 10+ languages without manual SDK work.</li>
-                <li>Built-in streaming: four service types cover the full communication spectrum.</li>
-                <li>Deadline/timeout propagation and cancellation are first-class primitives.</li>
-                <li>Interceptor chains (server and client) enable cross-cutting concerns: auth, logging, tracing.</li>
+                <li>Compact Protobuf payloads and fast parse/serialize versus JSON.</li>
+                <li>HTTP/2 multiplexing reduces connection count under bursty workloads.</li>
+                <li>Generated stubs enforce types and method names at compile time.</li>
+                <li>Deadlines, cancellation, and metadata are first-class across call chains.</li>
+                <li>Interceptors centralize auth, logging, and tracing on client and server.</li>
+                <li>Standard health and reflection (dev) protocols integrate with Kubernetes tooling.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Not browser-native: requires gRPC-Web proxy (Envoy) or Connect protocol adaptation.</li>
-                <li>Binary protocol is hard to inspect without tooling (grpcurl, grpcui).</li>
-                <li>HTTP/2 load balancing requires L7-aware proxies — L4 load balancers break per-RPC distribution.</li>
-                <li>Proto schema changes must follow strict backward-compatibility rules (field numbers cannot be reused).</li>
-                <li>Steeper learning curve than REST: requires understanding proto IDL, codegen pipeline, and HTTP/2.</li>
-                <li>Some cloud API gateways and firewalls don't support HTTP/2 natively, requiring transcoding.</li>
+                <li>Not browser-native without gRPC-Web or Connect.</li>
+                <li>Binary on the wire needs tooling to inspect.</li>
+                <li>L4 load balancers mis-route long-lived HTTP/2 connections.</li>
+                <li>Proto evolution rules are strict—never reuse field numbers.</li>
+                <li>Operational stack must understand HTTP/2, mTLS, and schema CI (e.g. buf).</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <h3>Protocol Buffers field rules</h3>
-          <p>Protobuf field numbers are permanent — once assigned, they can never be reused for a different field (even if the original is removed). Removing a field must be followed by reserving its number: <code>reserved 3;</code> and <code>reserved "old_field";</code>. Field numbers 1–15 are encoded in one byte; use them for frequently populated fields. Always default to optional fields in proto3 rather than required (proto3 removed required).</p>
+          <h3>Protobuf evolution</h3>
+          <p>In proto3, reserve removed field numbers and names. Prefer <code>optional</code> or explicit presence where needed. Never change the wire type of an existing number. Lint and breaking-change checks in CI (<a href="https://buf.build/docs/breaking/overview" target="_blank" rel="noopener noreferrer">Buf breaking rules</a>) catch unsafe edits before deploy.</p>
 
-          <h3>Deadlines and cancellation</h3>
-          <p>Always set a deadline on the client stub: <code>ctx, cancel := context.WithTimeout(ctx, 5*time.Second)</code>. gRPC propagates this deadline across chained service calls automatically. If the deadline expires, the server receives a cancellation signal and should abort in-flight work. Failing to set deadlines causes unbounded goroutine/thread accumulation under slow or stuck downstream services.</p>
+          <h3>Deadlines and status codes</h3>
+          <p>Always attach a deadline to client contexts; propagate it on outbound calls. Map <code>UNAVAILABLE</code> and <code>DEADLINE_EXCEEDED</code> to retry policies; treat <code>INVALID_ARGUMENT</code> as non-retryable. See <a href="https://grpc.io/docs/guides/error/" target="_blank" rel="noopener noreferrer">gRPC error handling</a>.</p>
 
-          <h3>Interceptors</h3>
-          <p>gRPC interceptors are middleware for both clients and servers. Use them for: authentication (validate JWT in server interceptor), distributed tracing (inject/extract trace context), metrics (record RPC duration, error rate), and logging. Interceptors chain compositionally — order matters for auth (first) before logging (second).</p>
+          <h3>Interceptors and metadata</h3>
+          <p>Use unary/stream interceptors for JWT validation, OpenTelemetry propagation, and request logging. Put auth tokens and trace IDs in metadata, not message bodies.</p>
 
-          <h3>gRPC-Web for browsers</h3>
-          <p>Browsers cannot use the native gRPC protocol over HTTP/2 due to lack of access to HTTP trailers. <strong>gRPC-Web</strong> is a variant that encodes trailers in the response body and works over HTTP/1.1 + XHR. It requires a proxy (typically Envoy) to translate gRPC-Web to native gRPC. The <strong>Connect</strong> protocol (by Buf) is a more modern alternative that works natively over HTTP/1.1 and HTTP/2 without a proxy, and is compatible with gRPC servers.</p>
+          <h3>Browser and gateway paths</h3>
+          <p>gRPC-Web proxies translate browser-safe framing to native gRPC. <a href="https://connectrpc.com/docs/protocol" target="_blank" rel="noopener noreferrer">Connect</a> speaks gRPC-compatible RPC over HTTP/1.1 or HTTP/2 without trailers browsers cannot read. API gateways can transcode JSON/REST to gRPC for external consumers.</p>
 
-          <h3>gRPC health checking protocol</h3>
-          <p>The standard <code>grpc.health.v1.Health</code> service provides a <code>Check</code> unary RPC and a <code>Watch</code> server-streaming RPC. Kubernetes liveness and readiness probes can call this endpoint via <code>grpc-health-probe</code>. Register per-service health checks (using the service name as the key) in addition to the global <code>""</code> key.</p>
-
-          <h3>Reflection</h3>
-          <p>Enable gRPC server reflection in development to allow tooling like <code>grpcurl</code> and <code>grpcui</code> to discover available services and call them without the <code>.proto</code> files. Disable reflection in production — it exposes your service contract to unauthenticated callers.</p>
+          <h3>Health and reflection</h3>
+          <p>Implement <code>grpc.health.v1.Health</code> per <a href="https://grpc.io/docs/guides/health-checking/" target="_blank" rel="noopener noreferrer">gRPC health checking</a> and point Kubernetes probes at <code>grpc-health-probe</code>. Enable server reflection only outside production so tools like <code>grpcurl</code> can discover services.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>No deadline set</strong> — cascading slow service calls pile up threads/goroutines, exhausting the thread pool under load.</li>
-            <li><strong>L4 load balancer with persistent HTTP/2 connections</strong> — all traffic from a client pod routes to one server pod; new pods don't receive traffic until connections are re-established.</li>
-            <li><strong>Field number reuse</strong> — reusing a proto field number for a different field causes silent data corruption when old and new versions communicate.</li>
-            <li><strong>Ignoring gRPC status codes</strong> — treating all errors as generic failures instead of mapping <code>UNAVAILABLE</code>, <code>DEADLINE_EXCEEDED</code>, and <code>RESOURCE_EXHAUSTED</code> to appropriate retry/backoff logic.</li>
-            <li><strong>Streaming without backpressure</strong> — a fast server-streaming RPC overwhelms a slow client; implement flow control using the stream's <code>Send</code> blocking behaviour.</li>
+            <li><strong>Missing deadlines</strong> — slow callees pile up blocked threads or goroutines.</li>
+            <li><strong>L4 stickiness</strong> — new pods see no traffic until connections recycle.</li>
+            <li><strong>Field number reuse</strong> — silent corruption between mixed client versions.</li>
+            <li><strong>Retry storms</strong> — retrying non-idempotent RPCs on <code>UNAVAILABLE</code>.</li>
+            <li><strong>Streaming without backpressure</strong> — fast producers OOM slow consumers.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are deadlines set on all outbound gRPC calls?</li>
-            <li>Is an L7-aware proxy (Envoy, Nginx with grpc_pass) handling load balancing?</li>
-            <li>Are field numbers in <code>.proto</code> files reserved after field removal?</li>
-            <li>Is the gRPC health checking protocol implemented and wired to Kubernetes probes?</li>
-            <li>Are interceptors used for auth, tracing, and metrics rather than inline code?</li>
-            <li>For browser clients, is gRPC-Web or Connect configured with a transcoding proxy?</li>
-            <li>Is server reflection disabled in production?</li>
-            <li>Are proto files version-controlled and governed by a breaking-change lint check (buf lint)?</li>
+            <li>Are deadlines set and propagated on every RPC?</li>
+            <li>Does load balancing understand HTTP/2 streams (L7 or client-side)?</li>
+            <li>Are proto files linted and breaking-checked in CI?</li>
+            <li>Is the health service registered and wired to orchestrator probes?</li>
+            <li>Are interceptors handling auth, tracing, and metrics consistently?</li>
+            <li>Is browser traffic using gRPC-Web, Connect, or REST transcoding?</li>
+            <li>Is reflection disabled in production?</li>
+            <li>Are retry policies idempotent and status-aware?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Microservice internal communication</strong> — an order service calls the inventory service and payment service over gRPC with 100ms deadlines; Envoy sidecar handles mTLS and load balancing.</li>
-            <li><strong>Live telemetry streaming</strong> — IoT device agents use client-streaming gRPC to stream sensor readings at 100Hz; the server aggregates in a time-series database.</li>
-            <li><strong>ML model inference</strong> — TensorFlow Serving and Triton expose gRPC endpoints for prediction requests; Protobuf binary payloads for large tensors are 5× smaller than JSON equivalents.</li>
-            <li><strong>Bidirectional chat</strong> — a customer support platform uses bidirectional streaming gRPC to relay chat messages with sub-100ms latency between agent and customer.</li>
+            <li><strong>Illustrative scenario —</strong> An order service calls inventory and payment over gRPC with 150&nbsp;ms deadlines; an Envoy sidecar terminates mTLS and spreads streams across replicas.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> dispatch agents use client-streaming RPC to upload GPS batches; the ingest service acks aggregates with a single response per window.</li>
+            <li><strong>Case study —</strong> Google Cloud and open-source stacks expose many data-plane APIs (e.g. Bigtable, Spanner client libraries) over gRPC for typed, multiplexed access.</li>
+            <li><strong>Case study —</strong> Model-serving platforms (TensorFlow Serving, NVIDIA Triton) commonly accept prediction RPCs with tensor Protobuf messages for low overhead.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="rest-api-design.html">REST API Design</a> — the JSON/HTTP alternative for public-facing APIs.</li>
-            <li><a href="graphql.html">GraphQL</a> — flexible query language for client-driven data fetching.</li>
-            <li><a href="api-gateway.html">API Gateway</a> — transcoding gRPC to REST/JSON for external consumers.</li>
-            <li><a href="api-authentication.html">API Authentication</a> — mTLS for service-to-service identity in gRPC.</li>
-            <li><a href="contract-testing.html">Contract Testing</a> — Protobuf schema compatibility testing with buf breaking.</li>
+            <li><a href="rest-api-design.html">REST API Design</a> — human-readable HTTP APIs for broad clients.</li>
+            <li><a href="graphql.html">GraphQL</a> — flexible reads for product-facing graphs.</li>
+            <li><a href="api-gateway.html">API Gateway</a> — JSON/OpenAPI transcoding at the edge.</li>
+            <li><a href="api-authentication.html">API Authentication</a> — mTLS and metadata tokens between services.</li>
+            <li><a href="contract-testing.html">Contract Testing</a> — proto compatibility gates in CI.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://grpc.io/docs" target="_blank" rel="noopener noreferrer">gRPC official documentation — grpc.io/docs</a></li>
-            <li><a href="https://buf.build" target="_blank" rel="noopener noreferrer">Buf schema registry and breaking-change detection — buf.build</a></li>
-            <li><a href="https://connectrpc.com/docs/protocol" rel="noopener noreferrer" target="_blank">Connect protocol specification</a> — HTTP-compatible gRPC alternative.</li>
-            <li><a href="https://cloud.google.com/blog/products/api-management/understanding-grpc-openapi-and-rest-and-when-to-use-them" target="_blank" rel="noopener noreferrer">Google Cloud — gRPC vs REST: Understanding gRPC, OpenAPI and REST and when to use them.</a></li>
-            <li><a href="https://envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_protocols/grpc" target="_blank" rel="noopener noreferrer">Envoy Proxy gRPC documentation — envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_protocols/grpc</a></li>
-            <li><a href="https://protobuf.dev/programming-guides/proto3" target="_blank" rel="noopener noreferrer">Protocol Buffers Language Guide (proto3) — protobuf.dev/programming-guides/proto3</a></li>
+            <li><a href="https://grpc.io/docs/what-is-grpc/introduction/" target="_blank" rel="noopener noreferrer">gRPC — Introduction (grpc.io)</a></li>
+            <li><a href="https://grpc.io/docs/what-is-grpc/core-concepts/" target="_blank" rel="noopener noreferrer">gRPC — Core concepts (RPC types, streaming)</a></li>
+            <li><a href="https://grpc.io/docs/guides/auth/" target="_blank" rel="noopener noreferrer">gRPC — Authentication guide</a></li>
+            <li><a href="https://grpc.io/docs/guides/health-checking/" target="_blank" rel="noopener noreferrer">gRPC — Health checking protocol</a></li>
+            <li><a href="https://grpc.io/docs/guides/error/" target="_blank" rel="noopener noreferrer">gRPC — Error handling</a></li>
+            <li><a href="https://protobuf.dev/programming-guides/proto3/" target="_blank" rel="noopener noreferrer">Protocol Buffers — Language Guide (proto3)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

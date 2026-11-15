@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>API Authentication — SA References</title>
-  <meta name="description" content="OAuth 2.0 flows, API keys, JWT structure and validation, mTLS for service-to-service auth, and token introspection vs local JWT validation.">
+  <meta name="description" content="OAuth 2.0 and OpenID Connect at API boundaries — PKCE, client credentials, device flow, JWT access tokens (RFC 6750, 9068), JWKS validation, introspection, and mTLS for service identity.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -46,8 +46,7 @@
       <a href="../communication-patterns/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-communication)"></span> Communication Patterns</a>
       <a href="../integration/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-integration)"></span> Integration</a>
       <a href="../data-architecture/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-data)"></span> Data Architecture</a>
-      <a href="../search/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-search)"></span> Search &amp; Retrieval</a>
-    </div>
+      </div>
     <div class="sidebar__section"><div class="sidebar__heading">Reliability &amp; Scale</div>
       <a href="../reliability/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-reliability)"></span> Reliability &amp; Resilience</a>
       <a href="../scalability/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-scalability)"></span> Scalability &amp; Performance</a>
@@ -96,96 +95,80 @@
             <span class="badge badge--secondary">Security</span>
           </div>
           <h1 class="article-header__title">API Authentication</h1>
-          <p class="article-header__desc">Mechanisms for establishing identity at API boundaries — OAuth 2.0 flows (authorization code + PKCE, client credentials, device code), API keys, JWT structure and local validation, mTLS for service-to-service identity, and token introspection.</p>
-          <div class="article-header__meta"><span>⏱ 15 min read</span></div>
+          <p class="article-header__desc">How APIs establish caller identity — OAuth 2.0 and OIDC flows, bearer JWT validation against JWKS, token introspection, API keys, and mTLS for machine-to-machine trust.</p>
+          <div class="article-header__meta"><span>⏱ 16 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>API authentication is the process of verifying the identity of the entity (user, service, or device) making an API request. Authentication answers "who are you?" — it does not answer "what can you do?" (that's authorisation). For APIs, the challenge is authenticating <em>stateless</em> HTTP requests efficiently and securely at scale.</p>
-          <p>The major authentication mechanisms for APIs are: <strong>API keys</strong> (simple opaque tokens), <strong>JWT (JSON Web Tokens)</strong> (self-contained, signed tokens carrying claims), <strong>OAuth 2.0</strong> (a delegated authorisation framework with multiple flows for different use cases), and <strong>mTLS (mutual TLS)</strong> (certificate-based mutual authentication, primarily for service-to-service). Each mechanism has specific use cases, security properties, and operational trade-offs.</p>
+          <p><strong>API authentication</strong> is how a resource server decides which principal—human user, OAuth client, service account, or device—is calling before it runs business logic. It answers “who is this?” and is distinct from authorisation (“what may they do?”).</p>
+          <p>For HTTP APIs the dominant standards are <strong>OAuth 2.0</strong> (delegated access and machine clients, <a href="https://www.rfc-editor.org/rfc/rfc6749.html" rel="noopener noreferrer" target="_blank">RFC 6749</a>), <strong>OpenID Connect</strong> (identity layer on OAuth 2.0 for login and <code>id_token</code> claims), <strong>JWT access tokens</strong> (<a href="https://www.rfc-editor.org/rfc/rfc9068.html" rel="noopener noreferrer" target="_blank">RFC 9068</a>) carried per <a href="https://www.rfc-editor.org/rfc/rfc6750.html" rel="noopener noreferrer" target="_blank">RFC 6750</a>, and <strong>mTLS</strong> or API keys where OAuth is unnecessary. Resource servers either validate JWTs locally via JWKS (<a href="https://www.rfc-editor.org/rfc/rfc7517.html" rel="noopener noreferrer" target="_blank">RFC 7517</a>) or call <strong>token introspection</strong> (<a href="https://www.rfc-editor.org/rfc/rfc7662.html" rel="noopener noreferrer" target="_blank">RFC 7662</a>).</p>
+          <p>A partner-facing REST API might accept only <code>Authorization: Bearer</code> JWTs whose <code>iss</code> and <code>aud</code> match the platform authorisation server; internal gRPC might require mutual TLS with SPIFFE identities instead of shared secrets in headers.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>HTTP is stateless — every request must carry its own credentials. Simple username/password per request is insecure (password exposure, no scope limitation) and inflexible (can't grant limited access to third parties). The evolution from Basic Auth → API keys → OAuth 2.0 reflects increasing requirements: multi-factor authentication, delegated third-party access, fine-grained scope limitation, and token revocation without requiring password changes.</p>
+          <p>HTTP does not carry sessions unless you add them. Sending passwords on every request exposes credentials, prevents scoped delegation to third-party apps, and offers no practical revocation path. OAuth 2.0 separates the <em>authorisation server</em> (issues tokens) from <em>resource servers</em> (consume tokens), so partners get least-privilege, time-bounded credentials without sharing user passwords.</p>
+          <p>OpenID Connect adds a standard login outcome: an <code>id_token</code> (JWT) with subject and profile claims for the client, while access tokens gate API calls. That split keeps authentication policy centralised and lets dozens of microservices validate the same token format.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>OAuth 2.0 Authorization Code + PKCE</strong> — any user-facing application (web SPA, mobile app) where a human grants access to their data.</li>
-            <li><strong>OAuth 2.0 Client Credentials</strong> — machine-to-machine: a service authenticating with another service with no human in the loop.</li>
-            <li><strong>OAuth 2.0 Device Code</strong> — devices with limited input capabilities (smart TVs, CLI tools) that can't open a browser.</li>
-            <li><strong>API keys</strong> — third-party developer access where full OAuth flow is unnecessary; server-to-server calls where the key is stored securely in secrets management.</li>
-            <li><strong>JWT (local validation)</strong> — high-volume APIs where the overhead of introspection requests per API call is prohibitive.</li>
-            <li><strong>mTLS</strong> — internal service-to-service communication in a zero-trust network; customer-to-service in high-security (banking, financial) contexts.</li>
+            <li><strong>Authorization Code + PKCE</strong> (<a href="https://www.rfc-editor.org/rfc/rfc7636.html" rel="noopener noreferrer" target="_blank">RFC 7636</a>) — browser SPAs and native apps where the user consents to delegated access; mandatory for public clients per OAuth 2.0 Security BCP.</li>
+            <li><strong>Client credentials</strong> — service-to-service calls with no interactive user; client authenticates with secret or mTLS at the token endpoint.</li>
+            <li><strong>Device authorization</strong> (<a href="https://www.rfc-editor.org/rfc/rfc8628.html" rel="noopener noreferrer" target="_blank">RFC 8628</a>) — TVs, printers, and CLIs that cannot host a secure redirect.</li>
+            <li><strong>JWT bearer validation</strong> — high-volume APIs where cryptographic verification plus claim checks scale better than per-request introspection.</li>
+            <li><strong>Token introspection</strong> — opaque tokens, immediate revocation requirements, or mixed token types from one authorisation server.</li>
+            <li><strong>API keys</strong> — simple server-side automation when OAuth client registration is heavy; never in browser code.</li>
+            <li><strong>mTLS</strong> — zero-trust service mesh or partner APIs where certificate SAN encodes workload identity.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>API keys in browser-side code</strong> — API keys embedded in JavaScript are exposed to anyone who reads the source.</li>
-            <li><strong>Long-lived JWTs without refresh token rotation</strong> — a stolen JWT remains valid until expiry; short expiry + refresh token reduces the window.</li>
-            <li><strong>OAuth Implicit flow</strong> — deprecated; access tokens in URL fragments are logged in browser history and server logs; use Authorization Code + PKCE instead.</li>
+            <li><strong>Implicit flow</strong> — removed from OAuth 2.0 Security BCP; tokens in URL fragments leak via history and referrer. Use Authorization Code + PKCE.</li>
+            <li><strong>Resource Owner Password Credentials</strong> — legacy only; trains users to type passwords into third-party apps. Prefer OIDC login redirects.</li>
+            <li><strong>Long-lived JWTs without refresh rotation</strong> — stolen bearer tokens remain valid until <code>exp</code>; pair short access tokens with refresh-token rotation (<a href="https://datatracker.ietf.org/doc/html/draft-ietf-oauth-refresh-token-rotation" rel="noopener noreferrer" target="_blank">rotation BCP</a>).</li>
+            <li><strong>API keys in front-end bundles</strong> — any user can extract them; use an OAuth public client and PKCE instead.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Public clients use Authorization Code with PKCE; services use client credentials; APIs validate JWTs locally or via introspection.</p>
+          <p>Public clients complete OIDC/OAuth at the authorisation server, receive access (and often refresh) tokens, and call resource APIs with <code>Authorization: Bearer</code>. The resource server validates JWTs via cached JWKS or calls introspection when tokens are opaque.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">sequenceDiagram
-    participant App as Client app
-    participant AS as Auth server
-    participant API as Resource API
-    App->>AS: Authorize with PKCE challenge
-    AS-->>App: Auth code
-    App->>AS: Exchange code plus verifier
-    AS-->>App: Access and refresh tokens
-    App->>API: Bearer JWT
-    API->>API: Verify JWKS signature and claims</div>
+    participant Client as Public client
+    participant AS as Authorization server
+    participant RS as Resource API
+    Client->>AS: Authorize code plus PKCE S256
+    AS-->>Client: Authorization code redirect
+    Client->>AS: POST token code and verifier
+    AS-->>Client: access_token id_token refresh_token
+    Client->>RS: Bearer access_token
+    RS->>RS: Verify JWT JWKS iss aud exp
+    Client->>AS: Refresh token grant
+    AS-->>Client: Rotated tokens</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Authorization Code + PKCE (user-facing SPA/mobile):
-  Browser/App
-    1. Generate code_verifier, code_challenge = SHA256(verifier)
-    2. Redirect to /authorize?response_type=code
-         &amp;code_challenge=...&amp;code_challenge_method=S256
-  Auth Server
-    3. User authenticates, grants consent
-    4. Redirect to app with ?code=AUTH_CODE
-  App
-    5. POST /token { code, code_verifier, client_id }
-  Auth Server
-    6. Verify code_verifier matches stored challenge
-    7. ← { access_token, refresh_token, id_token }
+              <pre class="architecture-diagram__canvas"><code>OIDC login + API access (simplified)
+  Client app
+    GET /.well-known/openid-configuration   (issuer metadata)
+    GET /authorize?response_type=code&code_challenge=...&scope=openid api
+  Authorization server
+    User authenticates; consent recorded
+    Redirect ?code=...
+  Client
+    POST /token { grant_type=authorization_code, code_verifier, client_id }
+    ← access_token (JWT), id_token (JWT), refresh_token
 
-Client Credentials (M2M):
-  Service A
-    POST /token { grant_type=client_credentials,
-                  client_id, client_secret }
-  Auth Server ← { access_token, expires_in }
-  Service A → GET /api/resource + Bearer token
+  Resource server (JWT profile RFC 9068)
+    Authorization: Bearer &lt;JWT&gt;
+    1. Resolve signing keys from iss/.well-known/jwks.json (cache + kid refresh)
+    2. Validate signature, exp, iss, aud (resource indicator RFC 8707 if used)
+    3. Map sub / client_id to internal principal
 
-JWT Structure:
-  Header.Payload.Signature   (Base64URL encoded, dot-separated)
-  
-  Header:  { "alg": "RS256", "typ": "JWT", "kid": "key-id-1" }
-  Payload: {
-    "sub": "user-42",
-    "iss": "https://auth.example.com",
-    "aud": ["https://api.example.com"],
-    "iat": 1714000000,
-    "exp": 1714003600,
-    "scope": "orders:read profile:read"
-  }
-  Signature: RSA-SHA256(base64url(header) + "." + base64url(payload), private_key)
+  Client credentials (M2M)
+    POST /token grant_type=client_credentials + client auth (secret or mTLS)
+    ← access_token (often no refresh)
 
-Local JWT Validation (no network call):
-  1. Fetch JWKS from iss/.well-known/jwks.json (cached, refreshed on kid miss)
-  2. Verify signature using public key matching kid header
-  3. Verify iss, aud, exp, nbf claims
-  4. Extract sub, scope, custom claims
-
-Token Introspection (RFC 7662 — real-time):
-  Resource Server → POST /introspect { token } → Auth Server
-  Auth Server ← { active: true, sub, scope, exp }
-  (adds latency; use for high-value ops or immediate revocation)</code></pre>
+  Introspection (opaque or high-assurance)
+    POST /introspect { token } → { active, sub, scope, exp, client_id }</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">PKCE browser flow, M2M client credentials, JWT structure, JWKS validation, and token introspection.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">OIDC authorisation-code flow with PKCE, JWT validation at the resource API, refresh rotation, and optional introspection for opaque tokens.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -193,88 +176,89 @@ Token Introspection (RFC 7662 — real-time):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>OAuth 2.0 enables delegated access without sharing passwords — third-party apps get limited, revocable tokens.</li>
-                <li>JWT local validation scales to millions of requests per second — no auth server lookup per request.</li>
-                <li>PKCE eliminates the authorisation code interception attack without requiring a client secret on public clients.</li>
-                <li>mTLS provides mutual identity verification — both client and server prove their identity, preventing impersonation.</li>
-                <li>Scoped tokens enforce least privilege at the token level — a token for <code>orders:read</code> can't mutate users.</li>
+                <li>OAuth 2.0 and OIDC are interoperable across vendors; metadata discovery (<a href="https://www.rfc-editor.org/rfc/rfc8414.html" rel="noopener noreferrer" target="_blank">RFC 8414</a>) reduces custom wiring.</li>
+                <li>JWT validation scales horizontally—no auth server lookup per request once JWKS is cached.</li>
+                <li>PKCE closes authorisation-code interception for public clients without embedding client secrets.</li>
+                <li>Scoped access tokens enforce least privilege at the credential layer.</li>
+                <li>mTLS binds identity to workload certificates, independent of bearer-token theft on the wire inside the mesh.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>JWTs cannot be revoked before expiry without an additional revocation list or introspection call.</li>
-                <li>OAuth 2.0 complexity — 6+ grant types, multiple token types, dozens of RFCs; easy to implement incorrectly.</li>
-                <li>API keys provide no scoping, expiry, or user identity by default; rotate them infrequently at your peril.</li>
-                <li>mTLS requires PKI management (certificate rotation, CA trust chains, revocation) which is operationally complex.</li>
-                <li>JWKS caching creates a window where a compromised key remains trusted until the cache TTL expires.</li>
+                <li>JWTs are not revocable by default until expiry unless you add deny lists, short TTLs, or introspection.</li>
+                <li>OAuth/OIDC surface area spans many RFCs—misconfigured redirect URIs, weak client auth, and algorithm confusion remain common.</li>
+                <li>API keys lack built-in scoping or rotation standards; operational discipline must compensate.</li>
+                <li>Introspection adds latency and couples availability to the authorisation server.</li>
+                <li>JWKS cache staleness can trust a rotated-but-still-cached signing key unless you handle <code>kid</code> misses correctly.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <h3>Authorization Code + PKCE</h3>
-          <p>PKCE (Proof Key for Code Exchange, RFC 7636) is mandatory for all public clients (SPAs, mobile apps) that cannot store a client secret. Generate a 32-byte cryptographically random <code>code_verifier</code>, compute <code>code_challenge = BASE64URL(SHA256(code_verifier))</code>, and send the challenge in the authorisation request. The auth server stores the challenge; when the app exchanges the code for tokens, it sends the verifier, which the server hashes and compares to the stored challenge. Without PKCE, an auth code stolen in transit (by a malicious app registered for the same redirect URI) can be exchanged for tokens.</p>
+          <h3>OAuth 2.0 grants and OIDC</h3>
+          <p>Use <strong>Authorization Code + PKCE</strong> for interactive clients. Register exact redirect URIs; reject open redirects. For SPAs, store refresh tokens in HTTP-only cookies where possible rather than <code>localStorage</code> to reduce XSS impact. Request <code>openid</code> scope when you need an <code>id_token</code>; validate <code>nonce</code> on the ID token per OpenID Connect Core. Machine clients use <strong>client credentials</strong> with confidential client authentication (secret, private-key JWT, or mTLS).</p>
 
-          <h3>JWT validation checklist</h3>
-          <p>Validate these claims on every request: <code>iss</code> (expected issuer URL), <code>aud</code> (must include your API's identifier), <code>exp</code> (must be in the future), <code>nbf</code> (not before, if present), and the signature (using the matching JWKS public key). Fetch JWKS at startup and cache; on a <code>kid</code> mismatch (new key), refresh the JWKS once. Never use the <code>none</code> algorithm — reject tokens with <code>"alg": "none"</code>.</p>
+          <h3>Access tokens and JWT validation</h3>
+          <p>Treat access tokens as credentials, not session cookies. For JWT access tokens, allow-list signing algorithms (reject <code>none</code> and unexpected <code>alg</code>). Validate <code>iss</code>, <code>aud</code> (or <code>resource</code> per RFC 8707), <code>exp</code>, and <code>nbf</code>. Use <code>scope</code> or structured <code>authorization_details</code> (RFC 9396) for coarse API permissions. Fetch JWKS on startup; on signature failure with unknown <code>kid</code>, refresh JWKS once before failing closed.</p>
 
-          <h3>Token introspection vs local JWT validation</h3>
-          <p><strong>Local validation</strong> uses the JWKS public key to verify the signature cryptographically without a network call — fast, scalable, but relies on expiry for revocation. <strong>Token introspection</strong> calls the auth server's <code>/introspect</code> endpoint on every request to check real-time token status — supports immediate revocation but adds latency (10–50ms) and a dependency on the auth server's availability. Strategy: use local validation for standard API calls; use introspection for high-value operations (money transfers, account deletion) or immediately after a revocation event is received via webhook.</p>
+          <h3>Bearer usage and introspection</h3>
+          <p>Send tokens only in the <code>Authorization</code> header (<a href="https://www.rfc-editor.org/rfc/rfc6750.html" rel="noopener noreferrer" target="_blank">RFC 6750</a>), not query strings (logged everywhere). Use introspection when tokens are opaque, when you must honour central revocation within seconds, or for step-up on high-value operations. Cache introspection results briefly with TTL bounded by token <code>exp</code>.</p>
 
-          <h3>Service-to-service with mTLS</h3>
-          <p>In a zero-trust network, every service presents a client certificate (SPIFFE/SVID format in service mesh environments). The server verifies the client certificate against the trusted CA. The service's identity is encoded in the certificate's Subject Alternative Name (SAN). Istio and Linkerd automate certificate issuance and rotation via the SPIRE or Cert Manager integration.</p>
-          <p>mTLS ensures that even if the network is compromised, an attacker without a valid certificate cannot impersonate a service.</p>
+          <h3>Refresh tokens and rotation</h3>
+          <p>Issue short access tokens (minutes) and longer refresh tokens bound to the client. Rotate refresh tokens on each use and detect reuse (invalidate token family). Pair with sender-constrained tokens (<a href="https://www.rfc-editor.org/rfc/rfc9449.html" rel="noopener noreferrer" target="_blank">DPoP</a> or mTLS sender-constrained access tokens) when theft of bearer tokens is a primary threat.</p>
 
-          <h3>API key management</h3>
-          <p>API keys should be: generated as cryptographically random values (32+ bytes, base64 or hex encoded); stored hashed (SHA-256) server-side — never store plaintext API keys; scoped to an explicit set of allowed operations; associated with a named consumer identity for attribution;</p>
-          <p>rotatable without service disruption (dual-key validity period during rotation); and auditable — every use logged with timestamp, key ID, and endpoint.</p>
+          <h3>API keys and mTLS</h3>
+          <p>Hash API keys at rest; expose only a prefix for support lookup. Attribute every call to a consumer ID for rate limits and audit. For mTLS, map certificate SAN (SPIFFE URI, DNS) to service principals; automate rotation via the mesh or cert-manager.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Long-lived access tokens with no refresh rotation</strong> — a stolen token remains valid for hours or days; use short-lived (15–60 min) access tokens with refresh token rotation.</li>
-            <li><strong>Accepting tokens signed with "none" algorithm</strong> — attackers craft tokens without a signature; always verify the algorithm against an allowlist.</li>
-            <li><strong>Not validating the <code>aud</code> claim</strong> — a valid token issued for service A is accepted by service B; always check that the audience includes your API identifier.</li>
-            <li><strong>Logging access tokens</strong> — tokens in access logs can be stolen from log aggregators; scrub tokens from logs.</li>
-            <li><strong>Using the Implicit flow</strong> — deprecated; access tokens in URL fragments are stored in browser history; migrate to Authorization Code + PKCE.</li>
-            <li><strong>Hardcoded API keys in source code</strong> — keys in Git history are effectively public; use secrets managers (AWS Secrets Manager, HashiCorp Vault).</li>
+            <li><strong>Algorithm confusion</strong> — accepting <code>HS256</code> with a public key or <code>none</code>; enforce algorithm allow-lists and key type matching.</li>
+            <li><strong>Skipped <code>aud</code> validation</strong> — tokens minted for another API are accepted; bind audience to your resource identifier.</li>
+            <li><strong>Tokens in logs</strong> — access tokens in query strings, error pages, or APM traces; scrub and use header-only bearer transport.</li>
+            <li><strong>Implicit or password grant in new systems</strong> — bypasses modern BCP controls.</li>
+            <li><strong>No refresh rotation</strong> — stolen refresh tokens grant indefinite access.</li>
+            <li><strong>Gateway forwards unverified JWTs</strong> — backends must not trust claims the edge did not validate.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is PKCE enforced for all public OAuth 2.0 clients (SPAs, mobile apps)?</li>
-            <li>Are JWT claims validated: iss, aud, exp, nbf, and signature?</li>
-            <li>Is the "none" algorithm rejected?</li>
-            <li>Are access tokens short-lived (≤ 1 hour) with refresh token rotation?</li>
-            <li>Are API keys stored hashed, not plaintext, in the auth database?</li>
-            <li>Are tokens scrubbed from application logs and error messages?</li>
-            <li>For service-to-service, is mTLS or client credentials used (not API keys)?</li>
-            <li>Is there a token revocation mechanism for high-value operations?</li>
+            <li>Is PKCE required for all public OAuth clients?</li>
+            <li>Does the authorisation server publish RFC 8414 metadata and a JWKS endpoint?</li>
+            <li>Are JWT access tokens validated for iss, aud, exp, signature, and allowed algorithms?</li>
+            <li>Are access token TTLs short with refresh rotation and reuse detection?</li>
+            <li>Is introspection or deny-listing defined for immediate revocation on sensitive operations?</li>
+            <li>Are API keys hashed, scoped, and never shipped in client-side code?</li>
+            <li>For M2M, is client credentials or mTLS used instead of shared API keys on the internet?</li>
+            <li>Are tokens excluded from logs, metrics labels, and support ticket attachments?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>SPA + REST API</strong> — React SPA uses Authorization Code + PKCE with Auth0; access tokens are 15-minute JWTs stored in memory (not localStorage); refresh tokens rotate on each use and are stored in httpOnly cookies.</li>
-            <li><strong>Microservice mesh</strong> — Istio enforces mTLS between all services; service identity is a SPIFFE URI in the X.509 certificate SAN; no per-request auth server lookup needed.</li>
-            <li><strong>Third-party developer API</strong> — API keys are issued per developer application; keys are stored hashed with HMAC-SHA256; each key carries a plan-tier label enforced at the gateway rate limiter.</li>
-            <li><strong>CLI tool / device</strong> — GitHub CLI uses the Device Code flow; the user opens a browser and enters a code displayed in the terminal; the CLI polls for the token until the user approves.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> ships a React storefront that uses Authorization Code + PKCE against its OIDC provider; 15-minute JWT access tokens stay in memory, refresh tokens rotate in HTTP-only cookies, and the order API validates <code>aud</code> against <code>https://api.meridian.example</code>.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> issues API keys only to server-side EDI partners; keys are SHA-256 hashed in the identity store and mapped to tier metadata consumed by the gateway rate limiter.</li>
+            <li><strong>Case study —</strong> GitHub’s REST API accepts personal access tokens and OAuth tokens as bearer credentials, documents required scopes, and rate-limits by authenticated identity rather than IP alone.</li>
+            <li><strong>Case study —</strong> Google’s device authorization flow (RFC 8628) powers CLI and TV login: the user approves on a second device while the constrained client polls the token endpoint.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="api-authorization.html">API Authorization</a> — after authentication, RBAC/ABAC determines what the identity can do.</li>
-            <li><a href="api-gateway.html">API Gateway</a> — JWT validation and OAuth enforcement happens at the gateway.</li>
-            <li><a href="grpc.html">gRPC</a> — mTLS is the standard authentication mechanism for gRPC service-to-service.</li>
+            <li><a href="api-authorization.html">API Authorization</a> — scopes and roles decide permitted actions after identity is established.</li>
+            <li><a href="api-gateway.html">API Gateway</a> — terminates TLS, validates JWTs, and forwards trusted identity headers.</li>
+            <li><a href="api-rate-limiting.html">API Rate Limiting</a> — quotas keyed on authenticated client or user ID.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.rfc-editor.org/rfc/rfc6749.html" target="_blank" rel="noopener noreferrer">RFC 6749 — The OAuth 2.0 Authorization Framework.</a></li>
-            <li><a href="https://www.rfc-editor.org/rfc/rfc7636.html" target="_blank" rel="noopener noreferrer">RFC 7636 — Proof Key for Code Exchange (PKCE).</a></li>
-            <li><a href="https://www.rfc-editor.org/rfc/rfc7519.html" target="_blank" rel="noopener noreferrer">RFC 7519 — JSON Web Token (JWT).</a></li>
-            <li><a href="https://www.rfc-editor.org/rfc/rfc7662.html" target="_blank" rel="noopener noreferrer">RFC 7662 — OAuth 2.0 Token Introspection.</a></li>
-            <li><a href="https://owasp.org/API-Security/" target="_blank" rel="noopener noreferrer">OWASP API Security Top 10 — Broken Authentication (API2:2023).</a></li>
-            <li><a href="https://datatracker.ietf.org/doc/draft-ietf-oauth-security-topics/" target="_blank" rel="noopener noreferrer">OAuth 2.0 Security Best Current Practice — draft-ietf-oauth-security-topics.</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc6749.html" rel="noopener noreferrer" target="_blank">RFC 6749 — OAuth 2.0 Authorization Framework</a></li>
+            <li><a href="https://openid.net/specs/openid-connect-core-1_0.html" rel="noopener noreferrer" target="_blank">OpenID Connect Core 1.0</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc7636.html" rel="noopener noreferrer" target="_blank">RFC 7636 — PKCE</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc6750.html" rel="noopener noreferrer" target="_blank">RFC 6750 — Bearer Token Usage</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc9068.html" rel="noopener noreferrer" target="_blank">RFC 9068 — JWT Profile for Access Tokens</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc7519.html" rel="noopener noreferrer" target="_blank">RFC 7519 — JSON Web Token (JWT)</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc7662.html" rel="noopener noreferrer" target="_blank">RFC 7662 — Token Introspection</a></li>
+            <li><a href="https://datatracker.ietf.org/doc/html/rfc9700" rel="noopener noreferrer" target="_blank">RFC 9700 — OAuth 2.0 Security Best Current Practice</a></li>
+            <li><a href="https://owasp.org/API-Security/editions/2023/en/0xa2-broken-authentication/" rel="noopener noreferrer" target="_blank">OWASP API Security — API2:2023 Broken Authentication</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
