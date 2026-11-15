@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>API Authorization — SA References</title>
-  <meta name="description" content="RBAC, ABAC, and ReBAC authorization models, JWT claims-based authz, Open Policy Agent, OAuth2 scopes, resource-based authorization, and attribute filtering in responses.">
+  <meta name="description" content="OAuth scopes, RBAC, ABAC, ReBAC, and OPA for API authorization — layered edge and service checks, object-level access, and OWASP BOLA prevention.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -23,7 +23,6 @@
     <div class="topnav__search" role="search">
       <svg class="search-icon" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m14 14 3 3"/></svg>
       <input type="search" id="topSearch" placeholder="Search articles…" autocomplete="off" aria-label="Search articles">
-      <a href="../search/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-search)"></span> Search &amp; Retrieval</a>
       <div class="search-results" id="topSearchResults" role="listbox"></div>
     </div>
     <div class="topnav__actions">
@@ -97,87 +96,71 @@
             <span class="badge badge--secondary">Security</span>
           </div>
           <h1 class="article-header__title">API Authorization</h1>
-          <p class="article-header__desc">Determining what authenticated identities are permitted to do — RBAC, ABAC, and ReBAC models, JWT claims-based authorization, Open Policy Agent (OPA), OAuth2 scopes, resource-based authorization, and field-level response filtering.</p>
-          <div class="article-header__meta"><span>⏱ 13 min read</span></div>
+          <p class="article-header__desc">What authenticated callers may do — OAuth 2.0 scopes at the gateway, RBAC and resource ownership in services, OPA policies, and ReBAC tuple stores.</p>
+          <div class="article-header__meta"><span>⏱ 14 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>API authorisation (authz) determines whether an authenticated identity is permitted to perform a requested action on a specific resource. Where authentication answers "who are you?", authorisation answers "what can you do?" The distinction matters architecturally: authentication happens at the edge (API gateway); authorisation may need to happen at the service level where domain context is available.</p>
-          <p>The three dominant authorisation models for APIs are:</p>
-          <ul>
-            <li><strong>RBAC (Role-Based Access Control)</strong> — permissions are assigned to roles; identities are assigned to roles. Simple and well-understood.</li>
-            <li><strong>ABAC (Attribute-Based Access Control)</strong> — permissions are evaluated based on arbitrary attributes of the subject, resource, action, and environment. Flexible but complex.</li>
-            <li><strong>ReBAC (Relationship-Based Access Control)</strong> — permissions are derived from the relationships between entities in a graph (e.g., Google Zanzibar). Powerful for social and collaborative systems.</li>
-          </ul>
+          <p><strong>API authorization</strong> decides whether an authenticated principal may perform an action on a specific resource. Authentication establishes identity; authorization enforces policy—roles, scopes, attributes, or relationships—on each request.</p>
+          <p>Production APIs combine layers: <strong>OAuth 2.0 scopes</strong> on access tokens for coarse, consent-backed API permissions; <strong>RBAC</strong> from identity claims for job functions; <strong>ABAC</strong> when decisions need resource metadata, time, or environment; and <strong>ReBAC</strong> when access follows sharing graphs (document co-owners, group inheritance). Policy engines such as <strong>Open Policy Agent (OPA)</strong> externalise Rego policies so services stay thin.</p>
+          <p>A billing API might require scope <code>invoices:read</code> at the gateway, then check that the caller’s organisation owns invoice <code>inv_123</code> inside the service—scope alone cannot express object-level ownership.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without authorisation, any authenticated user can access any resource — authentication alone is insufficient. Authorisation enforces the principle of least privilege: each identity gets exactly the access it needs for its role and nothing more. As systems grow in complexity, hardcoded <code>if (user.role == "admin")</code> checks become unmaintainable; externalising authorisation to a policy engine (OPA, Zanzibar) keeps it auditable, testable, and consistent across services.</p>
+          <p>Authenticated callers are not automatically trusted for every operation. Without authorization, any valid token could read or mutate any row. Least privilege requires evaluating policy on every call, preferably in code paths that understand domain invariants.</p>
+          <p>Hardcoded <code>if (role == "admin")</code> checks sprawl across services and diverge under pressure. Central policy (scopes at the edge, OPA or ReBAC stores for fine grain) keeps decisions auditable, versioned, and testable—especially when the same API serves partners, staff, and end users with different rules.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>RBAC — simple hierarchical permission structures (admin, editor, viewer).</li>
-            <li>ABAC — dynamic permissions based on resource attributes, time, location, or contract terms.</li>
-            <li>ReBAC — document sharing, social graphs, or any system where access is determined by ownership chains and group membership.</li>
-            <li>OPA — multi-service policy enforcement where policies need to be audited, version-controlled, and tested independently.</li>
+            <li><strong>OAuth scopes</strong> — partner and public APIs where users consent to capability bundles (<code>orders:write</code>, <code>profile:read</code>).</li>
+            <li><strong>RBAC</strong> — staff admin surfaces with stable role taxonomies (viewer, editor, admin).</li>
+            <li><strong>ABAC / OPA</strong> — healthcare, finance, or multi-tenant rules involving classification, department, contract tier, or request context.</li>
+            <li><strong>ReBAC</strong> — collaborative products where folders, teams, and inherited shares define access.</li>
+            <li><strong>Resource-based checks</strong> — any API returning or mutating instances by ID (orders, patient records, documents).</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Don't centralise all authorisation in the gateway when resource-level checks require domain context not available there.</li>
-            <li>Don't use ABAC when RBAC is sufficient — ABAC policies are harder to reason about and audit.</li>
+            <li>Do not rely on gateway scope checks alone when object ownership lives only in the domain database.</li>
+            <li>Do not adopt full ABAC when a small RBAC matrix suffices—policy complexity has operational cost.</li>
+            <li>Do not encode every permission as a JWT claim if roles change frequently and token TTL is long—short TTL, introspection, or server-side role lookup may be required.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>RBAC checks roles, ABAC evaluates attributes in OPA, ReBAC walks relation tuples, OAuth scopes gate coarse API access.</p>
+          <p>North-south traffic hits a gateway that enforces OAuth scopes and optional JWT claim presence; services enforce resource ownership, field filtering, and OPA or ReBAC policies where domain context is required.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    rbac["RBAC roles on JWT"]
-    abac["ABAC OPA policy engine"]
-    rebac["ReBAC tuple store expansion"]
-    scope["OAuth2 scopes on token"]
-    rbac --> abac --> rebac --> scope</div>
+    subgraph edge [API gateway]
+      scope[OAuth scope check]
+    end
+    subgraph svc [Domain service]
+      rbac[RBAC from claims]
+      own[Resource ownership]
+      opa[OPA ABAC]
+    end
+    subgraph rel [Relationship store]
+      rebac[ReBAC tuples]
+    end
+    scope --> rbac
+    rbac --> own
+    own --> opa
+    own --> rebac</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>RBAC (simple):
-  User → JWT { "roles": ["editor", "billing-viewer"] }
-  API check: if NOT roles.contains("editor") → 403
+              <pre class="architecture-diagram__canvas"><code>Layered authorization
+  Gateway
+    Validate JWT + required scope for route (e.g. orders:read)
+    Optional: reject missing role claim for /admin/*
 
-ABAC with OPA:
-  Request (input) → OPA Policy Engine → allow/deny
-  input = {
-    "user": { "id": "42", "department": "finance", "clearance": "L3" },
-    "resource": { "type": "report", "classification": "confidential", "owner_dept": "finance" },
-    "action": "read",
-    "env": { "time": "09:30", "ip": "10.0.0.1" }
-  }
-  
-  Rego policy:
-    allow {
-      input.action == "read"
-      input.resource.classification == "confidential"
-      input.user.department == input.resource.owner_dept
-      input.user.clearance >= "L3"
-    }
+  Service (order API)
+    Load order by id
+    if order.tenant_id != principal.tenant → 404 or 403
+    OPA input: user, order, action, env → allow/deny
 
-ReBAC (Zanzibar model):
-  Tuple store:
-    (document:doc-1, owner, user:alice)
-    (document:doc-1, viewer, group:engineering)
-    (group:engineering, member, user:bob)
-  
-  Check: can bob view doc-1?
-    → is (document:doc-1, viewer, user:bob)?
-    → expand viewer: {group:engineering}
-    → is bob member of engineering? → yes → ALLOW
-
-OAuth2 Scopes (coarse-grained):
-  Token: { scope: "orders:read invoices:write" }
-  orders:read  → GET /orders, GET /orders/{id}
-  invoices:write → POST /invoices, PUT /invoices/{id}
-  
-  Gateway enforces scope → service enforces resource ownership</code></pre>
+  ReBAC (sharing)
+    Tuple: (document:42, viewer, user:alice)
+    Check can(user, view, document:42) via graph expansion</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Role checks in JWT, OPA Rego on rich input, Zanzibar-style graph expansion, scope enforcement at gateway.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Scope enforcement at the edge, RBAC and ownership inside services, optional OPA and ReBAC for fine-grained policy.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -185,86 +168,87 @@ OAuth2 Scopes (coarse-grained):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>RBAC is simple to understand, implement, audit, and explain to stakeholders.</li>
-                <li>ABAC enables fine-grained, dynamic policies without code changes — policy-as-data.</li>
-                <li>OPA decouples policy from service code — policies can be tested, versioned, and deployed independently.</li>
-                <li>OAuth2 scopes provide coarse-grained, user-consented authorisation without the server needing to know all permissions upfront.</li>
-                <li>ReBAC scales to complex permission graphs that RBAC can't express without role explosion.</li>
+                <li>OAuth scopes give partners a consent-aligned, documentable permission surface in OpenAPI security schemes.</li>
+                <li>RBAC is easy to explain to auditors and product owners.</li>
+                <li>OPA decouples policy from microservice code; policies ship as bundles with tests.</li>
+                <li>ReBAC models sharing without hundreds of bespoke roles.</li>
+                <li>Layered checks align with zero trust: never trust the network, always re-verify policy.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>RBAC suffers from "role explosion" — you eventually need hundreds of roles to express fine-grained policies.</li>
-                <li>ABAC policies can become complex to reason about and may have unintended interactions.</li>
-                <li>OPA adds a network call (or sidecar overhead) for each authorisation check unless embedded; latency must be budgeted.</li>
-                <li>ReBAC tuple stores require careful consistency management — stale permissions may be evaluated.</li>
-                <li>JWT claims-based authz may have stale claims if the token TTL is long and roles change.</li>
+                <li>RBAC suffers role explosion when permissions are fine-grained.</li>
+                <li>ABAC policies can interact in surprising ways without rigorous testing.</li>
+                <li>OPA and ReBAC add latency and infrastructure unless embedded as sidecars with warm caches.</li>
+                <li>JWT role claims lag identity-provider updates for the token’s lifetime.</li>
+                <li>Splitting gateway vs service responsibility confuses teams unless documented clearly.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <h3>Scopes vs roles vs permissions</h3>
-          <p><strong>OAuth2 scopes</strong> represent what the token is allowed to do — typically coarse-grained and user-consented (e.g., <code>read:profile</code>, <code>write:orders</code>). They are defined at the application level. <strong>Roles</strong> represent job functions (admin, editor); a user may have multiple roles. <strong>Permissions</strong> are fine-grained operations (e.g., <code>order.cancel</code>, <code>user.delete</code>).</p>
-          <p>The best practice is a layered model: gateway enforces scopes, service enforces roles and fine-grained permissions.</p>
+          <h3>Scopes, roles, and permissions</h3>
+          <p><strong>Scopes</strong> label what an access token may attempt—typically API-wide and user-consented (<a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-3.3" rel="noopener noreferrer" target="_blank">RFC 6749 §3.3</a>). <strong>Roles</strong> reflect job functions; map roles to permissions in the identity provider or locally. <strong>Permissions</strong> are atomic (<code>invoice.void</code>). Document required scopes per operation in OpenAPI; gateway plugins reject missing scopes before traffic reaches services.</p>
 
-          <h3>Open Policy Agent (OPA)</h3>
-          <p>OPA is a general-purpose policy engine that evaluates policies written in the <strong>Rego</strong> language. Policies take a JSON input document (the authorisation request context) and return a decision (allow/deny + optional data). OPA can be deployed as: a sidecar (<code>opa</code> process alongside the service), an SDK embedded in the service, or a central policy service (with higher latency). Keep policies testable — OPA provides <code>opa test</code> for unit testing Rego policies.</p>
-          <p>Use OPA bundles to distribute policy versions with the same CI/CD pipeline as code.</p>
+          <h3>Resource-level and function-level checks</h3>
+          <p>Prevent <strong>BOLA/IDOR</strong> (OWASP API1) by validating the principal’s relationship to each resource instance—owner, tenant, or explicit grant. Prevent <strong>broken function level authorization</strong> (API5) by protecting admin routes server-side, not only in the UI. Return <code>404</code> when hiding existence is safer than <code>403</code>.</p>
 
-            <h3>Resource-based authorisation</h3>
-            <p>Resource-based authz checks whether the requesting identity owns or has been granted access to the specific resource instance — not just the resource type. Example: user A can read order #42 (because they own it) but not order #99 (owned by user B). This check requires domain context (the resource's owner field) and must happen inside the service, not at the gateway. Common patterns: automatically filter collection queries with <code>WHERE owner_id = $currentUser</code>, and explicitly check ownership before returning individual items.</p>
-          <p>Return <code>404 Not Found</code> (rather than <code>403 Forbidden</code>) when the caller should not know the resource exists — to avoid enumeration attacks.</p>
+          <h3>OPA and ABAC</h3>
+          <p>Send a JSON <code>input</code> document (subject, resource, action, environment) to OPA; evaluate Rego policies; cache allow decisions with tight TTL for read-heavy paths. Version policies in Git; run <code>opa test</code> in CI. Use ABAC when attributes like data classification or geography matter more than static roles.</p>
 
-          <h3>Attribute filtering in responses</h3>
-          <p>Sometimes a caller is allowed to read a resource but should not see all fields — a non-admin seeing a user record should not see <code>ssn</code>, <code>salary</code>, or internal notes. Implement field-level filtering in the service layer based on the caller's role/attributes, not in the API gateway. Document which fields are returned for each role in the OpenAPI spec. Consider separate response schemas per access level rather than conditional field omission — easier to test and document.</p>
+          <h3>ReBAC and OpenFGA</h3>
+          <p>Model tuples <code>(object, relation, subject)</code> and evaluate checks via graph traversal (Google Zanzibar). Open-source engines (OpenFGA, SpiceDB, Ory Keto) offer gRPC check APIs. Prefer ReBAC when permissions derive from membership, sharing links, and inheritance—not from a flat role list.</p>
 
-          <h3>Google Zanzibar / ReBAC</h3>
-          <p>Zanzibar is Google's global, consistent authorisation system powering Google Drive, Calendar, and YouTube. It stores <em>tuples</em> (object, relation, subject) and evaluates permission checks by traversing relation graphs. Open-source implementations include <strong>OpenFGA</strong>, <strong>Ory Keto</strong>, and <strong>Authzed/SpiceDB</strong>. Use ReBAC when permissions are defined by structural relationships (sharing, ownership, group membership) rather than flat role assignments.</p>
+          <h3>Response shaping</h3>
+          <p>Authorisation includes <em>which fields</em> a caller may see. Filter sensitive attributes in the domain layer based on roles; express separate response schemas in OpenAPI where feasible.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Object-level authorisation bypass (IDOR)</strong> — OWASP API1: the API checks if the user can access the resource type but not whether they own the specific object. <code>GET /invoices/999</code> returns another user's invoice.</li>
-            <li><strong>Function-level authorisation bypass</strong> — OWASP API5: admin-only endpoints are hidden from the UI but not protected server-side; an attacker calls them directly.</li>
-            <li><strong>Stale JWT claims</strong> — a user's role is downgraded but their JWT (issued with the old role) remains valid for its full TTL; use short TTLs or token introspection for role-sensitive operations.</li>
-            <li><strong>Over-permissive scopes</strong> — issuing <code>*:write</code> when the client only needs <code>orders:write</code> violates least privilege.</li>
-            <li><strong>Missing resource ownership check in collections</strong> — <code>GET /orders</code> returns all orders in the database instead of only the calling user's orders.</li>
+            <li><strong>Scope-only security</strong> — token with <code>orders:read</code> can read every order ID; missing tenant filter.</li>
+            <li><strong>Wildcard scopes</strong> — issuing <code>admin:*</code> or <code>*:write</code> for convenience.</li>
+            <li><strong>Trusting client-supplied tenant headers</strong> without binding to token claims.</li>
+            <li><strong>Stale admin in JWT</strong> — demoted admin retains access until token expiry.</li>
+            <li><strong>Policy only in the gateway</strong> — cannot see database ownership or field-level rules.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is every resource endpoint checking object-level ownership (not just resource-type access)?</li>
-            <li>Are admin-only endpoints protected server-side, not just hidden in the UI?</li>
-            <li>Are OAuth2 scopes defined at the least-privilege level (narrow, not wildcard)?</li>
-            <li>Are field-level access controls applied to sensitive fields in responses?</li>
-            <li>Is authorisation logic externalised and testable (OPA policies with unit tests)?</li>
-            <li>Are collection endpoints filtered to the calling identity's owned resources?</li>
-            <li>Is 404 returned (not 403) when the resource exists but the caller should not know?</li>
-            <li>Are role/permission changes reflected in tokens within an acceptable time window (short TTL or revocation)?</li>
+            <li>Does every mutating endpoint verify object-level access, not only scope?</li>
+            <li>Are admin and internal routes protected independently of the SPA?</li>
+            <li>Are OAuth scopes narrow and listed per route in OpenAPI?</li>
+            <li>Is there a documented split: gateway scopes vs service ownership checks?</li>
+            <li>Are OPA/ReBAC policies tested in CI?</li>
+            <li>Are sensitive response fields filtered by role?</li>
+            <li>Is token TTL compatible with how fast roles must take effect?</li>
+            <li>Do collection queries automatically scope to the caller’s tenant or user?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Multi-tenant SaaS</strong> — users belong to an organisation; all data queries are automatically scoped to <code>WHERE org_id = current_org</code>; cross-org access requires an explicit sharing grant stored in a ReBAC tuple store.</li>
-            <li><strong>Healthcare API</strong> — ABAC policy: a clinician can access a patient record if (a) they are assigned to the patient's care team AND (b) the record classification matches their clearance AND (c) the access is within working hours from an approved network.</li>
-            <li><strong>Developer platform</strong> — OPA policies govern which CI/CD pipelines can deploy to which environments; policies are stored in Git alongside application code; changes require a PR with peer review and automated Rego unit tests.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> requires scope <code>catalog:read</code> at Kong, then filters product rows with <code>WHERE merchant_id = :principal_merchant</code> in the catalog service.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> stores driver–depot relationships in OpenFGA; a driver may see only shipments for depots where <code>driver</code> relation holds.</li>
+            <li><strong>Case study —</strong> Google Zanzibar powers consistent sharing checks across Drive-style products using global tuple storage and Zookie consistency tokens.</li>
+            <li><strong>Case study —</strong> Stripe documents restricted API keys with explicit resource and permission lists—scope-like granularity without full OAuth for merchant automation.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="api-authentication.html">API Authentication</a> — authentication must precede authorisation.</li>
-            <li><a href="api-gateway.html">API Gateway</a> — coarse-grained scope enforcement at the gateway layer.</li>
-            <li><a href="openapi.html">OpenAPI Specification</a> — document security schemes and required scopes per endpoint.</li>
+            <li><a href="api-authentication.html">API Authentication</a> — identity and token validation precede authorization.</li>
+            <li><a href="api-gateway.html">API Gateway</a> — enforces coarse scopes and routes to services.</li>
+            <li><a href="openapi.html">OpenAPI Specification</a> — documents <code>securitySchemes</code> and required scopes.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://owasp.org/API-Security/" target="_blank" rel="noopener noreferrer">OWASP API Security Top 10 — API1 (Broken Object Level Authorization) and API5 (Broken Function Level Authorization).</a></li>
-            <li><a href="https://research.google/pubs/pub48190/" target="_blank" rel="noopener noreferrer">Google Zanzibar: Google&#x27;s Consistent, Global Authorization System (USENIX ATC 2019).</a></li>
-            <li><a href="https://www.openpolicyagent.org/docs" rel="noopener noreferrer" target="_blank">Open Policy Agent documentation</a> — policy-as-code authorization.</li>
-            <li><a href="https://openfga.dev/docs" target="_blank" rel="noopener noreferrer">OpenFGA (Fine-Grained Authorization) — openfga.dev</a></li>
-            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-162/final" target="_blank" rel="noopener noreferrer">NIST SP 800-162 — Guide to Attribute Based Access Control (ABAC).</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc6749.html" rel="noopener noreferrer" target="_blank">RFC 6749 — OAuth 2.0 scopes</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc8707.html" rel="noopener noreferrer" target="_blank">RFC 8707 — Resource Indicators</a></li>
+            <li><a href="https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/" rel="noopener noreferrer" target="_blank">OWASP API1 — Broken Object Level Authorization</a></li>
+            <li><a href="https://owasp.org/API-Security/editions/2023/en/0xa5-broken-function-level-authorization/" rel="noopener noreferrer" target="_blank">OWASP API5 — Broken Function Level Authorization</a></li>
+            <li><a href="https://research.google/pubs/pub48190/" rel="noopener noreferrer" target="_blank">Google Zanzibar (USENIX ATC 2019)</a></li>
+            <li><a href="https://www.openpolicyagent.org/docs/latest/" rel="noopener noreferrer" target="_blank">Open Policy Agent documentation</a></li>
+            <li><a href="https://openfga.dev/docs" rel="noopener noreferrer" target="_blank">OpenFGA documentation</a></li>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-162/final" rel="noopener noreferrer" target="_blank">NIST SP 800-162 — ABAC guide</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

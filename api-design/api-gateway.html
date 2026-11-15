@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>API Gateway — SA References</title>
-  <meta name="description" content="API Gateway as the entry point for auth, rate limiting, request transformation, routing, SSL termination, and the relationship with service mesh and BFF patterns.">
+  <meta name="description" content="API gateway patterns for north-south traffic — OAuth/JWT validation, rate limits, Gateway API, Kong, mesh and BFF layering, and token exchange at the edge.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -46,8 +46,7 @@
       <a href="../communication-patterns/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-communication)"></span> Communication Patterns</a>
       <a href="../integration/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-integration)"></span> Integration</a>
       <a href="../data-architecture/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-data)"></span> Data Architecture</a>
-      <a href="../search/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-search)"></span> Search &amp; Retrieval</a>
-    </div>
+      </div>
     <div class="sidebar__section"><div class="sidebar__heading">Reliability &amp; Scale</div>
       <a href="../reliability/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-reliability)"></span> Reliability &amp; Resilience</a>
       <a href="../scalability/index.html" class="sidebar__link"><span class="sidebar__dot" style="background:var(--cat-scalability)"></span> Scalability &amp; Performance</a>
@@ -96,76 +95,71 @@
             <span class="badge badge--secondary">Essential</span>
           </div>
           <h1 class="article-header__title">API Gateway</h1>
-          <p class="article-header__desc">A single entry point for all API traffic that handles cross-cutting concerns — authentication, authorisation, rate limiting, request transformation, routing, and SSL termination — abstracting the internal service topology from external consumers.</p>
-          <div class="article-header__meta"><span>⏱ 13 min read</span></div>
+          <p class="article-header__desc">The edge entry point for APIs — TLS, JWT and scope enforcement, routing, rate limits, and how gateways complement service meshes and BFFs.</p>
+          <div class="article-header__meta"><span>⏱ 14 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>An API gateway is a server that acts as the single entry point into a system from the outside world. It sits between clients and backend services, intercepting all API requests and applying a pipeline of cross-cutting concerns before forwarding the request to the appropriate upstream service and returning the response.</p>
-          <p>Core responsibilities of an API gateway include: routing requests to the correct backend, enforcing authentication and authorisation, rate limiting and throttling, SSL/TLS termination, request and response transformation, protocol translation (e.g., REST to gRPC), logging, and observability injection (trace IDs). Popular implementations include Kong, AWS API Gateway, Azure API Management, Nginx, Traefik, and Envoy-based solutions (such as Gloo Edge and Ambassador).</p>
+          <p>An <strong>API gateway</strong> is the controlled entry point for north-south API traffic. It terminates TLS, authenticates callers, enforces coarse authorization and rate limits, routes requests to upstream services, and injects observability context—without exposing internal hostnames, ports, or topology to clients.</p>
+          <p>Gateways implement a <strong>cross-cutting pipeline</strong> (authn/authz, throttling, WAF, protocol translation, request/response transformation) described in microservices literature and cloud reference architectures. They complement <strong>service meshes</strong> (east-west mTLS and policy) and optional <strong>BFFs</strong> (client-specific aggregation behind the gateway).</p>
+          <p>Implementations range from self-managed Kong or Envoy Gateway to managed AWS API Gateway, Azure API Management, and Kubernetes <strong>Gateway API</strong> resources—same pattern, different operational models.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without an API gateway, every microservice must independently implement authentication, rate limiting, TLS, and logging. This creates duplication, inconsistency, and a long tail of security vulnerabilities when teams implement these differently. The gateway centralises these concerns at the edge, allowing service teams to focus on business logic rather than infrastructure plumbing.</p>
-          <p>From a client perspective, the gateway provides a stable external surface: internal service URLs, ports, and topology can change without affecting consumers. The gateway also solves the protocol mismatch problem — external clients expect REST over HTTPS while internal services may communicate over gRPC or message queues.</p>
+          <p>Without a gateway, every service would duplicate JWT validation, quota enforcement, TLS configuration, and trace header propagation—leading to inconsistent security and painful audits. A gateway gives platform teams one place to apply organisation-wide policy while product teams focus on domain code.</p>
+          <p>Clients need a stable external URL and contract even when services split, merge, or move behind gRPC. The gateway abstracts churn and can translate protocols (HTTP/JSON at the edge, gRPC inside) or route API versions to different upstream clusters.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Microservices or SOA architectures where multiple backend services must be exposed as a unified API surface.</li>
-            <li>Any system requiring centralised authentication, rate limiting, or WAF (Web Application Firewall) enforcement.</li>
-            <li>When external clients (third-party developers, mobile apps, partners) need a stable, versioned API surface.</li>
-            <li>Protocol translation: exposing gRPC or WebSocket backends to HTTP/REST clients.</li>
-            <li>Canary deployments or A/B testing by routing traffic percentages to different service versions.</li>
+            <li>Multiple backend services exposed as one product API surface.</li>
+            <li>Partner, mobile, or public APIs requiring centralized OAuth scope enforcement and rate tiers.</li>
+            <li>Canary, blue/green, or percentage-based routing to new service versions.</li>
+            <li>TLS termination, WAF, and DDoS protection at the perimeter.</li>
+            <li>REST or HTTP front-ends to internal gRPC, WebSocket, or queue-driven workers.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Pure internal service mesh communication</strong> — east-west traffic between services is better handled by a service mesh (Istio, Linkerd); the gateway is for north-south (external) traffic.</li>
-            <li><strong>Single monolithic application</strong> — a gateway adds latency and operational complexity without providing benefits when there is only one backend.</li>
-            <li><strong>Simple prototypes</strong> — the setup overhead of a gateway is not justified until you have multiple services or security requirements.</li>
+            <li>Single monolith with no external consumers—gateway hop adds latency without benefit.</li>
+            <li>Pure internal service-to-service traffic—use mesh sidecars instead of an edge gateway.</li>
+            <li>When the team lacks automation for gateway config—manual UI drift becomes outages.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The gateway terminates TLS, authenticates, rate-limits, routes, and observes north-south traffic before backends.</p>
+          <p>Internet clients hit a highly available gateway cluster; the pipeline validates bearer tokens, applies quotas, routes by path, and forwards trusted identity to stateless upstreams. Mesh handles service-to-service identity inside the cluster.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    inet["Internet"] --> gw["API Gateway TLS auth limits route observe"]
-    gw --> u["Users service"]
-    gw --> o["Orders service"]
-    gw --> p["Products service"]
-    gw -. north-south .- mesh["Service mesh east-west"]</div>
+    clients[External clients]
+    gw[API Gateway pipeline]
+    bffm[Mobile BFF]
+    bffw[Web BFF]
+    svcA[Orders service]
+    svcB[Catalog service]
+    mesh[Service mesh mTLS]
+    clients --> gw
+    gw --> bffm
+    gw --> bffw
+    gw --> svcA
+  gw --> svcB
+    svcA -.-> mesh
+    svcB -.-> mesh</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Internet
-   │
-   ▼
-[API Gateway]
-  ┌────────────────────────────────────────────┐
-  │ 1. SSL Termination (HTTPS → HTTP internal) │
-  │ 2. Auth: validate JWT / API key            │
-  │ 3. Rate limiting (per key/IP/endpoint)     │
-  │ 4. Request transformation (headers, body)  │
-  │ 5. Routing based on path/method            │
-  │ 6. Load balancing to upstream instances    │
-  │ 7. Response transformation                 │
-  │ 8. Logging / metrics / trace injection     │
-  └────────────────────────────────────────────┘
-   │              │               │
-   ▼              ▼               ▼
-[Users Svc]  [Orders Svc]  [Products Svc]
-(gRPC)       (REST)        (REST)
+              <pre class="architecture-diagram__canvas"><code>Gateway pipeline (north-south)
+  1. TLS termination
+  2. WAF / bot protection (optional)
+  3. JWT or API key authentication
+  4. OAuth scope / claim checks
+  5. Rate limiting (Redis or edge store)
+  6. Routing + load balancing
+  7. Transform headers (trace id, user id)
+  8. Timeout, retry budget, circuit breaker
 
-Service Mesh vs API Gateway:
-  API Gateway    → north-south traffic (client ↔ cluster boundary)
-  Service Mesh   → east-west traffic  (service ↔ service inside cluster)
-  Both           → can coexist; Istio ingress gateway blurs the boundary
-
-BFF + Gateway layering:
-  Mobile Client → API Gateway → BFF (mobile) → [Services...]
-  Web Client    → API Gateway → BFF (web)    → [Services...]
-  Gateway handles: auth, rate limit, TLS
-  BFF handles:    aggregation, transformation, client-specific logic</code></pre>
+Patterns
+  Edge gateway + mesh: gateway = external policy; mesh = internal mTLS
+  Gateway + BFF: gateway = security/quotas; BFF = aggregation per client type
+  Two-tier gateway: regional edge + cluster ingress (Kubernetes Gateway API)</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Gateway pipeline to user, order, and product services; contrasts mesh east-west with optional BFF layering.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Highly available gateway in front of BFFs and domain services; service mesh secures east-west calls.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -173,90 +167,91 @@ BFF + Gateway layering:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Centralised enforcement of auth, rate limiting, and security policies — implemented once, applied uniformly.</li>
-                <li>Hides internal service topology from external consumers; backend can be refactored freely.</li>
-                <li>Single point for TLS termination, certificate management, and header injection.</li>
-                <li>Enables traffic routing for canary deployments, blue/green switches, and A/B tests.</li>
-                <li>Reduces duplication of cross-cutting concerns across service teams.</li>
+                <li>Uniform OAuth/JWT validation and rate limits across all routes.</li>
+                <li>Stable public API while internal topology evolves.</li>
+                <li>Central TLS and certificate management.</li>
+                <li>Traffic management for canaries and incident isolation.</li>
+                <li>Frees domain services from perimeter concerns.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Single point of failure — gateway outage takes down all APIs; requires HA deployment (multiple instances + health checks).</li>
-                <li>Added latency per request from the additional network hop and processing pipeline.</li>
-                <li>Can become a bottleneck or a "smart pipe" anti-pattern if too much business logic migrates into it.</li>
-                <li>Configuration management is complex at scale; declarative config (Kong declarative, AWS CDK) helps but adds tooling overhead.</li>
-                <li>Vendor lock-in with managed cloud gateways (AWS API Gateway, Azure APIM) — migrating later is costly.</li>
+                <li>HA gateways are mandatory—otherwise a single chokepoint outage drops all APIs.</li>
+                <li>Extra latency hop and plugin CPU cost per request.</li>
+                <li>Risk of “fat gateway” anti-pattern with business logic in plugins.</li>
+                <li>Managed gateways can create vendor lock-in for policies and analytics.</li>
+                <li>Config sprawl without GitOps, declarative sync, or review workflows.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <h3>Authentication at the gateway</h3>
-          <p>The gateway validates incoming credentials and forwards a trusted identity to backend services. For JWT-based auth: the gateway verifies the signature and expiry, then either forwards the original token or exchanges it for a shorter-lived internal token (token exchange / token relay). For API keys: the gateway maps the key to a consumer identity and attaches metadata (consumer ID, plan limits). Backend services should trust the gateway's verified identity header and not repeat JWT validation.</p>
+          <h3>Authentication patterns at the edge</h3>
+          <p>Validate JWTs against issuer JWKS (<a href="https://www.rfc-editor.org/rfc/rfc6750.html" rel="noopener noreferrer" target="_blank">RFC 6750</a> bearer). Enforce <code>exp</code>, <code>iss</code>, <code>aud</code>, and required scopes before routing. Options: <strong>pass-through</strong> (forward bearer token), <strong>token exchange</strong> (<a href="https://www.rfc-editor.org/rfc/rfc8693.html" rel="noopener noreferrer" target="_blank">RFC 8693</a>) to mint a downstream token, or <strong>terminate and inject</strong> trusted headers (<code>X-User-Id</code>) that backends accept only from the gateway network path. Never forward unverified claims.</p>
 
-          <h3>Rate limiting strategies</h3>
-          <p>Apply rate limits at multiple granularities: per API key, per IP, per endpoint, and per consumer plan tier. Use a distributed counter (Redis) for multi-instance gateways to ensure limits are enforced globally. Return <code>429 Too Many Requests</code> with <code>Retry-After</code> and <code>X-RateLimit-*</code> headers. Consider sliding window algorithms over fixed windows to prevent burst traffic at window boundaries.</p>
+          <h3>Authorization boundary</h3>
+          <p>Gateway enforces route-level scopes and optional role presence; services enforce ownership and field rules (see <a href="api-authorization.html">API Authorization</a>). Document the split in platform runbooks.</p>
 
-          <h3>Request and response transformation</h3>
-          <p>Gateways can transform requests (add/remove/rename headers, rewrite paths, inject correlation IDs) and responses (strip internal headers, reshape payloads, aggregate from multiple upstreams). Limit transformation complexity at the gateway — complex transformation logic belongs in a BFF. Keep gateway plugins thin; fat plugins become an unmaintainable hidden service.</p>
+          <h3>Rate limiting and resilience</h3>
+          <p>Apply per-consumer and per-route quotas (see <a href="api-rate-limiting.html">API Rate Limiting</a>). Configure upstream timeouts, retry limits (only for idempotent routes), and circuit breakers per route. Return <a href="https://www.rfc-editor.org/rfc/rfc9457.html" rel="noopener noreferrer" target="_blank">RFC 9457</a> problem details on gateway-generated errors.</p>
 
-          <h3>Service mesh vs API gateway boundary</h3>
-          <p>A service mesh (Istio, Linkerd) manages mTLS, observability, and traffic policies for east-west (internal) traffic. An API gateway manages north-south (external-to-internal) traffic. The two complement each other. In Kubernetes, an Istio ingress gateway or Gateway API resource can handle both, but many organisations run a dedicated API gateway at the edge (Kong, AWS API Gateway) and Istio internally.</p>
-          <p>The key rule: don't put business logic in either; keep them as infrastructure concerns.</p>
-
-          <h3>Kong, AWS API Gateway, and Azure APIM compared</h3>
+          <h3>Gateway deployment patterns</h3>
           <ul>
-            <li><strong>Kong (open source)</strong> — plugin-based, Lua/Wasm/Go plugins, runs on Nginx; deployable on any infrastructure; self-managed HA requires effort.</li>
-            <li><strong>AWS API Gateway</strong> — serverless, no capacity management, tight AWS integration (Lambda, Cognito, IAM); limited transformation capabilities without Lambda authorisers.</li>
-            <li><strong>Azure API Management</strong> — full lifecycle management platform with developer portal, policy engine (XML-based), built-in analytics; more opinionated than Kong.</li>
-            <li><strong>Nginx + Lua / Traefik</strong> — lightweight, config-as-code, good for container environments; requires more custom plugin development for advanced auth flows.</li>
+            <li><strong>Central edge cluster</strong> — Kong/Envoy behind global load balancer; good for multi-region public APIs.</li>
+            <li><strong>Managed serverless</strong> — AWS API Gateway + Lambda or HTTP integrations; minimal ops, AWS-centric auth (IAM, Cognito).</li>
+            <li><strong>Kubernetes Gateway API</strong> — portable HTTPRoute, GatewayClass; pairs with Envoy Gateway or Istio ingress.</li>
+            <li><strong>Two-layer</strong> — CDN/WAF edge + in-cluster ingress gateway for defence in depth.</li>
           </ul>
+
+          <h3>Mesh and BFF coexistence</h3>
+          <p>Use the gateway for external clients; mesh for internal mTLS and L7 policy between services. Place BFFs behind the gateway when mobile and web need different aggregates—the gateway still handles auth and quotas; BFFs stay thin orchestrators.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Single-instance gateway</strong> — no redundancy; gateway restart causes full API outage.</li>
-            <li><strong>Business logic creep</strong> — teams add validation, enrichment, and orchestration to gateway plugins; it becomes an untestable service without a deployment pipeline.</li>
-            <li><strong>Misconfigured rate limits</strong> — limits set too high provide no protection; limits set too low block legitimate traffic spikes.</li>
-            <li><strong>Token forwarding without validation</strong> — gateway passes the incoming JWT header to backends without verifying it; an attacker can forge claims.</li>
-            <li><strong>Config drift</strong> — gateway configuration is managed manually through a UI, diverging from source control; reproductions fail, rollbacks are guesswork.</li>
+            <li><strong>Unverified JWT pass-through</strong> — backends trust forged bearer tokens.</li>
+            <li><strong>Business logic in plugins</strong> — untested Lua/Wasm becomes a hidden monolith.</li>
+            <li><strong>Single gateway instance</strong> — no autoscaling or health-checked pool.</li>
+            <li><strong>UI-only admin protection</strong> — privileged routes reachable through the gateway without scope checks.</li>
+            <li><strong>Config not in Git</strong> — drifts across environments; rollback is manual.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the gateway deployed in HA mode (multiple instances + health-check-based load balancing)?</li>
-            <li>Is gateway configuration stored as code (declarative YAML, Terraform, CDK) and reviewed in version control?</li>
-            <li>Are rate limits configured per consumer tier, not just globally?</li>
-            <li>Does the gateway verify JWT signatures before forwarding requests to backends?</li>
-            <li>Are correlation IDs injected for every request, enabling end-to-end distributed tracing?</li>
-            <li>Is there a circuit breaker or timeout configured for each upstream service route?</li>
+            <li>Is the gateway deployed in HA with health-checked load balancing?</li>
+            <li>Is configuration declarative (Terraform, Kong deck, Gateway API YAML) and reviewed in PRs?</li>
+            <li>Does the edge verify JWT signatures and scopes before upstream routing?</li>
+            <li>Are rate limits keyed on authenticated identity, not only IP?</li>
+            <li>Are trace/correlation IDs injected on every request?</li>
+            <li>Are upstream timeouts and circuit breakers set per route?</li>
             <li>Is business logic absent from gateway plugins?</li>
-            <li>Is SSL/TLS termination happening at the gateway (not at individual services)?</li>
+            <li>Is the split with service-mesh east-west policy documented?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce platform API</strong> — AWS API Gateway routes <code>/v1/products/*</code> to ECS tasks, enforces Cognito JWT auth, applies per-API-key rate limits, and triggers CloudWatch alarms on 5xx rates above 1%.</li>
-            <li><strong>Internal developer platform</strong> — Kong deployed on Kubernetes manages all internal service APIs; plugins enforce OAuth2 client credentials for service-to-service, route canary traffic (10%) to new service versions, and inject Datadog trace headers.</li>
-            <li><strong>Financial services partner API</strong> — Azure APIM provides a developer portal for bank partners, enforces mutual TLS on partner certificates, translates REST requests to internal SOAP/WSDL services, and enforces SLA-based throttling per partner tier.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> runs Kong on Kubernetes: OAuth2 plugin validates JWTs from its OIDC provider, enforces <code>catalog:read</code> on product routes, and rate-limits by <code>client_id</code> before traffic reaches the catalog microservice.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> places an Envoy Gateway in front of mobile and driver BFFs; the gateway terminates TLS and attaches trace headers while BFFs aggregate trip and payment APIs.</li>
+            <li><strong>Case study —</strong> Netflix’s Zuul (historical) and later edge proxies centralised auth and routing for device APIs—pattern now common across Envoy-based edges.</li>
+            <li><strong>Case study —</strong> Kubernetes Gateway API standardises ingress routing (HTTPRoute, reference grants) so teams swap controller implementations without rewriting route definitions.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="backend-for-frontend.html">Backend for Frontend (BFF)</a> — BFF sits behind the gateway and handles client-specific aggregation.</li>
-            <li><a href="api-authentication.html">API Authentication</a> — OAuth2 and JWT enforcement is a core gateway function.</li>
-            <li><a href="api-rate-limiting.html">API Rate Limiting</a> — rate limiting patterns enforced at the gateway layer.</li>
-            <li><a href="api-versioning.html">API Versioning</a> — gateways route version prefixes to different backend versions.</li>
+            <li><a href="backend-for-frontend.html">Backend for Frontend (BFF)</a> — client-specific APIs behind the gateway.</li>
+            <li><a href="api-authentication.html">API Authentication</a> — token validation at the perimeter.</li>
+            <li><a href="api-rate-limiting.html">API Rate Limiting</a> — quotas enforced in the gateway pipeline.</li>
+            <li><a href="api-versioning.html">API Versioning</a> — path-based routing to versioned upstreams.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.konghq.com/" rel="noopener noreferrer" target="_blank">Kong Gateway documentation</a> — plugins, routing, and rate limiting.</li>
-            <li><a href="https://docs.aws.amazon.com/apigateway/latest/developerguide/welcome.html" rel="noopener noreferrer" target="_blank">AWS API Gateway developer guide</a> — managed REST and HTTP APIs.</li>
-            <li><a href="https://gateway-api.sigs.k8s.io" target="_blank" rel="noopener noreferrer">Kubernetes Gateway API specification — gateway-api.sigs.k8s.io</a></li>
-            <li>Chris Richardson — <em>Microservices Patterns</em> (API Gateway chapter).</li>
-            <li><a href="https://samnewman.io/books/building_microservices/" target="_blank" rel="noopener noreferrer">Sam Newman — Building Microservices (chapter on API gateways and BFFs).</a></li>
+            <li><a href="https://microservices.io/patterns/apigateway.html" rel="noopener noreferrer" target="_blank">microservices.io — API Gateway pattern</a></li>
+            <li><a href="https://gateway-api.sigs.k8s.io" rel="noopener noreferrer" target="_blank">Kubernetes Gateway API</a></li>
+            <li><a href="https://docs.konghq.com/gateway/latest/" rel="noopener noreferrer" target="_blank">Kong Gateway documentation</a></li>
+            <li><a href="https://docs.aws.amazon.com/apigateway/latest/developerguide/welcome.html" rel="noopener noreferrer" target="_blank">AWS API Gateway developer guide</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc8693.html" rel="noopener noreferrer" target="_blank">RFC 8693 — OAuth 2.0 Token Exchange</a></li>
+            <li><a href="https://samnewman.io/books/building_microservices/" rel="noopener noreferrer" target="_blank">Sam Newman — Building Microservices (gateway and BFF chapters)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
