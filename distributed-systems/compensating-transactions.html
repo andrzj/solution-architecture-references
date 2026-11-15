@@ -103,6 +103,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>A compensating transaction undoes the effect of a completed local step when a later step in a workflow fails. Refund payment reverses charge payment in an e-commerce checkout. Each compensating action must be idempotent because retries are inevitable.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>In distributed systems and microservices, each service commits its local database transaction independently. Once committed, that change is permanent and visible to other readers. There is no way to use a database-level ROLLBACK across service boundaries. When a later step in a multi-step business workflow fails, the only way to maintain business consistency is to explicitly undo the effects of already-committed steps by issuing compensating transactions in reverse order.</p>
 
@@ -123,24 +125,32 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Compensating transactions are executed in reverse order relative to the forward saga steps. Each service must implement both the forward action and its compensation:</p>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Forward Steps (T1 → T2 → T3 → FAILURE at T4)
-──────────────────────────────────────────────
-  T1: Create Order       ✓ committed
-  T2: Charge Payment     ✓ committed
-  T3: Reserve Inventory  ✓ committed
-  T4: Notify Warehouse   ✗ failed
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    T1["T1 Create order"] --> T2["T2 Charge payment"]
+    T2 --> T3["T3 Reserve inventory"]
+    T3 --> T4["T4 Notify warehouse FAIL"]
+    T4 --> C3["C3 Release inventory"]
+    C3 --> C2["C2 Refund payment"]
+    C2 --> C1["C1 Cancel order"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Forward Steps (T1 → T2 → T3 → FAILURE at T4)
+          ──────────────────────────────────────────────
+            T1: Create Order       ✓ committed
+            T2: Charge Payment     ✓ committed
+            T3: Reserve Inventory  ✓ committed
+            T4: Notify Warehouse   ✗ failed
+          
+          Compensating Steps (reverse: C3 → C2 → C1)
+          ──────────────────────────────────────────────
+            C3: Release Inventory  ← compensates T3
+            C2: Refund Payment     ← compensates T2
+            C1: Cancel Order       ← compensates T1
+          
+            Each C must be idempotent — safe to replay
+            Each C must succeed eventually (retry loop)</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Saga-style compensation: failed forward step triggers idempotent reverse operations.</figcaption>
+                    </figure>
 
-Compensating Steps (reverse: C3 → C2 → C1)
-──────────────────────────────────────────────
-  C3: Release Inventory  ← compensates T3
-  C2: Refund Payment     ← compensates T2
-  C1: Cancel Order       ← compensates T1
-
-  Each C must be idempotent — safe to replay
-  Each C must succeed eventually (retry loop)</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

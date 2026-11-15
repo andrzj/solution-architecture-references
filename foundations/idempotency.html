@@ -148,48 +148,62 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>The most common implementation pattern for idempotent APIs is the <strong>idempotency key</strong>: the client generates a unique identifier (typically a UUID) for each logical operation and includes it in the request. The server uses this key to detect and short-circuit duplicate requests. The sequence is: check key store → if key exists, return cached response; if key does not exist, execute operation, store key with response, return response.</p>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>
-Client                           Server
-  │                                │
-  │  POST /payments                │
-  │  Idempotency-Key: uuid-abc123  │
-  │  { amount: 99.99 }             │
-  │ ─────────────────────────────► │
-  │                                ├─► Check key store
-  │                                │     ┌────────────────────────┐
-  │                                │     │ idempotency_keys table │
-  │                                │     │ key | response | ttl   │
-  │                                │     └────────────────────────┘
-  │                                │
-  │  [First call: key not found]   │
-  │                                ├─► Execute payment
-  │                                ├─► Store key + response in DB
-  │                                │   (atomic with payment commit,
-  │  ◄─────────────────────────── │    or in same transaction)
-  │  201 { payment_id: "pay_456" } │
-  │                                │
-  │  [Network timeout — retry]     │
-  │                                │
-  │  POST /payments                │
-  │  Idempotency-Key: uuid-abc123  │
-  │  { amount: 99.99 }             │
-  │ ─────────────────────────────► │
-  │                                ├─► Check key store
-  │                                │     Key found! Return cached response.
-  │  ◄─────────────────────────── │     Payment NOT executed again.
-  │  201 { payment_id: "pay_456" } │
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant C as Client
+    participant S as API server
+    participant K as Idempotency store
+    C->>S: POST /payments + Idempotency-Key uuid-abc
+    S->>K: Lookup key
+    alt First request
+        S->>S: Execute payment
+        S->>K: Store key + response
+        S-->>C: 201 payment_id pay_456
+    else Retry same key
+        K-->>S: Cached response
+        S-->>C: 201 payment_id pay_456
+    end</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Client                           Server
+            │                                │
+            │  POST /payments                │
+            │  Idempotency-Key: uuid-abc123  │
+            │  { amount: 99.99 }             │
+            │ ─────────────────────────────► │
+            │                                ├─► Check key store
+            │                                │     ┌────────────────────────┐
+            │                                │     │ idempotency_keys table │
+            │                                │     │ key | response | ttl   │
+            │                                │     └────────────────────────┘
+            │                                │
+            │  [First call: key not found]   │
+            │                                ├─► Execute payment
+            │                                ├─► Store key + response in DB
+            │                                │   (atomic with payment commit,
+            │  ◄─────────────────────────── │    or in same transaction)
+            │  201 { payment_id: "pay_456" } │
+            │                                │
+            │  [Network timeout — retry]     │
+            │                                │
+            │  POST /payments                │
+            │  Idempotency-Key: uuid-abc123  │
+            │  { amount: 99.99 }             │
+            │ ─────────────────────────────► │
+            │                                ├─► Check key store
+            │                                │     Key found! Return cached response.
+            │  ◄─────────────────────────── │     Payment NOT executed again.
+            │  201 { payment_id: "pay_456" } │
+          
+          HTTP Method idempotency (by spec):
+            GET    → Idempotent (no side effects)
+            HEAD   → Idempotent (same as GET, no body)
+            PUT    → Idempotent (sets resource to exact state)
+            DELETE → Idempotent (second delete of same resource = 404, same state)
+            POST   → NOT idempotent (use Idempotency-Key header for safety)
+            PATCH  → NOT idempotent by spec (but can be made so by design)
+                    </code></pre></details>
+                      <figcaption id="typical-architecture-caption">Idempotency key flow: the server records each logical operation once and returns the cached outcome on client retries.</figcaption>
+                    </figure>
 
-HTTP Method idempotency (by spec):
-  GET    → Idempotent (no side effects)
-  HEAD   → Idempotent (same as GET, no body)
-  PUT    → Idempotent (sets resource to exact state)
-  DELETE → Idempotent (second delete of same resource = 404, same state)
-  POST   → NOT idempotent (use Idempotency-Key header for safety)
-  PATCH  → NOT idempotent by spec (but can be made so by design)
-          </code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

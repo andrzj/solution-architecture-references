@@ -103,6 +103,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>A quorum requires W nodes to acknowledge a write and R nodes to serve a read. When W + R is greater than replica count N, read and write sets overlap so clients usually see fresh data. Cassandra tuning ONE, QUORUM, and ALL is everyday quorum configuration.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Strong consistency (all replicas must confirm) maximises durability but reduces availability — any single node failure makes writes impossible. Eventual consistency (write to one, propagate later) maximises availability but exposes stale reads. Quorums offer a spectrum between these extremes: by tuning W and R for a fixed N, operators can favour read performance (low R, high W), write performance (low W, high R), or balance both (W = R = (N+1)/2 for the majority quorum). The W + R &gt; N rule is what guarantees freshness when balance is chosen.</p>
 
@@ -122,32 +124,42 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Quorum Configuration (N=3)
-═══════════════════════════
-Strong consistency:   W=2, R=2 → W+R=4 > N=3  ✓
-High write speed:     W=1, R=3 → reads always hit all nodes
-High read speed:      W=3, R=1 → writes must hit all nodes
-No consistency:       W=1, R=1 → W+R=2 ≤ N   ✗
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    C["Client write"] --> CO["Coordinator"]
+    CO --> R1["Replica 1 ACK"]
+    CO --> R2["Replica 2 ACK"]
+    CO --> R3["Replica 3 slow"]
+    R1 & R2 --> W["W=2 quorum reached"]
+    C2["Client read"] --> CO2["Coordinator"]
+    CO2 --> R1b["v=5"] & R2b["v=5"]
+    R1b & R2b --> RR["Read repair stale replica"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Quorum Configuration (N=3)
+          ═══════════════════════════
+          Strong consistency:   W=2, R=2 → W+R=4 > N=3  ✓
+          High write speed:     W=1, R=3 → reads always hit all nodes
+          High read speed:      W=3, R=1 → writes must hit all nodes
+          No consistency:       W=1, R=1 → W+R=2 ≤ N   ✗
+          
+          Write path (W=2, N=3):
+            Client──►Coordinator──►Replica1 (ACK)
+                                 ──►Replica2 (ACK)  → W=2 reached → OK
+                                 ──►Replica3 (slow) → ignored for now
+          
+          Read path (R=2, N=3):
+            Client──►Coordinator──►Replica1 (v=5)
+                                 ──►Replica2 (v=5)  → R=2 reached → OK
+                     Read repair: Replica3 (v=4) is stale → update async
+          
+          Sloppy Quorum (DynamoDB):
+            If target replicas are unreachable, accept writes on any
+            available node ("hinted handoff"). Hint stored with data.
+            When original node recovers, hints are replayed → eventually
+            all replicas converge. Improves availability; breaks
+            strict quorum overlap guarantee temporarily.</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Quorum reads and writes (N=3, W=2, R=2): overlapping quorums preserve consistency; read repair fixes lagging replicas.</figcaption>
+                    </figure>
 
-Write path (W=2, N=3):
-  Client──►Coordinator──►Replica1 (ACK)
-                       ──►Replica2 (ACK)  → W=2 reached → OK
-                       ──►Replica3 (slow) → ignored for now
-
-Read path (R=2, N=3):
-  Client──►Coordinator──►Replica1 (v=5)
-                       ──►Replica2 (v=5)  → R=2 reached → OK
-           Read repair: Replica3 (v=4) is stale → update async
-
-Sloppy Quorum (DynamoDB):
-  If target replicas are unreachable, accept writes on any
-  available node ("hinted handoff"). Hint stored with data.
-  When original node recovers, hints are replayed → eventually
-  all replicas converge. Improves availability; breaks
-  strict quorum overlap guarantee temporarily.</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

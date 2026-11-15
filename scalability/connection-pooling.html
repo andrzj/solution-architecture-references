@@ -101,8 +101,7 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>A pool maintains a set of warm connections ready to be borrowed, used, and returned — reducing per-request database setup to microseconds.</p>
+          <p>A connection pool is a cache of pre-established database (or service) connections that are reused by multiple request threads, rather than opening and closing a new connection for each request. Establishing a TCP connection, TLS handshake, and database authentication takes 10–100ms per connection on a local network, and much more across regions. Multiplying this overhead by thousands of requests per second makes per-request connection establishment untenable. A pool maintains a set of warm connections ready to be borrowed, used, and returned — reducing per-request database setup to microseconds.</p>
           <p>Connection pools operate on a borrow-use-return lifecycle: a request borrows a connection from the pool, executes its queries, and returns the connection to the pool. If all pool connections are in use when a new request needs one, it either waits (blocks) for a connection to be returned, or times out and fails. The pool also manages connection health: idle connections are periodically validated (using <code>SELECT 1</code> or equivalent) and replaced if the database dropped them due to server-side idle timeouts.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -126,8 +125,15 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>
+          <p>In-process pools cap app connections; PgBouncer multiplexes many clients onto fewer server sessions.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    apps["App pods with HikariCP pools"] --> pgb["PgBouncer transaction mode"]
+    pgb --> pg["PostgreSQL limited max_connections"]
+    apps --> cfg["leakDetectionThreshold idleTimeout maxLifetime"]</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
   In-Process Pool (HikariCP / c3p0):
   App Server ──► HikariCP Pool (min=5, max=20)
                  ├── conn1 [in use by thread A]
@@ -165,7 +171,8 @@
   - "Connection is not available, request timed out after 30000ms" errors
   - Database shows N connections all ACTIVE (none idle)
           </code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">HikariCP per pod, PgBouncer transaction pooling, sizing formula, and leak detection settings.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>

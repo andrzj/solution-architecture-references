@@ -104,7 +104,7 @@
 
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>It is a compound guarantee comprising two properties: <strong>exactly-once delivery</strong> (the broker delivers the message exactly once end-to-end) and <strong>exactly-once processing</strong> (the consumer's side effects are applied exactly once even if the message is delivered or processed multiple times due to failures).</p>
+          <p>Exactly-once delivery is the strongest message delivery guarantee: a producer's message is delivered to a consumer and its effects are applied to the system state precisely one time, with no possibility of loss (at-least-once risk) or duplication (at-most-once risk). It is a compound guarantee comprising two properties: <strong>exactly-once delivery</strong> (the broker delivers the message exactly once end-to-end) and <strong>exactly-once processing</strong> (the consumer's side effects are applied exactly once even if the message is delivered or processed multiple times due to failures).</p>
           <p>True exactly-once delivery across arbitrary distributed systems is impossible under all failure models (the "exactly-once myth"), but practical exactly-once semantics can be achieved through a combination of idempotent producers, transactional consumers, and distributed coordination — with the caveat that this applies within specific component boundaries. Kafka's transactional API provides exactly-once semantics within a Kafka-to-Kafka read-process-write loop. AWS SQS FIFO with deduplication and idempotent consumers achieves effectively-exactly-once processing. True cross-system exactly-once (e.g., database + message broker atomicity) requires the Transactional Outbox pattern or two-phase commit.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -127,8 +127,20 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Kafka Exactly-Once Semantics (EOS) — Read-Process-Write
+          <p>Transactional produce-and-commit (Kafka EOS) or broker deduplication (SQS FIFO) narrow duplicate windows.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    subgraph kafka["Kafka transactional EOS"]
+        p["Producer"] -->|read process write| kt["Source and sink topics"]
+        p -->|atomic commit| off["Consumer offsets"]
+    end
+    subgraph sqs["SQS FIFO deduplication"]
+        pr["Producer with MessageDeduplicationId"] --> fq["FIFO queue"]
+        fq --> cr["Consumer receives once per window"]
+    end</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Kafka Exactly-Once Semantics (EOS) — Read-Process-Write
 ═══════════════════════════════════════════════════════════
 
 Producer (transactional)            Kafka Broker
@@ -155,7 +167,8 @@ SQS deduplication window (5 minutes)
   - Duplicate MessageDeduplicationId suppressed by broker
   - Consumer receives each logical message exactly once
   - Consumer must still be idempotent for cross-window replays</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Kafka read-process-write commits outputs and offsets atomically; SQS FIFO suppresses duplicates inside the deduplication window.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>

@@ -103,6 +103,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>A distributed lock lets only one worker mutate a shared resource at a time across a cluster. Redis SET NX or ZooKeeper ephemeral nodes are common implementations. Pair locks with fencing tokens so stale holders cannot write after expiry.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Distributed systems frequently need to ensure that only one node performs a task at a given time: generating unique identifiers, updating a shared external resource, running a periodic job, or serving as a primary. A single-node mutex is invisible to other processes on other machines. Distributed locking provides a cross-process critical section, but the distributed context introduces hazards that have no equivalent in single-process programming.</p>
 
@@ -122,29 +124,46 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Redis Single-Node Lock (SET NX PX)
-───────────────────────────────────
-Client A: SET lock:resource "token-A" NX PX 30000
-  → OK (lock acquired)
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant A as Client A
+    participant R as Redis lock
+    participant B as Client B
+    participant S as Storage
+    A->>R: SET lock NX PX
+    R-->>A: OK token 33
+    B->>R: SET lock NX PX
+    R-->>B: fail
+    Note over A: GC pause — lock expires
+    B->>R: SET lock NX PX
+    R-->>B: OK token 34
+    A->>S: Write fence 33
+    S-->>A: Reject stale token
+    B->>S: Write fence 34
+    S-->>B: Accepted</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Redis Single-Node Lock (SET NX PX)
+          ───────────────────────────────────
+          Client A: SET lock:resource "token-A" NX PX 30000
+            → OK (lock acquired)
+          
+          Client B: SET lock:resource "token-B" NX PX 30000
+            → nil (lock not acquired — retry with backoff)
+          
+          Client A releases: DEL lock:resource (only if value == "token-A")
+            → 1 (released)
+          
+          Fencing Token Pattern (safe with any lock backend)
+          ───────────────────────────────────────────────────
+          Lock service issues a monotonically increasing token on each grant:
+            Client A acquires lock → receives token 33
+            Client A pauses (GC) → lock expires
+            Client B acquires lock → receives token 34
+            Client A resumes, sends write with token 33 to storage
+            Storage rejects: "token 33 < current fence 34"
+            Client B's write with token 34 is accepted ✓</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Distributed lock with fencing tokens: storage rejects writes from a client holding an expired lock.</figcaption>
+                    </figure>
 
-Client B: SET lock:resource "token-B" NX PX 30000
-  → nil (lock not acquired — retry with backoff)
-
-Client A releases: DEL lock:resource (only if value == "token-A")
-  → 1 (released)
-
-Fencing Token Pattern (safe with any lock backend)
-───────────────────────────────────────────────────
-Lock service issues a monotonically increasing token on each grant:
-  Client A acquires lock → receives token 33
-  Client A pauses (GC) → lock expires
-  Client B acquires lock → receives token 34
-  Client A resumes, sends write with token 33 to storage
-  Storage rejects: "token 33 < current fence 34"
-  Client B's write with token 34 is accepted ✓</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

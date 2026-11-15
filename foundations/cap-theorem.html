@@ -122,8 +122,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The CAP Theorem, originally proposed by Eric Brewer in 2000 as the "CAP Conjecture" and formally proven by Gilbert and Lynch in 2002, states that a distributed data system can provide at most two of the following three guarantees simultaneously: <strong>Consistency</strong> (every read returns the most recent write or an error), <strong>Availability</strong> (every request receives a non-error response, though it may not be the most recent data), and <strong>Partition Tolerance</strong> (the system continues to operate even when network messages between nodes are dropped or delayed).</p>
-          <p>The crucial practical implication is that network partitions are not optional — they are an inevitable reality in any distributed system spanning multiple machines. You cannot eliminate partitions; you can only decide how to respond when they occur. Therefore the real choice in distributed system design is not "C, A, or P?" but rather "when a partition occurs, do we sacrifice Consistency (return potentially stale data — AP system) or Availability (refuse to respond until the partition heals — CP system)?"</p>
+          <p>In a distributed database you cannot fully guarantee consistency, availability, and partition tolerance at the same time. When the network splits, you choose whether to stop serving some requests (CP) or answer with possibly stale data (AP). For example, a shopping cart can stay available across regions while order payment may require a CP store.</p>
+          
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Before CAP, engineers often assumed that building distributed data systems was primarily an engineering challenge — make nodes communicate reliably enough and you could have everything. CAP formalized the theoretical limit: no matter how well-engineered the system, there are inescapable trade-offs in the face of network failures. This changed how engineers approach database selection and distributed system design, moving the conversation from "which database is best?" to "what consistency model does this use case require?"</p>
@@ -146,44 +146,58 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>The CAP triangle below illustrates the three classifications and real-world systems that exemplify each. Note that CA systems — which sacrifice partition tolerance — are only truly achievable as single-node systems or systems where the network is considered fully reliable (a rare assumption in practice).</p>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>
-            Consistency
-                 ▲
-                 │
-        CP       │       (impossible in practice
-    ┌────────────┤        for truly distributed
-    │ ZooKeeper  │           systems)
-    │ etcd       │
-    │ HBase      │  CA
-    │ MongoDB*   │◄──── Single-node RDBMS
-    │            │      (PostgreSQL standalone,
-    └────────────┘       MySQL standalone)
-                /\
-               /  \
-              /    \
-             /  AP  \
-            / Cassandra\
-           / DynamoDB   \
-          / CouchDB      \
-         / Riak           \
-        ────────────────────
-   Availability        Partition Tolerance
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    C["Consistency"]
+    A["Availability"]
+    P["Partition tolerance"]
+    C --- A
+    A --- P
+    P --- C
+    cpdb["CP: ZooKeeper, etcd, HBase"]
+    apdb["AP: Cassandra, DynamoDB, CouchDB"]
+    cadb["CA: single-node PostgreSQL or MySQL"]
+    C --- cpdb
+    A --- apdb
+    P --- cadb
+    cpdb --- apdb</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>            Consistency
+                           ▲
+                           │
+                  CP       │       (impossible in practice
+              ┌────────────┤        for truly distributed
+              │ ZooKeeper  │           systems)
+              │ etcd       │
+              │ HBase      │  CA
+              │ MongoDB*   │◄──── Single-node RDBMS
+              │            │      (PostgreSQL standalone,
+              └────────────┘       MySQL standalone)
+                          /\
+                         /  \
+                        /    \
+                       /  AP  \
+                      / Cassandra\
+                     / DynamoDB   \
+                    / CouchDB      \
+                   / Riak           \
+                  ────────────────────
+             Availability        Partition Tolerance
+          
+          CP: Choose to reject requests rather than return stale data.
+              When a partition occurs, some nodes will refuse reads/writes.
+              Example: ZooKeeper refuses reads from isolated nodes.
+          
+          AP: Choose to return potentially stale data rather than reject requests.
+              When a partition occurs, nodes serve their local data.
+              Example: Cassandra serves reads from any available node.
+          
+          Real-world nuance: "consistency" in CAP means linearizability
+          (the strongest consistency model). Most systems offer weaker
+          guarantees (causal, eventual) along a spectrum.
+                    </code></pre></details>
+                      <figcaption id="typical-architecture-caption">CAP trade-off space: distributed systems choose CP (refuse during partition) or AP (serve possibly stale data); CA holds only on one node.</figcaption>
+                    </figure>
 
-CP: Choose to reject requests rather than return stale data.
-    When a partition occurs, some nodes will refuse reads/writes.
-    Example: ZooKeeper refuses reads from isolated nodes.
-
-AP: Choose to return potentially stale data rather than reject requests.
-    When a partition occurs, nodes serve their local data.
-    Example: Cassandra serves reads from any available node.
-
-Real-world nuance: "consistency" in CAP means linearizability
-(the strongest consistency model). Most systems offer weaker
-guarantees (causal, eventual) along a spectrum.
-          </code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

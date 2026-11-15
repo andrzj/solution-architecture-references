@@ -101,8 +101,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>There is no global lock — each local transaction commits independently to its own database and immediately becomes visible, which means sagas provide <em>eventual consistency</em> rather than strict ACID isolation.</p>
-          <p>Two coordination styles exist: choreography (event-driven, decentralised) and orchestration (central coordinator drives the flow).</p>
+          <p>A saga coordinates a multi-step business process across services without a single distributed transaction. If a later step fails, earlier steps run compensating actions—refunding payment after inventory reservation fails on checkout.</p>
+          
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Microservices each own their own database. Achieving atomicity across service boundaries without a distributed transaction (which is expensive, coupled, and often unavailable) requires an alternative. The saga pattern, introduced by Garcia-Molina and Salem in 1987 for long-lived database transactions, was adapted for microservices to provide a way to manage business consistency across services without holding distributed locks. It trades strict isolation (no global snapshot) for loose coupling and high availability.</p>
@@ -126,32 +126,49 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>The orchestrated saga uses a central saga orchestrator (often a state machine) that sends commands to participants and reacts to their replies:</p>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Orchestrated Saga — Happy Path &amp; Compensation
-═══════════════════════════════════════════════
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant O as Orchestrator
+    participant Ord as Order svc
+    participant Pay as Payment svc
+    participant Inv as Inventory svc
+    O->>Ord: CreateOrder
+    Ord-->>O: OrderCreated
+    O->>Pay: ChargePayment
+    Pay-->>O: PaymentCharged
+    O->>Inv: ReserveStock
+    Inv-->>O: StockFailed
+    Note over O: Begin compensation
+    O->>Pay: RefundPayment
+    Pay-->>O: PaymentRefunded
+    O->>Ord: CancelOrder
+    Ord-->>O: OrderCancelled</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Orchestrated Saga — Happy Path &amp; Compensation
+          ═══════════════════════════════════════════════
+          
+          Orchestrator        Order Svc      Payment Svc     Inventory Svc
+               │                  │               │                │
+               │─── CreateOrder ─►│               │                │
+               │◄── OrderCreated ─│               │                │
+               │                  │               │                │
+               │─── ChargePayment ────────────────►               │
+               │◄── PaymentCharged ────────────────               │
+               │                  │               │                │
+               │─── ReserveStock ──────────────────────────────────►
+               │◄── StockFailed ───────────────────────────────────
+               │                  │               │                │
+               │  [FAILURE — begin compensation]   │                │
+               │                  │               │                │
+               │─── RefundPayment ────────────────►               │
+               │◄── PaymentRefunded ───────────────               │
+               │                  │               │                │
+               │─── CancelOrder ──►│               │                │
+               │◄── OrderCancelled │               │                │
+               │                  │               │                │
+               │  [Saga complete — compensated]    │                │</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Orchestrated saga compensation: after inventory failure, prior steps run compensating transactions in reverse order.</figcaption>
+                    </figure>
 
-Orchestrator        Order Svc      Payment Svc     Inventory Svc
-     │                  │               │                │
-     │─── CreateOrder ─►│               │                │
-     │◄── OrderCreated ─│               │                │
-     │                  │               │                │
-     │─── ChargePayment ────────────────►               │
-     │◄── PaymentCharged ────────────────               │
-     │                  │               │                │
-     │─── ReserveStock ──────────────────────────────────►
-     │◄── StockFailed ───────────────────────────────────
-     │                  │               │                │
-     │  [FAILURE — begin compensation]   │                │
-     │                  │               │                │
-     │─── RefundPayment ────────────────►               │
-     │◄── PaymentRefunded ───────────────               │
-     │                  │               │                │
-     │─── CancelOrder ──►│               │                │
-     │◄── OrderCancelled │               │                │
-     │                  │               │                │
-     │  [Saga complete — compensated]    │                │</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
           <p>In choreography-based sagas, there is no orchestrator. Each service listens for events and reacts by performing its local transaction and publishing a new event. The overall flow emerges from the event chain, but understanding it requires reading all participating services.</p>
 
           <h2 id="pros-and-cons">Pros and cons</h2>

@@ -97,8 +97,8 @@
           <p class="article-meta">Last updated: <time datetime="2025-01">January 2025</time></p>
 
           </div>
-          <div class="article-content"><h2 id="what-it-is">What it is</h2>
-          
+          <div class="article-content">          <h2 id="what-it-is">What it is</h2>
+          <p><strong>LLM architecture</strong> is how you run large language models in production: accept prompts, generate tokens one at a time, and manage GPU memory for the growing key-value (KV) cache. A customer-support chatbot that streams answers needs this stack; calling a hosted API instead offloads it entirely.</p>
           <p>The core challenge is that LLM inference is fundamentally different from traditional neural network inference. LLMs generate tokens auto-regressively: each new token requires a forward pass through the entire model, and the computation for each forward pass depends on the key-value (KV) cache accumulated from all previous tokens in the context. This means inference is memory-bandwidth bound rather than compute bound, and the cost per request scales with the sequence length. The KV cache can consume tens of gigabytes of GPU memory for long contexts, severely limiting how many concurrent requests a single GPU instance can handle.</p>
           <p>Key architectural techniques address these constraints. <strong>Continuous batching</strong> (also called dynamic batching or iteration-level scheduling) interleaves requests at the token generation level so that finished requests immediately free their KV cache slot for new requests, dramatically improving GPU utilization. <strong>Paged attention</strong> (introduced in vLLM) manages the KV cache in fixed-size pages analogous to virtual memory, eliminating internal and external fragmentation. <strong>Quantization</strong> reduces model weights from 16-bit to 8-bit or 4-bit, halving or quartering memory requirements at the cost of some accuracy.</p>
           <p><strong>Tensor parallelism</strong> and <strong>pipeline parallelism</strong> distribute the model across multiple GPUs to serve models that exceed a single GPU's memory.</p>
@@ -111,7 +111,7 @@
           <h2 id="when-to-use">When to use</h2>
           <ul>
             <li>Deploying transformer language models with more than a few billion parameters where memory management and batching significantly affect throughput and cost.</li>
-            <li>Applications with concurrent user requests where naive request-by-request inference would leave GPU utilization below 20%.</li>
+            <li>Applications with concurrent user requests where naive one-request-per-GPU serving leaves GPUs mostly idle.</li>
             <li>Long-context applications (RAG, document analysis, multi-turn chat) where KV cache management is critical to serving capacity.</li>
             <li>Cost-sensitive deployments where efficient GPU utilization directly impacts the cost per 1,000 tokens served.</li>
             <li>Organizations deploying open-weight models (Llama, Mistral, Mixtral) that need to build their own serving infrastructure rather than using a managed API.</li>
@@ -125,8 +125,26 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    client["Client / chat / RAG app"]
+    gw["LLM gateway&lt;br/&gt;auth, limits, routing"]
+    prefill["Prefill worker&lt;br/&gt;tokenize, build KV cache"]
+    decode["Decode workers&lt;br/&gt;continuous batching"]
+    kvm["KV cache manager&lt;br/&gt;paged attention"]
+    stream["Response streaming&lt;br/&gt;SSE / WebSocket"]
+    tp["Tensor-parallel GPU group&lt;br/&gt;optional sharding"]
+    client --> gw
+    gw --> prefill
+    gw --> decode
+    prefill --> kvm
+    decode --> kvm
+    kvm --> stream
+    decode --> tp
+    prefill --> tp</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>
  ┌────────────────────────────────────────────────────────────┐
  │                    CLIENT / APPLICATION                     │
  │  Chat UI · API consumer · RAG pipeline · Agent framework   │
@@ -175,7 +193,8 @@
      └─────────────────────────────────────┘
               NVLink / InfiniBand AllReduce
 </code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Production LLM serving: gateway fronts prefill (prompt) and decode (token) workers; paged KV cache storage; optional tensor-parallel GPUs for large models.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>

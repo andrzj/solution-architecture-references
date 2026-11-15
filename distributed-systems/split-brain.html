@@ -103,6 +103,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>Split brain happens when a network partition leaves two nodes both believing they are the primary and accepting writes. Conflicting updates merge badly after the partition heals. Majority quorums and fencing tokens prevent a lone node from staying writable.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Leader election and primary selection algorithms rely on nodes being able to communicate. When a network partition splits a cluster into isolated sub-groups, each sub-group may independently detect the absence of a primary and elect one from its own members. The CAP theorem formalises this tension: during a partition, a system must choose between consistency (refusing writes until the partition is resolved) and availability (continuing to accept writes on both sides, risking divergence).</p>
 
@@ -119,30 +121,37 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Split Brain Scenario
-═════════════════════
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    P["Primary A"] <-->|replication| R1["Replica B"]
+    P <-->|replication| R2["Replica C"]
+    part["Network partition"] --> PA["Partition 1: A writes alone"]
+    part --> PB["Partition 2: B and C elect B primary"]
+    Q["Quorum writes prevent solo primary"] --- PA</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Split Brain Scenario
+          ═════════════════════
+          
+          Before partition:
+            [Primary: Node A] ←─── replication ───► [Replica: Node B]
+                                                     [Replica: Node C]
+          
+          Network partition severs A from B and C:
+            ┌─────────────────────┐   ║   ┌──────────────────────────┐
+            │  Partition 1        │   ║   │  Partition 2             │
+            │  Node A: "I am     │   ║   │  Node B + C detect A     │
+            │  still primary"     │   ║   │  missing → elect B as    │
+            │  accepts writes     │   ║   │  new primary → accepts   │
+            └─────────────────────┘   ║   │  writes                  │
+                                      ║   └──────────────────────────┘
+          
+          Result: conflicting writes on A and on B simultaneously.
+          
+          Prevention: Quorum-based writes (W = majority)
+            → Node A alone = 1 node  &lt; majority of 3 → A cannot write
+            → Node B + C   = 2 nodes = majority of 3 → B can write ✓</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Split brain: two primaries accept conflicting writes unless majority quorum blocks the isolated node.</figcaption>
+                    </figure>
 
-Before partition:
-  [Primary: Node A] ←─── replication ───► [Replica: Node B]
-                                           [Replica: Node C]
-
-Network partition severs A from B and C:
-  ┌─────────────────────┐   ║   ┌──────────────────────────┐
-  │  Partition 1        │   ║   │  Partition 2             │
-  │  Node A: "I am     │   ║   │  Node B + C detect A     │
-  │  still primary"     │   ║   │  missing → elect B as    │
-  │  accepts writes     │   ║   │  new primary → accepts   │
-  └─────────────────────┘   ║   │  writes                  │
-                            ║   └──────────────────────────┘
-
-Result: conflicting writes on A and on B simultaneously.
-
-Prevention: Quorum-based writes (W = majority)
-  → Node A alone = 1 node  &lt; majority of 3 → A cannot write
-  → Node B + C   = 2 nodes = majority of 3 → B can write ✓</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

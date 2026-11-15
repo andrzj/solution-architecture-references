@@ -149,54 +149,63 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>In an eventually consistent system, writes are accepted by any available replica and propagated to other replicas asynchronously via anti-entropy processes. The diagram below shows the replication flow and the convergence mechanisms used to resolve conflicts that arise from concurrent writes to different replicas.</p>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>
-Client A                    Client B
-   │                            │
-   │ write key="x", val=1       │ write key="x", val=2
-   ▼                            ▼
-┌──────────┐             ┌──────────┐
-│ Replica 1│             │ Replica 2│
-│ x = 1    │             │ x = 2    │
-└─────┬────┘             └────┬─────┘
-      │   async replication   │
-      ◄───────────────────────►
-      │                       │
- ┌────┴──────────────────────┐
- │   Conflict: x = 1 or 2?   │
- └────┬──────────────────────┘
-      │
-      ▼ Resolution Strategies:
- ┌──────────────────────────────────────────────────┐
- │ 1. Last-Write-Wins (LWW)                         │
- │    Each write tagged with a wall-clock timestamp. │
- │    Higher timestamp wins on conflict.             │
- │    Risk: clock skew can lose a valid write.       │
- ├──────────────────────────────────────────────────┤
- │ 2. Vector Clocks                                  │
- │    Each node maintains a version counter per key. │
- │    [node1:3, node2:1] > [node1:2, node2:1]       │
- │    Detects concurrent writes; application         │
- │    resolves or merges ("siblings" in Riak).       │
- ├──────────────────────────────────────────────────┤
- │ 3. CRDTs (Conflict-free Replicated Data Types)   │
- │    Data structures with merge operations that    │
- │    are: commutative, associative, idempotent.     │
- │    No conflict = guaranteed convergence.          │
- │    Examples: G-Counter, OR-Set, LWW-Register     │
- └──────────────────────────────────────────────────┘
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    CA["Client A write x=1"] --> R1["Replica 1 x=1"]
+    CB["Client B write x=2"] --> R2["Replica 2 x=2"]
+    R1 <-->|"async replication"| R2
+    R1 & R2 --> X{{"Conflict: x=1 or x=2?"}}
+    X --> LWW["Last-write-wins"]
+    X --> VC["Vector clocks"]
+    X --> CRDT["CRDT merge"]
+    X --> App["Application merge"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Client A                    Client B
+             │                            │
+             │ write key="x", val=1       │ write key="x", val=2
+             ▼                            ▼
+          ┌──────────┐             ┌──────────┐
+          │ Replica 1│             │ Replica 2│
+          │ x = 1    │             │ x = 2    │
+          └─────┬────┘             └────┬─────┘
+                │   async replication   │
+                ◄───────────────────────►
+                │                       │
+           ┌────┴──────────────────────┐
+           │   Conflict: x = 1 or 2?   │
+           └────┬──────────────────────┘
+                │
+                ▼ Resolution Strategies:
+           ┌──────────────────────────────────────────────────┐
+           │ 1. Last-Write-Wins (LWW)                         │
+           │    Each write tagged with a wall-clock timestamp. │
+           │    Higher timestamp wins on conflict.             │
+           │    Risk: clock skew can lose a valid write.       │
+           ├──────────────────────────────────────────────────┤
+           │ 2. Vector Clocks                                  │
+           │    Each node maintains a version counter per key. │
+           │    [node1:3, node2:1] > [node1:2, node2:1]       │
+           │    Detects concurrent writes; application         │
+           │    resolves or merges ("siblings" in Riak).       │
+           ├──────────────────────────────────────────────────┤
+           │ 3. CRDTs (Conflict-free Replicated Data Types)   │
+           │    Data structures with merge operations that    │
+           │    are: commutative, associative, idempotent.     │
+           │    No conflict = guaranteed convergence.          │
+           │    Examples: G-Counter, OR-Set, LWW-Register     │
+           └──────────────────────────────────────────────────┘
+          
+          Session guarantees (weaker than strong consistency,
+          stronger than pure eventual):
+            • Read-your-writes: a client always sees its own writes
+            • Monotonic reads: a client never reads an older value
+              after seeing a newer one
+            • Monotonic writes: a client's writes are applied in order
+            • Writes-follow-reads: a write that follows a read will
+              be applied after the value that was read
+                    </code></pre></details>
+                      <figcaption id="typical-architecture-caption">Replica divergence under concurrent writes: eventual consistency needs an explicit conflict resolution strategy.</figcaption>
+                    </figure>
 
-Session guarantees (weaker than strong consistency,
-stronger than pure eventual):
-  • Read-your-writes: a client always sees its own writes
-  • Monotonic reads: a client never reads an older value
-    after seeing a newer one
-  • Monotonic writes: a client's writes are applied in order
-  • Writes-follow-reads: a write that follows a read will
-    be applied after the value that was read
-          </code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

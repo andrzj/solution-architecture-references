@@ -149,63 +149,68 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>The <strong>expand-contract pattern</strong> (also called parallel change) is the canonical technique for making breaking changes backward-compatibly, particularly for database schema migrations. It proceeds in three phases: Expand (add the new column/field/endpoint alongside the old), Migrate (update all consumers to use the new), and Contract (remove the old once all consumers have migrated). This allows zero-downtime migration with no synchronized deployment required.</p>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>
-SAFE (additive) changes — backward compatible:
-  ✓ Add a new optional field to a response
-  ✓ Add a new endpoint or API operation
-  ✓ Add a new value to an enum in a response (consumers must tolerate unknown values)
-  ✓ Add a new optional request parameter with a sensible default
-  ✓ Relax a validation constraint (accept more inputs)
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    s1["Safe: optional fields"] --> s2["Safe: new endpoints"]
+    b1["Breaking: remove fields"] --> b2["Breaking: type change"]
+    old["full_name column"] --> both["Dual-write old and new columns"]
+    both --> new["first_name plus last_name only"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>SAFE (additive) changes — backward compatible:
+            ✓ Add a new optional field to a response
+            ✓ Add a new endpoint or API operation
+            ✓ Add a new value to an enum in a response (consumers must tolerate unknown values)
+            ✓ Add a new optional request parameter with a sensible default
+            ✓ Relax a validation constraint (accept more inputs)
+          
+          BREAKING changes — NOT backward compatible:
+            ✗ Remove a field from a response
+            ✗ Rename a field in a request or response
+            ✗ Change a field's type (string → integer)
+            ✗ Make an optional field required
+            ✗ Change the semantics of a field (same name, different meaning)
+            ✗ Remove an endpoint
+            ✗ Tighten a validation constraint (reject previously-valid inputs)
+          
+          Expand-Contract Pattern (database example):
+          Phase 1 — EXPAND
+            ┌──────────────┐    v1 reads: full_name column
+            │ Old column:  │    v2 reads: first_name + last_name
+            │  full_name   │    v2 writes: both old and new columns
+            │ New columns: │
+            │  first_name  │◄── New service version deployed
+            │  last_name   │    Old service still running against old column
+            └──────────────┘
+          
+          Phase 2 — MIGRATE
+            All consumers updated to use first_name/last_name.
+            Backfill script populates new columns from old column.
+            Old column kept populated for remaining old consumers.
+          
+          Phase 3 — CONTRACT
+            ┌──────────────┐    All consumers now use first_name/last_name.
+            │ New columns: │    Drop full_name column.
+            │  first_name  │◄── Safe to remove; no consumers reference it.
+            │  last_name   │
+            └──────────────┘
+          
+          API Versioning Strategies:
+            URL Path:    GET /v1/users/{id}  vs  GET /v2/users/{id}
+            Header:      Accept: application/vnd.myapi+json;version=2
+            Query Param: GET /users/{id}?version=2
+            Subdomain:   GET https://v2.api.example.com/users/{id}
+          
+          Serialization format backward compatibility:
+            Protobuf: field numbers are permanent identifiers.
+                      Never reuse a field number. Only add new fields.
+                      Field 1 in v1 schema must mean the same thing in v20.
+            Avro:     reader schema resolves against writer schema via registry.
+                      Add fields with defaults; never remove or rename fields.
+            JSON:     no schema enforcement by default; discipline required.
+                      Use a schema registry (e.g., AsyncAPI, OpenAPI) + linting.
+                    </code></pre></details>
+                      <figcaption id="typical-architecture-caption">API and schema evolution: additive changes preserve clients; breaking changes need versioning; expand-contract migrates databases without downtime.</figcaption>
+                    </figure>
 
-BREAKING changes — NOT backward compatible:
-  ✗ Remove a field from a response
-  ✗ Rename a field in a request or response
-  ✗ Change a field's type (string → integer)
-  ✗ Make an optional field required
-  ✗ Change the semantics of a field (same name, different meaning)
-  ✗ Remove an endpoint
-  ✗ Tighten a validation constraint (reject previously-valid inputs)
-
-Expand-Contract Pattern (database example):
-Phase 1 — EXPAND
-  ┌──────────────┐    v1 reads: full_name column
-  │ Old column:  │    v2 reads: first_name + last_name
-  │  full_name   │    v2 writes: both old and new columns
-  │ New columns: │
-  │  first_name  │◄── New service version deployed
-  │  last_name   │    Old service still running against old column
-  └──────────────┘
-
-Phase 2 — MIGRATE
-  All consumers updated to use first_name/last_name.
-  Backfill script populates new columns from old column.
-  Old column kept populated for remaining old consumers.
-
-Phase 3 — CONTRACT
-  ┌──────────────┐    All consumers now use first_name/last_name.
-  │ New columns: │    Drop full_name column.
-  │  first_name  │◄── Safe to remove; no consumers reference it.
-  │  last_name   │
-  └──────────────┘
-
-API Versioning Strategies:
-  URL Path:    GET /v1/users/{id}  vs  GET /v2/users/{id}
-  Header:      Accept: application/vnd.myapi+json;version=2
-  Query Param: GET /users/{id}?version=2
-  Subdomain:   GET https://v2.api.example.com/users/{id}
-
-Serialization format backward compatibility:
-  Protobuf: field numbers are permanent identifiers.
-            Never reuse a field number. Only add new fields.
-            Field 1 in v1 schema must mean the same thing in v20.
-  Avro:     reader schema resolves against writer schema via registry.
-            Add fields with defaults; never remove or rename fields.
-  JSON:     no schema enforcement by default; discipline required.
-            Use a schema registry (e.g., AsyncAPI, OpenAPI) + linting.
-          </code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

@@ -102,7 +102,7 @@
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
           
-          <p>When the leader fails, a new election is triggered to select a replacement.</p>
+          <p>Leader election picks one node in a cluster to coordinate writes, locks, or scheduled jobs. Followers watch the leader and promote a replacement when the leader dies. Kafka partition leaders and single-writer databases rely on this pattern.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Many coordination problems — replication, lock management, partition assignment, scheduled job execution — are simpler with a single authoritative node. Without a designated leader, every node must coordinate with every other node for every decision (O(n²) communication). Leader election concentrates decision-making, reducing coordination overhead to O(n) for follower-to-leader communication. The challenge is ensuring exactly one leader exists at any time, even across network partitions and process failures.</p>
@@ -124,30 +124,36 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>ZooKeeper ephemeral nodes are a common leader election pattern:</p>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>ZooKeeper Leader Election via Ephemeral Sequential Nodes
-═════════════════════════════════════════════════════════
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    A["Node A candidate-0001 leader"] --> B["Node B watches A"]
+    B --> C["Node C watches B"]
+    A -.->|"crash deletes ephemeral node"| B
+    B -.->|"becomes leader"| C</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>ZooKeeper Leader Election via Ephemeral Sequential Nodes
+          ═════════════════════════════════════════════════════════
+          
+          All candidates create: /election/candidate-XXXXXXXX (sequential)
+          
+            Node A creates: /election/candidate-0000000001
+            Node B creates: /election/candidate-0000000002
+            Node C creates: /election/candidate-0000000003
+          
+          Leader = node holding the lowest-numbered znode
+          
+            → Node A is leader (has candidate-0000000001)
+            → Node B watches candidate-0000000001
+            → Node C watches candidate-0000000002 (watches next lower)
+          
+          Node A crashes → its ephemeral znode is deleted automatically
+            → Node B's watch fires → Node B becomes leader
+            → Node C watches candidate-0000000002 (now B's node)
+          
+          Fencing token: leader is assigned epoch/term number.
+          Storage guards reject writes with outdated epoch.</code></pre></details>
+                      <figcaption id="typical-architecture-caption">ZooKeeper leader election: lowest sequential ephemeral znode wins; watchers promote the next node on failure.</figcaption>
+                    </figure>
 
-All candidates create: /election/candidate-XXXXXXXX (sequential)
-
-  Node A creates: /election/candidate-0000000001
-  Node B creates: /election/candidate-0000000002
-  Node C creates: /election/candidate-0000000003
-
-Leader = node holding the lowest-numbered znode
-
-  → Node A is leader (has candidate-0000000001)
-  → Node B watches candidate-0000000001
-  → Node C watches candidate-0000000002 (watches next lower)
-
-Node A crashes → its ephemeral znode is deleted automatically
-  → Node B's watch fires → Node B becomes leader
-  → Node C watches candidate-0000000002 (now B's node)
-
-Fencing token: leader is assigned epoch/term number.
-Storage guards reject writes with outdated epoch.</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
           <p>In Raft, leader election is built into the consensus protocol: nodes use randomised election timeouts; the first to time out sends <code>RequestVote</code> RPCs; a candidate gaining majority votes becomes the leader for that term.</p>
 
           <h2 id="pros-and-cons">Pros and cons</h2>

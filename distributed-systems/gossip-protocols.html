@@ -103,6 +103,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>Gossip spreads cluster state by having each node exchange information with a few random peers. Membership, failure suspicion, and config updates propagate without a central broadcaster. Cassandra and Consul use gossip variants to keep ring membership current.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Centralised broadcast and multicast scale poorly: a single coordinator becomes a bottleneck, and multicast requires network-level support. Flooding (sending to all nodes) generates O(N²) messages. Gossip provides a sweet spot: O(N log N) messages total, O(log N) propagation rounds, and no single point of failure. Any node failure only delays convergence slightly, not catastrophically, making gossip ideal for cluster membership, failure detection, and state dissemination in large-scale distributed systems.</p>
 
@@ -122,34 +124,40 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Gossip Dissemination Modes
-═══════════════════════════
-Push:      Node A selects random peer B, sends its state.
-           B updates its state if A's data is newer.
-           Good for propagating new information quickly.
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart LR
+    PUSH["Push — send state to random peer"] 
+    PULL["Pull — fetch peer state"]
+    PP["Push-pull — exchange and merge"]
+    SWIM["SWIM — ping, indirect probe, suspect, fail"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Gossip Dissemination Modes
+          ═══════════════════════════
+          Push:      Node A selects random peer B, sends its state.
+                     B updates its state if A's data is newer.
+                     Good for propagating new information quickly.
+          
+          Pull:      Node A selects random peer B, asks for B's state.
+                     A updates itself. Good when A suspects it is stale.
+          
+          Push-Pull: Node A and B exchange state bidirectionally.
+                     Both update with the union of known information.
+                     Most efficient: converges in ~log2(N) rounds.
+          
+          SWIM Failure Detection Protocol
+          ═════════════════════════════════
+            1. Node A sends direct ping to random node B.
+            2. If no ACK within timeout, A sends indirect ping:
+               asks k random nodes to ping B on A's behalf.
+            3. If no ACK from indirect ping, B is marked SUSPECT.
+            4. SUSPECT status is gossiped; if B does not refute
+               within a protocol period, B is declared FAILED.
+            5. FAILED status gossiped; node removed from membership.
+          
+            Advantage: failure detection is decoupled from probing;
+            false failure rates controlled by k (indirect probers).</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Gossip modes spread membership and state; SWIM adds scalable failure detection via indirect probes.</figcaption>
+                    </figure>
 
-Pull:      Node A selects random peer B, asks for B's state.
-           A updates itself. Good when A suspects it is stale.
-
-Push-Pull: Node A and B exchange state bidirectionally.
-           Both update with the union of known information.
-           Most efficient: converges in ~log2(N) rounds.
-
-SWIM Failure Detection Protocol
-═════════════════════════════════
-  1. Node A sends direct ping to random node B.
-  2. If no ACK within timeout, A sends indirect ping:
-     asks k random nodes to ping B on A's behalf.
-  3. If no ACK from indirect ping, B is marked SUSPECT.
-  4. SUSPECT status is gossiped; if B does not refute
-     within a protocol period, B is declared FAILED.
-  5. FAILED status gossiped; node removed from membership.
-
-  Advantage: failure detection is decoupled from probing;
-  false failure rates controlled by k (indirect probers).</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

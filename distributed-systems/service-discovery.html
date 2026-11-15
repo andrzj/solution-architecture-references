@@ -103,6 +103,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>Service discovery maps a logical service name to live instance addresses. Clients may look up instances themselves (Eureka/Ribbon) or call through a load balancer that hides them (Kubernetes Service). Instances register on startup and deregister on shutdown or failed health checks.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>In traditional deployments, services had stable hostnames or IP addresses configured in load balancers and application config files. In containerised microservices environments, this model breaks down: a single service may have dozens of instances with ephemeral IPs, instances spin up and down in seconds during scaling events or rolling deployments, and multiple versions may be simultaneously in service. Static configuration cannot track these changes. Service discovery automates the process of tracking service instances and their health, replacing manual load balancer management with a dynamic, self-updating registry.</p>
 
@@ -121,37 +123,41 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Client-Side Discovery
-══════════════════════
-  ServiceA ──► ServiceRegistry.lookup("serviceB")
-           ◄── [10.0.1.4:8080, 10.0.1.5:8080]
-  ServiceA ──► load balances itself ──► 10.0.1.5:8080
-  (client library: Ribbon, Eureka client)
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart LR
+    SA["Client-side: Service A"] --> REG1["Registry lookup"] --> LB1["Client load balance"]
+    SB["Server-side: Service A"] --> GW["Load balancer"] --> REG2["Registry lookup"] --> INST["Backend instance"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Client-Side Discovery
+          ══════════════════════
+            ServiceA ──► ServiceRegistry.lookup("serviceB")
+                     ◄── [10.0.1.4:8080, 10.0.1.5:8080]
+            ServiceA ──► load balances itself ──► 10.0.1.5:8080
+            (client library: Ribbon, Eureka client)
+          
+          Server-Side Discovery
+          ══════════════════════
+            ServiceA ──► Load Balancer / API Gateway
+            LB ────────► ServiceRegistry.lookup("serviceB")
+                     ◄── [10.0.1.4:8080, 10.0.1.5:8080]
+            LB ────────► 10.0.1.4:8080
+            (client is unaware of individual instances)
+          
+          DNS-Based Discovery (Kubernetes)
+          ══════════════════════════════════
+            serviceB.namespace.svc.cluster.local
+              resolves via kube-dns/CoreDNS to ClusterIP
+              ClusterIP is load-balanced by iptables/IPVS
+            Headless service: resolves to individual Pod IPs directly
+          
+          Service Registration Flow
+          ══════════════════════════
+            Instance starts → register with health endpoint
+            Registry polls /health every 10s → marks healthy
+            Instance stops → deregister (or TTL expires)
+            Clients receive updated instance list via watch or TTL cache</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Service discovery modes: clients may pick instances (Ribbon/Eureka) or a load balancer may hide instances behind one address.</figcaption>
+                    </figure>
 
-Server-Side Discovery
-══════════════════════
-  ServiceA ──► Load Balancer / API Gateway
-  LB ────────► ServiceRegistry.lookup("serviceB")
-           ◄── [10.0.1.4:8080, 10.0.1.5:8080]
-  LB ────────► 10.0.1.4:8080
-  (client is unaware of individual instances)
-
-DNS-Based Discovery (Kubernetes)
-══════════════════════════════════
-  serviceB.namespace.svc.cluster.local
-    resolves via kube-dns/CoreDNS to ClusterIP
-    ClusterIP is load-balanced by iptables/IPVS
-  Headless service: resolves to individual Pod IPs directly
-
-Service Registration Flow
-══════════════════════════
-  Instance starts → register with health endpoint
-  Registry polls /health every 10s → marks healthy
-  Instance stops → deregister (or TTL expires)
-  Clients receive updated instance list via watch or TTL cache</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

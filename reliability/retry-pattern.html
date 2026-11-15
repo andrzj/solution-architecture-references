@@ -104,7 +104,7 @@
 
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
+          <p>The Retry pattern automatically re-executes a failed operation after a brief wait, under the assumption that the failure is transient — caused by a momentary network hiccup, a short-lived service overload, or a rate-limit response — and will likely resolve itself without structural intervention. The pattern wraps the call site with retry logic that tracks attempt count, evaluates whether the failure is retryable, and applies a delay strategy between attempts. Most production retry implementations use exponential backoff with jitter (see the next article) rather than a fixed wait interval, to prevent all retrying callers from hitting the downstream service simultaneously.</p>
           <p>Retry is distinct from polling or idempotent replay: it applies at the call site immediately after a failure, within a single logical operation, rather than being driven by a background scheduler. The pattern is ubiquitous in HTTP clients, gRPC stubs, database drivers, and message broker SDKs — but when applied naively without caps or selectivity, it can amplify load on already struggling systems rather than relieve them.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -130,8 +130,22 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Retry Flow with Exponential Backoff
+          <p>Transient HTTP errors trigger bounded retries with backoff before surfacing failure to the caller.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant Cl as Client
+    participant Rw as Retry wrapper
+    participant Ds as Downstream
+    Cl->>Rw: call()
+    Rw->>Ds: attempt 1
+    Ds-->>Rw: 503
+    Rw->>Rw: wait base times 2^n plus jitter
+    Rw->>Ds: attempt 2
+    Ds-->>Rw: 200 OK
+    Rw-->>Cl: success</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Retry Flow with Exponential Backoff
 ═════════════════════════════════════════════════════
 
 Client                   Retry Wrapper              Downstream
@@ -156,7 +170,8 @@ Error Classification
 ────────────────────
   Retry    → 429, 503, 504, connection timeout, DNS error
   No Retry → 400, 401, 403, 404, 422, business logic errors</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Retry wrapper retries 429/503/timeouts with jitter; 4xx client errors fail immediately without retry.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>

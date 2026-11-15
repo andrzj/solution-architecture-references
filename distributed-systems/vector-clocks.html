@@ -103,6 +103,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>A vector clock tracks how many events each node has seen, producing a partial order stronger than Lamport timestamps. When two vectors are incomparable, the writes were concurrent and may conflict. Dynamo-style stores return sibling versions for the application to merge.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Lamport timestamps have a critical limitation: if event A's Lamport timestamp is less than event B's, it means A may have happened before B, but not necessarily — they could be concurrent events on different nodes. This makes Lamport clocks insufficient for conflict detection in multi-leader replication. Vector clocks solve this by tracking not just a global counter but the latest event seen from every node, allowing a recipient to determine exactly which events it knows about versus which it is missing, enabling precise causality and conflict detection.</p>
 
@@ -122,31 +124,39 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Vector Clock Algorithm (3 nodes: A, B, C)
-══════════════════════════════════════════
-Initial state: VC = [A:0, B:0, C:0] on each node
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    A["Node A VC 2,0,0"] 
+    C["Node C VC 0,0,1"]
+    A -.->|"concurrent"| C
+    CMP{{"Neither vector ≤ other"}}
+    A & C --> CMP
+    CMP --> CONF["Conflict detected — merge or return siblings"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Vector Clock Algorithm (3 nodes: A, B, C)
+          ══════════════════════════════════════════
+          Initial state: VC = [A:0, B:0, C:0] on each node
+          
+          Node A writes:    VC_A = [A:1, B:0, C:0]  → send to B
+          Node B receives:  VC_B = [A:1, B:1, C:0]  (merge + increment)
+          Node B writes:    VC_B = [A:1, B:2, C:0]  → send to C
+          Node C receives:  VC_C = [A:1, B:2, C:1]
+          
+          Concurrent writes (no causal relationship):
+            Node A: VC_A = [A:2, B:0, C:0]  (after A:1 event)
+            Node C: VC_C = [A:0, B:0, C:1]  (C wrote without seeing A)
+          
+          Comparison:
+            VC_A = [2, 0, 0]
+            VC_C = [0, 0, 1]
+            Neither is ≤ the other → CONCURRENT → conflict detected ✓
+          
+          Version Vectors (DynamoDB-style):
+            Each object stores a vector of (node, counter) pairs.
+            On read: return all conflicting versions (siblings).
+            Application or CRDT merges siblings on next write.</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Vector clocks detect concurrent updates: incomparable vectors signal conflicts that need application-level merge.</figcaption>
+                    </figure>
 
-Node A writes:    VC_A = [A:1, B:0, C:0]  → send to B
-Node B receives:  VC_B = [A:1, B:1, C:0]  (merge + increment)
-Node B writes:    VC_B = [A:1, B:2, C:0]  → send to C
-Node C receives:  VC_C = [A:1, B:2, C:1]
-
-Concurrent writes (no causal relationship):
-  Node A: VC_A = [A:2, B:0, C:0]  (after A:1 event)
-  Node C: VC_C = [A:0, B:0, C:1]  (C wrote without seeing A)
-
-Comparison:
-  VC_A = [2, 0, 0]
-  VC_C = [0, 0, 1]
-  Neither is ≤ the other → CONCURRENT → conflict detected ✓
-
-Version Vectors (DynamoDB-style):
-  Each object stores a vector of (node, counter) pairs.
-  On read: return all conflicting versions (siblings).
-  Application or CRDT merges siblings on next write.</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

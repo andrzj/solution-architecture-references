@@ -103,6 +103,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>A distributed transaction commits or aborts work spanning multiple databases through a coordinator. Two-phase commit (2PC) is the classic pattern: prepare votes, then commit if all agree. It preserves ACID but blocks on coordinator or participant failures.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Single-node databases achieve atomicity cheaply using write-ahead logs and local locks. Once data lives in separate systems — two relational databases, a database and a message queue, or databases in separate microservices — there is no single transaction log. Without coordination, a crash mid-operation leaves some participants committed and others not, creating permanent data inconsistency. Distributed transactions were introduced to provide the same atomicity guarantees engineers relied on in monolithic systems, even after distributing state across multiple nodes or services.</p>
 
@@ -126,28 +128,41 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Two-Phase Commit operates in two rounds of communication between a coordinator and N participants:</p>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Phase 1 — Prepare
-─────────────────
-Coordinator                Participant A      Participant B
-    │──── PREPARE ──────────────►│                │
-    │──── PREPARE ───────────────────────────────►│
-    │◄─── VOTE YES ─────────────│                │
-    │◄─── VOTE YES ──────────────────────────────│
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant C as Coordinator
+    participant A as Participant A
+    participant B as Participant B
+    C->>A: PREPARE
+    C->>B: PREPARE
+    A-->>C: VOTE YES
+    B-->>C: VOTE YES
+    C->>A: COMMIT
+    C->>B: COMMIT
+    A-->>C: ACK
+    B-->>C: ACK</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Phase 1 — Prepare
+          ─────────────────
+          Coordinator                Participant A      Participant B
+              │──── PREPARE ──────────────►│                │
+              │──── PREPARE ───────────────────────────────►│
+              │◄─── VOTE YES ─────────────│                │
+              │◄─── VOTE YES ──────────────────────────────│
+          
+          Phase 2 — Commit (all voted YES)
+          ──────────────────────────────────
+              │──── COMMIT ───────────────►│                │
+              │──── COMMIT ────────────────────────────────►│
+              │◄─── ACK ──────────────────│                │
+              │◄─── ACK ────────────────────────────────────│
+          
+          Phase 2 — Abort (any voted NO / coordinator timeout)
+          ──────────────────────────────────────────────────────
+              │──── ROLLBACK ─────────────►│                │
+              │──── ROLLBACK ──────────────────────────────►│</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Two-phase commit: coordinator collects prepare votes, then commits or aborts all participants atomically.</figcaption>
+                    </figure>
 
-Phase 2 — Commit (all voted YES)
-──────────────────────────────────
-    │──── COMMIT ───────────────►│                │
-    │──── COMMIT ────────────────────────────────►│
-    │◄─── ACK ──────────────────│                │
-    │◄─── ACK ────────────────────────────────────│
-
-Phase 2 — Abort (any voted NO / coordinator timeout)
-──────────────────────────────────────────────────────
-    │──── ROLLBACK ─────────────►│                │
-    │──── ROLLBACK ──────────────────────────────►│</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
           <p>XA is the standard C API / Java interface (JTA) that maps this protocol to specific resource managers. A transaction manager (e.g., Atomikos, Narayana, IBM TXSeries) drives the protocol and maintains a durable transaction log to recover after crashes.</p>
 
           <h2 id="pros-and-cons">Pros and cons</h2>

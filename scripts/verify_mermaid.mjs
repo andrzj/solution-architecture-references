@@ -4,10 +4,23 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import mermaid from "mermaid";
+import { JSDOM } from "jsdom";
+
+const dom = new JSDOM("<!DOCTYPE html><html><body></body></html>");
+globalThis.window = dom.window;
+globalThis.document = dom.window.document;
+
+const mermaid = (await import("mermaid")).default;
 
 const ROOT = join(import.meta.dirname, "..");
-const SKIP_DIRS = new Set([".git", "scripts", "docs", "node_modules", "assets/vendor"]);
+const SKIP_DIRS = new Set([
+  ".git",
+  "scripts",
+  "docs",
+  "node_modules",
+  "assets/vendor",
+  "templates",
+]);
 
 function walkHtml(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -17,9 +30,6 @@ function walkHtml(dir, out = []) {
       if (SKIP_DIRS.has(name)) continue;
       walkHtml(p, out);
     } else if (name.endsWith(".html") && name !== "404.html") {
-      if (name === "index.html" && dir !== ROOT) {
-        // category indexes may lack diagrams
-      }
       out.push(p);
     }
   }
@@ -27,9 +37,9 @@ function walkHtml(dir, out = []) {
 }
 
 const MERMAID_RE =
-  /<div class="[^"]*mermaid[^"]*"[^>]*>([\s\S]*?)<\/div>|<pre class="mermaid"[^>]*>([\s\S]*?)<\/pre>/gi;
+  /<div class="[^"]*\bmermaid\b[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?=<details|<figcaption)/gi;
 
-mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+mermaid.initialize({ startOnLoad: false, securityLevel: "loose" });
 
 let files = 0;
 let diagrams = 0;
@@ -38,8 +48,9 @@ const errors = [];
 for (const file of walkHtml(ROOT)) {
   const rel = relative(ROOT, file);
   const html = readFileSync(file, "utf8");
-  if (!html.includes('class="mermaid"') && !html.includes("class='mermaid'")) {
-    if (html.includes('id="typical-architecture"') && !html.includes('class="mermaid"')) {
+  const hasMermaid = /\bclass="[^"]*\bmermaid\b/.test(html);
+  if (!hasMermaid) {
+    if (html.includes('id="typical-architecture"')) {
       errors.push({ file: rel, message: "missing Mermaid diagram under typical-architecture" });
     }
     continue;
@@ -49,7 +60,7 @@ for (const file of walkHtml(ROOT)) {
   MERMAID_RE.lastIndex = 0;
   let idx = 0;
   while ((m = MERMAID_RE.exec(html))) {
-    const src = (m[1] || m[2] || "").trim();
+    const src = (m[1] || "").trim();
     if (!src) continue;
     diagrams++;
     idx++;

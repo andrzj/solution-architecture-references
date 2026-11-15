@@ -103,6 +103,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>Distributed nodes lack a shared clock, so you cannot trust wall-clock timestamps for ordering. Logical clocks (Lamport, vector clocks, hybrid logical clocks) assign orderable counters to events instead. A chat app might use Lamport timestamps to decide which edit wins when two users type offline at once.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Many operations depend on knowing the order of events across machines: database snapshot isolation requires a consistent timestamp for reads, distributed caches need to invalidate stale entries, audit logs must reflect true causality, and conflict resolution in replicated systems requires knowing which write came "later". Wall-clock timestamps are unreliable for these purposes because clock drift between machines can be tens of milliseconds (NTP) to hundreds of milliseconds (VMs), easily exceeding the latency between causally related events.</p>
 
@@ -121,44 +123,54 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>Lamport Clock Algorithm
-════════════════════════
-Rules:
-  1. Each node maintains counter L, initially 0.
-  2. Before each event, increment L: L = L + 1.
-  3. When sending message, attach current L.
-  4. On receiving message with timestamp T:
-     L = max(L, T) + 1
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant A as Node A
+    participant B as Node B
+    participant C as Node C
+    Note over A: L=1 local event
+    A->>B: message L=2
+    Note over B: L=max+1 → 3
+    B->>C: message L=4
+    Note over C: L=5 event</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Lamport Clock Algorithm
+          ════════════════════════
+          Rules:
+            1. Each node maintains counter L, initially 0.
+            2. Before each event, increment L: L = L + 1.
+            3. When sending message, attach current L.
+            4. On receiving message with timestamp T:
+               L = max(L, T) + 1
+          
+          Example:
+            Node A          Node B          Node C
+            L=1: event a1   │               │
+            L=2: send(B)──►L=3: event b1   │
+                            L=4: send(C)──────────►L=5: event c1
+            L=3: event a2   │               L=6: event c2
+          
+            Lamport clock gives partial order: if a→b then L(a) &lt; L(b)
+            But L(a) &lt; L(b) does NOT imply a→b (concurrent events
+            may have arbitrary ordering).
+          
+          Hybrid Logical Clock (HLC)
+          ═══════════════════════════
+            l (logical): max of wall-clock and peer timestamps
+            c (counter): tie-breaking counter within same wall-clock second
+          
+            On send/local event:
+              l = max(l, now); if l == old_l then c++ else c=0
+              send (l, c)
+          
+            On receive (l', c'):
+              if l' == l: c = max(c, c') + 1
+              elif l' > l: l = l'; c = c' + 1
+              else: c++
+          
+            HLC: close to wall-clock time, yet causally ordered ✓</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Lamport clocks: local increments and max-on-receive give a partial causal ordering across nodes.</figcaption>
+                    </figure>
 
-Example:
-  Node A          Node B          Node C
-  L=1: event a1   │               │
-  L=2: send(B)──►L=3: event b1   │
-                  L=4: send(C)──────────►L=5: event c1
-  L=3: event a2   │               L=6: event c2
-
-  Lamport clock gives partial order: if a→b then L(a) &lt; L(b)
-  But L(a) &lt; L(b) does NOT imply a→b (concurrent events
-  may have arbitrary ordering).
-
-Hybrid Logical Clock (HLC)
-═══════════════════════════
-  l (logical): max of wall-clock and peer timestamps
-  c (counter): tie-breaking counter within same wall-clock second
-
-  On send/local event:
-    l = max(l, now); if l == old_l then c++ else c=0
-    send (l, c)
-
-  On receive (l', c'):
-    if l' == l: c = max(c, c') + 1
-    elif l' > l: l = l'; c = c' + 1
-    else: c++
-
-  HLC: close to wall-clock time, yet causally ordered ✓</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">

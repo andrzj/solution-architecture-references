@@ -102,6 +102,8 @@
           <h2 id="what-it-is">What it is</h2>
           
 
+          <p>Coordination services like ZooKeeper, etcd, and Consul give distributed processes shared configuration, locks, and leader election. They expose watches so clients react when cluster state changes. Kubernetes control plane components depend on etcd for this kind of coordination.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Building correct distributed coordination from scratch (leader election, distributed locking, cluster membership) requires implementing consensus algorithms correctly — a notoriously hard problem with subtle failure modes (see: split-brain, fencing tokens). Dedicated coordination services encapsulate this complexity behind a simple, well-tested API. Rather than every team implementing their own Paxos or Raft variant, they delegate coordination concerns to proven systems, focusing on their application logic.</p>
 
@@ -121,37 +123,43 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-          <pre class="architecture-diagram__canvas"><code>ZooKeeper Node Types
-═════════════════════
-  /config              ← persistent node (configuration)
-  /config/db-url       ← persistent node (value)
-  /election            ← persistent node (parent)
-  /election/n-0000001  ← ephemeral sequential (candidate 1)
-  /election/n-0000002  ← ephemeral sequential (candidate 2)
+                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+                      <div class="architecture-diagram__render mermaid">flowchart TB
+    ZK["ZooKeeper znodes /election watches"]
+    ETCD["etcd PUT GET WATCH TXN lease locks"]
+    CON["Consul service registry + KV + health"]
+    ZK & ETCD & CON --> USE["Leader election config locks service mesh"]</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>ZooKeeper Node Types
+          ═════════════════════
+            /config              ← persistent node (configuration)
+            /config/db-url       ← persistent node (value)
+            /election            ← persistent node (parent)
+            /election/n-0000001  ← ephemeral sequential (candidate 1)
+            /election/n-0000002  ← ephemeral sequential (candidate 2)
+          
+            Watch mechanism:
+              Client watches /election → notified when child created/deleted
+              Lowest sequential node = current leader
+              On leader crash: ephemeral node deleted → watchers notified
+          
+          etcd Key Operations
+          ════════════════════
+            PUT /config/db-url "postgres://..."
+            GET /config/db-url
+            WATCH /config/           ← streams all changes under prefix
+            PUT /lock/my-service --lease=<id>  ← TTL-bound ownership
+            TXN [IF key == ""] THEN [PUT key val] ← atomic CAS
+          
+          Consul Features
+          ════════════════
+            Service registration with health checks
+            Key-Value store (similar to etcd)
+            Sessions (TTL-based leases for locking)
+            DNS interface for service discovery
+            Connect (service mesh with mTLS via Envoy)</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Coordination services expose watches, ephemeral nodes, and transactional keys for distributed configuration and locking.</figcaption>
+                    </figure>
 
-  Watch mechanism:
-    Client watches /election → notified when child created/deleted
-    Lowest sequential node = current leader
-    On leader crash: ephemeral node deleted → watchers notified
-
-etcd Key Operations
-════════════════════
-  PUT /config/db-url "postgres://..."
-  GET /config/db-url
-  WATCH /config/           ← streams all changes under prefix
-  PUT /lock/my-service --lease=<id>  ← TTL-bound ownership
-  TXN [IF key == ""] THEN [PUT key val] ← atomic CAS
-
-Consul Features
-════════════════
-  Service registration with health checks
-  Key-Value store (similar to etcd)
-  Sessions (TTL-based leases for locking)
-  DNS interface for service discovery
-  Connect (service mesh with mTLS via Envoy)</code></pre>
-          <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
-          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
