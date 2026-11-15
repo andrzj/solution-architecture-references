@@ -2,6 +2,8 @@
 
 This site is plain static HTML. Pattern articles (everything under category folders except `decision-guides/` and `templates/`) share one layout so readers can scan any topic the same way.
 
+**Editorial pass scope:** Category rewrites do not modify `decision-guides/`, `templates/`, `diagrams/`, or `glossary/` (Guides & Resources). Those areas stay out of scope for editorial PRs.
+
 ## Page shell
 
 Every article page includes:
