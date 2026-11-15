@@ -104,23 +104,38 @@
         </div>
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
-          
+          <p><strong>Lakehouse governance</strong> is the set of policies, catalogs, and controls that make tabular data on object storage as discoverable, secure, and auditable as warehouse tables. Open table formats—<a href="https://docs.delta.io/latest/delta-batch.html" target="_blank" rel="noopener noreferrer">Delta Lake</a>, <a href="https://iceberg.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Iceberg</a>, and <a href="https://hudi.apache.org/docs/overview" target="_blank" rel="noopener noreferrer">Apache Hudi</a>—add ACID transactions and metadata layers on top of cloud object stores; governance binds identities, classifications, masking rules, and audit logs to those registered tables instead of anonymous paths in a bucket.</p>
+          <p>A unified catalog (for example Databricks Unity Catalog, AWS Glue with Lake Formation, or an Iceberg REST catalog) becomes the control plane: engines obtain credentials and policies through the catalog, column tags drive masking, and query audit events feed compliance reporting.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Unrestricted S3/ADLS buckets create shadow data and regulatory risk. Governance binds identities, classifications, and audit trails to tables and volumes.</p>
+          <p>Early data lakes accumulated files with bucket-level IAM only. Teams could write sensitive Parquet anywhere, spin up shadow paths, and share credentials informally—creating regulatory exposure and no single inventory of what exists. Lakehouse formats and catalogs move enforcement to the table and column grain, close to where Spark, Trino, and Flink actually read data.</p>
+          <p>Central governance also supports cross-engine access: the same Iceberg table queried from multiple engines still resolves permissions through one metastore and produces consistent lineage and access logs for GDPR, HIPAA, or internal security reviews.</p>
+
           <h2 id="when-to-use">When to use</h2>
-          <ul><li>Multi-team analytics on shared lakehouse.</li><li>PII/PHI data on object storage.</li><li>Need fine-grained table/column ACLs.</li><li>Cross-region replication with policy enforcement.</li></ul>
+          <ul>
+            <li>Multiple teams share a production lakehouse on object storage with mixed sensitivity levels.</li>
+            <li>PII, PHI, or financial columns live in open-table files that must not rely on bucket secrecy alone.</li>
+            <li>You require fine-grained grants, row filters, or column masks enforced at query time across engines.</li>
+            <li>Cross-region replication or disaster recovery must preserve classifications and legal holds on table versions.</li>
+            <li>Compliance asks for who accessed which table, when, and under which policy.</li>
+          </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
-          <ul><li>Single-team sandbox with no sensitive data.</li></ul>
+          <ul>
+            <li>A single-team sandbox with synthetic data, no production coupling, and no compliance scope.</li>
+            <li>Immutable archival blobs never queried interactively and already governed by object-lock retention alone.</li>
+          </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Catalog + policy engine + audit log over table storage.</p>
+          <p>Files sit on object storage under an open table format; a catalog registers schemas and enforces IAM or attribute-based policies before query engines read data. Audit pipelines retain access and DDL events for compliance review.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     object_storage["Object storage"]
-    table_format["Table format"]
-    catalog_unity_glue["Catalog (Unity/Glue)"]
-    iam_abac["IAM/ABAC"]
-    audit["Audit"]
-    query_engines["Query engines"]
+    table_format["Delta / Iceberg / Hudi"]
+    catalog_unity_glue["Unified catalog"]
+    iam_abac["Policies IAM or ABAC"]
+    audit["Audit & lineage"]
+    query_engines["Spark Trino Flink"]
     object_storage --> table_format
     table_format --> catalog_unity_glue
     catalog_unity_glue --> iam_abac
@@ -128,32 +143,71 @@
     audit --> query_engines</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Object storage ► Table format ► Catalog (Unity/Glue) ► IAM/ABAC ► Audit ► Query engines
-</code></pre>
+              <pre class="architecture-diagram__canvas"><code>Object storage
+       ↓
+Open table format (Delta / Iceberg / Hudi)
+       ↓
+Unified catalog — grants, tags, row/column policies
+       ↓
+Policy enforcement (IAM / ABAC)
+       ↓
+Audit &amp; lineage ──► Query engines (Spark, Trino, Flink, …)</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Catalog + policy engine + audit log over table storage.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Registered tables on object storage with catalog-backed policies and query audit before engines access files.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul><li>Unified security model.</li><li>Lineage for compliance.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul><li>Migration from legacy ACLs.</li><li>Performance of row/column masks.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>One security model across batch, streaming, and ad hoc SQL instead of per-bucket exceptions.</li>
+                <li>Table-level lineage and access logs support erasure requests and regulatory attestations.</li>
+                <li>Column tags and masks apply consistently regardless of which engine issues the query.</li>
+                <li>Time travel and versioning on open formats pair with retention and legal-hold policies.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Migrating legacy Hadoop ACLs or ad hoc bucket policies into a catalog is labor-intensive.</li>
+                <li>Row filters and dynamic masking add latency on wide, high-QPS serving tables.</li>
+                <li>Catalog availability becomes a platform dependency for every analytical workload.</li>
+                <li>Engines must stay current with catalog APIs; gaps create policy bypass via unregistered paths.</li>
+              </ul>
+            </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Centralize metastore; tag columns with classifications; enforce ABAC where possible. Automate lineage from Spark/DBT jobs. Retention and legal hold on table versions; block public bucket policies via policy-as-code.</p>
-          
+          <p>Register every production table in the catalog; block or alert on writes to unregistered prefixes via storage policies. Classify columns with a small taxonomy (public, internal, confidential, PII) and map tags to default masks or deny rules.</p>
+          <p>Prefer attribute-based access where job identity and data tags combine into policies (Lake Formation, Unity Catalog, or Ranger with Iceberg plugins). Emit lineage from Spark, dbt, and Flink jobs into the same metadata store the catalog uses. Configure retention and legal hold on table snapshots per format docs. Enforce no public ACLs on storage accounts with infrastructure-as-code guardrails.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul><li><strong>Shadow catalogs:</strong> Teams bypass governance with private buckets.</li><li><strong>Over-broad grants:</strong> `*` readers on production marts.</li></ul>
+          <ul>
+            <li><strong>Shadow catalogs:</strong> Teams write to private bucket prefixes outside the metastore, bypassing masks and audit.</li>
+            <li><strong>Over-broad grants:</strong> Wildcard read roles on production marts defeat column-level controls for casual SQL users.</li>
+            <li><strong>Catalog split-brain:</strong> Multiple metastores for the same storage root produce conflicting ACLs and orphaned tables.</li>
+            <li><strong>Audit without review:</strong> Query logs land in cold storage but nobody monitors anomalous access patterns.</li>
+          </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist"><li>Are all production tables registered?</li><li>Is PII tagged and masked by default?</li><li>Can you produce an access report per regulation?</li></ul>
+          <ul class="checklist">
+            <li>Are all production tables and volumes registered in a single catalog with named owners?</li>
+            <li>Are PII and sensitive columns tagged with default mask or deny policies?</li>
+            <li>Can you produce per-user or per-role access reports for a regulator-defined window?</li>
+            <li>Is lineage available from gold tables back to ingestion for erasure and impact analysis?</li>
+            <li>Do storage and IAM guardrails prevent public buckets and unregistered write paths?</li>
+          </ul>
           <h2 id="example-use-cases">Example use cases</h2>
           <ul><li><strong>Healthcare lakehouse:</strong> Column masks on PHI; audit every analyst query via engine integration.</li></ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="data-governance-for-analytics.html">Data Governance for Analytics</a></li><li><a href="../data-architecture/data-lakehouse.html">Data Lakehouse</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.databricks.com/en/data-governance/unity-catalog/" target="_blank" rel="noopener noreferrer">Unity Catalog</a></li>
-            <li><a href="https://iceberg.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Iceberg security</a></li>
-            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark documentation</a></li>
+            <li><a href="https://docs.databricks.com/en/data-governance/unity-catalog/" target="_blank" rel="noopener noreferrer">Databricks Unity Catalog</a></li>
+            <li><a href="https://iceberg.apache.org/docs/latest/access-control/" target="_blank" rel="noopener noreferrer">Apache Iceberg access control</a></li>
+            <li><a href="https://hudi.apache.org/docs/access-control/" target="_blank" rel="noopener noreferrer">Apache Hudi access control</a></li>
+            <li><a href="https://docs.delta.io/latest/delta-utility.html#delta-lake-governance" target="_blank" rel="noopener noreferrer">Delta Lake governance</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
