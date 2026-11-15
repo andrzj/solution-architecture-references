@@ -59,20 +59,23 @@ All `h2` elements live in `.article-content` and use stable `id` attributes for 
 ### Typical architecture (diagram)
 
 1. Optional short `<p>` explaining the diagram.
-2. ASCII diagram inside:
+2. **Rendered Mermaid** plus a text fallback for accessibility and offline `file://` use:
 
 ```html
-<figure class="architecture-diagram" role="img" aria-labelledby="typical-architecture-caption">
-  <pre class="architecture-diagram__canvas"><code>…ASCII…</code></pre>
+<figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+  <div class="architecture-diagram__render mermaid">flowchart TB
+    …</div>
+  <details class="architecture-diagram__fallback">
+    <summary>View text diagram</summary>
+    <pre class="architecture-diagram__canvas"><code>…original ASCII…</code></pre>
+  </details>
   <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">
-    Text-based reference diagram for this pattern. Read top to bottom; boxes show components and lines show flow.
+    One sentence specific to this article’s diagram.
   </figcaption>
 </figure>
 ```
 
-Styling comes from `assets/css/main.css` (`.architecture-diagram`). No build step and no CDN: diagrams stay editable ASCII, readable in light/dark themes, and scroll horizontally on small screens.
-
-Run `python3 scripts/wrap_architecture_diagrams.py` after adding a bare `<pre><code>` block under *Typical architecture*.
+Mermaid is vendored at `assets/vendor/mermaid.min.js` and initialized from `assets/js/main.js` (light/dark themes). Validate syntax with `cd scripts && npm install && node verify_mermaid.mjs` before merging.
 
 ### Pros and cons
 
