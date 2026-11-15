@@ -122,30 +122,31 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The acronym stands for: in case of <strong>P</strong>artition, choose between <strong>A</strong>vailability and <strong>C</strong>onsistency; <strong>E</strong>lse (during normal operation), choose between <strong>L</strong>atency and <strong>C</strong>onsistency. This makes PACELC a more complete model for practical database selection decisions than CAP alone.</p>
-          <p>The key insight is that even when the network is fully healthy, a distributed system must decide whether to wait for confirmation from all replicas before responding (low latency/eventual consistency) or to ensure all replicas agree before acknowledging a write (higher latency/strong consistency). This is a meaningful trade-off in every distributed database operation, not just during the rare partition events that CAP focuses on.</p>
+          <p><strong>PACELC</strong> extends the CAP theorem. When a <strong>P</strong>artition happens, you choose <strong>A</strong>vailability or <strong>C</strong>onsistency. <strong>E</strong>lse — on a healthy network — you choose low <strong>L</strong>atency or <strong>C</strong>onsistency on every replicated write.</p>
+          <p><strong>RideRelay</strong>, a ride-hailing company, runs two stores side by side. Driver GPS pings land in DynamoDB with default eventual consistency (PA/EL): a map pin may lag briefly, but drivers keep streaming updates without waiting on far replicas. Driver payout balances sit in a strongly consistent ledger (PC/EC): a partition may block some writes, but two nodes never disagree about money owed.</p>
+          <p>CAP alone labels both Cassandra-class and DynamoDB-class systems “AP.” PACELC explains why RideRelay still needs two different designs — partition behavior and day-to-day latency behavior are separate questions.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>CAP's focus on partition scenarios, while theoretically important, does not capture the day-to-day trade-offs that matter most to system designers. Network partitions are relatively rare events in well-operated data centers. The latency/consistency trade-off in normal operation, however, affects every single database operation and directly impacts user-facing response times. PACELC gives architects the framework to have a complete conversation about a database's behavior both during failures and during normal operation.</p>
-          <p>PACELC also clarifies the difference between systems that appear similar under CAP but behave very differently in practice. Both Cassandra and DynamoDB are classified as AP under CAP — but under PACELC, Cassandra is PA/EL (highly available, low latency, high consistency sacrifice) while systems like PNUTS/Yahoo are PA/EC (available during partition, but strongly consistent in normal operation). These are fundamentally different systems for different use cases.</p>
+          <p>Most outages that users notice happen while the network is fine. CAP only speaks up when links fail; PACELC names the trade-off RideRelay engineers feel every sprint: acknowledge a write after one local replica (EL) or wait for a quorum (EC).</p>
+          <p>Daniel Abadi’s PACELC formulation (2010) also separates databases that look identical on a CAP slide. DynamoDB and Cassandra both tolerate partitions, but their default write paths favor low latency. Designs in the PNUTS family stay available under partition yet pursue stronger consistency when connected — a different PACELC posture RideRelay would document before picking either for payouts.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When comparing distributed databases where latency is as important as consistency behavior — which is most real-world database selection decisions.</li>
-            <li>When the system needs to make explicit trade-offs between read/write latency and the freshness of data returned.</li>
-            <li>When building globally distributed systems where cross-region replication latency makes the EL/EC trade-off particularly consequential.</li>
-            <li>When evaluating databases for financial or healthcare applications where the latency cost of strong consistency must be explicitly weighed against its benefits.</li>
+            <li>Use PACELC when RideRelay (or your team) is down to two or more distributed databases and stakeholders care about both freshness and response time.</li>
+            <li>Use it when the product mixes hot paths — live driver maps — with cold correctness paths — payout settlement — and you need separate consistency postures for each.</li>
+            <li>Use it when you deploy across regions, because quorum writes usually pay a cross-region round trip that EL backends avoid.</li>
+            <li>Use it when finance, compliance, or safety reviewers ask why the architecture accepts stale reads anywhere, and you need a named framework rather than ad hoc excuses.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>PACELC is a simplified model — it does not capture all the nuances of a specific database's replication and consistency implementation. Always read the database's consistency documentation directly.</li>
-            <li>For single-node systems, both CAP and PACELC are irrelevant to the consistency/partition discussion (though latency remains a design concern).</li>
-            <li>Do not treat PACELC classifications as fixed — most modern databases are configurable and their effective PACELC classification depends on the consistency level configured for each operation.</li>
+            <li>Do not treat PACELC as a substitute for reading the vendor’s consistency documentation; tunable levels blur the EL/EC label on every operation.</li>
+            <li>Do not apply CAP or PACELC to a single-node database; partition tolerance only matters once independent failure domains exist.</li>
+            <li>Do not stamp a database PA/EL forever in an ADR without retesting after upgrades, new consistency defaults, or multi-region layout changes.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The PACELC framework classifies systems along two dimensions: partition behavior (P→A or P→C) and normal-operation behavior (E→L or E→C). The following table shows the classification of well-known databases and the architectural implications for each quadrant.</p>
+          <p>RideRelay’s platform team classifies each datastore on two axes: partition time (stay up vs stay consistent) and normal operation (fast writes vs quorum writes). The flowchart matches the diagram below and the fallback table of common stores.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart LR
     P["Network partition?"] -->|yes| PA["PA — availability"]
@@ -192,53 +193,52 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>More complete than CAP — covers the trade-offs that affect every operation, not just partition scenarios.</li>
-                <li>Makes the latency cost of strong consistency explicit, enabling cost/benefit analysis.</li>
-                <li>Differentiates databases that appear identical under CAP but have different normal-operation behavior.</li>
-                <li>Provides a practical framework for comparing database candidates against both consistency and latency requirements.</li>
+                <li>RideRelay can explain why GPS and payouts use different databases without rehashing CAP lectures every quarter.</li>
+                <li>Engineers surface the latency tax of quorum writes before production traffic proves the API is too slow.</li>
+                <li>Product and finance stakeholders hear a shared vocabulary — PA/EL pins versus ledger rows — during roadmap trade-off meetings.</li>
+                <li>Architecture reviews compare candidates on both failure behavior and happy-path write latency, not logo slides.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Still a simplified model — real systems have tunable consistency levels that blur the EL/EC classification.</li>
-                <li>Less widely known than CAP — requires more explanation when communicating with stakeholders unfamiliar with it.</li>
-                <li>Does not address all important database properties: durability guarantees, query expressiveness, operational complexity, and cost are also crucial selection criteria.</li>
-                <li>Classifications can change with database version updates and configuration changes.</li>
+                <li>Labels collapse when Cassandra consistency levels differ per query; RideRelay must document operation-level settings, not one sticker per cluster.</li>
+                <li>Executives rarely know PACELC; staff must translate into user-visible outcomes (stale map vs delayed payout).</li>
+                <li>Durability, query models, licensing, and ops headcount still decide the shortlist — PACELC does not replace load tests.</li>
+                <li>A mistaken PA/EL choice on payouts is expensive to unwind once finance workflows depend on the store.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>The EL trade-off in practice:</strong> In a PA/EL system like Cassandra with consistency level ONE, a write is acknowledged as soon as a single replica confirms it. Other replicas are updated asynchronously. This means reads of recently written data from a different replica may return the previous value — eventual consistency. The benefit is that writes complete at local latency (sub-millisecond for in-region), making the system extremely fast for high-throughput write workloads.</p>
-          <p>The EC alternative would be QUORUM writes — waiting for a majority of replicas, which adds latency but guarantees that a subsequent QUORUM read will always see the latest write.</p>
-          <p><strong>Global distribution amplifies the trade-off:</strong> In a multi-region database (e.g., DynamoDB global tables, CockroachDB multi-region, Cassandra multi-DC), the EL/EC trade-off becomes dramatically more consequential. Cross-region replication typically adds 50–200 ms of round-trip latency. A strongly consistent (EC) multi-region write therefore costs hundreds of milliseconds per operation — which is completely unacceptable for user-facing APIs but may be acceptable for financial settlement or order fulfillment processes.</p>
-          <p><strong>Practical database selection workflow:</strong> Start with the question "can this use case tolerate stale reads?" If yes, PA/EL databases are candidates. If no, consider PC/EC. Then ask "how often do we expect network partitions, and what should happen during one?" If the service must stay available, eliminate PC options. Finally, apply operational, cost, and query capability filters to the remaining candidates.</p>
+          <p><strong>Split stores by PACELC posture:</strong> RideRelay keeps driver locations on DynamoDB global tables with default eventual consistency. Payout accruals run through a regional Postgres cluster with synchronous replication to a standby — PC/EC behavior documented in ADR-0014.</p>
+          <p><strong>Tune within one engine:</strong> On Cassandra, consistency level ONE is EL: the coordinator acks after the first replica. QUORUM shifts toward EC on the same cluster. Inventory reservations during surge pricing might use QUORUM while session tokens stay at ONE.</p>
+          <p><strong>Selection workflow:</strong> For each datastore, ask whether stale reads are acceptable (rules out naive EL for balances). Define partition behavior for rider safety and payouts (can the map go dark?). Benchmark quorum write latency at expected peak GPS rate. Record the chosen PACELC posture and per-operation levels in an ADR before cutover.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Using EL for financial data:</strong> Selecting DynamoDB or Cassandra at default consistency for balance or inventory data, then discovering that concurrent writes produce lost-update anomalies.</li>
-            <li><strong>Using EC for user-facing reads:</strong> Configuring PostgreSQL with synchronous multi-region replication for a read-heavy user profile service — adding 150 ms to every page load.</li>
-            <li><strong>Not benchmarking the EC overhead:</strong> Assuming strong consistency is "good enough" for performance without measuring the actual latency penalty of quorum writes at the expected throughput.</li>
-            <li><strong>Ignoring the P behavior in SLA planning:</strong> Building on a PC database without planning for the availability hit during partition events — which will occur and will result in downtime.</li>
+            <li><strong>One database for everything:</strong> RideRelay stores payout accruals in the same PA/EL table as GPS pings, then finance finds duplicate adjustments after concurrent writes.</li>
+            <li><strong>Quorum on the hot path:</strong> The rider app loads nearby drivers through synchronous multi-region Postgres; p99 latency jumps and riders abandon the session.</li>
+            <li><strong>Assumed labels:</strong> The team markets the stack as “strongly consistent” without chaos tests; the first AZ failure shows writes failing open in unexpected ways.</li>
+            <li><strong>Ignored partition plan:</strong> A PC ledger has no runbook for minority-side behavior, so on-call engineers guess during a real network split.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is this use case tolerant of stale reads? (If no, eliminate EL databases from consideration.)</li>
-            <li>What is the acceptable write latency target — and have we measured the overhead of quorum writes at the expected throughput?</li>
-            <li>Is the deployment single-region or multi-region? Multi-region makes the EL/EC latency difference 10–100× larger.</li>
-            <li>What should happen during a network partition — must the service stay available, or can it refuse requests?</li>
-            <li>Have we tested the chosen database under simulated partition conditions (chaos engineering) to validate its actual behavior?</li>
-            <li>For tunable-consistency databases, is the consistency level configured per-operation, and is it appropriate for each operation type?</li>
-            <li>Is the PACELC classification of the chosen database documented in an ADR so future teams understand the trade-off that was accepted?</li>
+            <li>Can this read path tolerate briefly stale data without violating safety or money rules?</li>
+            <li>Have we measured write latency at peak load for both EL and EC settings on the finalists?</li>
+            <li>Will the deployment span multiple regions or availability zones that add replication round trips?</li>
+            <li>During a partition, must riders still see a map, must payouts still accrue, or may we fail closed?</li>
+            <li>Have we run partition injection tests on the exact topology and consistency levels we plan to ship?</li>
+            <li>For each API operation, is the configured consistency level documented and reviewed with the owning team?</li>
+            <li>Does an ADR state the accepted PACELC posture and link to benchmarks that justified it?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>A ride-sharing app's driver location service uses DynamoDB (PA/EL) — a driver location that is 500 ms stale is acceptable, but location write latency must stay under 50 ms to handle high update rates.</li>
-            <li>A trading platform's order book uses a PC/EC database (VoltDB) — every microsecond of consistency guarantee is worth the latency cost because stale order state leads to incorrect trades.</li>
-            <li>A globally distributed e-commerce catalog uses Cassandra (PA/EL by default, EC for inventory) — product description reads can tolerate stale data, but inventory decrement writes use QUORUM to prevent overselling.</li>
+            <li><strong>RideRelay driver map (PA/EL):</strong> GPS pings write to DynamoDB; riders see slightly stale pins but the dispatch service never blocks on cross-region quorum.</li>
+            <li><strong>RideRelay weekly payouts (PC/EC):</strong> Accrual rows live in a consensus-backed ledger; a partition may reject writes, but duplicate payout lines do not appear.</li>
+            <li><strong>RideRelay surge inventory (PA + tunable EC):</strong> Promotional ride credits use EL counters; limited “surge bonus” slots use QUORUM decrements so two regions cannot oversell the same pool.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

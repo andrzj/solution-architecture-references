@@ -122,32 +122,31 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>An operation is <strong>idempotent</strong> if applying it multiple times produces the same result as applying it once. Formally, for a function <em>f</em>, idempotency means <em>f(f(x)) = f(x)</em>. In the context of distributed systems and APIs, an operation is idempotent if calling it once and calling it ten times with the same input leaves the system in the same final state.</p>
-          <p>Setting a value is idempotent (SET x = 5 twice results in x = 5). Incrementing is not (INCREMENT x twice results in x = initial + 2).</p>
-          <p>Idempotency is essential in distributed systems because network communication is inherently unreliable. When a client sends a request and does not receive a response (due to timeout, network interruption, or server crash), it cannot know whether the operation was executed. If the operation is not idempotent, retrying it could cause duplicate effects: charging a customer twice, creating duplicate records, or sending the same email twice. Making operations idempotent means retries are always safe — the worst outcome is redundant work, not data corruption.</p>
+          <p>An <strong>idempotent</strong> operation leaves the system in the same state whether you run it once or many times with the same intent. Set balance to $5 twice—you still have $5. Increment twice—you added two, which is not idempotent.</p>
+          <p>Networks drop responses, clients retry, and brokers redeliver messages. Without idempotency, a harmless retry becomes a double charge, duplicate row, or second email. Design for safe retries and duplicates become wasted work, not corruption.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Message delivery in distributed systems can be "at most once" (risk of loss), "at least once" (risk of duplicates), or "exactly once" (expensive, complex, and often illusory). In practice, the most reliable and scalable systems use at-least-once delivery — they guarantee every message is processed but may deliver it more than once due to retries after failures. Idempotent consumers make at-least-once delivery semantically equivalent to exactly-once: a message processed twice has the same effect as processing it once.</p>
-          <p>HTTP, the foundational protocol of the web, explicitly designates which methods should be idempotent (GET, HEAD, PUT, DELETE) and which are not (POST). This design makes web browsers and HTTP clients safe to retry failed requests for idempotent methods, and gives developers a clear signal that POST requests require special care to avoid duplicate side effects.</p>
+          <p>Delivery guarantees cluster around at-most-once (may lose), at-least-once (may duplicate), and exactly-once (hard and expensive). Most production pipelines choose at-least-once because it is resilient; idempotent handlers turn "processed twice" into "same outcome as once."</p>
+          <p>HTTP already encodes this split: GET, PUT, and DELETE are defined as idempotent; POST is not. Browsers and proxies may retry safe methods; POST needs keys or dedupe because side effects are expected.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All payment and financial operations — charge attempts, refund requests, and fund transfers must be idempotent to prevent duplicate charges or transfers.</li>
-            <li>Any API endpoint that triggers a side effect (send email, create record, trigger workflow) and may be called by retry-capable clients.</li>
-            <li>Message queue consumers that process at-least-once delivered messages.</li>
-            <li>Webhook receivers — webhooks are commonly retried by the sender on non-2xx responses, making the receiver responsible for deduplication.</li>
-            <li>Distributed workflow steps — any step in a saga or choreography-based transaction that might be retried after a failure.</li>
+            <li>Design for idempotency on payments, refunds, transfers, and anything else that moves money or inventory.</li>
+            <li>Design for it on APIs that create, charge, notify, or start workflows and may see client retries.</li>
+            <li>Design for it on queue and stream consumers that use at-least-once brokers.</li>
+            <li>Design for it on webhook endpoints, because senders retry on non-2xx responses.</li>
+            <li>Design for it on saga or choreography steps that can rerun after timeouts.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Idempotency is never "not applicable" — if an operation has side effects, it should always be designed for idempotency unless duplicates are explicitly acceptable and rare.</li>
-            <li>Pure reads (GET, SELECT) are naturally idempotent — no additional mechanism is required.</li>
-            <li>If "exactly once" processing is truly required (not "at-least-once with idempotent consumers"), Kafka exactly-once semantics or transactional outbox patterns are the appropriate tools — not just idempotency keys.</li>
+            <li>Side-effecting operations should default to idempotent design unless duplicates are explicitly harmless.</li>
+            <li>Reads need no extra idempotency machinery, because they are idempotent by nature.</li>
+            <li>When you truly need end-to-end exactly-once semantics, pair idempotency keys with a transactional outbox or broker features — keys alone are not enough.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The most common implementation pattern for idempotent APIs is the <strong>idempotency key</strong>: the client generates a unique identifier (typically a UUID) for each logical operation and includes it in the request. The server uses this key to detect and short-circuit duplicate requests. The sequence is: check key store → if key exists, return cached response; if key does not exist, execute operation, store key with response, return response.</p>
+          <p>The usual pattern is an <strong>idempotency key</strong>: the client sends a stable id (often a UUID) per logical action. The server looks up the key—if seen, return the stored response; if not, run the work, persist key plus outcome, then respond. The sequence diagram shows that flow.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">sequenceDiagram
     participant C as Client
@@ -210,54 +209,53 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Safe retries — clients can retry failed or timed-out requests without risk of duplicate side effects, dramatically simplifying error handling.</li>
-                <li>Enables at-least-once delivery — the simplest and most scalable message delivery guarantee becomes safe to use.</li>
-                <li>Simplifies distributed transactions — retry-safe operations remove the need for complex two-phase commit protocols in many scenarios.</li>
-                <li>Improves resilience — transient failures (network blips, pod restarts) can be recovered automatically with retries.</li>
+                <li>Retries after timeouts do not duplicate side effects.</li>
+                <li>At-least-once messaging stays simple and reliable.</li>
+                <li>Many flows avoid two-phase commit when steps can safely rerun.</li>
+                <li>Blips and pod restarts recover with automatic retry instead of manual repair.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Storage overhead — idempotency key storage requires a persistent, fast key-value store or database table with appropriate TTLs and cleanup.</li>
-                <li>Idempotency window — keys are typically stored for a finite TTL (24 hours is common for payments). Retries after the window may re-execute the operation.</li>
-                <li>Side effects that are inherently non-idempotent — sending an email or triggering a physical process cannot be "undone" by deduplication after the fact.</li>
-                <li>Distributed key storage — in a clustered server environment, all servers must share the same idempotency key store to prevent one server from executing what another has already completed.</li>
+                <li>Shared key store plus TTL management adds operational surface area.</li>
+                <li>Keys expire—retries outside the window may run twice (payments often use 24h).</li>
+                <li>Physical or external effects (email sent, printer fired) cannot be un-done by dedupe alone.</li>
+                <li>Per-pod memory caches break idempotency behind load balancers.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Idempotency key storage:</strong> The idempotency key table must be stored in a database that is visible to all instances of the service. Using a local in-memory store defeats the purpose in a multi-instance deployment. The key and its associated cached response should be committed <em>atomically</em> with the operation itself — if you charge the card in the same database transaction in which you insert the idempotency key, you can never have a state where the charge succeeded but the key was not stored (or vice versa). For operations that span external systems (e.g., charging a payment provider), use the outbox pattern to ensure the idempotency record is committed before the external call is confirmed.</p>
-          <p><strong>Database-level idempotency:</strong> SQL databases support idempotent write patterns natively. <code>INSERT INTO orders (...) ON CONFLICT (idempotency_key) DO NOTHING</code> (PostgreSQL) atomically either creates the record or does nothing if the key already exists. <code>INSERT OR IGNORE</code> in SQLite, and <code>INSERT IGNORE</code> in MySQL serve the same purpose. For updates, <code>UPDATE orders SET status='paid' WHERE order_id=?</p>
-          <p>AND status='pending'</code> is idempotent because the WHERE clause means the second update matches no rows if the first already changed the status. Optimistic locking via version columns is another approach: <code>UPDATE orders SET status='paid', version=version+1 WHERE order_id=? AND version=?</code>.</p>
-          <p><strong>Idempotent message consumers:</strong> In event-driven systems with at-least-once delivery (Kafka, SQS, RabbitMQ), consumers must handle duplicate messages. The standard pattern is a deduplication table keyed on the message ID: before processing, check if the message ID exists in the table; if yes, acknowledge and skip; if no, process and insert the ID in the same transaction. Kafka's log compaction and consumer offset tracking provide exactly-once <em>within a consumer group</em>, but the application-level consumer still needs idempotency for external side effects like database writes or HTTP calls.</p>
+          <p><strong>Idempotency key storage:</strong> All instances must share one store—Redis, DynamoDB, or a relational table—not process memory. Commit the key and the business outcome in one transaction when possible so you never charge without recording the key, or record the key without finishing the work. For external calls (payment gateways), outbox or similar patterns keep local state durable before you confirm upstream.</p>
+          <p><strong>Database-level idempotency:</strong> PostgreSQL <code>INSERT ... ON CONFLICT (idempotency_key) DO NOTHING</code>, SQLite <code>INSERT OR IGNORE</code>, and MySQL <code>INSERT IGNORE</code> make create paths safe. Updates like <code>UPDATE orders SET status='paid' WHERE order_id=? AND status='pending'</code> are naturally idempotent—the second run updates zero rows. Version columns add optimistic locking when you need stricter guards.</p>
+          <p><strong>Idempotent message consumers:</strong> Persist processed message ids (or business ids) and check before side effects. Kafka offsets help inside the consumer group, but HTTP calls, emails, and DB writes still need application-level dedupe.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Non-idempotent side effects:</strong> An idempotency key deduplicates the API call, but the implementation still sends an email confirmation for each call. The email send must also be guarded — typically by checking a "notification_sent" flag before sending.</li>
-            <li><strong>Idempotency key not tied to operation:</strong> Using a client-generated key for the HTTP call but not linking it to the specific operation (e.g., allowing the same key to be used for different amounts). The server must validate that a duplicate key has identical request parameters, not just the same key.</li>
-            <li><strong>Idempotency window too short:</strong> A 1-hour TTL on idempotency keys means a payment retry 2 hours later (e.g., from a mobile app that was offline) will re-execute. Stripe uses a 24-hour window; for financial operations, longer windows are safer.</li>
-            <li><strong>Non-shared key store in distributed deployments:</strong> Each pod maintains its own in-memory idempotency store. Load balancer routes the retry to a different pod that has no record of the first request — the operation executes twice.</li>
+            <li><strong>Deduped API, duplicate email:</strong> Key stops double charge but code still sends mail on every entry path.</li>
+            <li><strong>Key reuse with different payload:</strong> Same key, different amount—server must reject mismatched replays.</li>
+            <li><strong>TTL too short:</strong> Offline mobile client retries after expiry and pays twice.</li>
+            <li><strong>Local key cache:</strong> Retry hits another pod with an empty map—work runs again.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does this operation have side effects that should not be repeated on retry (charge, create, send, trigger)?</li>
-            <li>Can the client include an idempotency key with the request — either auto-generated or provided as a request parameter?</li>
-            <li>Is the idempotency key store shared across all service instances (not per-pod in-memory)?</li>
-            <li>Is the idempotency key committed atomically with the operation to prevent key/operation split-brain?</li>
-            <li>Is the idempotency TTL appropriate for the retry window of the clients that call this service?</li>
-            <li>Are all downstream side effects (emails, external API calls, event publications) also guarded against duplication?</li>
-            <li>For message consumers: is the message ID used as a deduplication key in a persistent store, not just checked in memory?</li>
+            <li>Does this path have side effects that must not double on retry?</li>
+            <li>Can clients send a stable idempotency key per logical operation?</li>
+            <li>Is the key store shared by every replica of the service?</li>
+            <li>Are key insert and side effect committed together when the datastore allows?</li>
+            <li>Does TTL cover realistic client retry horizons?</li>
+            <li>Are downstream calls, emails, and events guarded the same way?</li>
+            <li>For consumers, is dedupe persisted by message id, not only in RAM?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Stripe's payment API requires clients to include an <code>Idempotency-Key</code> header with every charge request. If a request times out, the client retries with the same key and Stripe returns the cached result of the first (and only) charge.</li>
-            <li>An order placement service uses <code>INSERT INTO orders ... ON CONFLICT (idempotency_key) DO NOTHING</code> to ensure that a mobile app that retries a timed-out order submission does not create duplicate orders.</li>
-            <li>An SQS consumer processing webhook events stores the SQS message ID in a DynamoDB deduplication table. If SQS delivers the same message twice (a guaranteed possibility with standard queues), the second delivery is detected and skipped without re-processing.</li>
-            <li>A Kubernetes controller uses idempotent reconciliation — the reconcile loop runs continuously and must be safe to run multiple times. Each reconcile call checks the desired state vs the current state and only takes action if a delta exists, making repeated runs safe.</li>
+            <li>Stripe charges with <code>Idempotency-Key</code>—timeout plus retry returns the original charge, not a second one.</li>
+            <li>Order API with <code>ON CONFLICT (idempotency_key) DO NOTHING</code>—mobile retries do not spawn duplicate orders.</li>
+            <li>SQS handler writing message ids to DynamoDB—second delivery is acknowledged and skipped.</li>
+            <li>Kubernetes controllers reconciling desired vs actual state—loops rerun safely until the cluster matches spec.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

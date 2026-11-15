@@ -122,31 +122,34 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The classic example is the concept of "Customer." In the sales context, a customer is a prospect who has agreed to a contract. In the support context, a customer is anyone who opens a ticket. In the billing context, a customer is an account with a payment method. These are different concepts that share a name, and trying to unify them into a single canonical Customer model is the root cause of countless monolith complexity problems.</p>
+          <p>A <strong>bounded context</strong> is an explicit boundary where a domain model and its <em>ubiquitous language</em> (shared terms between devs and domain experts) stay consistent.</p>
+          <p>Outside that boundary, the same word may mean something else — and that is normal, not a modeling bug.</p>
+          <p>At <strong>Meridian Commerce</strong>, “Customer” in the Catalog context is a buyer browsing SKUs. In Order, it is a party placing a checkout. In Payment, it is a bill-to account with a vaulted card. One noun, three models — forcing a single enterprise <code>Customer</code> table is how monoliths accumulate accidental complexity.</p>
+          <p>Each Meridian context owns its data and vocabulary. Contexts integrate through declared relationships (context maps), not through shared entity graphs.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Large systems fail because the implicit assumption that "everyone means the same thing when they say X" breaks down under organizational and technical scale. When a single domain model tries to serve all contexts — the "God Object" or "canonical data model" antipattern — it becomes a source of constant conflict, unintended coupling, and brittleness. Every change to the shared model risks breaking all consumers.</p>
-          <p>Bounded contexts resolve this by making the ambiguity explicit and controlled. Each context owns its own model, its own data, and its own ubiquitous language. Interactions between contexts are managed through well-defined integration patterns (context mappings) rather than shared object graphs. This enables independent development, deployment, and evolution of each context — which is the basis for microservices architecture done well.</p>
+          <p>Teams assume shared words imply shared meaning. That assumption breaks when sales, fulfillment, and finance scale separately.</p>
+          <p>A canonical “one true model” for Customer, Product, and Order becomes a merge conflict factory: every field change ripples to unrelated teams.</p>
+          <p>Bounded contexts make differences explicit. Meridian’s Payment team can evolve PCI-related fields without forcing Catalog to accept billing concepts. Integration is deliberate — ACL, events, published APIs — instead of implicit table joins.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When a system serves multiple distinct business capabilities or departments that use the same terms with different meanings.</li>
-            <li>When designing a microservices architecture — bounded contexts provide the intellectual framework for drawing service boundaries correctly.</li>
-            <li>When decomposing a monolith — identifying bounded contexts reveals the natural seams along which the system can be split.</li>
-            <li>When multiple teams own different parts of the same codebase and need clear ownership boundaries.</li>
-            <li>When building an event-driven system and needing to decide which events belong to which context.</li>
+            <li>Define bounded contexts when multiple capabilities reuse nouns with different rules, as Meridian does for Catalog versus Order versus Payment.</li>
+            <li>Define them when you draw microservice boundaries, because contexts come from domain cohesion, not the org chart alone.</li>
+            <li>Define them when you peel apart a monolith and event storming reveals natural seams.</li>
+            <li>Define them when several teams share a repository but need clear write ownership per capability.</li>
+            <li>Define them when you decide which service publishes <code>OrderPlaced</code> and which services only consume it.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Do not apply bounded contexts to simple CRUD applications with a single business domain — the overhead is unjustified.</li>
-            <li>Do not create a bounded context for every database table or entity; contexts represent cohesive business capabilities, not data structures.</li>
-            <li>Do not force a 1:1 mapping between bounded contexts and microservices; one context can be implemented as multiple services, or multiple small contexts can share one service.</li>
+            <li>Skip heavy context mapping for a small single-domain CRUD app owned by one team, because the ceremony adds friction without payoff.</li>
+            <li>Do not create one context per database table, because contexts track capabilities, not schemas.</li>
+            <li>Do not insist on one microservice per context, because one context can live in a modular monolith or split into services later.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>A context map is the DDD artifact that shows all bounded contexts in a system and the relationships between them. The six primary context mapping patterns describe different power and integration dynamics. The diagram below shows a simplified e-commerce context map.</p>
+          <p>A <strong>context map</strong> lists Meridian’s contexts and how they relate (shared kernel, customer/supplier, ACL, and others). The diagram below matches Meridian Commerce: Catalog, Inventory, Order, Payment, and Fulfillment with the integration styles labeled on each edge.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     cat["Catalog context"] <-->|"Shared kernel Product ID"| inv["Inventory context"]
@@ -190,54 +193,57 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Eliminates the "canonical model" antipattern — each context can model its domain without compromising for others.</li>
-                <li>Enables independent deployment and evolution of different parts of the system.</li>
-                <li>Provides a principled basis for team ownership — Conway's Law is respected rather than fought.</li>
-                <li>Makes cross-context integration explicit and deliberately managed rather than implicit and accidental.</li>
-                <li>Scales naturally to large organizations with many teams and many sub-domains.</li>
+                <li>Meridian stops arguing over a single mega-<code>Product</code> entity — Catalog and Inventory model what each capability needs.</li>
+                <li>Contexts deploy independently when data and language stay inside the boundary.</li>
+                <li>Team ownership maps cleanly when Conway’s Law aligns with context lines.</li>
+                <li>Integrations are visible on the context map instead of hidden in shared SQL.</li>
+                <li>New subdomains add new contexts instead of stretching the old model.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Requires significant upfront domain analysis to draw context boundaries correctly — premature boundaries are expensive to fix.</li>
-                <li>Cross-context queries (e.g., a report that joins data from three contexts) become complex and require aggregation patterns.</li>
-                <li>Data duplication is intentional and necessary — the same logical entity exists in multiple contexts with different representations.</li>
-                <li>Requires organizational alignment: context boundaries work best when they align with team boundaries (Conway's Law).</li>
+                <li>Wrong boundaries are costly — discovery workshops are cheaper than constant cross-team rework.</li>
+                <li>Cross-context reporting needs read models or events, not one join across three databases.</li>
+                <li>Duplicated facts (SKU attributes in Catalog and pick lists in Fulfillment) are intentional, not DRY failures.</li>
+                <li>Misaligned teams fight the map if leadership ignores Conway’s Law.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Identifying context boundaries:</strong> The most reliable technique is Event Storming — a facilitated workshop where domain events are placed on a timeline, and the natural groupings of events around a specific vocabulary and responsibility reveal context boundaries. Other indicators: different teams own different nouns with the same name, data that needs to change at different rates, different deployment lifecycles, and areas where different business units have ownership disputes.</p>
-          <p><strong>Anti-Corruption Layer (ACL):</strong> When a bounded context must integrate with a legacy system, a third-party service, or a context with a model that conflicts with its own, the ACL acts as a translation layer. It converts the upstream model into the downstream context's model at the integration boundary, protecting the downstream from upstream model changes. This is arguably the most important context mapping pattern for real-world systems.</p>
-          <p><strong>Bounded contexts and microservices:</strong> Bounded contexts are a logical concept; microservices are a deployment and operational concept. A bounded context should never be split across multiple services in ways that require distributed transactions (this is the "service mesh of death" antipattern). Multiple small bounded contexts can co-exist in a modular monolith before being extracted into separate services when operational independence becomes justified.</p>
+          <p><strong>Finding boundaries:</strong> Meridian ran event storming on checkout-to-delivery. Clusters around “merchandising,” “stock reservation,” “payment capture,” and “warehouse pick” became context candidates. Red flags: two teams edit the same noun, different change cadences, or recurring ownership fights.</p>
+          <p><strong>Anti-Corruption Layer:</strong> Order integrates with a legacy card processor. Meridian’s Payment ACL maps processor tokens into Payment’s <code>PaymentIntent</code> aggregate — Order never imports processor DTOs.</p>
+          <p><strong>Contexts vs microservices:</strong> Fulfillment and Inventory might live in one modular monolith until ops needs independent scaling. Do not split one invariant across services that need distributed two-phase commit — keep the transaction inside one context.</p>
+          <p><strong>Published language:</strong> <code>OrderPlaced</code> is the contract from Order to Fulfillment. Schema versioning and backward compatibility rules apply at that edge.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Shared database across context boundaries:</strong> Two services in different bounded contexts sharing a database table directly — this eliminates all the independence benefits of bounded contexts.</li>
-            <li><strong>Anemic context boundary:</strong> A context that contains a single entity or is defined by a data type rather than a business capability.</li>
-            <li><strong>Missing ACL:</strong> Consuming a legacy system's model directly, polluting the downstream context with the upstream's poor design choices.</li>
-            <li><strong>Premature decomposition:</strong> Defining twenty bounded contexts before understanding the domain well, resulting in the wrong boundaries that are expensive to fix.</li>
-            <li><strong>Ignoring the ubiquitous language:</strong> Having a "bounded context" in name only, with no shared vocabulary between developers and domain experts.</li>
+            <li><strong>Shared tables:</strong> Order and Payment both write <code>orders.payment_status</code> — contexts collapse into coupling.</li>
+            <li><strong>Entity-sized contexts:</strong> “AddressContext” because there is an Address table — too small to own a language.</li>
+            <li><strong>No ACL:</strong> Fulfillment imports Catalog ORM entities directly; Catalog refactors break the warehouse.</li>
+            <li><strong>Map spray:</strong> Twenty contexts before the first production flow ships — boundaries guess wrong.</li>
+            <li><strong>Paper language:</strong> Slide says “bounded context” but docs and code still use one generic DTO everywhere.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have we conducted domain discovery (event storming or domain interviews) to identify natural context boundaries before drawing service lines?</li>
-            <li>Does each bounded context have a clearly named ubiquitous language documented and shared with domain experts?</li>
-            <li>Does each context own its own data store exclusively — no shared databases across context boundaries?</li>
-            <li>Have cross-context relationships been mapped and assigned a context mapping pattern (ACL, customer/supplier, etc.)?</li>
-            <li>Do context boundaries align with team ownership boundaries to leverage Conway's Law?</li>
-            <li>For any legacy system integration, is there an explicit Anti-Corruption Layer rather than direct model sharing?</li>
-            <li>Have we validated that no bounded context requires distributed transactions across another context to satisfy business invariants?</li>
+            <li>Did Meridian run event storming or structured interviews before cutting services?</li>
+            <li>Does each context publish a glossary developers and domain experts share?</li>
+            <li>Does each context own its store with no cross-context table writes?</li>
+            <li>Is every cross-context edge labeled on the context map (ACL, customer/supplier, shared kernel)?</li>
+            <li>Do team ownership lines match context lines closely enough to reduce handoffs?</li>
+            <li>Do legacy or SaaS integrations enter through an ACL module?</li>
+            <li>Can any business invariant be enforced without a distributed transaction across contexts?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
+          <p>Meridian Commerce uses one map end to end:</p>
           <ul>
-            <li>An e-commerce platform identifies Catalog, Inventory, Ordering, Fulfillment, Billing, and Customer Support as six distinct bounded contexts, each owned by a separate team with its own data store.</li>
-            <li>A healthcare system uses an ACL to integrate with an HL7 FHIR legacy EHR, translating FHIR Patient resources into the local context's Patient aggregate without exposing FHIR concepts to the domain model.</li>
-            <li>A logistics company identifies that "Shipment" means something different in the quoting context (a priced request), the operations context (a physical movement), and the billing context (an invoice line), and models three separate aggregates with an event-based integration.</li>
+            <li><strong>Contexts:</strong> Catalog, Inventory, Order, Payment, Fulfillment — each team, datastore, and glossary.</li>
+            <li><strong>Shared kernel:</strong> Catalog and Inventory share a guarded Product ID format, nothing else.</li>
+            <li><strong>ACL:</strong> Payment wraps the external processor; Order only sees Meridian payment commands.</li>
+            <li><strong>Event handoff:</strong> Order publishes <code>OrderPlaced</code>; Fulfillment subscribes and builds its own pick aggregate — no shared Order ORM.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
