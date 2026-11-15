@@ -43,6 +43,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "architecture-styles",
         "ai-ml",
         "api-design",
+        "big-data",
     }
 )
 

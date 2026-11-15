@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Batch Processing — SA References</title>
-  <meta name="description" content="Batch processing for large-scale analytics: schedulers, idempotent jobs, Spark, and data lake ingestion patterns.">
+  <meta name="description" content="Batch processing runs scheduled jobs over bounded datasets for lakehouse ETL, ML snapshots, and reconciliation—with orchestration, idempotent partitions, and lake-scale engines like Spark.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,20 +99,36 @@
             <span class="badge badge--primary">Big Data & Analytics</span>
           </div>
           <h1 class="article-header__title">Batch Processing</h1>
-          <p class="article-header__desc">Offline computation over bounded datasets—ETL, ML feature builds, and periodic reconciliations at warehouse scale.</p>
+          <p class="article-header__desc">Scheduled jobs over bounded datasets for lakehouse ETL, ML snapshots, and reconciliation—with idempotent partitions and warehouse-scale engines.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-<h2 id="what-it-is">What it is</h2>
-          
+          <h2 id="what-it-is">What it is</h2>
+          <p><strong>Batch processing</strong> is data computation that runs over a <em>bounded</em> input—files, table partitions, or a time window—on a schedule or on demand, then finishes. Unlike stream jobs that never “complete,” batch jobs have a defined start and end: ingest a dataset, transform it, write outputs, and exit. Orchestrators (Airflow, Dagster, cloud workflow engines) trigger runs; engines such as Apache Spark, Hive, or warehouse SQL perform the work.</p>
+          <p>Batch is the default shape for analytics pipelines: nightly marts, compliance exports, search index rebuilds, and ML training snapshots all assume you can wait minutes or hours for a correct answer over the full slice of data.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Many business questions do not require second-level freshness: financial close, search index rebuilds, training snapshots, and compliance exports. Batch provides strong correctness (rerun the same job) and economical use of spot/preemptible compute.</p>
+          <p>Most downstream decisions tolerate delay. Finance close, capacity planning, and historical reporting need accurate aggregates over complete datasets more than they need sub-second updates. Batch fits that profile: run when data is ready, exploit parallelism over the full partition set, and shut clusters down between runs so you pay for peak capacity only when you need it.</p>
+          <p>Batch also simplifies correctness. Given immutable inputs and deterministic transforms, the same job re-run for the same partition should produce the same outputs—making backfills, audits, and incident recovery predictable compared with long-lived streaming state.</p>
+
           <h2 id="when-to-use">When to use</h2>
-          <ul><li>Daily or hourly ETL/ELT into a lakehouse or warehouse.</li><li>Model training snapshots and feature backfills.</li><li>Large-scale reconciliation and auditing.</li><li>Index or cache warmers fed from warehouse exports.</li></ul>
+          <ul>
+            <li>You load curated tables in a lakehouse or warehouse on hourly, daily, or weekly cadences (ETL/ELT).</li>
+            <li>Freshness SLAs are measured in minutes to hours, not seconds.</li>
+            <li>You need full-history recomputation, reconciliation, or audit exports over known partitions.</li>
+            <li>ML feature stores or training sets are rebuilt from historical snapshots.</li>
+            <li>Downstream search indexes, caches, or embeddings are warmed from warehouse or lake exports.</li>
+          </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
-          <ul><li>Fraud detection or live dashboards needing sub-minute latency.</li><li>Per-event regulatory reporting without micro-batch compromise.</li></ul>
+          <ul>
+            <li>Product or risk workflows require sub-minute latency (fraud blocks, live personalization, operational alerting).</li>
+            <li>Regulatory rules demand per-event reporting with no acceptable micro-batch gap.</li>
+            <li>Data volume is small enough that interactive SQL or a single-node script is simpler and faster end to end.</li>
+          </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Scheduler triggers idempotent jobs; raw zones are append-only.</p>
+          <p>Sources land in raw or bronze zones; an orchestrator waits for upstream completeness, then launches idempotent transform jobs. Curated tables feed BI, ML, and serving systems. Raw layers stay append-only so partitions can be reprocessed without rewriting history in place.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     sources["Sources ──"]
@@ -133,25 +149,61 @@
           </figure>
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul><li>Cost-efficient at scale; easy replay and audit.</li><li>Simpler correctness than distributed streaming.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul><li>Latency bounded by schedule.</li><li>Peak resource usage; needs capacity planning.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Economical at scale: clusters spin up for the run, then release capacity.</li>
+                <li>Deterministic replays over immutable partitions simplify backfills and audits.</li>
+                <li>Mature tooling—Spark, warehouses, table formats, and orchestration—is widely understood.</li>
+                <li>Peak throughput for heavy shuffles and joins is often higher than continuous streaming for the same hardware.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Minimum latency is the schedule interval plus job runtime.</li>
+                <li>Spiky resource use requires capacity planning or queueing during close periods.</li>
+                <li>Late-arriving data forces reprocessing windows or complex incremental logic at batch boundaries.</li>
+              </ul>
+            </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Partition inputs by date or business key; make jobs idempotent with deterministic outputs. Use orchestration sensors for data readiness, not wall-clock alone. Store lineage and row counts; alert on anomaly thresholds. Prefer open table formats (Parquet, Iceberg, Delta) for ACID merges.</p>
-          
+          <p><strong>Partitioning:</strong> Align job inputs and outputs with date or business keys so a single partition can be re-run without touching neighbors. Document partition keys in the catalog so consumers know what “latest” means.</p>
+          <p><strong>Idempotency:</strong> Writes should overwrite or merge into a partition deterministically (for example merge into Iceberg/Delta, or `INSERT OVERWRITE` with explicit predicates). Avoid append-only fact tables without deduplication keys unless the pipeline is strictly once-only.</p>
+          <p><strong>Readiness, not cron alone:</strong> Gate runs on upstream file arrival, row-count sensors, or data-quality checks—not only on wall-clock schedule—so partial upstream outages do not publish incomplete marts.</p>
+          <p><strong>Observability:</strong> Record input/output row counts, bytes processed, and lineage per run; alert when metrics deviate from trailing baselines.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul><li><strong>Silent partial writes:</strong> Jobs succeed but write incomplete partitions.</li><li><strong>Non-idempotent reruns:</strong> Duplicated facts after retry.</li></ul>
+          <ul>
+            <li><strong>Silent partial writes:</strong> Jobs exit successfully after writing only some partitions because upstream data was incomplete.</li>
+            <li><strong>Non-idempotent reruns:</strong> Retries duplicate rows or double-apply transforms when merge semantics are undefined.</li>
+            <li><strong>Clock-driven schedules:</strong> Pipelines run before dependencies finish, publishing stale or empty slices.</li>
+            <li><strong>Unbounded backfills:</strong> Reprocessing entire history on every logic change instead of scoped partition ranges.</li>
+          </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist"><li>Can the job be safely rerun for the same partition?</li><li>Are inputs immutable and outputs versioned?</li><li>Is SLA defined as data freshness, not wall time?</li></ul>
+          <ul class="checklist">
+            <li>Can the job be safely rerun for the same input partition without corrupting downstream tables?</li>
+            <li>Are raw inputs immutable and curated outputs versioned or partition-addressable?</li>
+            <li>Is the freshness SLA expressed as “data available by time T,” not merely “job started at T”?</li>
+            <li>Do orchestration sensors prove upstream completeness before transforms start?</li>
+            <li>Are late-arriving events handled with an explicit reprocessing window or incremental model?</li>
+          </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul><li><strong>Nightly sales mart:</strong> Spark aggregates POS and e-commerce into a gold table for executive dashboards.</li></ul>
+          <ul>
+            <li><strong>Illustrative scenario —</strong> A retailer runs nightly Spark jobs that aggregate point-of-sale and web orders into a gold sales mart; dashboards read the mart each morning with a stated “data as of 06:00 UTC” freshness.</li>
+            <li><strong>Case study —</strong> <strong>Netflix</strong> has long relied on large-scale scheduled batch analytics (including Spark on object storage) for recommendations and reporting pipelines where throughput and reproducibility matter more than per-event latency.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="data-pipelines.html">Data Pipeline Design</a></li><li><a href="spark-architecture.html">Spark Architecture</a></li><li><a href="../integration/etl-vs-elt.html">ETL vs ELT</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark</a></li>
-            <li><a href="https://cloud.google.com/dataflow/docs" target="_blank" rel="noopener noreferrer">Google Cloud data pipelines</a></li>
-            <li><a href="https://docs.aws.amazon.com/whitepapers/latest/aws-overview/summary.html" target="_blank" rel="noopener noreferrer">AWS Big Data Analytics whitepapers</a></li>
+            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark documentation</a></li>
+            <li><a href="https://airflow.apache.org/docs/apache-airflow/stable/" target="_blank" rel="noopener noreferrer">Apache Airflow documentation</a></li>
+            <li><a href="https://static.googleusercontent.com/media/research.google.com/en//archive/mapreduce-osdi04.pdf" target="_blank" rel="noopener noreferrer">MapReduce (OSDI 2004 paper)</a></li>
+            <li><a href="https://iceberg.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Iceberg documentation</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
