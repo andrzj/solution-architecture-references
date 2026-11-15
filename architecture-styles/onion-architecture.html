@@ -121,30 +121,35 @@
           </div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          
-          <p>The domain model at the center has zero external dependencies. Unlike Clean Architecture's four named rings, Onion Architecture explicitly separates Domain Services (pure domain logic with no external calls) from Application Services (orchestrating domain services and calling infrastructure through interfaces), giving domain behavior a dedicated named layer.</p>
+                    <h2 id="what-it-is">What it is</h2>
+          <p><strong>Onion Architecture</strong> is Jeffrey Palermo’s domain-centric layering model: dependencies point inward toward the <strong>Domain Model</strong> at the center, with <strong>Domain Services</strong>, <strong>Application Services</strong>, and <strong>Infrastructure</strong> as outward rings.</p>
+          <p><strong>Meridian Billing</strong> uses Onion Architecture for subscription invoicing, usage metering, and dunning. The inner <strong>Domain Model</strong> holds aggregates such as <code>Invoice</code>, <code>Subscription</code>, and <code>UsageRecord</code>. <strong>Domain Services</strong> such as <code>ProrationCalculator</code> and <code>TaxLineAllocator</code> express cross-aggregate math with no I/O. <strong>Application Services</strong> such as <code>IssueInvoiceService</code> load aggregates, invoke domain services, start transactions, and call repository interfaces. Infrastructure implements repositories, payment gateways, and HTTP — never referenced from the domain model.</p>
+          <p>Unlike Hexagonal’s symmetric ports metaphor, Onion emphasizes <em>where behavior lives</em>: pure rules in the domain model and domain services, orchestration in application services, technical detail in infrastructure.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Palermo introduced Onion Architecture to address the same core problem as Clean Architecture and Hexagonal: the database-centric architecture where the data model drives everything. By making the domain model the immovable center, the architecture forces every design decision to ask "does this belong in the domain?" before placing it in a layer. The explicit Domain Services layer is a meaningful addition over simpler two-tier (core/infrastructure) splits: it carves out space for domain behavior that involves multiple entities — pricing calculations, business rule engines, domain event dispatchers — without mixing that logic with application orchestration (transaction management, security, external service calls) in Application Services.</p>
+          <p>Database-first designs let EF Core or Hibernate entities become the “real” model. Meridian Billing once spread proration formulas across application services and Razor pages because no layer owned “billing math” explicitly.</p>
+          <p>Onion Architecture makes the domain model immovable. Every change asks whether logic belongs in an entity, a domain service, or application orchestration before someone adds another <code>if</code> beside a repository call.</p>
+          <p>The explicit Domain Services ring matters for Meridian: proration across multiple <code>Subscription</code> lines, tax jurisdiction splits, and credit-note pairing involve several aggregates but still must stay pure and fast to test — that is domain service territory, not HTTP orchestration.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>DDD-aligned projects where Domain Services (cross-entity domain logic) need a dedicated layer distinct from Application Services.</li>
-            <li>Teams that find Clean Architecture's ring decomposition (Entities, Use Cases, Interface Adapters) too coarse and want the explicit Domain Services layer.</li>
-            <li>Applications with rich domain logic that spans multiple entity aggregates and benefits from explicit domain service objects.</li>
-            <li>Codebases where domain invariants must be enforced purely by domain objects without any infrastructure knowledge.</li>
+            <li>Use Onion Architecture when Meridian Billing has cross-aggregate rules that deserve a dedicated Domain Services layer separate from Application Services.</li>
+            <li>Use it when the team wants clearer placement than a two-tier core-versus-adapters split provides.</li>
+            <li>Use it for DDD-aligned billing where aggregates, repositories, and domain services are already part of the ubiquitous language.</li>
+            <li>Use it when invoice and dunning invariants must compile and test with zero infrastructure references.</li>
+            <li>Use it when .NET or Java module boundaries can enforce ring dependencies through project references or ArchUnit.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>CRUD applications or those with thin domain logic — the Domain Services layer adds overhead for logic that doesn't exist.</li>
-            <li>Teams already using Clean Architecture or Hexagonal — Onion is a close variant; mixing metaphors creates confusion, not clarity.</li>
-            <li>Projects where the added layer granularity between Domain Services and Application Services is not needed for the actual complexity level.</li>
+            <li>Skip the extra layer when Billing is mostly CRUD on invoice headers with no proration or tax rules to isolate.</li>
+            <li>Skip mixing Onion and Hexagonal metaphors in the same codebase without a written layering guide — choose one vocabulary.</li>
+            <li>Skip the pattern when Domain Services versus Application Services distinction would not clarify any real Meridian workflow.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Four concentric rings with dependencies pointing inward. Domain Model and Domain Services form the pure business core; Application Services orchestrate; Infrastructure is the outermost ring.</p>
+          <p>Meridian Billing maps to four inward-pointing rings: Domain Model and Domain Services form the pure core; Application Services coordinate; Infrastructure wraps the outside, as shown below.</p>
+
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     INF["Infrastructure outer"] --> APP["Application services"]
@@ -177,55 +182,59 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Explicit Domain Services layer gives cross-aggregate domain logic a well-defined home.</li>
-                <li>Domain Model is dependency-free — pure, fast unit tests with no mocking required.</li>
-                <li>Infrastructure is fully replaceable without touching domain or application logic.</li>
-                <li>Aligns naturally with Domain-Driven Design's vocabulary (Aggregates, Repositories, Domain Services).</li>
-                <li>The clear layer decomposition gives teams a shared language for code placement decisions.</li>
+                <li>Meridian’s <code>ProrationCalculator</code> and similar domain services have a named home instead of hiding in application classes.</li>
+                <li>The domain model runs unit tests with no mocks when behavior lives on entities and value objects.</li>
+                <li>Infrastructure such as SQL invoice stores or payment clients can be replaced without touching proration rules.</li>
+                <li>Layer names align with DDD workshops Meridian already runs with finance stakeholders.</li>
+                <li>Clear rings reduce “where does this invoice rule go?” debates during code review.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Conceptually very close to Clean Architecture — teams must decide which variant to adopt and stick with it consistently.</li>
-                <li>The Domain Services / Application Services distinction can be unclear in practice and requires strong conventions.</li>
-                <li>Adds layer overhead for simple features; developers often ask "does this go in Domain Services or Application Services?"</li>
-                <li>Mapping between layers (Domain ↔ Application ↔ Infrastructure DTOs) creates conversion boilerplate.</li>
+                <li>Onion is close to Clean Architecture — teams must pick one narrative and stay consistent.</li>
+                <li>Domain Services versus Application Services boundaries blur without written Meridian conventions.</li>
+                <li>Extra mapping between layer DTOs adds friction on simple invoice line CRUD.</li>
+                <li>Developers may over-create domain service classes when logic belongs on a single aggregate.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>The key distinction to enforce is between Domain Services and Application Services. A Domain Service contains pure business logic: "calculate the discount for this customer given their tier and order history." An Application Service orchestrates: "load the customer, call the domain service, persist the result, send a confirmation event." Repository interfaces are defined in the Domain Model layer; repository implementations live in Infrastructure. In .NET, this maps cleanly to separate class library projects with explicit project references enforcing the dependency rule. In Java, module-info.java can enforce package dependencies.</p>
-          <p>In TypeScript/Node.js, enforce with ESLint import rules or package-level dependency-cruiser config. Always map between layer-specific data models at layer boundaries — never pass infrastructure DTOs into the domain.</p>
+          <p><strong>Domain Services stay pure:</strong> <code>ProrationCalculator</code> accepts <code>Subscription</code> and <code>UsageRecord</code> instances passed in by <code>IssueInvoiceService</code>; it never calls <code>IInvoiceRepository</code> itself.</p>
+          <p><strong>Application Services orchestrate:</strong> <code>IssueInvoiceService</code> opens a transaction, loads aggregates, calls domain services, persists through repository interfaces, and publishes <code>InvoiceIssued</code> — it does not embed tax formulas.</p>
+          <p><strong>Repository interfaces live in the domain model ring:</strong> <code>IInvoiceRepository</code> sits with aggregates; EF Core or Dapper implementations live in Infrastructure.</p>
+          <p><strong>Enforce with projects or ArchUnit:</strong> Meridian’s Billing solution uses separate class libraries with inward-only references, plus ArchUnit rules in CI for Java-style ports of the same layout.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Domain Services calling repositories directly:</strong> Domain Services should receive domain objects as parameters, not reach out to infrastructure to load them — that's Application Services' job.</li>
-            <li><strong>Application Services containing business rules:</strong> If an Application Service has an <code>if</code> statement implementing a business rule, that rule belongs in a Domain Service or Entity.</li>
-            <li><strong>Infrastructure types in Domain Model:</strong> Entity Framework, Hibernate, or Jackson annotations appearing on domain entities — the domain model is no longer dependency-free.</li>
-            <li><strong>Skipping layer mapping:</strong> Passing the same DTO through all four layers — the "DTO that knows too much" anti-pattern.</li>
-            <li><strong>Layer confusion:</strong> Two developers disagreeing on which layer a piece of code belongs to — indicates missing conventions or a need for an Architecture Decision Record.</li>
+            <li><strong>Domain services that query:</strong> <code>ProrationCalculator</code> that loads subscriptions from SQL is really an application service in disguise.</li>
+            <li><strong>Business rules in application services:</strong> Tax allocation <code>if</code> chains in <code>IssueInvoiceService</code> belong in <code>TaxLineAllocator</code> or entities.</li>
+            <li><strong>ORM on entities:</strong> EF attributes on <code>Invoice</code> break the dependency-free domain model promise.</li>
+            <li><strong>One DTO everywhere:</strong> Reusing API invoice JSON through all four rings couples Billing to external field names.</li>
+            <li><strong>Unresolved layer disputes:</strong> Recurring “domain or application?” arguments signal missing ADRs or team guidelines.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the Domain Model completely free of all framework, ORM, and infrastructure imports?</li>
-            <li>Do Domain Services operate only on domain objects passed in as parameters, with no I/O of their own?</li>
-            <li>Do Application Services handle orchestration (transactions, event publishing, security) while delegating rules to Domain Services?</li>
-            <li>Are Repository interfaces defined in the Domain Model layer, not in Infrastructure?</li>
-            <li>Is there a documented convention for which code belongs in Domain Services vs. Application Services?</li>
-            <li>Are architecture tests enforcing layer dependency rules in CI?</li>
+            <li>Is Meridian’s domain model free of ORM, web, and messaging framework imports?</li>
+            <li>Do domain services operate only on objects passed as parameters, with no I/O?</li>
+            <li>Do application services handle transactions, events, and security while delegating rules inward?</li>
+            <li>Are repository interfaces defined beside aggregates, not in infrastructure projects?</li>
+            <li>Is there a short document stating when Billing logic belongs in Domain Services versus Application Services?</li>
+            <li>Do architecture tests enforce ring dependencies in CI?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
+          <p>Meridian Billing’s domain core complements Northwind’s hexagonal Payment edge — same dependency inversion, different emphasis on layers inside the core:</p>
           <ul>
-            <li><strong>.NET enterprise applications:</strong> ASP.NET Core projects structured as separate class library projects (Domain, Application, Infrastructure, Web), with project references enforcing the dependency rule — a very common pattern in the .NET community.</li>
-            <li><strong>DDD-aligned e-commerce platform:</strong> Pricing, discount, and inventory allocation rules live in Domain Services; the checkout Application Service orchestrates across them, calling infrastructure only through interfaces.</li>
-            <li><strong>Insurance underwriting system:</strong> Complex underwriting rules are pure Domain Services testable without any infrastructure; Application Services manage workflow, notifications, and persistence.</li>
+            <li><strong>Domain model:</strong> <code>Invoice</code>, <code>Subscription</code>, and <code>CreditNote</code> enforce line totals, credit caps, and status transitions without knowing SQL.</li>
+            <li><strong>Domain services:</strong> <code>ProrationCalculator</code> and <code>TaxLineAllocator</code> combine multiple aggregates for mid-cycle plan changes.</li>
+            <li><strong>Application services:</strong> <code>IssueInvoiceService</code> and <code>ApplyDunningStepService</code> coordinate repositories, payment ports, and domain events.</li>
+            <li><strong>Infrastructure:</strong> Postgres repositories and payment client adapters implement interfaces defined inward — PCI and processor detail stay outside the onion.</li>
           </ul>
 
-          <h2 id="related-patterns">Related patterns</h2>
+<h2 id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="clean-architecture.html">Clean Architecture</a> — Uncle Bob's closely related concentric ring model; choose one and apply it consistently.</li>
             <li><a href="hexagonal-architecture.html">Hexagonal Architecture</a> — Ports-and-adapters formulation of the same principles; more flexible layer decomposition.</li>
@@ -234,9 +243,9 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://jeffreypalermo.com/2008/07/the-onion-architecture-part-1/" rel="noopener noreferrer" target="_blank">The Onion Architecture: Part 1</a> — Jeffrey Palermo's original series.</li>
-            <li><a href="https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures" rel="noopener noreferrer" target="_blank">Common Web App Architectures</a> — Microsoft's .NET guidance covering Onion Architecture.</li>
-            <li><a href="https://github.com/jasontaylordev/CleanArchitecture" rel="noopener noreferrer" target="_blank">Clean Architecture .NET Template</a> — Jason Taylor's widely-used .NET Clean/Onion template on GitHub.</li>
+            <li><a href="https://jeffreypalermo.com/2008/07/the-onion-architecture-part-1/" rel="noopener noreferrer" target="_blank">The Onion Architecture: Part 1</a> — Jeffrey Palermo's original series introducing domain-centric layers.</li>
+            <li><a href="https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures" rel="noopener noreferrer" target="_blank">Common Web Application Architectures</a> — Microsoft's .NET guidance covering onion-style layering.</li>
+            <li><a href="https://herbertograca.com/2017/11/16/explicit-architecture-01-ddd-hexagonal-onion-clean-cqrs-how-i-put-it-all-together/" rel="noopener noreferrer" target="_blank">Explicit Architecture</a> — Herberto Graça on relating onion, hexagonal, clean, and CQRS in one system.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
