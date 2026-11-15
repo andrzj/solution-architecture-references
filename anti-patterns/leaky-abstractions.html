@@ -105,11 +105,11 @@
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
           <p>A <strong>leaky abstraction</strong> sells a simple surface while hiding mechanics callers must still understand to stay correct. Joel Spolsky’s formulation — TCP’s reliable byte stream until packet loss forces retransmit awareness — applies directly to distributed data layers. See <a href="https://www.joelonsoftware.com/2002/11/11/the-law-of-leaky-abstractions/" target="_blank" rel="noopener noreferrer">The Law of Leaky Abstractions</a>.</p>
-          <p>At <strong>RideRelay</strong>, a multi-region ride-hailing product, the mobile and dispatch teams treated the shared ORM as “just call <code>save()</code> on <code>Trip</code>.” Behind that API, entities spanned a US writer and an EU read replica. Lazy-loaded <code>Driver</code> and <code>Rider</code> associations issued round trips the code never named. Under stadium surge load, support screens and matching workers paid cross-region latency the ORM graph obscured — a concrete instance of <a href="chatty-io.html">Chatty I/O</a> wrapped in object convenience.</p>
+          <p>In a multi-region product, mobile and back-office teams often treat a shared ORM as “just call <code>save()</code> on the aggregate.” Behind that API, entities may span a primary writer and distant read replicas. Lazy-loaded associations issue round trips the application code never names. Under surge load, operators and workers pay cross-region latency the object graph obscures — a concrete instance of <a href="chatty-io.html">Chatty I/O</a> wrapped in convenience APIs.</p>
           <p>Leaky abstractions are not malicious; they trade initial speed for production surprises when partitions, replication lag, or N+1 fetches reappear through error messages and p99 graphs.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>ORMs and managed SDKs optimize for single-region developer laptops. RideRelay’s integration tests mocked the database on one host, so cross-region RTT and replica staleness never appeared in CI.</p>
+          <p>ORMs and managed SDKs optimize for single-region developer laptops. Integration tests that mock a database on one host rarely surface cross-region RTT or replica staleness in CI.</p>
           <p>Product pressure rewards demo velocity. Shipping features behind a repository interface feels faster than documenting consistency per aggregate, shard keys, and idempotency tokens at the boundary.</p>
           <p>Documentation often stops at happy-path tutorials. When the only path to correctness is reading framework source or DBA runbooks, every new squad rediscovers the same incident — as Azure’s <a href="https://learn.microsoft.com/en-us/azure/architecture/antipatterns/" target="_blank" rel="noopener noreferrer">architecture anti-patterns</a> catalog warns for thick middleware.</p>
 
@@ -118,7 +118,7 @@
             <li>Dispatch engineers grep stack traces for provider-specific SQL or shard hints to explain Rider-facing timeouts.</li>
             <li>Listing open trips triggers one query per lazy association across the Atlantic, although a single join or batched <code>IN</code> clause would suffice.</li>
             <li>Retries at the controller layer duplicate trip state changes because the ORM hid non-idempotent flush semantics on the replica path.</li>
-            <li>Tuning “ORM performance” means reading Hibernate or EF Core internals instead of fixing access patterns — see <a href="../foundations/pacelc-theorem.html">PACELC</a> for why RideRelay split map pins from payout ledgers.</li>
+            <li>Tuning “ORM performance” means reading Hibernate or EF Core internals instead of fixing access patterns — see <a href="../foundations/pacelc-theorem.html">PACELC</a> for why teams split hot read models from consensus-backed ledgers.</li>
           </ul>
 
           <h2 id="when-not-to-use">How to recognize it early</h2>
@@ -129,7 +129,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical manifestation</h2>
-          <p>Application code at RideRelay assumed a single database behind <code>save()</code>; the repository leaked shard placement and cross-region fetch behavior sketched in the diagram.</p>
+          <p>Application code that assumes a single homogeneous database behind <code>save()</code> often leaks shard placement and cross-region fetch behavior, as sketched in the diagram.</p>
           
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
@@ -158,7 +158,7 @@
               <ul>
                 <li>Duplicate trip updates and stale driver assignments when callers misunderstood replica lag.</li>
                 <li>Framework swaps (ORM upgrade, region move) forced wide refactors because leaks soaked into controllers.</li>
-                <li>Onboarding slowed: every engineer learned RideRelay’s network map via outages.</li>
+                <li>Onboarding slowed: every engineer learned the production network map via outages.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -172,7 +172,7 @@
             </div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>RideRelay split hot read models: driver map tiles use an eventually consistent store; payout accrual uses a consensus-backed ledger — the same PA/EL versus PC/EC split documented under <a href="../foundations/pacelc-theorem.html">PACELC</a>. The ORM should not pretend those stores are one homogeneous <code>DbContext</code>.</p>
+          <p>Split hot read models deliberately: map tiles or catalog views may use an eventually consistent store; payout or inventory accrual may use a consensus-backed ledger — the same PA/EL versus PC/EC split documented under <a href="../foundations/pacelc-theorem.html">PACELC</a>. The ORM should not pretend those stores are one homogeneous <code>DbContext</code>.</p>
           <p>Thin domain services depend on explicit ports (<code>TripCommandPort</code>, <code>TripQueryPort</code>) implemented by adapters that translate to SQL, DynamoDB, or gRPC. Application code never opens lazy navigations on entities that might hydrate across a region boundary.</p>
           <p>Contract tests fail CI when a repository method exceeds an agreed query count or touches a forbidden region for a strong-consistency use case.</p>
 
@@ -191,7 +191,7 @@
           </ul>
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>RideRelay ORM hides cross-region latency:</strong> Matching workers loaded <code>Trip</code> aggregates with lazy <code>Driver</code> and <code>Rider</code> entities stored behind EU replicas. Stadium events drove p99 matching latency up until teams replaced graph navigation with eager fetches and region-aware query ports — leaks surfaced only under real geography, not in single-region CI.</li>
+            <li><strong>Illustrative scenario — RideRelay ORM hides cross-region latency:</strong> At <strong>RideRelay</strong>, a multi-region ride-hailing product, matching workers loaded <code>Trip</code> aggregates with lazy <code>Driver</code> and <code>Rider</code> entities stored behind EU replicas. Stadium events drove p99 matching latency up until teams replaced graph navigation with eager fetches and region-aware query ports — leaks surfaced only under real geography, not in single-region CI.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

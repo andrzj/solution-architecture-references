@@ -105,25 +105,31 @@
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
           <p>The <strong>shared database</strong> anti-pattern lets multiple services read and write the same tables as if they were one application. Deployments look separate; persistence is not. Martin Fowler’s <a href="https://martinfowler.com/bliki/IntegrationDatabase.html" target="_blank" rel="noopener noreferrer">Integration Database</a> describes the same idea: the RDBMS becomes the integration bus.</p>
-          <p>At <strong>Meridian Commerce</strong>, Order, Payment, Inventory, and Reporting still share <code>meridian_core.orders</code> and related line-item tables. When <strong>Northwind Logistics</strong> onboarded merchant shipments, its label service gained write access to the same schema for freight metadata — four teams, one migration queue.</p>
+          <p>Order, payment, inventory, and reporting services may each have their own repo and CI pipeline, yet they still mutate the same <code>orders</code> and line-item tables inside one OLTP schema. A partner integration that gains write access to freight columns on those rows adds another migration consumer without adding a bounded context boundary.</p>
+          <p>Chris Richardson’s <a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">database per service</a> pattern states the inverse: each service owns data it alone writes. Shared-database coupling is what remains when a microservices migration stops at the connection string.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Shared tables feel faster than duplicating data or standing up CDC. Meridian’s split from a modular monolith left the Postgres instance in place; JOINs and foreign keys still look cheaper than events on a roadmap. Northwind’s integration added another writer instead of subscribing to <code>OrderPlaced</code>.</p>
-          <p>Shared NuGet/npm ORM packages that map the whole enterprise schema make the problem worse: every service “owns” the same entity graph.</p>
+          <p>Shared tables feel faster than duplicating data or standing up change-data capture. A split from a modular monolith often leaves the original Postgres or SQL Server instance in place; JOINs and foreign keys still look cheaper than domain events on a roadmap.</p>
+          <p>Integration pressure reinforces the shortcut. When a shipment or marketplace partner needs freight metadata on order rows, granting JDBC write access beats defining <code>OrderPlaced</code> events and a separate shipment aggregate—until schema contention becomes the release bottleneck.</p>
+          <p>Shared NuGet, npm, or internal ORM packages that map the whole enterprise schema make the problem worse: every service compiles against the same entity graph, so version bumps force coordinated releases even when runtime behavior should be independent.</p>
           <h2 id="when-to-use">How it manifests</h2>
           <ul>
-            <li>Meridian Payment and Inventory both UPDATE <code>orders.payment_status</code> and <code>orders.fulfillment_state</code> without a single write owner.</li>
-            <li>A nullable column for Payment capture requires coordinated deploys of Order, Shipment batch jobs, and Northwind’s label worker.</li>
-            <li>Reporting runs heavy SQL against primary OLTP tables, pinning locks during checkout peaks.</li>
-            <li>Schema CAB meetings gate routine ALTERs because any change can break a peer service’s queries.</li>
+            <li>Payment and inventory services both UPDATE <code>orders.payment_status</code> and <code>orders.fulfillment_state</code> without a single write owner.</li>
+            <li>A nullable column for payment capture requires coordinated deploys of order, shipment batch jobs, and a partner label worker that reads the same table.</li>
+            <li>Reporting or ad-hoc BI runs heavy SQL against primary OLTP tables, pinning locks during checkout peaks.</li>
+            <li>Schema change advisory boards gate routine ALTERs because any migration can break a peer service’s queries or ORM mappings.</li>
+            <li>Teams file cross-repo release tickets before merging schema-dependent features because no service owns the database alone.</li>
+            <li>Horizontal scale adds pods that increase lock contention on shared hot rows rather than isolating workloads per context.</li>
           </ul>
           <h2 id="when-not-to-use">How to recognize it early</h2>
           <ul>
-            <li>Meridian’s analytics replica is <em>read-only</em> with no application writers — that is a reporting pattern, not shared-database coupling.</li>
-            <li>A modular monolith with one team owning one schema is a valid modular-monolith choice, not this anti-pattern.</li>
-            <li>Northwind FieldOps reading a curated mart fed by CDC is integration done at the warehouse layer, not shared OLTP access.</li>
+            <li><strong>Deployment choreography:</strong> Payment cannot ship alone when order still expects a new column on a shared table—that is a shared-database signal, not healthy service independence.</li>
+            <li><strong>Cross-service SQL:</strong> Inventory joins <code>orders</code> in views or stored procedures instead of consuming events or APIs, which means persistence is shared rather than contracted.</li>
+            <li><strong>Read replica without writers:</strong> An analytics replica with no application writers is a reporting pattern, not this anti-pattern.</li>
+            <li><strong>Monolith with one owner:</strong> A modular monolith with one team owning one schema is a valid choice, not shared-database coupling across deployables.</li>
+            <li><strong>Warehouse-fed reads:</strong> Operational teams reading a curated mart fed by CDC integrate at the warehouse layer, not via shared OLTP access.</li>
           </ul>
           <h2 id="typical-architecture">Typical manifestation</h2>
-          <p>Meridian and Northwind services stay independent only above the JDBC connection string.</p>
+          <p>Services stay independent only above the JDBC or ODBC connection string; below that line, one schema serializes change.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     order["Order service"]
@@ -144,25 +150,52 @@
          joins across service boundaries in SQL views
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Services remain logically independent only above the JDBC connection string.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Multiple services writing one OLTP schema—logical independence stops at the shared connection.</figcaption>
           </figure>
           <h2 id="pros-and-cons">Consequences and remediation</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Consequences</h3><ul><li>Meridian’s Black Friday deploy window requires Payment, Order, Inventory, and Northwind label services in one train.</li><li>A long-running reporting query stalls checkout writes on the shared primary.</li><li>Neither team can shard or archive orders independently.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Remediation</h3><ul><li><a href="../data-architecture/database-per-service.html">Database per service</a> — Order owns order rows; Payment owns captures in its own store.</li><li><a href="../integration/change-data-capture.html">CDC</a> and domain events feed Reporting and Northwind read models without shared writes.</li><li>Strangler extraction on <code>orders</code> with anti-corruption layers at each new boundary.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Consequences</h3>
+              <ul>
+                <li><strong>Release trains:</strong> Peak-season deploy windows require order, payment, inventory, and partner label services in one coordinated train because migrations must align.</li>
+                <li><strong>OLTP contention:</strong> Long-running reporting or reconciliation queries stall checkout writes on the shared primary.</li>
+                <li><strong>Scale limits:</strong> No team can shard, archive, or retention-policy orders independently when rows are multi-writer.</li>
+                <li><strong>Incident blast radius:</strong> A bad migration or lock storm on shared tables takes down every service on that schema, not one bounded context.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Remediation strategies</h3>
+              <ul>
+                <li><strong>Database per service:</strong> Order owns order rows; payment owns captures in its own store—see <a href="../data-architecture/database-per-service.html">database per service</a>.</li>
+                <li><strong>CDC and events:</strong> <a href="../integration/change-data-capture.html">Change data capture</a> and domain events feed reporting and partner read models without shared writes.</li>
+                <li><strong>Strangler extraction:</strong> Peel writers off <code>orders</code> slice by slice with anti-corruption layers at each new boundary.</li>
+                <li><strong>Freeze new writers:</strong> Stop granting JDBC write access to integration partners until an event contract exists.</li>
+              </ul>
+            </div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Meridian froze new cross-table writers first, then moved Payment off direct <code>orders</code> updates behind <code>PaymentCaptured</code> events. Northwind stopped mutating Meridian tables and consumes the same stream to build its shipment aggregate. Dual-write periods need a field-level source of truth matrix; CDC contract tests catch schema drift before BI and FieldOps break.</p>
-          
+          <p>Remediation usually starts by freezing new cross-table writers, then moving the highest-churn context—often payment—off direct <code>orders</code> updates behind <code>PaymentCaptured</code> or equivalent events. Partner label services should stop mutating order rows and instead consume the same stream to build a shipment aggregate they own.</p>
+          <p>Dual-write periods need a field-level source-of-truth matrix: which service wins when capture status disagrees, how long reconciliation runs, and when the legacy column becomes read-only. CDC contract tests catch schema drift before BI and operational dashboards break.</p>
+          <p>Intentional duplication is part of the exit. Order may keep denormalized shipping addresses fed by user-profile events so fulfillment does not join across databases at request time. Simon Brown’s C4 views help executives fund schema splits when containers and data stores are drawn separately.</p>
           <h2 id="common-failure-modes">Escalation patterns</h2>
-          <ul><li><strong>Dual-write limbo:</strong> Payment and Order both write capture status during migration — incidents when states disagree.</li><li><strong>BI exception:</strong> Finance adds a read-only JDBC user that becomes a shadow writer via ad-hoc “fix” scripts.</li><li><strong>Northwind shortcut:</strong> Label service writes freight fields on Meridian’s rows instead of owning <code>shipment</code> data.</li></ul>
-          <h2 id="decision-checklist">Diagnostic checklist</h2>
-          <ul class="checklist"><li>Does every Meridian/Northwind table have exactly one owning write service?</li><li>Can Payment ship without Inventory migrating the same schema?</li><li>Are cross-context reads served from events, APIs, or marts — not shared primary tables?</li></ul>
-          <h2 id="example-use-cases">Example use cases</h2>
-          <p>Meridian and Northwind on one shared <code>orders</code> table:</p>
           <ul>
-            <li><strong>Anti-pattern:</strong> Payment adds <code>capture_reference</code> NULLable; Northwind’s nightly label batch expects NOT NULL legacy columns; three services deploy in a single maintenance window.</li>
-            <li><strong>Fix:</strong> Order owns <code>orders</code>; Payment stores captures separately and publishes events; Reporting and Northwind subscribe via CDC into their own databases — per <a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">database per service</a>.</li>
+            <li><strong>Dual-write limbo:</strong> Payment and order both write capture status during migration—incidents when states disagree and support cannot tell which store is canonical.</li>
+            <li><strong>BI exception:</strong> Finance adds a read-only JDBC user that becomes a shadow writer via ad-hoc “fix” scripts during month-end.</li>
+            <li><strong>Partner shortcut:</strong> A label service writes freight fields on order rows instead of owning <code>shipment</code> data, permanently enlarging the shared schema.</li>
+            <li><strong>Schema coupling spiral:</strong> Teams postpone nullable-column migrations because consumers disagree on semantics, so the shared schema stops evolving.</li>
+          </ul>
+          <h2 id="decision-checklist">Diagnostic checklist</h2>
+          <ul class="checklist">
+            <li>Does every OLTP table have exactly one owning write service?</li>
+            <li>Can payment ship without inventory migrating the same schema in the same window?</li>
+            <li>Are cross-context reads served from events, APIs, or marts—not shared primary tables?</li>
+            <li>Can reporting run without holding locks on checkout-critical tables during peaks?</li>
+            <li>Do integration partners consume events instead of gaining new writers on the core schema?</li>
+            <li>Is there an exit plan with dual-write boundaries documented before the next major ALTER?</li>
+          </ul>
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>Meridian Commerce and Northwind Logistics on one shared <code>orders</code> table:</strong> Payment added <code>capture_reference</code> as NULLable; Northwind’s nightly label batch expected NOT NULL legacy columns; order, payment, and label services had to deploy in a single maintenance window. The remediation assigned order ownership of <code>orders</code>, moved captures to payment’s store with events, and fed reporting and Northwind via CDC into separate databases—aligned with <a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">database per service</a>.</li>
           </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="distributed-monolith.html">Distributed Monolith</a></li><li><a href="../data-architecture/database-per-service.html">Database per Service</a></li><li><a href="../integration/change-data-capture.html">Change Data Capture</a></li></ul>

@@ -104,25 +104,31 @@
         </div>
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
-          <p><strong>Tight coupling</strong> means a change in one module forces coordinated changes in others — at compile time, deploy time, or runtime. Shared types, synchronous call chains, and hidden contracts replace published boundaries.</p>
-          <p>At <strong>Northwind Logistics</strong>, the Billing service imports <code>@northwind/catalog-orm</code> and uses Catalog’s <code>Product</code> entity in invoice line generation. Billing is a separate deployable, but Catalog’s schema and package version dictate Billing’s release train.</p>
+          <p><strong>Tight coupling</strong> means a change in one module forces coordinated changes in others — at compile time, deploy time, or runtime. Shared types, synchronous call chains, and hidden contracts replace published boundaries. The symptom is not “two services talk”; it is that neither can evolve alone.</p>
+          <p>A billing deployable that imports a catalog ORM package and uses catalog’s <code>Product</code> entity in invoice line generation looks independent in Kubernetes, but catalog’s schema version and package release dictate billing’s train.</p>
+          <p>Tight coupling is the compile-time and data-plane sibling of <a href="distributed-monolith.html">distributed monolith</a> behavior: separate repos with monolith dependencies.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Northwind’s Billing team needed SKU descriptions and tax codes quickly; importing Catalog’s ORM was faster than defining an integration contract. The shared package duplicated the monolith’s entity graph across repositories.</p>
-          <p>Without governance on published APIs and events, every shortcut becomes a permanent edge in the dependency graph — the foundation of <a href="distributed-monolith.html">distributed monolith</a> behavior.</p>
+          <p>Billing teams often need SKU descriptions and tax codes quickly; importing the catalog ORM is faster than defining an integration contract, anti-corruption layer, or event stream.</p>
+          <p>The shared package duplicates the monolith’s entity graph across repositories. Every consumer compiles against the same types, so renaming a column in catalog becomes billing’s problem without an API version bump anyone discussed.</p>
+          <p>Without governance on published APIs and events, every shortcut becomes a permanent edge in the dependency graph. Code review that celebrates “reuse” without boundary review accelerates the entanglement.</p>
           <h2 id="when-to-use">How it manifests</h2>
           <ul>
-            <li>Billing <code>package.json</code> pins <code>catalog-orm@2.3</code>; Catalog bumps to 2.4 and Billing must ship the same week.</li>
-            <li>Invoice PDFs break when Catalog renames a column Billing’s ORM mapped directly.</li>
-            <li>Integration tests start Postgres, Catalog API, and Billing — no isolated Billing unit suite.</li>
-            <li>Routing and FieldOps wait on Billing because a Catalog refactor blocked invoice deploy.</li>
+            <li>Billing pins <code>catalog-orm@2.3</code>; catalog bumps to 2.4 and billing must ship the same week.</li>
+            <li>Invoice PDFs break when catalog renames a column billing’s ORM mapped directly.</li>
+            <li>Integration tests start Postgres, catalog API, and billing—no isolated billing unit suite.</li>
+            <li>Downstream dispatch or finance teams wait on billing because a catalog refactor blocked invoice deploy.</li>
+            <li>Pull requests in one service require simultaneous changes in two others to keep builds green.</li>
+            <li>Runtime failures in catalog take billing offline even when rating data for recurring invoices is unchanged.</li>
           </ul>
           <h2 id="when-not-to-use">How to recognize it early</h2>
           <ul>
-            <li>Explicit module boundaries inside Northwind’s modular monolith, with no cross-repo ORM imports, are intentional coupling — not this anti-pattern.</li>
-            <li>Versioned OpenAPI clients generated per release signal loose coupling; shared JARs with domain entities signal tight coupling.</li>
+            <li><strong>Generated clients vs shared entities:</strong> Versioned OpenAPI clients generated per release signal loose coupling; shared JARs with domain entities signal tight coupling.</li>
+            <li><strong>Monolith boundaries:</strong> Explicit module boundaries inside one modular monolith, with no cross-repo ORM imports, are intentional in-process coupling—not this anti-pattern at service scope.</li>
+            <li><strong>Deploy independence:</strong> If release notes routinely list paired service versions, coupling has become operational habit.</li>
+            <li><strong>Test pyramid inversion:</strong> Teams skip unit tests because wiring half the estate is the only way to exercise billing logic.</li>
           </ul>
           <h2 id="typical-architecture">Typical manifestation</h2>
-          <p>Billing’s dependency graph tugs Catalog, Routing, and Finance whenever Catalog’s ORM changes.</p>
+          <p>One service’s dependency graph tugs peers whenever shared libraries or schemas change—any tug moves multiple deployables.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     service_a_shared_lib_v2["Service A shared-lib v2.3 Service B"]
@@ -146,21 +152,48 @@
           </figure>
           <h2 id="pros-and-cons">Consequences and remediation</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Consequences</h3><ul><li>Catalog and Billing share a single production deploy window.</li><li>Minor Catalog refactors require full regression of invoice PDFs and EDI exports.</li><li>Catalog outages take Billing offline even when rating data is unchanged.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Remediation</h3><ul><li>Published <code>RateCardPublished</code> / <code>SkuSnapshot</code> events instead of ORM sharing.</li><li>Anti-corruption layer in Billing with its own invoice line DTOs.</li><li><a href="../software-engineering/contract-testing.html">Consumer-driven contract tests</a> on the Catalog HTTP API.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Consequences</h3>
+              <ul>
+                <li><strong>Shared release windows:</strong> Catalog and billing share a single production deploy train for schema-aligned changes.</li>
+                <li><strong>Regression tax:</strong> Minor catalog refactors require full regression of invoice PDFs, EDI exports, and batch jobs.</li>
+                <li><strong>Failure propagation:</strong> Catalog outages take billing offline even when invoice data is static for recurring lanes.</li>
+                <li><strong>Velocity collapse:</strong> Feature work in billing queues behind catalog refactors unrelated to invoice rules.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Remediation strategies</h3>
+              <ul>
+                <li><strong>Events over ORM:</strong> Publish <code>RateCardPublished</code> / <code>SkuSnapshot</code> instead of sharing database packages.</li>
+                <li><strong>Anti-corruption layer:</strong> Map catalog API responses into billing-owned invoice line DTOs.</li>
+                <li><strong>Contract tests:</strong> <a href="../software-engineering/contract-testing.html">Consumer-driven contract tests</a> on catalog’s HTTP API lock JSON shapes.</li>
+                <li><strong>Freeze imports:</strong> Measure cross-repo PRs touching shared ORM packages and stop new consumers.</li>
+              </ul>
+            </div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Northwind measured cross-repo PRs touching <code>catalog-orm</code> and froze new imports. Billing’s ACL now maps Catalog API responses into <code>BillableLineItem</code>. Hot path first: recurring lane invoices; strangler the remaining ORM reads behind cached snapshots with explicit TTL.</p>
-          
+          <p>Remediation starts by measuring cross-repo pull requests touching shared ORM artifacts and freezing new imports. Billing’s anti-corruption layer maps catalog HTTP responses into <code>BillableLineItem</code> (or equivalent) types billing owns outright.</p>
+          <p>Prioritize the hot path: recurring lane invoices that need stable SKU snapshots before ad-hoc catalog lookups. Strangle remaining ORM reads behind cached snapshots with explicit TTL and version fields so renames surface as contract test failures, not production PDF gaps.</p>
+          <p>Synchronous calls that remain should use timeouts, bulkheads, and circuit breakers so catalog blips do not empty billing’s thread pools—but resilience patterns do not replace published boundaries.</p>
           <h2 id="common-failure-modes">Escalation patterns</h2>
-          <ul><li><strong>DTO mirroring:</strong> Billing copies Catalog’s entire <code>Product</code> graph; every Catalog field becomes Billing’s problem.</li><li><strong>Shared migrations:</strong> One Flyway script alters tables both teams thought they owned.</li></ul>
-          <h2 id="decision-checklist">Diagnostic checklist</h2>
-          <ul class="checklist"><li>Can Catalog rename a SKU attribute without a Billing release?</li><li>Does Billing depend on Catalog’s database package or on versioned APIs/events?</li><li>Are cross-service calls bounded with timeouts and bulkheads?</li></ul>
-          <h2 id="example-use-cases">Example use cases</h2>
-          <p>Northwind Billing and Catalog:</p>
           <ul>
-            <li><strong>Anti-pattern:</strong> Billing imports Catalog ORM; hazmat flag rename breaks invoice line rendering until both repos deploy.</li>
-            <li><strong>Fix:</strong> Billing consumes <code>SkuSnapshot</code> events and calls Catalog’s OpenAPI for ad-hoc lookups; contract tests lock the JSON schema — aligned with <a href="https://martinfowler.com/articles/microservice-trade-offs.html" target="_blank" rel="noopener noreferrer">loosely coupled components</a>.</li>
+            <li><strong>DTO mirroring:</strong> Billing copies catalog’s entire <code>Product</code> graph; every catalog field becomes billing’s problem.</li>
+            <li><strong>Shared migrations:</strong> One Flyway script alters tables both teams thought they owned.</li>
+            <li><strong>Version pin deadlock:</strong> Services pin different ORM versions; production drifts until a forced big-bang upgrade weekend.</li>
+            <li><strong>ACL bypass:</strong> Engineers add “just one” direct ORM read for a demo; the exception becomes the pattern.</li>
+          </ul>
+          <h2 id="decision-checklist">Diagnostic checklist</h2>
+          <ul class="checklist">
+            <li>Can catalog rename a SKU attribute without a billing release?</li>
+            <li>Does billing depend on catalog’s database package or on versioned APIs and events?</li>
+            <li>Are cross-service calls bounded with timeouts and bulkheads?</li>
+            <li>Do contract tests fail when catalog changes response shape without a negotiated version bump?</li>
+            <li>Can billing unit tests run without starting catalog’s database or API?</li>
+            <li>Is there an inventory of shared libraries with owners and deprecation dates?</li>
+          </ul>
+          <h2 id="example-use-cases">Example use cases</h2>
+          <ul>
+            <li><strong>Northwind Logistics billing and catalog:</strong> Billing imported catalog ORM; a hazmat flag rename broke invoice line rendering until both repos deployed. Billing then consumed <code>SkuSnapshot</code> events and called catalog’s OpenAPI for ad-hoc lookups; contract tests locked the JSON schema—aligned with <a href="https://martinfowler.com/articles/microservice-trade-offs.html" target="_blank" rel="noopener noreferrer">loosely coupled components</a>.</li>
           </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="distributed-monolith.html">Distributed Monolith</a></li><li><a href="../software-engineering/contract-testing.html">Contract Testing</a></li></ul>
