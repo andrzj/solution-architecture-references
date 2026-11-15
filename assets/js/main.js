@@ -321,6 +321,7 @@ function initSearch(inputSelector, resultsSelector) {
    ============================================================ */
 function initCopyCode() {
   document.querySelectorAll('pre').forEach(pre => {
+    if (pre.closest('.architecture-diagram')) return;
     const btn = document.createElement('button');
     btn.className = 'copy-btn';
     btn.textContent = 'Copy';

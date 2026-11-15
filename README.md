@@ -4,7 +4,7 @@ A curated reference library for architects and engineering teams — covering pa
 
 ## Overview
 
-This is a static HTML site containing 200+ articles organized into 24 categories. Every article follows a consistent structure: what it is, why it exists, when to use / not use, typical architecture, pros/cons, implementation notes, failure modes, decision checklist, example use cases, related patterns, and further reading.
+This is a static HTML site containing 200+ articles organized into 24 categories. Every article follows a consistent structure: what it is, why it exists, when to use / not use, typical architecture, pros/cons, implementation notes, failure modes, decision checklist, example use cases, related patterns, and further reading. See [docs/TEMPLATE.md](docs/TEMPLATE.md) for the full HTML contract and diagram markup.
 
 ## Structure
 
