@@ -104,10 +104,13 @@
           <p>A <strong>vector database</strong> (or vector index inside another store) persists <strong>embeddings</strong>—fixed-length float vectors from ML models—and answers <strong>approximate nearest neighbor (ANN)</strong> queries: given a query vector, which stored vectors are closest under cosine, dot product, or L2 distance?</p>
           <p>Purpose-built systems include Pinecone, Weaviate, Qdrant, and Milvus; embedded options include <a href="https://github.com/pgvector/pgvector" target="_blank" rel="noopener noreferrer">pgvector</a> on PostgreSQL, Redis vector search, Elasticsearch <code>dense_vector</code>, and <a href="https://www.mongodb.com/docs/atlas/atlas-vector-search/vector-search-overview/" target="_blank" rel="noopener noreferrer">MongoDB Atlas Vector Search</a> when documents and vectors should co-locate. Indexes are dominated by <strong>HNSW</strong> (graph-based, high recall, RAM-heavy) and <strong>IVF</strong> (inverted lists with probes).</p>
           <p>Kleppmann’s secondary-index discussion in <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer"><em>Designing Data-Intensive Applications</em></a> applies: ANN structures are maintenance-heavy, approximate, and must be validated on domain queries—not benchmark slogans.</p>
+          <p>Managed offerings—<strong>Pinecone</strong>, Azure AI Search, Google Vertex AI Vector Search—trade control for operations when teams lack capacity to babysit shards. Open-source <strong>Milvus</strong> and <strong>Qdrant</strong> suit Kubernetes-native estates that want filtering and horizontal scale in-house. <strong>Weaviate</strong> emphasizes multi-modal schemas and GraphQL APIs; co-located stores such as Elasticsearch <code>dense_vector</code> or OpenSearch k-NN matter when lexical and vector retrieval must share one cluster.</p>
+          <p><strong>HNSW</strong> graphs deliver high recall with millisecond queries but consume RAM for edge lists and tolerate slow rebuilds after large ingest. <strong>IVF</strong> clusters vectors into inverted lists probed at query time—cheaper builds and smaller memory at the cost of tuning list counts and probe depth. Product selection is less about brand than about whether your SLA tolerates approximate ranking and how often the corpus re-embeds.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Keyword search fails when vocabulary diverges from user intent; embeddings map text, images, or audio into spaces where semantic nearness is geometric nearness. Exact k-NN over millions of 1k–3k dimensional vectors is CPU-prohibitive for interactive SLAs.</p>
           <p>ANN indexes trade guaranteed optimality for throughput and latency, exposing knobs (<code>ef_search</code>, probes, quantization) that teams must tune against labeled evaluation sets. RAG architectures ground LLM outputs by retrieving chunks from this layer; without it, prompts hallucinate or omit policy-sensitive context.</p>
+          <p>Keyword systems still win for error codes, SKUs, and statutory phrases where exact tokens carry legal weight. Vectors complement those engines: a query about “comfortable walking footwear” should surface hiking boots and insoles even when the catalog copy never repeats the user’s adjectives. Hybrid pipelines—BM25 shortlist plus vector rerank, or the reverse—remain the pragmatic default in commerce and support tooling because neither signal alone survives production tail queries.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -116,6 +119,8 @@
             <li>Deduplication and near-duplicate detection for media, code, or support tickets.</li>
             <li>Anomaly cues when “far from all neighbors” signals novelty—paired with human review.</li>
             <li>Hybrid retrieval stacks combining BM25 filters with vector ranking for SKU-heavy catalogs.</li>
+            <li>Multi-modal search when images, audio, and text share one embedding index for similarity—common in catalog and media libraries.</li>
+            <li>Internal copilots that must cite runbooks, contracts, or policy PDFs with tenant-scoped metadata filters on every query.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -187,6 +192,7 @@
                 <li>Metadata-filtered vector search supports tenant isolation and ACL-aware retrieval.</li>
                 <li>Model upgrades are localized to re-embedding jobs; storage layout can remain stable.</li>
                 <li>Colocated pgvector reduces moving parts for moderate corpora already on PostgreSQL.</li>
+                <li>Quantization and product-native sharding paths help when single-node RAM ceilings approach millions of high-dimensional vectors.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -205,6 +211,8 @@
           <p>Pick distance ops to match model training: pgvector index opclasses (<code>vector_cosine_ops</code>, etc.) must align with embedder docs. Tune HNSW <code>m</code>, <code>ef_construction</code>, and session <code>hnsw.ef_search</code> against a held-out query set; log recall@k and nDCG in CI for retrieval changes.</p>
           <p>Chunk with overlap sized to model context—headings-aware splits beat naive fixed token windows for policy docs. Store content hash and embedding model version on each row to trigger partial re-embed jobs. Cache query embeddings when models are deterministic.</p>
           <p>Ship <strong>hybrid retrieval</strong> (vector + BM25 via Elasticsearch/Postgres FTS) with reciprocal rank fusion for SKU- and error-code-heavy domains. For MongoDB workloads, define Atlas vector index definitions alongside document validators so metadata filters stay consistent.</p>
+          <p>On pgvector, raising HNSW <code>m</code> and <code>ef_construction</code> improves recall at build time while session <code>hnsw.ef_search</code> controls exploration during queries—benchmark both on held-out questions rather than defaulting to tutorial values. IVF indexes benefit when <code>lists</code> scales roughly with the square root of row count and <code>probes</code> targets ten to twenty percent of lists for latency-sensitive paths.</p>
+          <p>Production RAG should log retrieval IDs, similarity scores, and embedding model version per answer so incident review can distinguish chunking bugs from index regressions. Pair offline nDCG or recall@k suites with canary queries that include rare acronyms and multilingual phrases your tokenizer might otherwise bury.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -213,6 +221,7 @@
             <li><strong>Micro-chunks:</strong> Sentence-level splits retrieve irrelevant snippets lacking definitional context.</li>
             <li><strong>RAM cliff:</strong> High <code>m</code> HNSW on tens of millions of vectors without horizontal sharding collapses nodes.</li>
             <li><strong>Metric mismatch:</strong> Euclidean index on cosine-normalized embeddings ranks plausible neighbors incorrectly.</li>
+            <li><strong>Filter leakage:</strong> Tenant or ACL metadata applied only at the application layer lets cross-tenant chunks appear in ANN results before post-filtering drops them.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -223,6 +232,7 @@
             <li>Is re-embedding scoped by content hash when sources change?</li>
             <li>For pgvector: is ANN sufficient at projected N, or is a dedicated shard required?</li>
             <li>Are ACL metadata fields enforced on both ingest and query filters?</li>
+            <li>Is memory headroom modeled as raw vector bytes plus index overhead before the first production reindex?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -230,6 +240,8 @@
             <li><strong>Illustrative scenario —</strong> Internal IT embeds runbooks in pgvector, retrieves top chunks per incident description, and requires the LLM to cite chunk IDs in responses.</li>
             <li><strong>Illustrative scenario —</strong> A retailer hybrid-searches SKU tokens with BM25 and merges with description embeddings for natural-language browse.</li>
             <li><strong>Case study —</strong> Streaming platforms publicly describe embedding similarity for discovery—illustrative of ANN at catalog scale with metadata filters.</li>
+            <li><strong>Illustrative scenario —</strong> A forty-thousand-document policy library chunks at eight-hundred-token windows, embeds with a small commercial model, and requires support answers to list chunk IDs so auditors can replay citations.</li>
+            <li><strong>Illustrative scenario —</strong> An engineering org embeds functions with a code-oriented model to flag semantic duplicates in pull requests before human review escalates license or provenance risk.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

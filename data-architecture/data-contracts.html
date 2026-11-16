@@ -103,10 +103,12 @@
           <p>A <strong>data contract</strong> is a versioned agreement between whoever produces a dataset or event stream and the teams that consume it. Beyond column types, it states semantics (what a field <em>means</em>), quality thresholds, freshness SLAs, ownership, and how incompatible changes get announced—so downstream jobs fail loudly instead of silently ingesting wrong-shaped data.</p>
           <p>Serial forms usually live in <strong>Apache Avro</strong>, <strong>Protocol Buffers</strong>, or <strong>JSON Schema</strong>, registered in a <strong>schema registry</strong> that rejects publishes violating a chosen compatibility mode. The open <a href="https://datacontract.com/" rel="noopener noreferrer" target="_blank">Data Contract Specification</a> layers YAML metadata—SLAs, quality rules, lineage hooks—on top of schema-only checks. Registries such as <a href="https://docs.confluent.io/platform/current/schema-registry/index.html" rel="noopener noreferrer" target="_blank">Confluent Schema Registry</a> and <a href="https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html" rel="noopener noreferrer" target="_blank">AWS Glue Schema Registry</a> automate enforcement at produce time.</p>
           <p>In Zhamak Dehghani’s <a href="../architecture-styles/data-mesh.html">Data Mesh</a> writing, each domain-oriented <em>data product</em> exposes a contract as its public interface under <em>data as a product</em> and <em>federated computational governance</em>. Consumers discover products through the catalog but rely on contracts to know how those products will behave over time—see Dehghani’s <a href="https://martinfowler.com/articles/data-monolith-to-mesh.html" rel="noopener noreferrer" target="_blank">monolith-to-mesh</a> essay and Fowler’s <a href="https://martinfowler.com/articles/data-mesh-principles.html" rel="noopener noreferrer" target="_blank">principles synthesis</a>.</p>
+          <p>Structural compatibility—what a registry can prove—is only half the story. <strong>BACKWARD</strong> readers tolerate new schema versions when they deserialize historical payloads; <strong>FORWARD</strong> writers must not drop fields old consumers still expect; <strong>FULL</strong> locks both directions and suits tightly coupled analytics; <strong>NONE</strong> is an emergency escape hatch that should expire with an audit trail. Semantic drift—redefining “amount” as post-tax while the column name stays unchanged—passes green registry checks until business rules or model features fail in production.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Implicit assumptions about shared tables and topics fail once dozens of pipelines fork the same landing zone. A renamed column, narrowed type, or shifted timezone silently poisons dashboards and models because batch jobs do not throw on extra NULLs. Contracts move compatibility left: registries block incompatible schema versions, CI runs assertion suites on warehouse tables, and human notice periods give consumers time to adapt.</p>
           <p>They also clarify accountability. When ownership, semantics, and escalation paths sit beside the schema, platform teams spend less time arbitrating Slack threads about “whose bug” broke revenue reporting. Mesh-aligned organizations treat the contract artifact as the durable interface while implementation details remain inside the domain.</p>
+          <p>Poor contracts externalize breakage: optional fields appear without notice, timezone shifts change daily aggregates, and nullable key columns silently widen until dashboards disagree with finance closes. Explicit SLAs, notice periods, and versioned semantics turn those surprises into scheduled migrations consumers can plan for.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -115,6 +117,8 @@
             <li>When ML feature stores or regulatory reports depend on columns whose meaning and null rates must not change without review.</li>
             <li>When warehouse tables feed multiple dbt projects, BI semantic layers, or partner exports that cannot coordinate informally on every deploy.</li>
             <li>When audit or privacy programs require documented lineage tied to explicit field definitions and change policies.</li>
+            <li>When partner or regulator exports need frozen column semantics and published retention windows, not informal “ask the producer” agreements.</li>
+            <li>When multiple consumer teams deserialize the same topic or landing table and cannot attend every producer stand-up to learn about additive changes.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -127,6 +131,7 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Producers own the contract repository entry, register schemas, embed schema identifiers in serialized messages, and publish quality metrics. Consumers pin reader schemas or dbt tests to contract versions; CI blocks merges that violate assertions. Mesh deployments link contract metadata to catalog entries so discovery shows freshness and owner alongside structure.</p>
+          <p>Breaking evolution paths favor multi-step releases: add a renamed column alongside the legacy field, dual-write during a notice window, migrate consumers under registry compatibility checks, then deprecate the old subject version. Warehouse contracts mirror the pattern—dbt exposures reference stable model contracts while silver-to-gold promotions run Great Expectations or Soda suites tied to the same YAML thresholds product managers cite in SLAs.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     prod["Data producer&lt;br/&gt;owns contract"]
@@ -169,6 +174,7 @@
                 <li>Lets consumers evolve independently when compatibility rules and notice windows are respected.</li>
                 <li>Connects automated dbt, Great Expectations, or Soda checks to the same thresholds product managers reference.</li>
                 <li>Supplies audit evidence for regulated fields when paired with catalog lineage and classification.</li>
+                <li>Makes additive stream evolution routine when BACKWARD mode and field defaults are understood by every producing service.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -179,13 +185,15 @@
                 <li>Semantic gaps remain; prose definitions still require human review for business-breaking shifts.</li>
                 <li>Registry, contract repo, and CI integration carry platform cost before benefits compound.</li>
                 <li>Emergency bypasses (compatibility NONE) tend to linger unless governance audits configuration.</li>
+                <li>Cross-team negotiation overhead rises when every nullable addition still needs semantic review beyond registry green lights.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>On Kafka, use registry-aware serializers for every producer; default subjects to <strong>BACKWARD</strong> unless readers truly never read history. Document when to choose FORWARD or FULL per Confluent’s <a href="https://docs.confluent.io/platform/current/schema-registry/avro.html#compatibility-types" rel="noopener noreferrer" target="_blank">compatibility types</a>. Store contract YAML in Git beside infrastructure so SLAs and semantics version with schema.</p>
-          <p>For warehouse tables, encode quality as executable tests—dbt <code>not_null</code>, <code>unique</code>, <code>relationships</code>, or Great Expectations suites—and fail deploy pipelines on regression. Align the open <a href="https://datacontract.com/" rel="noopener noreferrer" target="_blank">Data Contract Specification</a> fields (owner, quality, service-level) with what you already expose in Datadog or Monte Carlo.</p>
+          <p>For warehouse tables, encode quality as executable tests—dbt <code>not_null</code>, <code>unique</code>, <code>relationships</code>, or Great Expectations suites—and fail deploy pipelines on regression. Publish semantic definitions in the business glossary and link them from contract YAML so “revenue” cannot mean pre-tax in one subject and post-tax in another without a version bump. Align the open <a href="https://datacontract.com/" rel="noopener noreferrer" target="_blank">Data Contract Specification</a> fields (owner, quality, service-level) with what you already expose in Datadog or Monte Carlo.</p>
+          <p>Instrument freshness monitors on the same thresholds contracts promise: if YAML says five-minute lag, dashboards and paging rules must reference the same metric IDs consumers read in the catalog. Reject raw JSON producers that bypass registration; shadow traffic in staging should exercise reader schemas against canary payloads before promotion.</p>
           <p>Pair technical gates with process: breaking changes require consumer acknowledgement, semantic release notes, and catalog updates. In mesh topologies, treat the contract as the data product’s API; Dehghani’s platform principle expects domains to publish these interfaces without a central modeling committee.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -195,6 +203,7 @@
             <li><strong>Semantic break behind green CI:</strong> Adding a nullable enum value passes Avro checks but invalidates downstream business rules.</li>
             <li><strong>Rename via edit instead of migration:</strong> Changing Avro field names in place fails registry rules; teams need add-alias-deprecate patterns.</li>
             <li><strong>SLA without telemetry:</strong> Freshness promises in YAML lack monitors, so stale data reaches executives before anyone pages.</li>
+            <li><strong>Dual schema truth:</strong> Producers maintain Avro in the registry while warehouse DDL diverges manually, so stream and table contracts disagree on required fields.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -212,6 +221,7 @@
             <li><strong>Illustrative scenario —</strong> Payments emits <code>payment.completed</code> with Avro registered BACKWARD; fraud adds optional <code>risk_score</code> without forcing a coordinated consumer deploy.</li>
             <li><strong>Illustrative scenario —</strong> A feature table’s dbt tests enforce null-free keys; an upstream bug fails CI before corrupted rows reach the online model.</li>
             <li><strong>Illustrative scenario —</strong> Orders domain publishes a mesh data product with contract YAML listing 14-day notice; analytics schedules migration when <code>line_items</code> JSON shape changes.</li>
+            <li><strong>Illustrative scenario —</strong> A platform bot comments on pull requests that touch owned dbt models, linking the contract diff and listing consumer teams that acknowledged the prior semantic version.</li>
             <li><strong>Case study —</strong> Large-scale schema discipline narratives include Uber’s <a href="https://www.uber.com/blog/schemaless-part-1/" rel="noopener noreferrer" target="_blank">Schemaless</a> series and Confluent’s registry guides; Dehghani’s mesh essays motivate treating contracts as product interfaces.</li>
           </ul>
 
