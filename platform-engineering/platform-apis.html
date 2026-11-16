@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Platform APIs and Abstractions — SA References</title>
-  <meta name="description" content="Platform APIs and Abstractions: Kubernetes operators, CRDs, Crossplane, Backstage Software Catalog API, resource abstraction layers, self-service infrastructure workflows, and safe abstraction escapes.">
+  <meta name="description" content="Platform APIs expose self-service, versioned abstractions—Kubernetes CRDs, Crossplane compositions, Backstage catalog APIs, and GitOps workflows—so teams provision resources without raw cloud console access.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -98,49 +98,53 @@
             <span class="badge badge--warning">Advanced</span>
           </div>
           <h1 class="article-header__title">Platform APIs and Abstractions</h1>
-          <p class="article-header__desc">The technical interfaces that expose platform capabilities to application teams as self-service, declarative APIs — hiding infrastructure complexity behind simple, versioned abstractions that developers can understand and operators can safely enforce.</p>
-          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
+          <p class="article-header__desc">Platform APIs are the versioned, self-service interfaces—CRDs, catalog REST endpoints, and portal actions—that let teams declare what they need while the platform reconciles safe defaults behind the scenes.</p>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>Rather than granting developers IAM access to create RDS instances (requiring AWS knowledge, security configuration, and VPC setup), the platform exposes a <code>PostgresDatabase</code> Custom Resource Definition (CRD). The developer applies a YAML manifest declaring the desired database size and engine version; a Kubernetes operator running in the cluster reconciles this declaration against AWS, creates the RDS instance with correct subnets, security groups, and KMS encryption, and injects the connection string as a Kubernetes Secret.</p>
-          <p>The developer gets a database in 5 minutes without writing a line of Terraform.</p>
-          <p>The dominant technical approach to platform APIs in 2024 is <strong>Kubernetes as the control plane</strong>: CRDs extend the Kubernetes API with platform-specific resource types (Database, Queue, ServiceAccount, Environment), operators implement the business logic for each resource type, and all platform resources are managed through the same <code>kubectl apply</code> and GitOps workflows developers already use. Crossplane provides a framework for composing CRDs that provision cloud resources declaratively. The Backstage Software Catalog API provides a REST and GraphQL interface for querying the catalog programmatically, enabling integration with CI/CD, cost tools, and incident management.</p>
+          <p><strong>Platform APIs and abstractions</strong> are the technical contracts between the platform team and product engineering: declarative resource types, HTTP endpoints, and portal workflows that expose databases, environments, credentials, and catalog entries as self-service operations instead of tickets or console clicks.</p>
+          <p>The most common pattern treats <strong>Kubernetes as the control plane</strong>. Custom Resource Definitions (CRDs) add platform-specific kinds—<code>PostgresDatabase</code>, <code>Environment</code>, <code>MessageQueue</code>—to the same API server that already enforces RBAC and admission. An <strong>operator</strong> watches those CRDs and reconciles desired state against cloud APIs, writing status and secrets back into the cluster. <strong>Crossplane</strong> can implement the cloud side via providers and compositions so one CRD shape works across vendors. Admission controllers running <strong>OPA Gatekeeper</strong> or <strong>Kyverno</strong> validate every create/update before it is stored, so security and tagging rules apply uniformly at the API boundary.</p>
+          <p>Not every interaction belongs in <code>kubectl</code>. <strong>Backstage</strong> exposes a Software Catalog API (REST and GraphQL) for registering and querying components, systems, and APIs; Software Templates invoke the same underlying APIs when developers scaffold repos. GitOps controllers (Argo CD, Flux) treat platform manifests like application manifests, giving PR review and rollback for infrastructure changes.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Raw cloud APIs (AWS Console, Terraform) are powerful but require deep infrastructure expertise to use safely. An application developer who needs a PostgreSQL database for their service should not need to understand VPC subnets, security group rules, parameter groups, backup retention policies, multi-AZ configuration, encryption at rest, IAM authentication, and subnet group configuration. They should declare "I need a PostgreSQL 15 database with 50 GB storage" and receive a connection string. Platform APIs provide this abstraction: they encode the infrastructure team's expertise into a repeatable, safe interface that any developer can use.</p>
-          <p>The Kubernetes control plane model is particularly powerful because it provides <strong>desired-state reconciliation</strong> for free: operators continuously compare the declared state (a <code>PostgresDatabase</code> CRD with <code>size: small</code>) against the actual state (the RDS instance in AWS) and reconcile any drift. This means platform resources are self-healing — if someone manually modifies the RDS instance outside the CRD, the operator detects and corrects the drift. It also means platform resources are GitOps-compatible — a PR to change the CRD declaration triggers a reconciliation that updates the real infrastructure, with full audit trail.</p>
+          <p>Direct cloud console and raw Terraform modules scale poorly across dozens of teams. Each squad interprets networking, encryption, and IAM differently; audit findings cluster on the same misconfigurations. Platform APIs compress expert decisions into a small schema: a <code>size: medium</code> field hides instance class, storage type, backup window, and subnet placement that the operator already encodes.</p>
+          <p>Reconciliation is the other payoff. Operators continuously compare declared CRD state with live resources and repair drift, so manual console edits do not become permanent shadow changes. The same manifests flow through GitOps, producing an audit trail tied to commits and catalog entities rather than anonymous console sessions.</p>
+          <p>Backstage and catalog APIs close the loop for humans and automation: CI pipelines register new services, cost tools join spend to <code>spec.owner</code>, and incident routers read ownership metadata without bespoke integrations per tool.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Use CRDs and operators when multiple teams need the same type of cloud resource (databases, queues, certificates) with consistent configuration and security defaults — the abstraction benefit scales with demand.</li>
-            <li>Use Crossplane when the organisation wants a cloud-provider-agnostic infrastructure abstraction layer that works across AWS, GCP, and Azure with the same CRD interface.</li>
-            <li>Use the Backstage Software Catalog API when building tooling (cost dashboards, incident routing, dependency analysis) that needs programmatic access to the service registry.</li>
-            <li>Use resource abstraction layers when developers are spending time on infrastructure configuration that could be encoded in an operator without loss of flexibility for the common case.</li>
-            <li>Expose escape hatches via annotation-based overrides (e.g., <code>platform.org/custom-instance-class: db.r6g.4xlarge</code>) to allow teams with non-standard requirements to bypass defaults without bypassing the entire abstraction.</li>
+            <li>Three or more teams request the same resource type (relational DB, cache, TLS cert) with similar security defaults—operator economics improve with reuse.</li>
+            <li>Kubernetes is already the deployment substrate; extending the API with CRDs reuses RBAC, admission (OPA/Kyverno), and GitOps muscle memory.</li>
+            <li>Crossplane compositions when the same higher-level claim (for example <code>Environment</code>) must provision AWS and GCP equivalents from one schema.</li>
+            <li>Backstage Catalog API when portals, CI, FinOps, or paging need stable identifiers for components, owners, and dependencies.</li>
+            <li>Documented escape hatches (annotations or elevated tiers) for the minority of workloads that legitimately need non-default instance classes or regions.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Low-demand resources:</strong> Writing a Kubernetes operator for a resource type that only 2 teams need and configure differently is over-engineering; a shared Terraform module is sufficient.</li>
-            <li><strong>Rapidly evolving abstractions:</strong> If the underlying infrastructure is changing frequently (new cloud services, new security requirements), the overhead of maintaining CRD schemas and operator versions may exceed the benefit; abstract stable resources first.</li>
-            <li><strong>Very small organisations:</strong> Crossplane has significant operational complexity; organisations with fewer than 5 engineers working on infrastructure should use Terraform modules and module registries rather than a full control plane abstraction.</li>
-            <li><strong>Replacing the Kubernetes API entirely:</strong> Building a bespoke internal API gateway in front of Kubernetes adds complexity without Kubernetes' built-in RBAC, admission webhooks, and reconciliation — prefer CRDs over custom API servers.</li>
+            <li><strong>Low demand:</strong> One or two teams with unique needs are better served by a curated Terraform module than a multi-replica operator.</li>
+            <li><strong>Unstable surface area:</strong> If the underlying cloud service changes weekly, freeze abstractions until the platform team can version CRDs and conversion webhooks deliberately.</li>
+            <li><strong>No Kubernetes footprint:</strong> Running a control plane solely for abstractions may cost more than a thin provisioning API backed by your existing IaC pipeline.</li>
+            <li><strong>Parallel bespoke API servers:</strong> Custom REST gateways that duplicate Kubernetes semantics lose admission, audit, and ecosystem tooling—extend the API server instead.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Developers interact through Backstage or Git; manifests hit admission policy, then operators and providers reconcile cloud resources and publish credentials back to the cluster.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    client["Portal / CI caller"]
-    api["Platform API layer&lt;br/&gt;versioned REST"]
-    k8s["Kubernetes API"]
-    tf["Terraform / Crossplane"]
-    iam["Cloud IAM broker"]
-    client --> api
-    api --> k8s
-    api --> tf
-    api --> iam</div>
+    portal["Backstage / Git PR"]
+    admit["Admission OPA / Kyverno"]
+    crd["Platform CRDs"]
+    op["Operators / Crossplane"]
+    cloud["Cloud APIs"]
+    catalog["Catalog API consumers"]
+    portal --> admit
+    admit --> crd
+    crd --> op
+    op --> cloud
+    crd --> catalog</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>Platform API Layer (Kubernetes-based)
@@ -176,7 +180,7 @@
   └── Consumed by: cost dashboard, incident routing,
                    dependency graph visualisation</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Platform APIs abstract Kubernetes, infrastructure as code, and IAM behind a stable product-facing interface.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Portal and GitOps flows pass admission policy, then CRDs and operators reconcile cloud resources while the catalog API feeds downstream tooling.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -228,16 +232,17 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Database self-service via CRD:</strong> Platform team writes a <code>PostgresDatabase</code> operator backed by Crossplane's AWS provider; 15 product teams provision databases via <code>kubectl apply</code>; all databases have encryption, automated backups, and private subnets by default; database provisioning time drops from 3 days (ticket) to 8 minutes (operator reconciliation); zero misconfigured databases in production.</li>
-            <li><strong>Backstage catalog driving incident response:</strong> PagerDuty integration reads the Backstage catalog API to determine service ownership; all incidents are automatically routed to the correct team; MTTR for misrouted incidents drops from 45 minutes to 0; post-incident reviews show correct first notification 98% of the time, up from 74%.</li>
-            <li><strong>Crossplane multi-cloud environment provisioning:</strong> SaaS company must support tenant environments on both AWS and GCP; Crossplane Composite Resource encapsulates the environment (namespace + database + bucket + network); same CRD works on both clouds; environment provisioning is cloud-agnostic from the developer perspective; cloud migration risk reduced.</li>
+            <li><strong>Illustrative scenario — database CRD:</strong> A <code>PostgresDatabase</code> operator backed by Crossplane enforces encrypted storage and private subnets; teams apply manifests or use a Backstage template; provisioning completes in minutes with connection secrets projected into the namespace.</li>
+            <li><strong>Case study — Spotify Backstage:</strong> Open-sourcing Backstage showed how catalog and template APIs centralize service metadata and scaffolding so integrations (CI, ownership, docs) share one registry instead of custom spreadsheets per team.</li>
+            <li><strong>Illustrative scenario — multi-cloud claim:</strong> A composite <code>Environment</code> CRD provisions namespace, object store, and managed database via Crossplane compositions on AWS or GCP from the same spec field set, reducing forked Terraform per cloud.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="internal-developer-platform.html">Internal Developer Platform</a> — platform APIs are the technical underpinning of the self-service layer in the IDP.</li>
             <li><a href="paved-roads.html">Paved Roads and Golden Paths</a> — golden paths are the UX layer on top of platform APIs.</li>
-            <li><a href="platform-security.html">Platform Security</a> — OPA/Gatekeeper admission webhooks integrate with the Kubernetes API to enforce security policies on all platform resource requests.</li>
+            <li><a href="platform-security.html">Platform Security</a> — admission policies (OPA, Kyverno) gate every platform API request.</li>
+            <li><a href="policy-as-code.html">Policy as Code</a> — shared policy language across CRDs, CI, and Terraform plans.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>

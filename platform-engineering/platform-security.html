@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Platform Security — SA References</title>
-  <meta name="description" content="Platform Security: policy-as-code with OPA/Gatekeeper, image signing with Cosign/Sigstore, network policy automation, External Secrets Operator, RBAC templates, compliance guardrails, and security as a platform service.">
+  <meta name="description" content="Platform security embeds policy-as-code (OPA, Kyverno, Sentinel), supply-chain signing, secrets automation, and RBAC templates in the IDP so teams inherit guardrails by default.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -98,27 +98,28 @@
             <span class="badge badge--muted">Security</span>
           </div>
           <h1 class="article-header__title">Platform Security</h1>
-          <p class="article-header__desc">Enforcing security standards across all teams through the platform layer — using policy-as-code, image signing, automated secrets injection, RBAC templates, and compliance guardrails that developers benefit from automatically rather than configure manually.</p>
-          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
+          <p class="article-header__desc">Platform security delivers guardrails as platform services—admission policy, signed artifacts, automated secrets, and namespace RBAC—so the default path is compliant without per-team security archaeology.</p>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The key technologies for platform security in the Kubernetes ecosystem are: <strong>OPA/Gatekeeper</strong> (Open Policy Agent with the Gatekeeper Kubernetes admission webhook) for policy-as-code enforcement at the Kubernetes API layer; <strong>Cosign/Sigstore</strong> for container image signing and verification (ensuring only images built by the organisation's CI pipeline can be deployed); the <strong>External Secrets Operator (ESO)</strong> for platform-wide secrets injection (syncing secrets from AWS Secrets Manager, HashiCorp Vault, or GCP Secret Manager into Kubernetes Secrets automatically); and templated <strong>RBAC configurations</strong> that are provisioned per team namespace rather than being configured manually by individual teams.</p>
+          <p><strong>Platform security</strong> is the set of controls the internal developer platform applies so every team inherits baseline posture—identity, secrets, network boundaries, and artifact trust—without reimplementing them in each repository.</p>
+          <p>On Kubernetes, admission is the primary enforcement point: <strong>OPA Gatekeeper</strong> and <strong>Kyverno</strong> evaluate create/update requests against versioned policies (non-root containers, required labels, approved registries, signed images). Gatekeeper runs Rego via ConstraintTemplates; Kyverno uses Kubernetes-native YAML rules and can mutate resources (for example inject labels or sidecars). For infrastructure-as-code, <strong>Open Policy Agent</strong> in CI or <strong>HashiCorp Sentinel</strong> in Terraform Cloud/HCP Terraform blocks plans that violate tagging, encryption, or network rules before apply.</p>
+          <p>Around the workload lifecycle, <strong>Cosign</strong> (Sigstore) signs images in CI; admission verifies signatures. The <strong>External Secrets Operator</strong> syncs secrets from Vault or cloud secret managers into namespaces on a schedule. Templated <strong>RBAC</strong> and <strong>NetworkPolicy</strong> bundles ship with each namespace. <strong>Backstage</strong> can surface security ownership, plugin links to vulnerability data, and catalog annotations that tie components to compliance scope.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In organisations with many application teams, security inconsistency is inevitable when teams are responsible for their own security implementation. Audit findings consistently show that some teams configure container security contexts correctly (non-root, read-only filesystem, dropped capabilities) while others run containers as root with host network access. Some teams use secrets injection via ESO; others commit base64-encoded secrets to Kubernetes manifests (which end up in git history). Some teams implement proper RBAC; others bind all service accounts to <code>cluster-admin</code> "temporarily" during debugging and never revert.</p>
-          <p>The platform security model addresses this by enforcing minimum security standards through the Kubernetes admission layer — a pod that violates the security policy is rejected at apply time, before it ever reaches the container runtime.</p>
-          <p>Platform security also reduces the cognitive load of security compliance on application teams. A team that must read the AWS security whitepaper, understand Kubernetes security contexts, implement IRSA (IAM Roles for Service Accounts), configure network policies, set up image scanning, and generate SBOMs to pass an audit is spending a significant fraction of its time on undifferentiated security work. The platform team that implements these controls centrally and exposes them through golden paths allows application teams to be secure without being security experts — security is a platform service rather than a per-team responsibility.</p>
+          <p>Distributed ownership of security defaults produces predictable gaps: privileged pods, secrets in git, wide-open security groups, unsigned images. Central security teams cannot review every manifest at scale; admission and pipeline policy convert standards into automatic deny/warn decisions with an audit log.</p>
+          <p>Embedding controls in golden paths and platform APIs shifts effort from education to mechanics. A developer using a Backstage template or namespace provisioner receives IRSA bindings, default-deny network policy, and ESO-backed secrets whether or not they read the hardening guide.</p>
+          <p>Regulators and customers increasingly expect continuous evidence—SBOMs, signature provenance, policy reports—not quarterly attestations. Platform security generates that evidence as a side effect of delivery.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Implement OPA/Gatekeeper admission policies for all Kubernetes clusters as soon as Kubernetes is in use — the cost of retrofitting policies to an already-running cluster is much higher than enforcing from the start.</li>
-            <li>Use image signing (Cosign) and policy controller verification when supply chain security is a concern — this is a best practice for any production workload and a requirement for SOC2 Type II, PCI-DSS, and NIST SSDF compliance.</li>
-            <li>Deploy External Secrets Operator org-wide as the standard secrets injection mechanism whenever teams are using more than one cloud-native secrets store (AWS Secrets Manager, HashiCorp Vault) or when Kubernetes Secrets with base64-encoded values are present in git.</li>
-            <li>Provision RBAC templates per team namespace automatically as part of the namespace provisioning workflow — RBAC configuration should never be a manual step for individual teams.</li>
-            <li>Use compliance-as-code guardrails (Gatekeeper policies, SBOM generation, image scanning) whenever there is a regulatory or audit requirement that applies uniformly to all services.</li>
+            <li>Any multi-tenant Kubernetes fleet where workloads share a control plane—admission policy (OPA or Kyverno) from day one, audit mode before enforce.</li>
+            <li>Production clusters subject to SOC 2, PCI, or SSDF supply-chain expectations—Cosign signing plus admission verification.</li>
+            <li>Organisations standardising on Vault, Secrets Manager, or similar—ESO or equivalent as the only path for runtime secrets.</li>
+            <li>Terraform or OpenTofu at scale—OPA <code>conftest</code> or Sentinel policies on plans alongside Kubernetes admission.</li>
+            <li>Namespace-per-team models where RBAC and network policy must be provisioned atomically with the namespace.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -129,6 +130,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Build-time scans and signing feed admission-time policy; runtime secrets and network segmentation complete the loop with centralized audit export.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     admit["Admission policies&lt;br/&gt;OPA / Kyverno"]
@@ -230,9 +232,9 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>SOC2 compliance via platform guardrails:</strong> SaaS company with 40 engineers faces annual SOC2 Type II audit; platform team implements Gatekeeper policies (no root, required labels, resource limits), Cosign image signing, and ESO secrets management as platform defaults; all 25 production services are automatically compliant; audit evidence (SBOM registry, image signatures in Rekor, Gatekeeper audit reports) is auto-generated; audit prep time drops from 3 weeks to 3 days.</li>
-            <li><strong>Supply chain security after incident:</strong> Organisation discovers a compromised Docker Hub image was running in staging; post-incident review mandates that all images must be built by internal CI and signed with Cosign; Cosign policy controller is deployed; unsigned images are rejected at admission; within 4 weeks all services use internal base images; zero external image incidents since deployment.</li>
-            <li><strong>Secrets hygiene across 60 services:</strong> Platform team discovers 30% of services have database passwords as plain-text environment variables in Kubernetes Deployments (stored in git); ESO rollout over 8 weeks migrates all secrets to AWS Secrets Manager with access logging; git history is purged using BFG; all future secrets are provisioned via the ESO golden path template; zero secrets-in-git findings in subsequent audits.</li>
+            <li><strong>Illustrative scenario — admission hardening:</strong> Kyverno policies in audit mode surface privileged pods and missing resource limits; after remediation, enforce mode blocks regressions; SOC auditors receive monthly policy compliance exports.</li>
+            <li><strong>Illustrative scenario — signed images only:</strong> CI signs release images with Cosign; Kyverno or Gatekeeper verifies signatures at admission; break-glass annotations require on-call approval for emergency unsigned deploys.</li>
+            <li><strong>Case study — Shopify:</strong> Public engineering writing on bootstrapping security with policy-as-code and hardened supply chains informed many IDP teams’ sequencing of scan-then-sign-then-admit pipelines.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -240,6 +242,7 @@
             <li><a href="internal-developer-platform.html">Internal Developer Platform</a> — platform security controls are delivered as a component of the IDP, not as a separate security programme.</li>
             <li><a href="platform-apis.html">Platform APIs and Abstractions</a> — Gatekeeper and RBAC templates are applied at the Kubernetes API layer, integrating with the platform API infrastructure.</li>
             <li><a href="paved-roads.html">Paved Roads and Golden Paths</a> — security controls (image signing, SBOM generation) are embedded in golden path CI pipeline templates, making secure behaviour the default path.</li>
+            <li><a href="policy-as-code.html">Policy as Code</a> — OPA, Kyverno, and Sentinel policy lifecycle across CI and clusters.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
