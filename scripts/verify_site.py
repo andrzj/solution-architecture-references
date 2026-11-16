@@ -3,13 +3,25 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urljoin
-from urllib.request import urlopen
 
-ROOT = Path(__file__).resolve().parents[1]
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from site_index_lib import (  # noqa: E402
+    ROOT,
+    articles_in_category,
+    build_search_entries,
+    category_dirs,
+    expected_homepage_count,
+    local_index_hrefs,
+)
+
+SEARCH_INDEX_JSON = ROOT / "assets" / "data" / "search-index.json"
 
 STANDARD_IDS = [
     "what-it-is",
@@ -111,6 +123,84 @@ def fictional_before_examples(html: str) -> list[tuple[int, str]]:
     return hits
 
 
+def check_category_indexes() -> list[str]:
+    errors: list[str] = []
+    for cat_dir in category_dirs():
+        idx = cat_dir / "index.html"
+        html = idx.read_text(encoding="utf-8", errors="replace")
+        linked = local_index_hrefs(html)
+        for art in articles_in_category(cat_dir):
+            if art.name not in linked:
+                errors.append(
+                    f"{idx.relative_to(ROOT)}: missing listing for {art.name}"
+                )
+        for href in linked:
+            target = cat_dir / href
+            if not target.is_file():
+                errors.append(
+                    f"{idx.relative_to(ROOT)}: broken local link {href}"
+                )
+    return errors
+
+
+def check_homepage_counts() -> list[str]:
+    homepage = ROOT / "index.html"
+    html = homepage.read_text(encoding="utf-8", errors="replace")
+    errors: list[str] = []
+    for block in re.findall(
+        r'<a href="([^"]+/index\.html)" class="category-card"[^>]*>(.*?)</a>',
+        html,
+        flags=re.DOTALL,
+    ):
+        href, body = block
+        cat = href.replace("/index.html", "").strip("./")
+        m = re.search(r'<span class="category-card__count">([^<]+)</span>', body)
+        if not m:
+            continue
+        displayed = m.group(1).strip()
+        cat_dir = ROOT / cat
+        if not cat_dir.is_dir():
+            errors.append(f"index.html: unknown category {cat}")
+            continue
+        n = len([p for p in cat_dir.glob("*.html") if p.name != "index.html"])
+        expected = expected_homepage_count(cat, n)
+        if displayed != expected:
+            errors.append(
+                f"index.html: {cat} shows {displayed!r}, expected {expected!r}"
+            )
+    return errors
+
+
+def check_search_index() -> list[str]:
+    errors: list[str] = []
+    expected = {e["path"] for e in build_search_entries()}
+    if not SEARCH_INDEX_JSON.is_file():
+        return [f"Missing {SEARCH_INDEX_JSON.relative_to(ROOT)}"]
+    data = json.loads(SEARCH_INDEX_JSON.read_text(encoding="utf-8"))
+    indexed = {item["path"] for item in data}
+    missing = expected - indexed
+    extra = indexed - expected
+    for path in sorted(missing):
+        errors.append(f"search-index.json missing {path}")
+    for path in sorted(extra):
+        errors.append(f"search-index.json extra entry {path}")
+    for path in sorted(indexed):
+        if not (ROOT / path).is_file():
+            errors.append(f"search-index.json path not found: {path}")
+    main_js = (ROOT / "assets" / "js" / "main.js").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    paths_in_js = set(re.findall(r'path: "([^"]+)"', main_js))
+    if paths_in_js != indexed:
+        only_js = paths_in_js - indexed
+        only_json = indexed - paths_in_js
+        for path in sorted(only_js):
+            errors.append(f"main.js SEARCH_INDEX missing {path} (not in JSON)")
+        for path in sorted(only_json):
+            errors.append(f"main.js SEARCH_INDEX extra {path} (not in JSON)")
+    return errors
+
+
 def main() -> int:
     missing_sections: list[tuple[str, list[str]]] = []
     no_diagram: list[str] = []
@@ -134,10 +224,17 @@ def main() -> int:
                 if hits:
                     fictional_violations.append((str(path.relative_to(ROOT)), hits))
 
+    index_errors = check_category_indexes()
+    homepage_errors = check_homepage_counts()
+    search_errors = check_search_index()
+
     print(f"Stub articles remaining: {stub_count}")
     print(f"Articles missing sections: {len(missing_sections)}")
     print(f"Articles missing diagram wrapper: {len(no_diagram)}")
     print(f"Fictional names before example-use-cases: {len(fictional_violations)}")
+    print(f"Category index coverage errors: {len(index_errors)}")
+    print(f"Homepage count errors: {len(homepage_errors)}")
+    print(f"Search index errors: {len(search_errors)}")
     if missing_sections[:15]:
         print("\nSample missing sections:")
         for p, m in missing_sections[:15]:
@@ -149,7 +246,28 @@ def main() -> int:
                 print(f"  {p}: {word}")
             if len(hits) > 3:
                 print(f"  {p}: ... +{len(hits) - 3} more")
-    fail = stub_count or missing_sections or fictional_violations or no_diagram
+    if index_errors[:20]:
+        print("\nCategory index issues (sample):")
+        for line in index_errors[:20]:
+            print(f"  {line}")
+    if homepage_errors:
+        print("\nHomepage count issues:")
+        for line in homepage_errors:
+            print(f"  {line}")
+    if search_errors[:20]:
+        print("\nSearch index issues (sample):")
+        for line in search_errors[:20]:
+            print(f"  {line}")
+
+    fail = (
+        stub_count
+        or missing_sections
+        or fictional_violations
+        or no_diagram
+        or index_errors
+        or homepage_errors
+        or search_errors
+    )
     return 1 if fail else 0
 
 
