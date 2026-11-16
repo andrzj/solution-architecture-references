@@ -48,6 +48,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "communication-patterns",
         "data-architecture",
         "deployment",
+        "distributed-systems",
     }
 )
 

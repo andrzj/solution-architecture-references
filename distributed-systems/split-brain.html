@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Split Brain Problem — SA References</title>
-  <meta name="description" content="What split brain is, how network partitions cause dual primaries, quorum-based prevention, fencing tokens, STONITH, and recovery strategies.">
+  <meta name="description" content="Split brain during network partitions—CAP trade-offs, Raft majorities, Dynamo quorums, fencing tokens, STONITH, and Jepsen-style verification.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,28 +96,27 @@
             <span class="badge badge--muted">Reliability</span>
           </div>
           <h1 class="article-header__title">Split Brain Problem</h1>
-          <p class="article-header__desc">What happens when a network partition causes two nodes to each believe they are the sole primary — and how to prevent, detect, and recover from it.</p>
-          <div class="article-header__meta"><span>⏱ 9 min read</span></div>
+          <p class="article-header__desc">When partitions create two writable primaries—CAP trade-offs, Raft majority rules, Dynamo quorums, fencing tokens, and lessons from Jepsen.</p>
+          <div class="article-header__meta"><span>⏱ 13 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-
-          <p>Split brain happens when a network partition leaves two nodes both believing they are the primary and accepting writes. Conflicting updates merge badly after the partition heals. Majority quorums and fencing tokens prevent a lone node from staying writable.</p>
+          <p><strong>Split brain</strong> is a failure mode in replicated systems where two or more nodes each believe they are the authoritative primary and accept conflicting writes during or after a <strong>network partition</strong>. When connectivity returns, replicas disagree on state; automatic merge is impossible for operations that do not commute (balances, inventory, identity). DDIA (Ch. 5–9) ties this to leader-based replication: any timeout that declares a leader dead is a guess that can be wrong, so safety requires majority quorums, external witnesses, or resource-side <strong>fencing</strong>—not hope that only one side will write.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Leader election and primary selection algorithms rely on nodes being able to communicate. When a network partition splits a cluster into isolated sub-groups, each sub-group may independently detect the absence of a primary and elect one from its own members. The CAP theorem formalises this tension: during a partition, a system must choose between consistency (refusing writes until the partition is resolved) and availability (continuing to accept writes on both sides, risking divergence).</p>
+          <p>Election and failover depend on asynchronous communication. CAP and the FLP result explain why no algorithm can simultaneously guarantee perfect partition tolerance, availability, and strong consistency without trade-offs. During a partition, a minority side may keep serving if misconfigured, or two majorities may appear if operators run two independent clusters with the same identity. Jepsen routinely surfaces “split brain” not as a single bug but as violated assumptions: leases without fencing, sticky clients, or quorum sizes that do not intersect across read and write paths.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Understanding split brain is essential for designing any replicated stateful system — it is not an optional consideration.</li>
-            <li>High-consistency systems (financial data, inventory, user identity) must prevent split brain at all costs, even at the expense of availability.</li>
-            <li>Systems prioritising availability over consistency (social media feeds, analytics) may tolerate split brain with appropriate reconciliation.</li>
+            <li>Design reviews for any leader-elected database, stream controller, or HA pair—split-brain prevention is mandatory homework.</li>
+            <li>Choosing CP behaviour during partitions: refuse writes on the minority side (Raft, MongoDB majority, Postgres with DCS quorum).</li>
+            <li>Documenting reconciliation when AP behaviour is intentional (multi-master with CRDTs, conflict resolution, operator merge tools).</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Not a pattern to avoid, but a failure mode to mitigate — every distributed system with replication must address this.</li>
+            <li>“Avoiding split brain” is not optional for mutable shared state—you either prevent dual primaries or define how conflicts are detected and healed.</li>
+            <li>Do not treat last-writer-wins timestamps as a prevention strategy; they hide data loss after partition (DDIA’s warnings on clock-based conflict resolution).</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -176,10 +175,12 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Elasticsearch split brain</strong> was historically managed with the <code>minimum_master_nodes</code> setting (deprecated in 7.x, replaced by automatic quorum in 8.x). Setting this to ⌊N/2⌋+1 prevents a minority shard from electing a master. In Elasticsearch 8+, cluster bootstrapping and voting configurations handle this automatically.</p>
-          <p><strong>MongoDB</strong> uses a replica set with a primary elected by majority vote. A partition that isolates the primary from the majority will step it down (it detects it can no longer reach a majority). The majority partition elects a new primary. The old primary becomes a secondary and rolls back any writes not replicated before the partition.</p>
-          <p><strong>Redis Sentinel</strong> uses a quorum for the number of sentinels that must agree a master is down, and a separate "majority" requirement for the number of sentinels that must authorise a failover. Setting <code>min-replicas-to-write</code> on the master forces it to stop accepting writes if too few replicas are connected, preventing the split-brain window.</p>
-          <p><strong>STONITH</strong> is used in traditional Linux HA clusters (Pacemaker/Corosync). When a node is suspected failed, the cluster initiates a STONITH (power-off via IPMI/DRAC/iLO) before promoting a standby, guaranteeing the old primary is dead before the new one starts writing. This prevents split brain at the cost of requiring physical/virtual power management infrastructure.</p>
+          <p><strong>Majority on the write path (Raft, Paxos):</strong> a leader commits only after a quorum of replicas acknowledge; a minority partition cannot commit new entries. Stale leaders on the minority cannot extend their logs; when reconnected they follow the higher-term leader. etcd and Consul inherit this; application misconfiguration (reading from stale followers without quorum reads) can still expose inconsistency.</p>
+          <p><strong>Dynamo-style quorums:</strong> with <code>N</code> replicas, require <code>W</code> and <code>R</code> such that <code>W + R &gt; N</code> for read/write overlap (DDIA Ch. 5; Amazon Dynamo paper). That prevents a lone replica from serving fresh writes indefinitely but does not guarantee linearisability under concurrent writers—pair with version vectors and application merge rules when AP is acceptable.</p>
+          <p><strong>Fencing tokens:</strong> even when two primaries exist transiently, storage that rejects lower epochs/terms blocks the zombie from damaging data—Chubby, Kafka leader epochs, and SAN arrays implementing SCSI reservations are variations on the same theme.</p>
+          <p><strong>Witness / tie-breaker:</strong> two-node clusters cannot form an internal majority; a lightweight third voter (etcd witness, cloud witness, ZooKeeper observer) breaks ties without storing full data.</p>
+          <p><strong>STONITH / forced demotion:</strong> Pacemaker clusters power off the old node before promotion; Postgres Patroni demotes when DCS connectivity is lost; Redis <code>min-replicas-to-write</code> stops a master from accepting writes without enough connected replicas.</p>
+          <p><strong>Verification:</strong> run partition chaos tests; compare outcomes to Jepsen reports for your exact database version—marketing “CP” labels do not substitute for empirical histories.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -216,9 +217,11 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.mongodb.com/docs/manual/replication/" rel="noopener noreferrer" target="_blank">MongoDB Replication — MongoDB Documentation</a> — covers replica set elections and partition handling.</li>
-            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-discovery.html" rel="noopener noreferrer" target="_blank">Discovery and Cluster Formation — Elasticsearch Reference</a> — how ES 8+ prevents split brain.</li>
-            <li><a href="https://aphyr.com/posts/283-call-me-maybe-paxos" rel="noopener noreferrer" target="_blank">Call Me Maybe: Paxos — Kyle Kingsbury (Aphyr)</a> — testing distributed systems for split-brain and data loss.</li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> — partitions, leader failure, and consistency trade-offs.</li>
+            <li><a href="https://raft.github.io/raft.pdf" rel="noopener noreferrer" target="_blank">Raft paper</a> — how majority voting prevents dual committed logs.</li>
+            <li><a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" rel="noopener noreferrer" target="_blank">Dynamo paper</a> — sloppy quorums, hinted handoff, and availability during partition.</li>
+            <li><a href="https://aphyr.com/tags/jepsen" rel="noopener noreferrer" target="_blank">Jepsen analyses</a> — split-brain and data-loss histories across databases and coordination tools.</li>
+            <li><a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="noopener noreferrer" target="_blank">How to Do Distributed Locking — Kleppmann</a> — fencing when dual holders are possible.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

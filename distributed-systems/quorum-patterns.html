@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Quorum Reads &amp; Writes — SA References</title>
-  <meta name="description" content="Quorum definition (W+R>N), read and write quorums, sloppy quorums, hinted handoff, read repair, tunable consistency in Cassandra, and anti-entropy.">
+  <meta name="description" content="Dynamo-style W, R, and N quorums—overlap rule, sloppy quorums, hinted handoff, Cassandra levels, and contrast with Raft majority commit.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,17 +96,16 @@
             <span class="badge badge--muted">Consistency</span>
           </div>
           <h1 class="article-header__title">Quorum Reads &amp; Writes</h1>
-          <p class="article-header__desc">W + R &gt; N guarantees overlap between read and write sets — tunable consistency, sloppy quorums, hinted handoff, read repair, and anti-entropy in Cassandra and DynamoDB.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">Tunable leaderless replication—Dynamo’s <code>W</code>/<code>R</code>/<code>N</code> rules, sloppy quorums and hinted handoff, Cassandra consistency levels, and how this differs from Raft majority commit.</p>
+          <div class="article-header__meta"><span>⏱ 14 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-
-          <p>A quorum requires W nodes to acknowledge a write and R nodes to serve a read. When W + R is greater than replica count N, read and write sets overlap so clients usually see fresh data. Cassandra tuning ONE, QUORUM, and ALL is everyday quorum configuration.</p>
+          <p>In <strong>quorum replication</strong>, each key is stored on <code>N</code> nodes; a write must be acknowledged by <code>W</code> replicas and a read must consult <code>R</code> replicas before the client considers the operation complete. When <code>W + R &gt; N</code>, the read and write replica sets necessarily overlap, giving <em>strong eventual consistency</em> for single-writer timelines (DDIA Ch. 5; DeCandia et al., Dynamo). This is the core of leaderless designs: any replica may coordinate an operation—unlike Raft, where only the leader orders writes.</p>
+          <p>Cassandra exposes the knobs as consistency levels (<code>ONE</code>, <code>QUORUM</code>, <code>LOCAL_QUORUM</code>, <code>ALL</code>); DynamoDB and Riak inherited the same ideas with different defaults. Quorums do not invent linearisability under concurrent writers; they bound staleness and availability trade-offs operators can dial per query.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Strong consistency (all replicas must confirm) maximises durability but reduces availability — any single node failure makes writes impossible. Eventual consistency (write to one, propagate later) maximises availability but exposes stale reads. Quorums offer a spectrum between these extremes: by tuning W and R for a fixed N, operators can favour read performance (low R, high W), write performance (low W, high R), or balance both (W = R = (N+1)/2 for the majority quorum). The W + R &gt; N rule is what guarantees freshness when balance is chosen.</p>
+          <p>Requiring all <code>N</code> replicas for every write maximises durability but fails closed when any node is down. Writing to one replica alone maximises availability but lets readers see ancient values. Quorums sit between: tune toward write availability (<code>W=1</code>, <code>R=N</code>), read availability (<code>W=N</code>, <code>R=1</code>), or balanced latency (<code>W=R=⌊N/2⌋+1</code>). Dynamo additionally introduced <strong>sloppy quorums</strong> and <strong>hinted handoff</strong> so writes survive when the “home” replicas are unreachable—trading strict overlap for partition tolerance, with hints replayed when nodes recover.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -184,9 +183,12 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Cassandra consistency levels</strong> map directly to quorum concepts: <code>ONE</code> sets W=1 or R=1; <code>QUORUM</code> sets W or R to (N/2)+1; <code>ALL</code> requires all replicas. Cassandra additionally supports <code>LOCAL_QUORUM</code> which applies quorum within a single data centre only, avoiding cross-DC latency for writes while accepting cross-DC staleness until asynchronous replication catches up.</p>
-          <p><strong>Read repair</strong> happens in two modes: synchronous read repair (the coordinator waits for all R responses, upgrades stale replicas before returning to the client — increases latency but improves consistency) and background read repair (stale replicas are updated asynchronously after the response is sent). Cassandra uses a <code>read_repair_chance</code> setting to control background repair frequency.</p>
-          <p><strong>Anti-entropy</strong> (Merkle tree-based repair in Cassandra's <code>nodetool repair</code>) compares hash trees of data ranges between replicas. Differing subtrees identify divergent data without transmitting all data. Repair should be scheduled regularly (especially in write-heavy clusters) to prevent unbounded divergence.</p>
+          <p><strong>Pick <code>N</code> first.</strong> Replication factor defines fault tolerance: tolerate up to <code>N−W</code> write failures and <code>N−R</code> read failures while still completing operations. Document per-table or per-bucket policies—mixing <code>ONE</code> counters with <code>QUORUM</code> ledger rows in one cluster is common but must be intentional.</p>
+          <p><strong>Cassandra mapping:</strong> <code>QUORUM</code>≈majority of <code>N</code>; <code>LOCAL_QUORUM</code> limits quorum to the local datacenter—lower cross-DC write latency, eventual cross-DC visibility. <code>SERIAL</code>/<code>LOCAL_SERIAL</code> add lightweight transactions (Paxos rounds) when compare-and-set semantics are required atop quorums.</p>
+          <p><strong>Dynamo sloppy quorum:</strong> if preferred replicas are down, the coordinator may write to alternative nodes and store a <em>hint</em> for later delivery. Availability rises; during the hint window <code>W+R&gt;N</code> overlap may fail—design compensating reads and monitoring for hint backlog storms after large outages.</p>
+          <p><strong>Read repair &amp; anti-entropy:</strong> on read, coordinators compare versions (timestamps or version vectors—see <a href="vector-clocks.html">Vector Clocks</a>) and repair lagging replicas synchronously or in the background. Merkle-tree <code>repair</code> scans catch divergence missed by reads alone—schedule in write-heavy clusters.</p>
+          <p><strong>Contrast with Raft:</strong> Raft’s majority is a single leader’s commit barrier achieving consensus on a total order. Dynamo quorums are per-operation replica counts without a central serializer—simpler scale-out, weaker guarantees under concurrent writers. Use Raft/etcd when you need one agreed sequence; use quorums when AP tunability dominates.</p>
+          <p><strong>Testing:</strong> Jepsen histories of Cassandra and Riak illustrate stale reads, hinted-handoff races, and repair gaps—treat them as checklists for consistency-level choices.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -207,10 +209,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Cassandra with <code>LOCAL_QUORUM</code> reads and writes for a globally replicated user profile store accepting some cross-region staleness.</li>
-            <li>Amazon DynamoDB using sloppy quorums internally to maintain high write availability during AZ failures.</li>
-            <li>Riak using W=1/R=1 for highest throughput counters and W=3/R=3 for critical configuration data — same cluster, different consistency per bucket type.</li>
-            <li>Voting systems requiring quorum agreement before committing ballot records to prevent double-voting.</li>
+            <li><strong>Case study —</strong> Amazon Dynamo (2007 paper) pioneered <code>W</code>/<code>R</code>/<code>N</code>, vector clocks, sloppy quorums, and hinted handoff for shopping-cart scale.</li>
+            <li><strong>Case study —</strong> Apache Cassandra clusters commonly run <code>LOCAL_QUORUM</code> for regional user profiles and <code>ONE</code> for high-volume telemetry—same ring, different consistency per table.</li>
+            <li><strong>Case study —</strong> DynamoDB’s regional replication and quorum writes underpin high write availability across AZ failure domains (public architecture descriptions align with Dynamo lineage).</li>
+            <li><strong>Illustrative scenario —</strong> A session store tolerates <code>ONE</code> reads for flash traffic but uses <code>QUORUM</code> when loading account recovery tokens.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -222,9 +224,11 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" rel="noopener noreferrer" target="_blank">Dynamo: Amazon's Highly Available Key-value Store</a> — introduced sloppy quorums and hinted handoff to the mainstream.</li>
-            <li><a href="https://cassandra.apache.org/doc/latest/cassandra/architecture/dynamo.html" rel="noopener noreferrer" target="_blank">Cassandra Architecture: Dynamo</a> — Cassandra's consistency level documentation.</li>
-            <li><a href="https://en.wikipedia.org/wiki/Quorum_(distributed_computing)" rel="noopener noreferrer" target="_blank">Quorum (distributed computing) — Wikipedia</a> — formal quorum read/write rules and majority voting.</li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> — leaderless replication, quorums, and version clocks (Ch. 5).</li>
+            <li><a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" rel="noopener noreferrer" target="_blank">Dynamo: Amazon's Highly Available Key-value Store</a> — <code>N</code>/<code>R</code>/<code>W</code>, sloppy quorums, hinted handoff.</li>
+            <li><a href="https://cassandra.apache.org/doc/latest/cassandra/architecture/dynamo.html" rel="noopener noreferrer" target="_blank">Cassandra Architecture: Dynamo</a> — consistency levels and repair.</li>
+            <li><a href="https://raft.github.io/raft.pdf" rel="noopener noreferrer" target="_blank">Raft paper</a> — majority commit quorums in leader-based consensus (contrast with Dynamo-style tunable quorums).</li>
+            <li><a href="https://aphyr.com/tags/jepsen" rel="noopener noreferrer" target="_blank">Jepsen</a> — quorum and hinting behaviour under partition in Cassandra-class systems.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Distributed Locking — SA References</title>
-  <meta name="description" content="Why distributed locking is hard, Redis Redlock and its criticism, ZooKeeper-based locking, fencing tokens, and when optimistic concurrency is a better choice.">
+  <meta name="description" content="Distributed locks, efficiency versus correctness, Redlock limits, Raft-backed etcd/ZooKeeper locks, and fencing tokens from DDIA and Kleppmann.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,31 +96,30 @@
             <span class="badge badge--muted">Coordination</span>
           </div>
           <h1 class="article-header__title">Distributed Locking</h1>
-          <p class="article-header__desc">Mutual exclusion across distributed nodes — why it is fundamentally harder than single-process locking, the Redis Redlock controversy, ZooKeeper-based alternatives, and fencing tokens as a correctness backstop.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">Mutual exclusion across processes and hosts—why TTL locks are not enough for correctness, the Redis Redlock debate, consensus-backed locks, and fencing tokens per DDIA.</p>
+          <div class="article-header__meta"><span>⏱ 13 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-
-          <p>A distributed lock lets only one worker mutate a shared resource at a time across a cluster. Redis SET NX or ZooKeeper ephemeral nodes are common implementations. Pair locks with fencing tokens so stale holders cannot write after expiry.</p>
+          <p>A <strong>distributed lock</strong> is a mutual-exclusion primitive that only one client in a cluster may hold at a time, usually implemented as a key in Redis, a sequential ephemeral znode in ZooKeeper, or a lease record in etcd. Unlike an in-process mutex, lock ownership is inferred over the network: acquirers compete with timeouts, retries, and (hopefully) explicit release. Kleppmann’s <a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="noopener noreferrer" target="_blank">distributed locking essay</a> and DDIA (Ch. 8–9) stress that a lock is only safe when <em>both</em> the lock service and the guarded resource cooperate—especially via monotonic <strong>fencing tokens</strong> that block writes from clients whose lease expired while they were paused.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Distributed systems frequently need to ensure that only one node performs a task at a given time: generating unique identifiers, updating a shared external resource, running a periodic job, or serving as a primary. A single-node mutex is invisible to other processes on other machines. Distributed locking provides a cross-process critical section, but the distributed context introduces hazards that have no equivalent in single-process programming.</p>
+          <p>Applications need cross-host exclusion for leader election, deduplicated cron, serializing access to legacy APIs, or guarding non-transactional side effects. A local <code>synchronized</code> block cannot see peers. Distributed locks approximate a critical section, but wall-clock TTLs, GC pauses, and partitions break the analogy to local mutexes: two holders can be active concurrently unless the system design acknowledges asynchronous failure detection.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Ensuring that a scheduled job runs on exactly one node.</li>
-            <li>Preventing concurrent writes to an external system that has no built-in concurrency control.</li>
-            <li>Coordinating access to a shared resource that cannot use optimistic concurrency (e.g., a non-transactional external API).</li>
-            <li>Leader election where you need a lightweight approach without a full consensus protocol.</li>
+            <li><strong>Efficiency locks</strong>: duplicate work is wasteful but idempotent (metrics rollups, cache warming)—a simple Redis lease may suffice.</li>
+            <li>The guarded resource is external and lacks compare-and-set, transactions, or versioning.</li>
+            <li>Consensus-backed coordination (etcd, ZooKeeper) is already on the critical path for other cluster metadata.</li>
+            <li>You implement fencing at the storage or API layer and treat the lock service as a token issuer, not the sole safety barrier.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>The target resource supports conditional writes (compare-and-swap, optimistic locking via ETags or version numbers) — prefer that approach as it avoids the distributed lock complexity entirely.</li>
-            <li>Correctness guarantees are critical and clock drift or GC pauses could expire the lock while the holder is still executing — use fencing tokens + storage guard rails instead.</li>
-            <li>High contention scenarios where many clients compete for the same lock, degrading throughput.</li>
+            <li>The database or object store supports conditional writes, unique constraints, or serialisable transactions—prefer optimistic concurrency (DDIA’s default recommendation).</li>
+            <li>You need a correctness lock over mutable shared state but cannot enforce fencing tokens downstream—Redlock/TTL-only designs remain unsafe under pause and clock skew.</li>
+            <li>Many clients fight for one lock name; queueing or sharding work removes the choke point.</li>
+            <li>You are tempted to implement Paxos/Raft yourself just for locking—use an existing consensus service instead.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -187,10 +186,12 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Redis single-node lock:</strong> use <code>SET key value NX PX ttl</code> for atomic acquire. For release, use a Lua script to atomically check the value and delete — never use a plain DEL as it may delete another client's lock. Set the TTL conservatively: long enough for the critical section to complete, short enough to recover quickly if the holder crashes. This approach is sufficient for "efficiency locks" where occasional duplicate execution is tolerable.</p>
-          <p><strong>Redis Redlock</strong> (acquiring a lock across N independent Redis nodes) was proposed by Redis's author as a stronger algorithm. However, Martin Kleppmann's critique demonstrated that Redlock can fail under clock jumps and GC pauses in ways that single-node Redis cannot prevent. The Redis author responded, and the debate continues. The consensus in the distributed systems community: use Redlock only as an efficiency lock, never as a correctness lock.</p>
-          <p><strong>ZooKeeper / etcd locking:</strong> these systems are backed by consensus algorithms (ZAB, Raft), making their locks strongly consistent. etcd provides a transaction API (<code>Txn</code>) with compare-and-set semantics. ZooKeeper provides sequential ephemeral znodes. Both are more operationally complex than Redis but correct for critical sections where safety matters more than performance.</p>
-          <p><strong>Fencing tokens</strong> are the ultimate correctness backstop: regardless of which lock backend you use, if the guarded resource can validate a monotonically increasing token, you get safety even if the lock expires before the holder realises it. This requires storage-layer support (a simple <code>IF fence_token &gt; last_seen_fence THEN accept</code> check).</p>
+          <p><strong>Classify the lock.</strong> DDIA and Kleppmann distinguish <em>efficiency</em> locks (occasional overlap is tolerable) from <em>correctness</em> locks (overlap corrupts data). Only the latter demands consensus or fencing.</p>
+          <p><strong>Redis single-node:</strong> acquire with <code>SET key unique-token NX PX ttl</code>; release with a Lua script that deletes only when <code>GET key == unique-token</code>. Extend TTL with the same token check if critical sections can overrun. Without fencing, treat this as best-effort exclusion.</p>
+          <p><strong>Redlock</strong> (multi-master Redis) attempts quorum acquisition across independent nodes. Kleppmann showed overlapping holders remain possible when processes pause longer than TTL or clocks step. Salvador Valverde’s responses and follow-on Jepsen tests of Redis clients reinforce: Redlock does not create a linearisable lock, only a probabilistic one. Use it when wasting work is acceptable, not when protecting financial balances or inventory.</p>
+          <p><strong>Consensus locks (ZooKeeper, etcd):</strong> locks inherit Raft/ZAB safety—sessions, ephemeral nodes, or lease records tie ownership to cluster-visible state. Latency is higher than Redis; correctness for metadata and small critical sections is the payoff. etcd’s concurrency API combines lease TTL with transactional compare—closer to the “lock as token issuer” model.</p>
+          <p><strong>Fencing tokens:</strong> the lock service returns an ever-increasing number (Chubby-style). Every write to the guarded resource carries the token; storage rejects stale tokens even if the client still holds an expired Redis key. This is the pattern DDIA documents for making lease-based leadership safe on shared disks or databases.</p>
+          <p><strong>Testing:</strong> Jepsen’s histories simulate clock skew, process pause, and partition between lock clients and servers—use them as acceptance criteria before trusting a new lock integration.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -213,10 +214,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Distributed cron: ensuring a background job (e.g., sending daily digests) runs on exactly one application instance.</li>
-            <li>Exclusive access to a legacy external system with no built-in locking support.</li>
-            <li>Preventing duplicate payment processing in an idempotent payment gateway wrapper.</li>
-            <li>Kubernetes controller leader election via Lease API (backed by etcd consensus).</li>
+            <li><strong>Illustrative scenario —</strong> A Redis lease ensures only one app replica sends hourly email digests; occasional duplicate sends are acceptable.</li>
+            <li><strong>Case study —</strong> Google Chubby (described in the Chubby paper and DDIA) issues lock handles with fencing tokens consumed by Bigtable and other services.</li>
+            <li><strong>Case study —</strong> Kubernetes Lease API provides etcd-backed leader election for controllers—consensus locking rather than cache TTL.</li>
+            <li><strong>Illustrative scenario —</strong> Payment capture uses a database unique constraint on idempotency keys instead of a distributed lock, following Kleppmann’s preference for conditional writes where possible.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -228,9 +229,11 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="noopener noreferrer" target="_blank">How to Do Distributed Locking — Martin Kleppmann</a> — the essential read on Redlock's limitations and fencing tokens.</li>
-            <li><a href="https://redis.io/docs/manual/patterns/distributed-locks/" rel="noopener noreferrer" target="_blank">Distributed Locks with Redis (Redlock) — Redis Documentation</a> — the official Redlock specification.</li>
-            <li><a href="https://etcd.io/docs/v3.5/dev-guide/api_concurrency_reference_v3/" rel="noopener noreferrer" target="_blank">etcd Concurrency API Reference</a> — etcd lease and lock primitives.</li>
+            <li><a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="noopener noreferrer" target="_blank">How to Do Distributed Locking — Martin Kleppmann</a> — Redlock critique and fencing-token pattern.</li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> — transactions, mistakes and remedies, fault-tolerant leadership (Ch. 7–9).</li>
+            <li><a href="https://redis.io/docs/manual/patterns/distributed-locks/" rel="noopener noreferrer" target="_blank">Distributed Locks with Redis (Redlock)</a> — official algorithm; read alongside Kleppmann.</li>
+            <li><a href="https://etcd.io/docs/v3.5/dev-guide/api_concurrency_reference_v3/" rel="noopener noreferrer" target="_blank">etcd Concurrency API Reference</a> — leases and locks on Raft.</li>
+            <li><a href="https://aphyr.com/tags/jepsen" rel="noopener noreferrer" target="_blank">Jepsen — distributed systems safety analyses</a> — Redis, etcd, and coordination stores under partition.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
