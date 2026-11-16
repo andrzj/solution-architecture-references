@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sync Engine Design — SA References</title>
-  <meta name="description" content="Conflict-free replicated data types (CRDTs), last-write-wins, and operational transforms.">
+  <meta name="description" content="Designing a mobile sync engine: outbox queues, delta fetch, version vectors, conflict resolution (LWW, CRDT, server authority), and resilient retries on unreliable networks.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,93 +99,146 @@
             <span class="badge badge--primary">Mobile Architecture</span>
           </div>
           <h1 class="article-header__title">Sync Engine Design</h1>
-          <p class="article-header__desc">Conflict-free replicated data types (CRDTs), last-write-wins, and operational transforms.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">How to reconcile local mobile data with server truth using outbox queues, versioning, merge policies, and user-visible conflict handling— the technical core of offline-first apps.</p>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A <strong>sync engine</strong> reconciles local mobile data with server truth: upload queue, conflict detection, merge policies (last-write-wins, CRDT, operational transform), and backoff on poor networks.</p>
-          <p>It is the backbone of <a href="offline-first.html">offline-first</a> apps.</p>
+          <p>A <strong>sync engine</strong> is the client-side subsystem that moves data between a local store and a remote source of truth: enqueueing mutations made offline, downloading deltas since a cursor, detecting conflicts, applying merge rules, and surfacing cases that need human resolution. It sits behind the repository layer in <a href="offline-first.html">offline-first</a> architectures and hides network timing from the UI.</p>
+          <p>Merge policies range from simple last-write-wins (LWW) on scalar fields to server-authoritative merges, vector clocks, CRDTs for commutative structures, and operational transforms for ordered collaborative text. The right policy depends on domain semantics—not every field can tolerate silent overwrites.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Mobile networks are unreliable; users expect edits made offline to appear later without duplication or loss.</p>
-          <p>Naive timestamp sync fails across time zones and clock skew.</p>
+          <p>Mobile networks drop, lag, and switch interfaces without warning. Users expect edits made in airplane mode to appear on other devices later—without duplicates, silent data loss, or unexplained rollbacks. A dedicated sync layer turns "retry until success" into a structured protocol with versions, idempotency, and observable sync status.</p>
+          <p>Naive approaches—compare client timestamps, overwrite server rows, or re-fetch entire tables—fail under clock skew, multi-device edits, and partial failures. Sync engines make trade-offs explicit: what merges automatically, what blocks until the user chooses, and what the server always wins.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Field apps, messaging, notes, and any CRUD offline.</li>
-            <li>Collaborative editing needing merge semantics.</li>
+            <li>Field, retail, or logistics apps where staff work offline for long stretches.</li>
+            <li>Notes, tasks, and personal productivity data that must sync across phone, tablet, and web.</li>
+            <li>CRUD domains with moderate write rates and clear per-entity ownership.</li>
+            <li>Collaborative data where automatic merge is possible (counters, sets) or conflict UI is acceptable.</li>
+            <li>When product requirements include "syncing…" indicators, manual retry, or per-item sync errors.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Read-only apps with cache — simple HTTP cache may suffice.</li>
+            <li><strong>Read-mostly catalogue apps:</strong> HTTP cache plus periodic full refresh may be enough; avoid outbox complexity until users must edit offline.</li>
+            <li><strong>Strong global consistency:</strong> Financial ledger or inventory locks often need online server validation; optimistic local commits without reconciliation rules are unsafe.</li>
+            <li><strong>Real-time multiplayer state:</strong> Sub-second shared state usually needs a dedicated realtime channel (WebSocket, game server), not batch sync alone.</li>
+            <li><strong>Binary-heavy media:</strong> Large video or RAW photo uploads belong in resumable object-storage APIs with background URL sessions, not row-by-row outbox tables.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Local writes are append-only operations in an outbox; a worker pushes them upstream while a pull channel applies server deltas and triggers merge logic.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    write["Local write"]
-    outbox["Outbox table&lt;br/&gt;pending ops"]
-    worker["Sync worker"]
-    server["Server applies op"]
-    write --> outbox --> worker --> server</div>
+    write["Local mutation"]
+    outbox["Outbox / change log"]
+    pull["Delta fetch&lt;br/&gt;since cursor"]
+    merge["Merge layer"]
+    api["Sync API"]
+    write --> outbox
+    outbox --> api
+    pull --> api
+    api --> merge
+    merge --> write</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>SYNC QUEUE
+              <pre class="architecture-diagram__canvas"><code>SYNC ENGINE PIPELINE
 ────────────────────────────────────────────
-  Local write → outbox table
-        ▼
-  Background worker uploads
-        ▼
-  Server version / vector clock
-        ▼
-  Merge or surface conflict UI</code></pre>
+  UI → Repository → Local DB (optimistic write)
+                         │
+                    Outbox row (op id, entity id, payload, version)
+                         │
+  Sync worker (WorkManager / BGTask / foreground coordinator)
+     ├─ PUSH: POST /changes (idempotency-key = op id)
+     └─ PULL: GET /changes?since=cursor → apply merges
+
+  Per entity:
+     server_version / vector clock
+     tombstones for deletes (never rely on absence alone)
+
+  Outcomes:
+     ACK → remove outbox row, bump local version
+     CONFLICT → merge policy or user resolution queue
+     RETRY → exponential backoff + jitter
+</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Sync queue: local writes enqueue outbox operations a worker replays to the server when connectivity returns.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Sync engine: outbox pushes local ops upstream; delta pull applies server changes through a merge layer before updating the local store.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Resilient UX on flaky networks.</li>
-            <li>Structured path to offline-first.</li>
+                <li>Predictable offline UX: the UI reads local data immediately while sync status is explicit.</li>
+                <li>Idempotent, queued uploads survive process death and flaky networks.</li>
+                <li>Delta sync reduces bandwidth versus full-table refresh.</li>
+                <li>Clear extension point for analytics (queue depth, conflict rate, time-to-sync).</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Conflict UI is hard to design.</li>
-            <li>CRDT complexity for rich text.</li>
+                <li>Merge semantics and conflict UI are product decisions—engineering cannot hide ambiguity in shared fields.</li>
+                <li>CRDTs and OT add substantial complexity for rich text and ordered lists.</li>
+                <li>Dual-write bugs between outbox and main tables cause subtle duplication if transactions are not atomic.</li>
+                <li>Server must expose versioned, idempotent change APIs—sync is a cross-team contract, not only mobile work.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use monotonic server versions or logical clocks per entity. Idempotent upload APIs with client-generated IDs.</p>
-          <p>Surface conflicts only when automatic merge cannot proceed.</p>
+          <p><strong>Outbox pattern:</strong> Wrap local business writes and outbox inserts in a single database transaction. Each operation gets a stable client-generated ID used as the HTTP idempotency key. Store operation type (create/update/delete), entity type, payload snapshot, and optional dependency ordering (parent before child).</p>
+          <p><strong>Versioning:</strong> Prefer monotonic server-assigned versions or per-replica vector clocks over device timestamps for conflict detection. For LWW, scope wins per field or per document—not globally per table—so unrelated fields on the same record do not clobber each other.</p>
+          <p><strong>Pull cursors:</strong> Persist the last successfully applied change cursor per collection. After push ACK, run pull to absorb concurrent edits from other devices before declaring the entity clean. Use tombstones or soft-delete flags so deletes propagate and resurrected rows do not reappear.</p>
+          <p><strong>Backoff and fairness:</strong> Exponential backoff with jitter on 5xx and network errors; cap retries and surface a user-visible "sync failed" with manual retry. Pause or throttle sync on low battery, data-saver mode, and metered networks—expose toggles in settings for power users.</p>
+          <p><strong>When to reach for CRDTs:</strong> Use CRDT structures (G-Counter, OR-Set, LWW-Register) when commutative merges are provably correct. For linear collaborative text, OT or CRDT text types are warranted; for simple task titles, field-level LWW plus audit log is usually enough.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Duplicate creates:</strong> Retry without idempotency key — server sees two records.</li>
-            <li><strong>Infinite sync loop:</strong> Bad merge re-triggers upload — cap retries and alert.</li>
+            <li><strong>Duplicate creates on retry:</strong> Missing idempotency key causes two server rows for one user action.</li>
+            <li><strong>Lost deletes:</strong> Hard-delete locally without tombstone; another device or a stale pull resurrects the record.</li>
+            <li><strong>Sync loops:</strong> Merge produces a diff that re-enqueues upload; missing convergence check or version comparison.</li>
+            <li><strong>Clock-skew LWW:</strong> Device time wrong → wrong winner; server clock or logical versioning avoids this.</li>
+            <li><strong>Full-table pull after push:</strong> O(n) downloads erase battery and obscure incremental errors.</li>
+            <li><strong>Blocking UI on sync:</strong> Awaiting network in the repository blocks reads; UI should always observe local state first.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are all mutations idempotent server-side?</li>
-            <li>Is there a user-visible conflict resolution path?</li>
-            <li>Does sync pause on low battery / data saver?</li>
+            <li>Are all server mutation endpoints idempotent with respect to client operation IDs?</li>
+            <li>Is every automatic merge rule documented per entity and field?</li>
+            <li>Is there a user-facing path when automatic merge cannot proceed?</li>
+            <li>Are outbox writes transactional with the domain tables they represent?</li>
+            <li>Do pull and push share a single versioning model the backend team owns?</li>
+            <li>Does sync respect battery, metered network, and lifecycle pause hooks?</li>
+            <li>Are delete, conflict, and retry metrics visible in observability dashboards?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Field CRM:</strong> SQLite outbox; LWW per field with audit log; sync over MQTT with QoS1.</li>
+            <li><strong>Illustrative scenario — field CRM:</strong> SQLite outbox for visit notes and status updates; LWW on status with server audit log; MQTT or HTTPS push with pull-on-reconnect for rural connectivity.</li>
+            <li><strong>Illustrative scenario — shared task list:</strong> OR-Set for assignees, LWW for title and due date; conflict badge when two users edit the same field offline.</li>
+            <li><strong>Case study — local-first research:</strong> The <a href="https://www.inkandswitch.com/local-first/" target="_blank" rel="noopener noreferrer">local-first</a> community documents merge and ownership patterns that influenced products such as collaborative notebooks and design tools—useful reference when choosing CRDT vs server authority.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="offline-first.html">Offline-First Architecture</a> — Overall offline model.</li>
-            <li><a href="mobile-api-design.html">Mobile API Design</a> — APIs for sync.</li>
-            <li><a href="../foundations/idempotency.html">Idempotency</a> — Safe retries.</li>
+            <li><a href="offline-first.html">Offline-First Design</a> — Repository and local-first UX that the sync engine implements.</li>
+            <li><a href="app-lifecycle.html">App Lifecycle Management</a> — When to flush outbox and pause workers on background.</li>
+            <li><a href="mobile-api-design.html">Mobile API Design</a> — Delta payloads, versioning headers, and BFF aggregation for sync endpoints.</li>
+            <li><a href="../foundations/idempotency.html">Idempotency</a> — Foundation for safe upload retries.</li>
+            <li><a href="../architecture-styles/event-sourcing.html">Event Sourcing</a> — Server-side change logs that pair naturally with client outboxes.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.inkandswitch.com/local-first/" target="_blank" rel="noopener noreferrer">Local-First Software</a></li>
-            <li><a href="https://crdt.tech/" target="_blank" rel="noopener noreferrer">CRDT.tech</a></li>
-            <li><a href="https://developer.android.com/topic/architecture" target="_blank" rel="noopener noreferrer">Android app architecture guide</a></li>
+            <li><a href="https://www.inkandswitch.com/local-first/" target="_blank" rel="noopener noreferrer">Local-First Software — Ink &amp; Switch</a></li>
+            <li><a href="https://crdt.tech/" target="_blank" rel="noopener noreferrer">CRDT.tech — Conflict-free Replicated Data Types</a></li>
+            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/change-data-capture.html" target="_blank" rel="noopener noreferrer">Change Data Capture — Martin Fowler</a></li>
+            <li><a href="https://developer.android.com/topic/architecture/data-layer/offline-first" target="_blank" rel="noopener noreferrer">Build an offline-first app — Android Developers</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">

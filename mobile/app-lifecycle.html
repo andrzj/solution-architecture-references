@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>App Lifecycle Management — SA References</title>
-  <meta name="description" content="Foreground/background state management, background tasks, and memory pressure handling.">
+  <meta name="description" content="Managing mobile app lifecycle: foreground and background transitions, state persistence, OS-imposed execution limits, background tasks, and graceful recovery after process death.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,98 +99,145 @@
             <span class="badge badge--primary">Mobile Architecture</span>
           </div>
           <h1 class="article-header__title">App Lifecycle Management</h1>
-          <p class="article-header__desc">Foreground/background state management, background tasks, and memory pressure handling.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">How to design apps that survive foreground/background transitions, OS suspension and termination, memory pressure, and platform-specific background execution limits without losing user work.</p>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Background execution limits differ: iOS is strict (BGTaskScheduler, push-driven refresh); Android offers WorkManager, foreground services, and doze mode constraints.</p>
+          <p><strong>App lifecycle management</strong> is how a mobile application responds to operating-system events: moving between foreground and background, being suspended or killed under memory pressure, and waking for background tasks, push payloads, or deep links. Architecture here covers what state to persist, when to flush data, and which platform APIs are allowed for work that continues after the user leaves the screen.</p>
+          <p>iOS (UIKit/SwiftUI <code>scenePhase</code>, <code>BGTaskScheduler</code>) and Android (Activity/Fragment lifecycle, <code>ProcessLifecycleOwner</code>, WorkManager, foreground services) expose different callbacks and stricter background limits. A sound design maps domain state to durable storage and keeps UI state reconstructable after process death—not merely pausable in RAM.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Users switch apps constantly; mishandled background transitions lose form input and break payments.</p>
-          <p>OS kills memory-heavy background apps; architecture must restore gracefully.</p>
+          <p>Mobile users context-switch constantly: messages, camera, phone calls, and multitasking mean your app may leave the foreground dozens of times per session. If drafts, carts, or in-progress workflows live only in memory, a single OS kill restores an empty screen and erodes trust.</p>
+          <p>Operating systems aggressively reclaim resources. Background apps face suspension, CPU throttling, and termination without warning. Battery and privacy policies further cap how long code may run when the user is not looking at the app. Lifecycle-aware architecture aligns product behaviour with these constraints instead of fighting them.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Apps with long forms, media playback, or location tracking.</li>
-            <li>Sync engines that must flush queues on background.</li>
-            <li>Push notification handlers that update UI state.</li>
+            <li>Multi-step flows (checkout, onboarding, forms) where partial progress must survive backgrounding and process death.</li>
+            <li>Media, navigation, or fitness apps that need foreground services or audio session continuity on Android and iOS respectively.</li>
+            <li>Apps with <a href="sync-engine.html">sync engines</a> that must enqueue or flush outbox rows when entering background.</li>
+            <li>Push-driven or deep-link entry where the app cold-starts into a specific screen with restored session context.</li>
+            <li>Any app targeting older or low-memory devices where the OS kills background processes frequently.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Relying on infinite background execution — will be throttled.</li>
+            <li><strong>Always-on background polling:</strong> Periodic timers in background violate platform guidance and drain battery; use push, <code>BGAppRefreshTask</code>, or WorkManager with constraints instead.</li>
+            <li><strong>Duplicating OS state in custom globals:</strong> Reimplementing lifecycle in singletons bypasses configuration-change and process-death handling already provided by ViewModel, <code>SavedStateHandle</code>, and SwiftUI state restoration.</li>
+            <li><strong>Foreground service for non-user-visible work:</strong> Misclassified foreground services risk Play policy violations and user uninstalls.</li>
+            <li><strong>Assuming <code>onPause</code> means "app is gone forever":</strong> Fast app switching causes rapid foreground/background churn; idempotent save logic must tolerate duplicate calls.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The UI observes lifecycle-aware presenters; on background transitions, critical state is written to local storage while deferrable work is handed to OS-scheduled workers.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">stateDiagram-v2
-    [*] --> Foreground
-    Foreground --> Background: user leaves app
-    Background --> Foreground: resume
-    Background --> Suspended: OS reclaim
-    Suspended --> Background: relaunch
-    Foreground --> Terminated: kill
-    Background --> Terminated: low memory</div>
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    ui["UI / Compose / SwiftUI"]
+    vm["ViewModel + saved state"]
+    persist["Local DB / DataStore / files"]
+    lifecycle["Lifecycle observer"]
+    worker["Background worker&lt;br/&gt;WorkManager / BGTask"]
+    ui --> vm
+    lifecycle --> vm
+    vm --> persist
+    lifecycle --> worker
+    worker --> persist</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>LIFECYCLE STATE MACHINE (simplified)
+              <pre class="architecture-diagram__canvas"><code>LIFECYCLE-AWARE ARCHITECTURE
 ────────────────────────────────────────────
-  Foreground active
-        │ user leaves
-        ▼
-  Background (save state)
-        │ OS suspends
-        ▼
-  Suspended / cached
-        │ memory pressure
-        ▼
-  Terminated → cold start restore</code></pre>
+  UI observes ViewModel / presenter (survives rotation)
+        │
+  Lifecycle observer (ON_STOP / scenePhase .background)
+        ├─► Flush draft + navigation args → Local DB / SavedState
+        └─► Schedule sync flush → WorkManager / BGTaskScheduler
+
+  Process killed → cold start
+        └─► Restore from local store + saved state handle
+
+ANDROID CALLBACKS (simplified)
+──────────────────────────────
+  onStart / onResume   → subscribe sensors, resume UI timers
+  onStop / onDestroy   → persist; cancel UI-bound work
+  onTrimMemory         → drop caches by severity level
+
+iOS scenePhase
+──────────────
+  active → inactive → background → (suspended)
+  Persist on background; use BGProcessingTask for heavy deferred work
+</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Mobile lifecycle states: foreground and background transitions lead to suspension or termination under OS resource pressure.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Lifecycle flow: UI-bound state lives in ViewModels; background transitions trigger persistence and OS-approved background workers.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Better UX on resume.</li>
-            <li>Battery and memory compliance with OS rules.</li>
+                <li>Users resume where they left off after interruptions, improving completion rates for long flows.</li>
+                <li>Cooperating with OS power rules reduces battery complaints and store-policy risk.</li>
+                <li>Explicit persistence boundaries simplify testing and crash recovery.</li>
+                <li>Background workers consolidate deferrable sync and upload work with retry semantics.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Platform differences complicate shared Kotlin/Swift code.</li>
-            <li>Easy to mishandle race on fast app switching.</li>
+                <li>Dual-platform lifecycle APIs increase shared-code complexity for Kotlin Multiplatform or cross-platform frameworks.</li>
+                <li>Over-eager persistence on every <code>onStop</code> can waste I/O and drain battery if not debounced.</li>
+                <li>Foreground services and location modes require careful UX disclosure and maintenance across OS versions.</li>
+                <li>Rapid switchers expose race conditions between in-flight network calls and saved snapshots.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Persist critical UI state to disk on <code>onStop</code>/<code>scenePhase</code> background. Defer heavy work to WorkManager/BGTask.</p>
-          <p>Test lifecycle with instrumented tests simulating rotation and background.</p>
+          <p><strong>Persist early, restore cheaply:</strong> On Android, combine <code>SavedStateHandle</code> for small navigation args with Room or DataStore for durable drafts. On iOS, use SwiftData/Core Data for drafts and <code>@SceneStorage</code> only for lightweight, non-sensitive UI restoration. Target completing critical writes within a few hundred milliseconds of the background transition—long synchronous disk work on the main thread causes jank and ANRs on resume.</p>
+          <p><strong>Background execution:</strong> Use WorkManager with network and battery constraints for upload retries on Android. On iOS, register <code>BGAppRefreshTask</code> for short refresh windows and <code>BGProcessingTask</code> for longer work; silent push can nudge sync but is throttled and not guaranteed. Never rely on a fixed timer firing in background on either platform.</p>
+          <p><strong>Process death testing:</strong> Enable "Don't keep activities" in Android developer options; use Xcode's "Simulate memory warning" and terminate the app from the debugger. Verify cold start restores the same screen and data users expect—not a generic home reset.</p>
+          <p><strong>Configuration changes:</strong> Retain ViewModels across rotation; release camera, location, and sensor listeners in <code>onStop</code> / <code>scenePhase</code> inactive unless a foreground service or active navigation session requires them.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Lost checkout state:</strong> No save on background — use local DB or saved state handle.</li>
-            <li><strong>Background ANR:</strong> Long work on main thread during resume.</li>
+            <li><strong>Checkout or form loss:</strong> In-memory cart or wizard state with no flush on <code>onStop</code> / background phase—users return to an empty flow after a phone call.</li>
+            <li><strong>Resume ANR:</strong> Reloading large datasets or running migrations on the main thread in <code>onResume</code> blocks input for seconds.</li>
+            <li><strong>Stale token after long background:</strong> Session expired while suspended; resume attempts API calls without refresh and shows opaque errors.</li>
+            <li><strong>Duplicate sync:</strong> Both lifecycle callback and push handler trigger the same flush without idempotency, causing double uploads.</li>
+            <li><strong>Leaked location:</strong> Fused location client or <code>CLLocationManager</code> left running after the user backgrounds a non-navigation screen.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is user data saved within 200ms of background transition?</li>
-            <li>Are background tasks using approved APIs per platform?</li>
+            <li>Is every multi-step flow restorable after process death without server round-trips for draft data?</li>
+            <li>Are background tasks scheduled only through WorkManager, BGTaskScheduler, or approved foreground-service types?</li>
+            <li>Does the app release expensive resources (camera, GPS, audio) when not in foreground-active state?</li>
+            <li>Are lifecycle edge cases covered in instrumented tests (rotation, background, kill, deep link)?</li>
+            <li>Is session refresh handled on resume when the app was backgrounded longer than token TTL?</li>
+            <li>Do sync flushes on background use the same idempotent outbox semantics as foreground sync?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Ride app:</strong> Trip state in Room/SwiftData; location via foreground service only during active ride.</li>
+            <li><strong>Illustrative scenario — retail checkout:</strong> Cart and address steps persist to local DB on background; payment step revalidates inventory on resume; abandoned carts trigger a push deep link that cold-starts into the cart screen with restored state.</li>
+            <li><strong>Illustrative scenario — active navigation:</strong> Turn-by-turn uses a foreground service (Android) or active navigation mode (iOS) only while guidance runs; waypoints sync via WorkManager when the trip ends.</li>
+            <li><strong>Case study — music streaming:</strong> Major streaming apps use platform audio session APIs and background modes so playback continues under lock screen while UI state is rebuilt from local queue metadata on relaunch.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="sync-engine.html">Sync Engine Design</a> — Flush on background.</li>
-            <li><a href="mobile-performance.html">Mobile Performance</a> — Memory under pressure.</li>
-            <li><a href="push-notifications.html">Push Notifications</a> — Background wake patterns.</li>
+            <li><a href="sync-engine.html">Sync Engine Design</a> — Outbox flush and pause policies tie directly to lifecycle events.</li>
+            <li><a href="mobile-performance.html">Mobile Performance</a> — <code>onTrimMemory</code> cache eviction and main-thread discipline on resume.</li>
+            <li><a href="push-notifications.html">Push Notifications</a> — Silent push and notification taps as alternate entry paths into lifecycle handlers.</li>
+            <li><a href="offline-first.html">Offline-First Design</a> — Local-first storage makes lifecycle persistence the default data path.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://developer.android.com/guide/components/activities/activity-lifecycle" target="_blank" rel="noopener noreferrer">Android Activity Lifecycle</a></li>
-            <li><a href="https://developer.apple.com/documentation/uikit/app_and_environment/managing_your_app_s_life_cycle" target="_blank" rel="noopener noreferrer">UIKit App Life Cycle</a></li>
-            <li><a href="https://developer.android.com/topic/architecture" target="_blank" rel="noopener noreferrer">Android app architecture guide</a></li>
+            <li><a href="https://developer.android.com/guide/components/activities/activity-lifecycle" target="_blank" rel="noopener noreferrer">Understand the Activity lifecycle — Android Developers</a></li>
+            <li><a href="https://developer.android.com/topic/libraries/architecture/lifecycle" target="_blank" rel="noopener noreferrer">Handling lifecycles with lifecycle-aware components — Android Developers</a></li>
+            <li><a href="https://developer.apple.com/documentation/uikit/app_and_environment/managing_your_app_s_life_cycle" target="_blank" rel="noopener noreferrer">Managing your app's life cycle — Apple Developer</a></li>
+            <li><a href="https://developer.apple.com/documentation/backgroundtasks" target="_blank" rel="noopener noreferrer">Background Tasks framework — Apple Developer</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
