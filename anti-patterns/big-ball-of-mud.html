@@ -102,11 +102,14 @@
           <p>A <strong>Big Ball of Mud</strong> is a system with no enforceable structure: modules call modules in every direction, domain rules live wherever the last sprint left them, and the only way to predict behavior is to trace code by hand. Foote and Yoder gave the pattern its name and argued that such systems are common in practice because organizational pressure rewards shipping today over shaping structure for tomorrow.</p>
           <p>In a typical legacy field-dispatch codebase, dispatch consoles, driver mobile clients, partner webhooks, and nightly reporting compile into overlapping assemblies. Route assignment, SLA timers, geofence exceptions, and billing adjustments share static helpers and a single relational schema with decades of migration history. Controllers, “manager” classes, and database triggers each re-implement pieces of the same dispatch rules, so no layer is authoritative.</p>
           <p>Tests exist but rarely isolate a module; they boot half the application and depend on shared database fixtures. That is the signature of the anti-pattern: not messy formatting, but the absence of seams where you can change one concern without dragging the rest of the hairball with you.</p>
+          <p>Shared tables and static singletons mean side effects travel invisibly: a billing flag flipped during webhook retry can change what the dispatcher console shows without any single component claiming ownership. The only reliable mental model is transitive dependency tracing, which grows exponentially as hubs, carriers, and regulatory checks accumulate.</p>
+          <p>These systems are rarely built by engineers who ignored architecture on purpose. They start as focused tools and accrete requirements; each shortcut was reasonable under deadline pressure until structure could no longer be enforced or reviewed.</p>
 
           <h2 id="why-it-exists">Why it emerges</h2>
           <p>The system often began as a modest web application for a regional fleet. Each acquisition added hubs, customs checks, and partner carriers under the same release train. Product pressure favored extending a shared helper class and adding columns to a central shipments table because that path shipped before quarter end.</p>
           <p>Engineer turnover compounded the drift. Engineers who knew why a geofence rule lived in a stored procedure left; successors copied the pattern for fuel-surcharge logic in application code and again in the dispatcher console. Foote and Yoder describe this as entropy from locally rational edits; mature dispatch platforms frequently show this accumulation.</p>
           <p>Thin automated tests made every refactor feel dangerous. Teams labeled fragile modules “do not touch” and routed new requirements through the same entry points, which widened coupling until dispatch, billing, and notifications could not be discussed separately.</p>
+          <p>Weak dependency tooling makes the drift hard to see until it is expensive. Without ArchUnit-style rules or a published module graph in CI, each sprint adds another import edge; the hairball becomes normal because nobody measures cycle growth.</p>
 
           <h2 id="when-to-use">How it manifests</h2>
           <ul>
@@ -124,6 +127,7 @@
             <li><strong>Module boundary violations:</strong> ArchUnit or Dependency Cruiser reports new cycles between dispatch, inventory-bridge, and billing packages while those folders were supposed to stay separate.</li>
             <li><strong>Growing onboarding time:</strong> Each new cohort of developers needs longer before their first meaningful production change, which means cognitive load is climbing even if story points look flat.</li>
             <li><strong>Test coverage plateau:</strong> Coverage stops rising despite deliberate test work because new code must wire through untestable static singletons and shared database state.</li>
+            <li><strong>God-table growth:</strong> The central shipments or orders table gains columns quarterly with no owning team, which signals domain concepts collapsed into one mutable structure.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical manifestation</h2>
@@ -187,7 +191,7 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Consequences</h3>
               <ul>
-                <li><strong>Velocity collapse:</strong> Roadmaps spend more time on impact analysis and regression firefighting than on new dispatch capabilities, so lead time for partner integrations stretches even when headcount is flat.</li>
+                <li><strong>Velocity collapse:</strong> Roadmaps spend more time on impact analysis and regression firefighting than on new dispatch capabilities, so lead time for partner integrations stretches even when headcount is flat and sprint commitments become forecasts rather than promises.</li>
                 <li><strong>Reliability degradation:</strong> Failures hop across layers—a stuck notification worker can leave shipments in a billing hold because shared tables and static helpers propagate state nobody owns.</li>
                 <li><strong>Talent attrition:</strong> Engineers who want to ship clean boundaries leave; those who stay specialize in navigating mud, which narrows the skill base that could refactor the system.</li>
                 <li><strong>Security exposure:</strong> Partner API authentication and dispatcher role checks live in multiple projects with divergent rules, so security review cannot treat any single module as the source of truth.</li>
@@ -200,6 +204,7 @@
                 <li><strong>Strangler Fig pattern:</strong> Martin Fowler’s strangler approach routes new partner onboarding through a small, well-structured service while legacy code handles the long tail until traffic can switch slice by slice.</li>
                 <li><strong>Build a characterization test suite:</strong> Golden-master tests around route assignment and SLA breach capture today’s behavior—including quirks—so refactors detect unintended changes before drivers see them.</li>
                 <li><strong>Allocate explicit remediation capacity:</strong> Leadership reserves a fixed slice of each sprint for structural work instead of funding it only after outages, so seams appear steadily rather than never.</li>
+                <li><strong>Modularize by capability:</strong> Split packages along dispatch versus billing language even before microservices, so new imports reinforce seams instead of random folders.</li>
               </ul>
             </div>
           </div>
@@ -208,14 +213,16 @@
           <p>Foote and Yoder’s paper treats the Big Ball of Mud as an emergent outcome: time pressure, incomplete domain knowledge, and churn reward the shortcut that ships this week. Systems drift not because engineers ignore patterns, but because every regional launch rewards extending the existing dispatch path.</p>
           <p>Remediation must change those incentives. If product still measures only feature throughput, a parallel “clean” codebase will inherit the same shortcuts. Pair architecture decision records with a visible dependency graph so shortcuts become visible in review, not only in retrospective blame.</p>
           <p>The dangerous phase is the silent slide from “messy but known” to “nobody knows.” That line is crossed when veteran dispatchers can predict failure modes engineers cannot, and when documentation diagrams diverge from what dependency analysis reports. Simon Brown’s C4 model helps here: level-2 containers for dispatcher web, mobile API, and batch reconciliation give a shared vocabulary before anyone extracts a service.</p>
+          <p>Ownership matters as much as diagrams. Assign a module steward for each container who approves new inbound dependencies and runs a quarterly cycle review. Without named owners, “no new cycles” policies decay the moment a launch pressures someone to import a shortcut.</p>
           <p>Michael Feathers’ seam-finding discipline—wrapper interfaces, dependency injection points, and characterization tests—lets teams improve one corridor (for example partner webhooks) without reading every file. The goal is not a big-bang rewrite but expanding islands of testable structure until the hairball is mostly legacy behind facades.</p>
+          <p>The cheap-intervention window closes quietly. Velocity may look stable while confidence erodes; by the time leadership funds a rewrite, identifiable seams are scarce and even small extractions require multi-quarter negotiation across billing and dispatch stakeholders. Instrument lead time and change-failure rate alongside story points so decay becomes visible before dispatch reliability is on the evening news.</p>
 
           <h2 id="common-failure-modes">Escalation patterns</h2>
           <ul>
-            <li><strong>The heroic rewrite that fails:</strong> Leadership funds a greenfield dispatch platform; hidden rules surface only during migration, the rewrite stalls, and the organization runs dual systems with duplicated bug classes.</li>
-            <li><strong>Architectural astronauts take over:</strong> A mandated microservices framework landed atop the monolith without extracting data or behavior, adding network hops and repositories while the same SQL Server schema stayed shared.</li>
-            <li><strong>Test suite abandonment:</strong> Slow integration runs pushed teams to bypass CI for “urgent” hub openings, which accelerated regressions in billing and notification paths that shared fixtures.</li>
-            <li><strong>Knowledge concentration in irreplaceable engineers:</strong> Two senior engineers carried dispatch escalation tribal knowledge; when one left, overnight hub failures took longer to diagnose because runbooks referenced code paths that no longer matched production.</li>
+            <li><strong>The heroic rewrite that fails:</strong> Leadership funds a greenfield dispatch platform; parity testing reveals undocumented geofence exceptions and billing proration rules buried in triggers. The rewrite slips quarters behind while production still needs fixes in the old stack, so the organization maintains two codebases with divergent bug classes.</li>
+            <li><strong>Architectural astronauts take over:</strong> A mandated microservices framework landed atop the monolith without extracting data or behavior, adding network hops and repositories while the same SQL Server schema stayed shared. Teams now debug distributed traces for behavior that still executes in one database transaction.</li>
+            <li><strong>Test suite abandonment:</strong> Slow integration runs pushed teams to bypass CI for “urgent” hub openings, which accelerated regressions in billing and notification paths that shared fixtures. Without the safety net, developers stop deleting dead code because nobody can prove what still matters.</li>
+            <li><strong>Knowledge concentration in irreplaceable engineers:</strong> Two senior engineers carried dispatch escalation tribal knowledge; when one left, overnight hub failures took longer to diagnose because runbooks referenced code paths that no longer matched production. Remaining staff avoided risky refactors, which accelerated entropy in the modules only those engineers understood.</li>
           </ul>
 
           <h2 id="decision-checklist">Diagnostic checklist</h2>
@@ -223,14 +230,18 @@
             <li>Can any module be compiled, tested, and deployed without dragging the rest of the solution?</li>
             <li>Does an architecture diagram that dispatch and platform teams both accept match what dependency analysis reports?</li>
             <li>When a production defect is filed, can ownership be assigned to a named module rather than “the whole dispatch system”?</li>
+            <li>Does each major capability have a steward who can reject new cross-package imports in review?</li>
             <li>Does module-level dependency analysis report a shrinking set of cycles quarter over quarter?</li>
             <li>Can a new engineer land a bounded dispatch change with review from one mentor instead of a committee?</li>
             <li>Are structural changes recorded in ADRs before merge, not only discussed after incidents?</li>
+            <li>Does the team track change-failure rate and dependency cycle count alongside feature velocity every sprint?</li>
           </ul>
 
           <h2 id="example-use-cases">Real-world examples</h2>
           <ul>
             <li><strong>Illustrative scenario — Northwind FieldOps legacy dispatch:</strong> Partner carrier onboarding required edits across the web console, mobile sync API, a SQL assignment trigger, and a reporting batch package. Each path implemented hub-priority rules slightly differently, so the same snow delay produced conflicting ETA displays and duplicate billing lines until the team stopped feature work and spent a quarter carving a strangler path for new partners only.</li>
+            <li><strong>Illustrative scenario — regional retailer order core:</strong> Fifteen years of feature flags and one-off promotions left four hundred tables without owners. Placing an order touched dozens of files across payment, tax, and loyalty modules; estimates to add multi-currency support ranged from two quarters to two years because nobody could bound the regression surface.</li>
+            <li><strong>Illustrative scenario — hospital patient index:</strong> Four migrations over two decades left patient identifiers in multiple formats across relational and flat-file stores. Reconciliation code had to understand every historical schema at once; a single correction workflow fanned out through six persistence paths before clinicians saw a consistent record.</li>
           </ul>
 
           <h2 id="related-patterns">Related anti-patterns</h2>
