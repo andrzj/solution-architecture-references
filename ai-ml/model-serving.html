@@ -100,19 +100,22 @@
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
  
  <p><strong>Model serving</strong> at an e-commerce retailer is how the <strong>Catalog search ranking</strong> model reaches shoppers. <strong>Online inference</strong> exposes a gRPC ranking endpoint: each query fetches candidate product features, scores them within a latency budget, and returns a reordered list. <strong>Batch inference</strong> (the separate path in the diagram) pre-scores catalog segments overnight for email campaigns and category landing pages where millisecond latency is unnecessary.</p>
- <p>The team's serving layer handles routing, autoscaling, canary traffic splits, and versioned model servers (Triton, TorchServe, or SageMaker endpoints). The application does not load ONNX weights directly — it calls serving, which owns GPU batching and rollout semantics.</p>
+ <p>A third mode — <strong>stream inference</strong> — scores cart and browse events as they arrive on Kafka: lightweight models update session-level signals that the online ranker consumes minutes later. Stream paths tolerate slightly higher per-event latency but must keep up with peak traffic without backpressure into checkout.</p>
+ <p>The team's serving layer handles routing, autoscaling, canary traffic splits, and versioned model servers (Triton, TorchServe, TensorFlow Serving, or SageMaker endpoints). The storefront BFF does not load ONNX weights directly — it calls serving, which owns GPU batching, health probes, and rollout semantics. A stable request contract (candidate SKU IDs in, scores and model version out) lets Catalog swap rankers without redeploying PHP or Next.js tiers.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
  <p>The team's ranking model lived in a data-science repo long after it beat the rules engine in offline NDCG. Search still called legacy heuristics because no one owned production inference, versioning, or GPU pooling. Serving turns the trained artifact into a contract the storefront can depend on.</p>
- <p>Catalog search cares about p99 latency and safe rollout more than batch throughput. Multiple ranking versions must coexist for canary and shadow tests; GPUs must be shared across ranking and related models. Gradual promotion — 95% on v1.2, 5% on v1.3 in the diagram — lets the team compare score distributions before full cutover, something a blue/green app deploy alone does not guarantee.</p>
+ <p>Catalog search cares about p99 latency and safe rollout more than batch throughput. Production inference engineering differs from notebook training: tail percentiles matter more than mean batch time, accelerators must be bin-packed across rankers and embedding servers, and version swaps must avoid draining shopper sessions mid-query.</p>
+ <p>Multiple ranking versions coexist for <strong>A/B tests</strong>, <strong>canaries</strong>, and <strong>shadow</strong> evaluations. Gradual promotion — 95% on v1.2, 5% on v1.3 in the diagram — compares live score distributions and click-through before full cutover. Unlike a blue/green app deploy alone, serving can silently worsen long-tail discovery while headline CTR looks flat; per-version observability is not optional.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
- <li>The team search needs <strong>real-time ranking</strong> within tens of milliseconds — online gRPC with feature-store lookup.</li>
+ <li>Search needs <strong>real-time ranking</strong> within tens of milliseconds — online gRPC with feature-store lookup.</li>
  <li>Marketing needs <strong>batch scores</strong> for all active users or SKUs — nightly Airflow/Spark job on the batch path in the diagram.</li>
  <li>Ranking experiments require <strong>canary or shadow</strong> traffic without redeploying the web tier.</li>
  <li>GPU inference must be <strong>centralized</strong> so Catalog and recommendations do not each provision idle GPUs.</li>
  <li>Predictions must be <strong>logged</strong> for monitoring (see <a href="model-monitoring.html">Model Monitoring</a>) and ground-truth join.</li>
+ <li>Continuous <strong>stream scoring</strong> must refresh session features faster than nightly batch alone can support.</li>
  </ul>
 
  <h2 id="when-not-to-use">When not to use</h2>
@@ -123,7 +126,9 @@
  </ul>
 
  <h2 id="typical-architecture">Typical architecture</h2>
- <p>The diagram’s <strong>top path</strong> is The team's online search flow: clients hit the gateway (auth, rate limits, 95%/5% split), model servers pre-process requests, pull ranking features, run GPU inference, optionally cache hot SKU scores, and emit logs to observability. The <strong>batch path</strong> is the overnight catalog job — scheduler → feature prep in Spark → batch score on a GPU cluster → scores land in S3 or the warehouse for campaigns.</p>
+ <p>The diagram’s <strong>top path</strong> is the team's online search flow: clients hit the gateway (auth, rate limits, 95%/5% split), model servers pre-process requests, pull ranking features from the <a href="feature-stores.html">feature store</a>, run GPU inference, optionally cache hot SKU scores in the prediction store, and emit logs to observability. Post-processing may attach calibration scores or explainability summaries before the BFF merges results with business rules (stock, brand exclusions).</p>
+ <p>The <strong>batch path</strong> is the overnight catalog job — scheduler → feature prep in Spark → batch score on a GPU cluster → scores land in S3 or the warehouse for campaigns. Batch jobs partition by category so a bad segment file cannot monopolize the whole cluster.</p>
+ <p>Below the fold in operations, a <strong>model registry</strong> pointer tells each server which artifact bundle to load; health checks fail pods that cannot reach the registry or load tensors within the SLO. Stream consumers follow the same embedding and ranking contracts but write scores to Redis or the online store instead of answering HTTP directly.</p>
  <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
  <div class="architecture-diagram__render mermaid">flowchart TB
  client_application["CLIENT APPLICATION"]
@@ -202,7 +207,7 @@
  <div class="pros-cons__col pros-cons__col--cons">
  <h3>Cons</h3>
  <ul>
- <li>Extra hop from search BFF to serving adds RTT and must stay inside The team's search latency budget once feature fetch is included.</li>
+ <li>Extra hop from search BFF to serving adds RTT and must stay inside the team's search latency budget once feature fetch is included.</li>
  <li>Gateways, autoscaling, and GPU health checks are ongoing ops work.</li>
  <li>Idle GPU replicas during overnight traffic troughs are expensive without scale-to-zero policies.</li>
  <li>Sharing GPUs between ranking and embedding models can create noisy-neighbor tail latency.</li>
@@ -212,23 +217,30 @@
 
  <h2 id="implementation-notes">Implementation notes</h2>
  <p>Profile search ranking end-to-end: gateway, feature-store reads, tensor assembly, GPU forward pass, post-processing. Ranker compute is often smaller than bulk feature retrieval — cache hot product features and co-locate serving near the online store region.</p>
- <p>Enable <strong>dynamic batching</strong> on the ranking server for burst traffic; cap batch wait time so p99 does not violate SLA.</p>
- <p>Run <strong>shadow</strong> ranking: v1.3 scores every query alongside v1.2 but only v1.2 answers the user until NDCG and score-distribution checks pass.</p>
- <p>Version input schemas (<code>query_id</code>, candidate SKU list, feature vector layout) and reject malformed requests before inference. Batch jobs use the same schema written to parquet to avoid train-serve skew.</p>
+ <p>Enable <strong>dynamic batching</strong> on the ranking server for burst traffic; cap batch wait time so p99 does not violate SLA. For wide transformers, consider <strong>INT8 or FP16</strong> exports only after measuring NDCG regression on a frozen eval set — quantization saves VRAM but can reorder tail SKUs.</p>
+ <p>Run <strong>shadow</strong> ranking: v1.3 scores every query alongside v1.2 but only v1.2 answers the user until NDCG and score-distribution checks pass. Log both score vectors with <code>request_id</code> so offline analysts can diff rank lists without exposing v1.3 to shoppers.</p>
+ <p>Version input schemas (<code>query_id</code>, candidate SKU list, feature vector layout) and reject malformed requests before inference. Return a typed output schema — scores, optional confidence, <code>model_version</code> — so downstream caches never misinterpret a partial response after rollout.</p>
+ <p>Batch jobs use the same preprocessing code path as online serving (shared container or library pin) and write parquet with identical column order. <strong>Prediction caches</strong> help when the same SKU sets repeat (category browse rails); set TTL below merchandising refresh so stale scores do not survive major sale events.</p>
+ <p>Instrument the observability block in the diagram: histogram latency per model version, log input feature checksums on sample rate, and export prediction distribution drift metrics to the same stack that pages SRE during app deploys.</p>
+ <p>Choose gRPC when search sends large candidate feature tensors; REST JSON may suffice for smaller tabular rankers but watch payload size on mobile clients. Either way, enforce auth at the gateway and cap batch sizes so a buggy BFF cannot submit entire catalog SKU lists per query.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
- <li><strong>Cold start after scale-out:</strong> Loading The team's wide ranking network on new GPU pods spikes p999 — keep minimum replicas and pre-warm on deploy.</li>
+ <li><strong>Cold start after scale-out:</strong> Loading the wide ranking network on new GPU pods spikes p999 — keep minimum replicas and pre-warm on deploy.</li>
  <li><strong>Feature fetch dominates:</strong> Online store timeouts blow the latency budget while the GPU sits idle — circuit-break to cached defaults only where product allows.</li>
  <li><strong>Runaway batch score:</strong> A marketing segment typo scores the entire catalog — partition batch jobs and cap row counts.</li>
  <li><strong>Steep ranking shifts:</strong> A canary passes average CTR but collapses long-tail discovery — watch score histograms, not only top-line CTR.</li>
+ <li><strong>GPU memory fragmentation:</strong> Loading multiple ranker variants on one card can fail mysteriously when free VRAM looks sufficient — prefer explicit model slots or one primary model per replica.</li>
+ <li><strong>Silent post-rollout drift:</strong> v1.3 ships with a preprocessor bug that only affects mobile clients — segment dashboards by client type before promoting canary traffic past 5%.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
  <ul class="checklist">
  <li>Are online ranking SLAs defined (p50/p99) including feature retrieval?</li>
  <li>Is GPU serving shared with autoscaling and dynamic batching tuned for Catalog peaks?</li>
- <li>Does the gateway implement The team's 95/5 (or similar) canary split with per-version metrics?</li>
+ <li>Does the gateway implement the team's 95/5 (or similar) canary split with per-version metrics?</li>
+ <li>Is shadow traffic enabled for every major ranker promotion, with a documented stop condition?</li>
+ <li>Are stream, online, and batch paths pinned to the same preprocessing library version?</li>
  <li>Are request ID, features, scores, and model version logged for every online and batch run?</li>
  <li>Is rollback a registry pointer flip plus traffic shift, tested in staging?</li>
  <li>Does batch inference reuse the same preprocessing contract as the real-time path?</li>
@@ -240,6 +252,7 @@
             <li><strong>Illustrative scenario —</strong> <strong>Meridian search ranking (online):</strong> A shopper query hits gRPC ranking; features for the candidate set load from the online store; the model returns reordered SKUs within the agreed search SLO.</li>
             <li><strong>Illustrative scenario —</strong> <strong>Meridian campaign batch:</strong> Overnight Spark prepares features; the batch path scores every active loyalty member; results land in DynamoDB for email “top picks” modules.</li>
             <li><strong>Illustrative scenario —</strong> <strong>Canary promotion:</strong> v1.3 receives 5% of live queries per the diagram until monitoring clears drift and NDCG against click labels.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Stream enrichment:</strong> browse events update session embeddings in Redis; the online ranker merges them at query time without scoring the full catalog per click.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

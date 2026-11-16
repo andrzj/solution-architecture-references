@@ -99,33 +99,37 @@
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
  
- <p>At a logistics operator, the <strong>feature store</strong> is the single place dispatch ML reads <strong>ETA</strong> and <strong>delay-history</strong> signals. The <strong>offline store</strong> holds timestamped values for training delay and ETA models with point-in-time joins — Parquet on S3 or BigQuery tables keyed by <code>loadId</code> and event time. The <strong>online store</strong> (Redis or DynamoDB) holds the latest rolling delay stats and route ETA features for the dispatch console and driver apps at inference latency.</p>
- <p>The <strong>feature registry</strong> documents definitions such as <code>rolling_delay_p90_7d</code> and <code>hub_to_customer_eta_minutes</code>, owners in Dispatch Scheduling, and which models consume them — Feast, Tecton, or Vertex Feature Store implement the same pattern at different maturity levels.</p>
+ <p>A <strong>feature store</strong> is a governed platform for machine-learning features: named, versioned computations over operational and analytical data that training and serving both consume from the same definition. Features are organizational assets with owners, lineage, freshness expectations, and explicit entity keys — not one-off columns copied from a warehouse export into a notebook.</p>
+ <p>Architecturally the store splits into two tiers. The <strong>offline store</strong> keeps historical feature values keyed by entity and event time for bulk training access — typically Parquet on object storage, Hive, BigQuery, or Delta Lake — with APIs that support <strong>point-in-time</strong> joins so labels never see future facts. The <strong>online store</strong> holds only the latest value per entity for low-latency inference in Redis, DynamoDB, Cassandra, or Bigtable, often with single-digit millisecond p99 lookup budgets.</p>
+ <p>A <strong>feature registry</strong> catalogs meaning, owners, consumers, and materialization schedules. Feast, Tecton, Hopsworks, and Vertex AI Feature Store differ in maturity and ops model, but architects evaluate them on the same questions: one definition for offline and online paths, observable freshness, and statistics on every materialization.</p>
+ <p>On a logistics dispatch platform, ETA and delay-history features show the pattern in practice: batch jobs roll hub-to-customer minutes and rolling delay percentiles into the offline store for retraining, while the online store serves the same signals when a load is scored in the dispatch console — one semantic definition, two storage profiles.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
- <p>The platform’s ETA model looked excellent offline until dispatch noticed the dispatch console showed different delay minutes than training SQL. Two teams had written “last seven days late percentage” differently — one used hub departure time, the other customer dock arrival. Training-serving skew made the model untrustworthy for driver messaging.</p>
- <p>Dispatch, Routing, and Fleet each recomputed similar aggregates from Kafka and the warehouse. A feature store lets the platform compute delay history once, materialize to offline and online stores, and reuse features for ETA prediction, dispatch ranking, and billing dispute models. Point-in-time correctness prevents labeling a Monday shipment with Friday’s delay rollup — a common leakage path when joining warehouse facts without timestamps.</p>
+ <p>Production ML’s quiet killer is <strong>training-serving skew</strong>. Offline evaluation looks strong because trainers computed features in Spark or SQL one way; the serving microservice applies slightly different logic — another timezone on dock events, another rule for null dwell minutes, a seven-day window measured from hub departure instead of customer delivery. The model answers every RPC successfully while systematically wrong ETAs erode trust.</p>
+ <p>Before feature stores, each squad wrote feature code twice: once in a training DAG and again beside the inference path. The same signal — rolling late percentage, congestion index, customer lifetime value — was reimplemented with small divergences. When upstream schemas changed, every team patched independently. Centralized computation materializes each feature once into offline and online stores and lets ETA, ranking, and billing models share it through the registry.</p>
+ <p><strong>Point-in-time correctness</strong> matters as much as consistency. Joining a shipment’s entire future delay history when building a row that predicts an in-flight ETA is classic label leakage: offline metrics inflate, production disappoints. Timestamped feature values and point-in-time joins keep trainers honest about what was knowable at label time — the same discipline Google’s <em>Rules of ML</em> emphasize for reproducible datasets.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
- <li>logistics dispatch models share ETA, delay, and dwell features across teams — publish once, consume many.</li>
- <li>The dispatch console needs sub-100ms feature lookup at scoring time — pre-materialize to the online store.</li>
- <li>Training-serving skew is a known risk for rolling delay and route features with non-trivial SQL.</li>
- <li>Historical retraining requires point-in-time joins on <code>loadId</code> / <code>shipmentId</code> timelines.</li>
- <li>The platform is scaling ML beyond one notebook and needs registry, ownership, and lineage.</li>
+ <li>Multiple models or teams reuse overlapping signals — publish delay history, session depth, or catalog popularity once instead of re-deriving in every repo.</li>
+ <li>Inference needs sub-100ms feature lookup and cannot afford on-the-fly warehouse SQL at request time.</li>
+ <li>Training-serving skew is a known risk or has already caused a production incident on non-trivial transforms.</li>
+ <li>Historical retraining requires point-in-time joins on entity timelines (shipments, users, accounts).</li>
+ <li>ML is scaling beyond ad hoc notebooks and needs ownership, documentation, and discoverability for features.</li>
+ <li>Regulated or contractual contexts demand lineage from a live prediction back to feature definition version and materialization run.</li>
  </ul>
 
  <h2 id="when-not-to-use">When not to use</h2>
  <ul>
- <li>Models use only raw GPS coordinates with no shared aggregates — a thin API may suffice.</li>
- <li>Batch-only monthly billing scores with no latency SLA — warehouse SQL without an online store.</li>
- <li>Early ETA experiments before product value is proven — store overhead may wait.</li>
- <li>No data engineering capacity to operate Spark/dbt materialization jobs.</li>
+ <li>Models consume only raw inputs with trivial transforms where training and serving share one library call.</li>
+ <li>Batch-only scoring with no latency SLA — curated warehouse tables may suffice without an online tier.</li>
+ <li>Early experiments before product value is proven and before a data platform team can own materialization.</li>
+ <li>No capacity to operate Spark, dbt, or Flink jobs that keep offline and online stores synchronized.</li>
  </ul>
 
  <h2 id="typical-architecture">Typical architecture</h2>
- <p>The platform maps the diagram to dispatch data: Kafka shipment events and the warehouse feed batch and stream transforms that compute ETA and delay features; offline store feeds <a href="training-pipelines.html">training pipelines</a>; online store feeds the dispatch console and serving; the registry sits underneath for definitions and lineage.</p>
- <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <p>In the diagram below, event streams and the warehouse feed batch and stream transforms that compute entity-level features; the offline store supplies <a href="training-pipelines.html">training pipelines</a> with point-in-time datasets; the online store backs serving and operational consoles; the registry records definitions, owners, and lineage across both paths. Stream transforms cover corridors where five-minute freshness beats nightly batch; batch backfills reconcile long horizons for retrain jobs.</p>
+<figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
  <div class="architecture-diagram__render mermaid">flowchart TB
  data_sources["DATA SOURCES"]
  event_stream["Event Stream"]
@@ -188,50 +192,54 @@
  </details>
  <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
  </figure>
-
- <h2 id="pros-and-cons">Pros and cons</h2>
+<h2 id="pros-and-cons">Pros and cons</h2>
  <div class="pros-cons">
  <div class="pros-cons__col pros-cons__col--pros">
  <h3>Pros</h3>
  <ul>
- <li>The dispatch console and training both read the same delay-history definition — skew investigations shrink from weeks to diffing versions.</li>
- <li>Routing and Dispatch reuse hub congestion features instead of duplicating Spark jobs.</li>
- <li>Point-in-time joins give honest offline ETA metrics for shipments still in flight.</li>
- <li>Registry and stats turn “what is <code>rolling_delay_p90_7d</code>?” into a documented answer.</li>
+ <li>One definition for training and serving shrinks skew investigations from cross-team forensics to diffing feature versions.</li>
+ <li>Reuse across ETA, congestion, and capacity models avoids redundant Spark spend and inconsistent semantics.</li>
+ <li>Point-in-time joins produce offline metrics that correlate better with live behavior on time-series problems.</li>
+ <li>Registry metadata turns “what is <code>rolling_delay_p90_7d</code>?” into an answerable question with owner and stats.</li>
+ <li>Freshness and null-rate telemetry on materialization catches upstream pipeline breaks before model accuracy moves.</li>
  </ul>
  </div>
  <div class="pros-cons__col pros-cons__col--cons">
  <h3>Cons</h3>
  <ul>
- <li>Operating offline plus online stores and sync jobs is real platform ownership for the platform.</li>
- <li>Materialization lag means ETAs may trail live GPS until stream paths catch up.</li>
- <li>Onboarding Feast/Tecton abstractions slows first experiments.</li>
- <li>Online store outages directly break dispatch scoring — HA and paging are mandatory.</li>
+ <li>Operating offline plus online stores, sync jobs, and HA Redis clusters is real platform ownership.</li>
+ <li>Materialization lag means online ETAs may trail GPS reality until stream paths catch up.</li>
+ <li>Vendor abstractions and onboarding slow the first experiments compared with notebook SQL.</li>
+ <li>Online store outages directly break scoring paths — paging and multi-AZ design are mandatory.</li>
+ <li>Feature proliferation without deprecation policy creates registry clutter and unclear consumer sets.</li>
  </ul>
  </div>
  </div>
 
  <h2 id="implementation-notes">Implementation notes</h2>
- <p>Version the platform features explicitly: <code>rolling_delay_p90_7d_v1</code> vs <code>v2</code> when the window changes from hub to customer dock. Models pin versions at train time; serving migrates deliberately.</p>
- <p>Stream <code>ShipmentDelayed</code> and GPS enrichment into Flink for five-minute freshness on hot lanes; nightly Spark backfills the offline store for retraining. Materialization jobs push latest values to Redis with monotonic event timestamps so stale writes lose.</p>
- <p>Emit feature statistics on each materialization — null rate on ETA, p90 delay drift — into the same observability stack as <a href="model-monitoring.html">model monitoring</a>.</p>
+ <p><strong>Versioning:</strong> Treat features as versioned computations, not mutable column aliases. When the delay window moves from hub departure to customer dock, ship <code>rolling_delay_p90_7d_v2</code> and pin models to the version they trained on; migrate serving deliberately with shadow comparison.</p>
+ <p><strong>Materialization:</strong> Nightly Spark or dbt jobs backfill the offline store; streaming paths write hot lanes to the online tier. Push updates with monotonic event timestamps so stale async writes cannot overwrite fresher values. Document expected staleness per feature and alert when freshness SLAs breach.</p>
+ <p><strong>Dual-write discipline:</strong> When streams bypass the offline path for strict freshness, define how batch reconciliation converges both tiers. Without reconciliation, trainers and servers read divergent histories.</p>
+ <p><strong>Statistics:</strong> Emit null rates, quantiles, and cardinality on every materialization into the same observability stack as <a href="model-monitoring.html">model monitoring</a>. Distribution shifts often precede accuracy drops by days.</p>
+ <p><strong>Contracts:</strong> Validate Kafka and warehouse schemas at ingestion; bump feature versions when upstream columns change instead of silently breaking transforms.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
- <li><strong>Stale delay rollups:</strong> A failed dbt run leaves yesterday’s p90 in Redis — alert on freshness SLAs per feature.</li>
- <li><strong>New load, empty history:</strong> Brand-new <code>loadId</code> rows lack delay history — define defaults and monitor imputation rate.</li>
- <li><strong>Schema drift on events:</strong> Kafka renames <code>dockArrivalUtc</code> without bumping feature version — validate contracts at ingest.</li>
- <li><strong>Online overload:</strong> Peak dispatch rescoring spikes Redis p99 — pool connections and cache at the serving layer.</li>
+ <li><strong>Stale online features:</strong> Failed dbt or Flink jobs leave yesterday’s values in Redis — page on freshness SLAs per feature, not only on job success flags.</li>
+ <li><strong>Cold-start entities:</strong> New loads or users lack history — define imputation defaults and monitor how often defaults dominate scoring.</li>
+ <li><strong>Schema drift at source:</strong> Renamed dock timestamps without a feature version bump produce silent nulls or wrong rollups.</li>
+ <li><strong>Online overload:</strong> Peak rescoring spikes Redis p99 past serving budgets — cache at the inference layer and capacity-plan from peak dispatch, not averages.</li>
+ <li><strong>Registry without enforcement:</strong> Teams bypass the store with shadow SQL; governance without CI checks reintroduces skew.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
  <ul class="checklist">
- <li>Which the platform features (ETA, delay, dwell) are shared across models and teams?</li>
- <li>Is hourly batch enough for ETA, or do certain corridors need stream freshness?</li>
- <li>Are training labels joined point-in-time on shipment event timestamps?</li>
- <li>Does a data platform squad own materialization and on-call?</li>
- <li>What are online lookup latency and availability targets for the dispatch console?</li>
- <li>Is feature versioning planned before the first production model pins definitions?</li>
+ <li>Which features are shared across models and teams, and who owns each definition?</li>
+ <li>Is hourly batch sufficient, or do specific corridors need stream freshness with documented dual-write rules?</li>
+ <li>Are training labels joined point-in-time on entity event timestamps, with tests that fail on leakage?</li>
+ <li>Does a platform squad own materialization on-call and freshness dashboards?</li>
+ <li>What are online lookup latency, availability, and throughput targets for production scoring?</li>
+ <li>Is feature versioning mandatory before the first production model pins definitions?</li>
  </ul>
 
  <h2 id="example-use-cases">Example use cases</h2>
@@ -240,6 +248,7 @@
             <li><strong>Illustrative scenario —</strong> <strong>Northwind dispatch ETA:</strong> Stream and batch pipelines publish <code>hub_to_customer_eta_minutes</code> and <code>rolling_delay_p90_7d</code>; FieldOps pulls them at score time; retraining uses the offline store with point-in-time joins.</li>
             <li><strong>Illustrative scenario —</strong> <strong>Delay prediction training:</strong> Historical delay labels join delay-history features from the offline store without future dock events leaking into past rows.</li>
             <li><strong>Illustrative scenario —</strong> <strong>Fleet platform reuse:</strong> Fleet’s capacity model consumes the same hub congestion features from the registry without recomputing from raw GPS.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Catalog ranking (secondary):</strong> An e-commerce team reuses session-depth and price-band features for search ranking while logistics features remain on a separate namespace in the same registry.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -253,12 +262,13 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.featurestore.org/" rel="noopener noreferrer" target="_blank">Feature Store for ML</a> — featurestore.org community patterns and vendor landscape.</li>
-            <li><a href="https://docs.feast.dev/" rel="noopener noreferrer" target="_blank">Feast Feature Store Documentation</a> — open-source offline/online feature serving.</li>
+            <li><a href="https://www.featurestore.org/" rel="noopener noreferrer" target="_blank">Feature Store for ML</a> — community patterns and vendor landscape.</li>
+            <li><a href="https://docs.feast.dev/" rel="noopener noreferrer" target="_blank">Feast Feature Store Documentation</a> — open-source offline and online serving.</li>
             <li><a href="https://cloud.google.com/vertex-ai/docs/featurestore/overview" rel="noopener noreferrer" target="_blank">Vertex AI Feature Store Overview</a> — managed feature management on Google Cloud.</li>
-            <li><a href="https://www.tecton.ai/blog/what-is-a-feature-store/" rel="noopener noreferrer" target="_blank">What is a Feature Store?</a> — Tecton’s overview of registry, materialization, and serving.</li>
+            <li><a href="https://www.tecton.ai/blog/what-is-a-feature-store/" rel="noopener noreferrer" target="_blank">What is a Feature Store?</a> — registry, materialization, and serving overview.</li>
+            <li><a href="https://developers.google.com/machine-learning/guides/rules-of-ml" rel="noopener noreferrer" target="_blank">Rules of ML</a> — Google guidance on data and serving consistency.</li>
           </ul>
-        </div>
+        </div></div>
         </div>
 
         <aside class="article-aside">

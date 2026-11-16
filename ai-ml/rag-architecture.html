@@ -107,6 +107,7 @@
  <p>A support LLM once quoted a 30-day return policy that marketing had extended to 60 days — the model was confident and wrong. Policy PDFs, carrier SLAs, and SKU-specific warranty tables change weekly; retraining a chat model on every merchandising edit is not viable.</p>
  <p>RAG keeps the generator’s weights stable while injecting fresh evidence per request, which is exactly the non-parametric memory Lewis et al. targeted for knowledge-intensive QA. When retrieval returns the right policy clause, the model synthesizes and cites; when retrieval misses, the team can abstain or escalate instead of inventing policy.</p>
  <p>Fine-tuning still helps the desired tone (“friendly, brief, no legalese”) and output shape, but factual answers about returns, recalls, and loyalty tiers belong in the indexed knowledge base, not in weights.</p>
+ <p>Full retraining or continual fine-tune on every policy PDF is costly and still lags same-day merchandising edits. RAG keeps parametric weights stable while retrieval injects current clauses at request time — the pattern Lewis et al. used as non-parametric memory for knowledge-intensive QA. Fine-tuning remains complementary: adapt phrasing and escalation etiquette; let the index own verifiable dates, dollar thresholds, and region-specific tables.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
@@ -238,6 +239,9 @@
  <p><strong>Embeddings:</strong> Index and query share one Azure OpenAI embedding deployment (same model version and dimensions); mismatched models break ANN semantics. Cap chunk length below the embedding model’s context limit so warranty tables are not silently truncated.</p>
  <p><strong>Grounded generation:</strong> The assembled prompt follows Azure’s pattern — system instructions to answer only from supplied context, user question last — with <code>temperature</code> low for policy extracts (<a href="https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/prompt-engineering" rel="noopener noreferrer" target="_blank">Azure OpenAI prompt engineering</a>).</p>
  <p><strong>Evaluation:</strong> Support maintains a golden question set with expected source doc IDs; CI tracks retrieval recall and answer faithfulness when chunking or embedding settings change.</p>
+ <p><strong>Indexing cadence:</strong> Wire change feeds from SharePoint and Zendesk so updates upsert within minutes, with tombstones when legal pulls a bulletin. Version embedding model deployments alongside the index — re-embed corpora when the embedding SKU changes or ANN recall drifts in golden tests.</p>
+ <p><strong>Latency budget:</strong> Account for embed + ANN + optional cross-encoder before first token; cache frequent policy queries only when answers are stable and PII-safe. Cap retrieved chunks with token budgeting so prompt assembly leaves room for shopper transcript history.</p>
+ <p><strong>Security filters:</strong> Apply metadata filters (region, product line, agent role) at retrieval time so vectors never return chunks the shopper’s session is not authorized to see — authorization belongs in search predicates, not only in post-hoc prompt scrubbing.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
@@ -245,16 +249,22 @@
  <li><strong>Vocabulary mismatch:</strong> Shoppers say “free delivery”; docs say “complimentary shipping.” Hybrid BM25 + dense retrieval plus synonym tables in the processor reduce misses.</li>
  <li><strong>Stale index:</strong> A recalled blender SKU still appears in vectors after the safety bulletin is pulled; change-feed indexing and tombstone deletes on doc removal are required.</li>
  <li><strong>Context overflow:</strong> Pasting entire warranty PDFs fills the context window; dynamic top-N and token budgeting before chat completions prevent silent truncation.</li>
+ <li><strong>Embedding version skew:</strong> Index built with one embedding deployment but queries hit another; fix with pinned model versions and automated golden-set recall checks on every deploy.</li>
+ <li><strong>Citation without substance:</strong> The model cites chunk IDs but paraphrases beyond retrieved text; fix with faithfulness evals, lower temperature on policy answers, and abstain rules when top-K scores fall below a confidence floor.</li>
+ <li><strong>Multi-hop shopper questions:</strong> “Compare my last three orders’ return eligibility” fails with single-round ANN; fix with query decomposition, order lookup tools, or human escalation rather than forcing one vector search.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
  <ul class="checklist">
- <li>Is chunk size validated on The team's golden support questions (recall@K, not guesswork)?</li>
+ <li>Is chunk size validated on the team’s golden support questions (recall@K, not guesswork)?</li>
  <li>Do indexing and query paths call the same embedding model version?</li>
  <li>Is hybrid search required for SKU codes, regulation numbers, and policy section labels?</li>
  <li>Does the cross-encoder re-ranker earn its p95 latency budget on supervisor-reviewed chats?</li>
  <li>Are SharePoint/Zendesk updates reflected incrementally with delete semantics?</li>
  <li>Can support auditors trace each answer to retrieved chunk IDs?</li>
+ <li>Do indexing jobs enforce tombstones and re-embed when legal retracts a policy document?</li>
+ <li>Is there a faithfulness or citation-accuracy gate in CI before chunking or embedding settings change?</li>
+ <li>When retrieval confidence is low, does the assistant abstain or escalate instead of inventing policy language?</li>
  </ul>
 
  <h2 id="example-use-cases">Example use cases</h2>

@@ -101,18 +101,20 @@
  <p><strong>LLM architecture</strong> is how you run transformer language models in production: tokenize prompts, run prefill and decode phases, manage the growing key-value (KV) cache, and stream tokens back to clients. It is the serving layer beneath chat, RAG, and agent features — distinct from choosing which model weights you call.</p>
  <p>An e-commerce retailer’s <strong>shopper copilot</strong> (product Q&amp;A, outfit suggestions, post-add-to-cart nudges) hits an LLM gateway that rate-limits mobile clients, routes traffic between Azure OpenAI chat completions and a vLLM pool for overflow, and streams responses over SSE. Peak holiday traffic is why the team owns this stack instead of naïvely pinning one request per GPU.</p>
  <p>Autoregressive decode means each new token reuses prior KV activations; long RAG contexts plus chat history make inference memory-bandwidth heavy. vLLM’s <strong>PagedAttention</strong> stores KV cache in fixed-size pages (like virtual memory) to cut fragmentation (<a href="https://arxiv.org/abs/2309.06180" rel="noopener noreferrer" target="_blank">Kwon et al., PagedAttention</a>), and <strong>continuous batching</strong> schedules decode steps across concurrent shopper sessions so finished chats free GPU slots immediately (<a href="https://docs.vllm.ai/en/latest/" rel="noopener noreferrer" target="_blank">vLLM documentation</a>).</p>
+ <p>Larger catalog-tuned checkpoints may need <strong>tensor parallelism</strong> inside an NVLink-connected GPU group, while <strong>weight quantization</strong> (INT8 or INT4 via GPTQ, AWQ, or SmoothQuant) trades a small quality hit for higher concurrent session count. Architecture separates <em>who routes traffic</em> (gateway) from <em>who schedules GPU memory</em> (vLLM engine)—not from which foundation model SKU product management selected.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
  <p>The team's first copilot prototype called a single GPU with static batching: Black Friday threads queued behind one power user pasting entire care guides, time-to-first-token missed latency targets, and GPUs sat half-empty between bursts.</p>
  <p>LLM serving needs iteration-level scheduling, not batch-at-end classification serving. The diagram’s <em>Prefill worker</em> ingests the fat RAG prompt; <em>Decode workers</em> stream short recommendation blurbs; the <em>KV cache manager</em> tracks pages per session; optional <em>tensor-parallel GPU group</em> shards a larger catalog-tuned model when Azure capacity is throttled.</p>
- <p>Azure OpenAI covers baseline copilot traffic with managed scale; vLLM on The team's GPU fleet handles burst routing and keeps PII-heavy prompts inside the VPC when policy requires it — same OpenAI-compatible request shape on both sides (<a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/switching-endpoints" rel="noopener noreferrer" target="_blank">Azure OpenAI endpoints</a>).</p>
+ <p>Azure OpenAI covers baseline copilot traffic with managed scale; vLLM on the team’s GPU fleet handles burst routing and keeps PII-heavy prompts inside the VPC when policy requires it — same OpenAI-compatible request shape on both sides (<a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/switching-endpoints" rel="noopener noreferrer" target="_blank">Azure OpenAI endpoints</a>).</p>
+ <p>Classification-style batching queues requests until a batch fills, then returns—all or nothing. Copilot generation is token-streamed and heterogeneous: one shopper ends after two tokens while another streams a size guide. Iteration-level scheduling avoids head-of-line blocking where short replies wait on long ones, which is why dedicated LLM engines (vLLM, TensorRT-LLM, SGLang) exist instead of reusing generic Triton classification paths unchanged.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
  <li>Large-scale concurrent shopper chats where one-GPU-one-session wastes HBM and misses latency SLOs.</li>
  <li>Copilot prompts with long catalog RAG context (retrieved chunks + transcript) where KV cache sizing dominates capacity planning.</li>
  <li>Hybrid routing: Azure OpenAI primary, vLLM warm standby or overflow with identical chat-completions schemas.</li>
- <li>Open-weight models (e.g., Llama-family) that must run in The team's region for data residency.</li>
+ <li>Open-weight models (e.g., Llama-family) that must run in the team’s region for data residency.</li>
  <li>Token streaming UX — outfit picks that render word-by-word in the mobile storefront.</li>
  </ul>
 
@@ -206,12 +208,13 @@
  <li>PagedAttention raises concurrent session count when every shopper carries a fat RAG prefix.</li>
  <li>Gateway dual-routing preserves UX when Azure throttles — failover to private vLLM without app rewrites.</li>
  <li>Prefix caching on static copilot system prompts trims prefill cost for repeat mobile opens.</li>
+ <li>Quantized checkpoints stretch HBM budget so more concurrent RAG-heavy sessions fit before spill to pay-per-token overflow.</li>
  </ul>
  </div>
  <div class="pros-cons__col pros-cons__col--cons">
  <h3>Cons</h3>
  <ul>
- <li>The team SRE owns GPU drivers, vLLM upgrades, and KV fragmentation tuning — not just REST integrations.</li>
+ <li>The team’s SRE group owns GPU drivers, vLLM upgrades, and KV fragmentation tuning — not just REST integrations.</li>
  <li>Warm GPU fleets cost money on quiet Tuesday mornings compared with pure pay-per-token APIs.</li>
  <li>Model rollovers need blue/green engine deploys so copilot sessions do not die mid-stream.</li>
  <li>One shopper pasting a huge care guide can still inflate tail latency for neighbors on shared decode workers.</li>
@@ -220,10 +223,12 @@
  </div>
 
  <h2 id="implementation-notes">Implementation notes</h2>
- <p><strong>Gateway:</strong> The team's copilot API enforces shopper auth, per-device rate limits, and prompt logging with redacted payment fields before prefill. Routes pick Azure vs. vLLM from health, cost, and data-class flags.</p>
- <p><strong>Prefill vs. decode:</strong> Catalog RAG makes prefill compute-heavy (many retrieved tokens); decode stays relatively short for shopper replies. Separate pools or disaggregated workers lets operators scale each phase independently.</p>
+ <p><strong>Gateway:</strong> The team’s copilot API enforces shopper auth, per-device rate limits, and prompt logging with redacted payment fields before prefill. Routes pick Azure vs. vLLM from health, cost, and data-class flags.</p>
+ <p><strong>Prefill vs. decode:</strong> Catalog RAG makes prefill compute-heavy (many retrieved tokens); decode stays relatively short for shopper replies. Separate pools or disaggregated workers let operators scale each phase independently — prefill on FLOPs-heavy cards, decode on memory-bandwidth-heavy pools when traces show imbalance.</p>
  <p><strong>vLLM ops:</strong> Run with OpenAI-compatible <code>/v1/chat/completions</code>, cap <code>max_tokens</code> for mobile snippets, and set <code>max_model_len</code> from worst-case context (system + RAG + history). Monitor KV cache usage and batch size in vLLM metrics.</p>
  <p><strong>Context budget:</strong> Copilot truncates oldest transcript turns before dropping retrieved catalog chunks; Azure and vLLM paths share the same token budget logic.</p>
+ <p><strong>Parallelism and quantization:</strong> Tensor parallelism inside an NVLink pair lowers single-request latency for large catalog models; sharding decode across slow Ethernet links often makes AllReduce dominate — keep TP intra-node. Benchmark INT8 or INT4 weights on real shopper prompts before promotion; outfit suggestions may tolerate INT4 while sizing advice may need INT8. Reserve roughly 2–3&nbsp;GB per GPU for framework overhead when sizing <code>max_model_len</code> and concurrent batch depth.</p>
+ <p><strong>Context window management:</strong> Define maximum context from product limits (system prompt + retrieved chunks + transcript). Use prefix caching for static system instructions, and cap generation length so one verbose shopper cannot monopolize decode slots during peak events.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
@@ -231,16 +236,21 @@
  <li><strong>OOM at load:</strong> Shipping a bigger catalog-tuned checkpoint without re-sizing tensor-parallel width prevents the model from loading — capacity planning must include CUDA overhead.</li>
  <li><strong>Head-of-line blocking:</strong> Unlimited <code>max_tokens</code> lets one user generate an essay; cap generation length for copilot and prioritize interactive SSE sessions.</li>
  <li><strong>Cross-node tensor parallel:</strong> Sharding vLLM across Ethernet-heavy nodes makes AllReduce dominate; keep TP inside NVLink pairs.</li>
+ <li><strong>Quantization regression:</strong> Aggressive INT4 shrinks memory but pushes apparel sizing or allergy disclaimers off-policy; validate slice metrics on high-risk intents before fleet-wide rollout.</li>
+ <li><strong>Prefill-decode skew:</strong> RAG catalog growth lengthens prefill while decode stays short; without separate scaling signals one pool starves the other during document-heavy campaigns.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
  <ul class="checklist">
- <li>What are The team's p50/p95 targets for time-to-first-token and tokens/sec on mobile copilot?</li>
+ <li>What are the team’s p50/p95 targets for time-to-first-token and tokens/sec on mobile copilot?</li>
  <li>What is the worst-case prompt size (system + RAG chunks + history) in tokens?</li>
  <li>Does vLLM capacity cover Azure overflow, or only residency-sensitive traffic?</li>
  <li>Are prefill and decode pools sized from measured traces, not guesswork?</li>
  <li>Is there a blue/green path for vLLM model and tokenizer updates?</li>
  <li>Do gateway logs correlate shopper session IDs across Azure and vLLM backends?</li>
+ <li>Have you profiled quantization quality on sizing, care, and policy-intent slices before promoting a smaller checkpoint?</li>
+ <li>Is tensor parallelism confined to high-bandwidth GPU pairs, with overflow routing tested when Azure quota throttles?</li>
+ <li>Does capacity planning multiply worst-case KV footprint by target concurrent sessions, including framework memory overhead?</li>
  </ul>
 
  <h2 id="example-use-cases">Example use cases</h2>

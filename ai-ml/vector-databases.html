@@ -99,13 +99,19 @@
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
  <p>A <strong>vector database</strong> stores embedding vectors and answers <em>approximate nearest neighbor (ANN)</em> queries: given a query embedding, return the IDs whose vectors are closest in cosine or dot-product space. It is the retrieval engine behind RAG and semantic catalog search.</p>
+ <p>Exact nearest-neighbor search over millions of 768-dimensional points is too slow for copilot turn budgets. ANN indexes — especially <strong>HNSW</strong> graph layers and <strong>IVF</strong> cluster probes shown in the diagram fallback — trade a small recall loss for millisecond queries at catalog scale.</p>
  <p>An e-commerce retailer maintains a <strong>catalog embedding index</strong>: every product description chunk, care guide section, and FAQ paragraph is embedded and stored with metadata (<code>sku</code>, <code>category</code>, <code>region</code>, <code>in_stock</code>). Shopper copilot and the support assistant both query the same collection with different filters.</p>
- <p>The diagram’s <strong>write path</strong> runs <em>Documents / Items / Events</em> → <em>Embedding model</em> (768/1536-d floats) → <em>Vector database</em> with an <em>ANN index</em> (HNSW in the fallback sketch). The <strong>read path</strong> embeds the query with the same model, ANN-searches top-K, applies <em>metadata filters</em>, and returns IDs, scores, and payload for downstream RAG or search APIs.</p>
+ <p>The diagram’s <strong>write path</strong> runs <em>Documents / Items / Events</em> → <em>Embedding model</em> (768/1536-d floats) → <em>Vector database</em> with an <em>ANN index</em> (HNSW in the fallback sketch). The <strong>read path</strong> embeds the query with the same model, ANN-searches top-K, applies <em>metadata filters</em>, and returns IDs, scores, and payload for downstream RAG or search APIs. Multimodal catalogs may add CLIP-style image embeddings beside text chunks in the same store with separate payload namespaces.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
  <p>The team's OpenSearch keyword index missed paraphrases (“breathable summer dress”) and could not feed the copilot’s RAG context without brittle join queries against Postgres. Embeddings encode meaning; ANN retrieves in single-digit milliseconds at catalog scale.</p>
  <p>Support RAG and shopper copilot share one indexing investment: nightly catalog exports and help-center articles land in the same vector store with different metadata namespaces. When merchandising publishes new SKUs, projectors re-embed changed chunks — the same operational pattern as Lewis-style retrieval corpora, but tuned for commerce facets.</p>
  <p>Retailers keep transactional truth in Postgres and search faceting in OpenSearch; the vector index is a specialized read model for similarity, not a system of record.</p>
+ <p>Teams sometimes start with <strong>pgvector</strong> or Elasticsearch dense vectors when chunk counts stay below a few hundred thousand. Purpose-built engines (Qdrant, Pinecone, Weaviate, Milvus) earn their keep when RAM for HNSW graphs, filter-aware indexes, and billion-vector sharding outgrow a single Postgres volume.</p>
+ <p><strong>Hybrid retrieval</strong> pairs ANN with BM25: copilot may union keyword hits for exact SKU codes with semantic neighbors for vague gifts — architects document how scores merge so support does not double-count the same chunk.</p>
+ <p>Recommendation-style features also map cleanly: a shopper embedding (from recent views) becomes the query vector; ANN returns visually or semantically adjacent PDPs for “you may also like” rails without maintaining hand-tuned synonym tables.</p>
+ <p>Capacity planning should include query concurrency during marketing pushes: copilot traffic spikes when email campaigns land, and ANN latency is sensitive to concurrent <code>ef_search</code> settings. Load tests mix filtered and unfiltered queries so autoscaling rules see realistic CPU and RAM footprints.</p>
+ <p>Document an explicit <strong>recall vs latency</strong> knob per use case: support RAG may accept lower recall with stricter filters, while browse similarity rails need higher <code>ef_search</code> to avoid empty shelves.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
@@ -114,6 +120,8 @@
  <li>Duplicate listing detection — near-identical descriptions from marketplace sellers.</li>
  <li>Filtered retrieval: in-stock, shippable-to-DE, adult-category exclusions via payload indexes.</li>
  <li>Shared embedding index serving both Azure-hosted and vLLM generation paths with identical retrieval results.</li>
+ <li>Image or audio similarity widgets where deep embeddings encode perceptual features beyond catalog text.</li>
+ <li>Near-duplicate listing review when marketplace sellers paste nearly identical descriptions.</li>
  </ul>
 
  <h2 id="when-not-to-use">When not to use</h2>
@@ -121,10 +129,15 @@
  <li>Authoritative inventory counts or price — vectors are eventually consistent projections, not ACID ledgers.</li>
  <li>Tiny pilot corpora (&lt;50k chunks) where pgvector beside existing Postgres may suffice.</li>
  <li>Exact SKU lookup by primary key — use Catalog’s SQL or OpenSearch term queries instead of ANN.</li>
+ <li>Use cases that require <strong>deterministic exact neighbors</strong> — ANN may omit the true top match; do not rely on vectors alone for compliance keyword blocklists without verification.</li>
  </ul>
 
  <h2 id="typical-architecture">Typical architecture</h2>
  <p>The team's catalog index mirrors the diagram: Kafka <code>ProductPublished</code> events trigger embed jobs; vectors land in HNSW collections with payload indexes on category and stock; copilot and support APIs embed the user utterance and call ANN + filter before LLM generation.</p>
+ <p>On the write side, batch re-embed jobs rebuild shadow collections while online upserts stream incremental points for changed chunks. Metadata JSON (price band, age gate, locale) lives beside vectors so filters do not require a second database round trip.</p>
+ <p>On the read side, architects choose <strong>pre-filtering</strong> (constrain ANN to eligible SKUs) versus <strong>post-filtering</strong> (retrieve extra neighbors then discard out-of-stock rows). Pre-filter improves precision for strict rules but shrinks the searchable pool; post-filter keeps recall but wastes work when stock filters are tight. Payload-aware indexes exist precisely to preserve recall under pre-filter.</p>
+ <p>Latency budgets usually allocate single-digit milliseconds to ANN plus one embedding round trip. Copilot chains may retrieve top-20, rerank with a cross-encoder, then pass five chunks to the LLM — the vector DB still must return a broad candidate set quickly so the reranker has material to judge.</p>
+ <p>Deletion and tombstone paths matter: when a SKU leaves the catalog, vectors must disappear from ANN results before marketing emails quote obsolete pricing. Event-driven consumers listen for delist messages and issue point deletes; periodic compaction reclaims graph edges so searches do not wander through ghost nodes.</p>
  <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
  <div class="architecture-diagram__render mermaid">flowchart TB
  documents_items_events["Documents / Items / Events"]
@@ -210,24 +223,30 @@
  <li>HNSW incremental inserts keep pace with hourly SKU updates without full index rebuilds each night.</li>
  <li>Payload filters combine ANN with <code>in_stock</code> and region rules in one query — critical for lawful catalog answers.</li>
  <li>One index feeds support RAG and browse similarity, amortizing embedding cost.</li>
+ <li>Engine-native sharding and replication primitives scale out read QPS without copying the entire corpus into every app tier.</li>
  </ul>
  </div>
  <div class="pros-cons__col pros-cons__col--cons">
  <h3>Cons</h3>
  <ul>
- <li>Large chunk counts and high-dimensional embeddings plus HNSW graph overhead dominate RAM; size clusters with deliberate headroom with deliberate headroom.</li>
+ <li>Large chunk counts and high-dimensional embeddings plus HNSW graph overhead dominate RAM; size clusters with deliberate headroom and rehearse Black Friday growth on shadow hardware.</li>
  <li>ANN misses the exact neighbor occasionally — unacceptable for compliance keywords unless hybrid BM25 backs retrieval.</li>
  <li>Embedding model upgrades force full re-embed; shadow collections and alias cutover are mandatory.</li>
  <li>Heavy <code>in_stock=true AND region=EU</code> pre-filters shrink candidate pools and hurt recall without partitioned collections.</li>
+ <li>Operating yet another datastore splits expertise — someone must own backup, access control, and on-call playbooks distinct from Postgres and OpenSearch.</li>
  </ul>
  </div>
  </div>
 
  <h2 id="implementation-notes">Implementation notes</h2>
  <p><strong>Embeddings:</strong> Teams index with the same Azure OpenAI embedding deployment used at query time (aligned with <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/use-your-data" rel="noopener noreferrer" target="_blank">Azure “use your data”</a> guidance). Store <code>embedding_model_version</code> on every point.</p>
- <p><strong>HNSW tuning:</strong> Start <code>M=16</code>, <code>ef_construction=100</code>, tune <code>ef_search</code> against catalog golden queries (recall@10 on labeled “expected SKU set”).</p>
+ <p><strong>HNSW tuning:</strong> Start <code>M=16</code>, <code>ef_construction=100</code>, tune <code>ef_search</code> against catalog golden queries (recall@10 on labeled “expected SKU set”). For billion-scale shards, IVF with carefully chosen <code>nlist</code> can reduce RAM at the cost of build-time clustering jobs.</p>
  <p><strong>Metadata:</strong> Index <code>category_path</code>, <code>price_band</code>, and compliance flags for pre-filter; copilot passes shopper locale into the filter expression on every ANN call.</p>
  <p><strong>Lifecycle:</strong> Keep raw chunk text in object storage; rebuild vectors into a shadow collection when dimensions or models change, then flip the alias used by RAG and search.</p>
+ <p><strong>Chunking:</strong> Product pages split on semantic boundaries (care instructions vs marketing fluff) so ANN does not return irrelevant paragraphs. Overlap windows (50–100 tokens) reduce edge-cut misses when shoppers quote mid-paragraph phrases.</p>
+ <p><strong>Operations:</strong> Monitor insert lag, graph build queue depth, and recall@K weekly on held-out query sets. Plan replica counts for multi-region read paths where GDPR keeps EU indexes separate from US corpora.</p>
+ <p><strong>Security:</strong> Treat the index as sensitive merchandising IP — restrict who can export raw vectors, audit copilot retrieval logs, and scrub PII from chunks before embedding support transcripts.</p>
+ <p><strong>Cost:</strong> Embedding every variant description nightly is linear in token count; debounce embed jobs on low-signal attribute tweaks and batch text through the same rate-limited deployment used at query time.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
@@ -235,6 +254,8 @@
  <li><strong>RAM underestimate:</strong> Black Friday growth fills HNSW RAM; pods OOM mid-query. Autoscale memory from observed graph size, not raw vector bytes alone.</li>
  <li><strong>Filter starvation:</strong> Aggressive stock filters return three neighbors; copilot hallucinates gaps. Partition by region or widen <code>ef_search</code> when filters bite.</li>
  <li><strong>Stale vectors:</strong> Discontinued SKUs remain searchable until tombstone deletes run on <code>ProductDelisted</code> events.</li>
+ <li><strong>Chunk drift:</strong> Merchandising rewrites titles without re-embed jobs — ANN returns outdated claims until the write path catches up.</li>
+ <li><strong>Unbalanced shards:</strong> Hot categories dominate one IVF partition; latency spikes even when average QPS looks healthy.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
@@ -245,6 +266,8 @@
  <li>Do payload indexes cover every mandatory filter (region, stock, age gate)?</li>
  <li>Is canonical chunk text retained for full re-embed on model change?</li>
  <li>When should teams duplicate collections per locale vs. one global index with filters?</li>
+ <li>Is hybrid BM25 documented with merge weights and fallback when ANN returns empty post-filter results?</li>
+ <li>Who owns on-call for index lag, and what is the maximum acceptable minutes between PIM publish and searchable vectors?</li>
  </ul>
 
  <h2 id="example-use-cases">Example use cases</h2>

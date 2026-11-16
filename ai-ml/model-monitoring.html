@@ -99,31 +99,37 @@
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
  
- <p><strong>Model monitoring</strong> for an e-commerce retailer’s <strong>Catalog search ranking</strong> watches whether live traffic still matches what the ranker was trained on. <strong>Data drift</strong> compares query, session, and product features to the training baseline. <strong>Prediction drift</strong> tracks score distributions and rank positions. When click or purchase labels arrive, <strong>performance monitoring</strong> recomputes NDCG and related metrics against offline benchmarks.</p>
- <p>APM latency and error rates are not enough — The team's ranker can answer every gRPC call quickly while silently reordering search into irrelevance. Monitoring operates on semantics: features, scores, and eventual labels, tied to model version in the prediction log.</p>
+ <p><strong>Model monitoring</strong> observes production ML beyond CPU graphs: it tracks whether inputs, outputs, and delayed labels still match what the model was trained to handle. Traditional APM reports healthy latency while ranking or fraud scores drift into nonsense; ML monitoring works at the semantic layer — features, scores, calibration, and business proxies — tied to model version on every log row.</p>
+ <p>Signal types stack together. <strong>Data drift</strong> compares live feature distributions to the training baseline — shoppers search differently, fraudsters change tactics, sensors recalibrate. <strong>Concept drift</strong> means the relationship between inputs and the target shifted even when marginals look stable. <strong>Prediction drift</strong> watches score or label distributions over time as a leading indicator when labels lag. <strong>Performance monitoring</strong> recomputes precision, NDCG, RMSE, or SLA metrics when ground truth arrives.</p>
+ <p>For an e-commerce <strong>catalog search ranking</strong> service, that means logging each query’s features and scores, comparing session and category mix to the training window, and joining clicks days later to recompute NDCG — not merely checking that the gRPC tier returns 200 responses.</p>
+ <p>Latency, error rate, and GPU utilization belong in the same executive view, but they answer a different question: whether the scoring tier is up, not whether it is still ranking sensibly for the traffic mix arriving this hour.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
- <p>The team shipped a new ranking model after a strong offline NDCG gain, then saw conversion soften over two weeks. No exceptions fired; load balancers were green. Query mix had shifted (more mobile, more long-tail SKUs) and competitor pricing changed item click propensity — classic drift the model never saw at train time.</p>
- <p>Without monitoring, Catalog discovers problems through revenue dashboards. With it, PSI on session features and score histogram shifts page the team before shoppers churn. Logged predictions joined to delayed click labels also feed the next <a href="training-pipelines.html">training pipeline</a> run instead of one-off exports from serving logs.</p>
+ <p>Models degrade without exceptions. A ranker can serve every request at low latency while silently ordering search results into irrelevance; load balancers stay green until conversion or support tickets move weeks later. Root cause then spans feature pipelines, embeddings, and promo traffic — expensive detective work.</p>
+ <p>Real-world distributions are non-stationary: campaigns, seasonality, new categories, competitor pricing, and mobile mix shifts change the query and catalog regime. Historical training slices become progressively less representative. Monitoring exposes when the live population crossed from “in distribution” to “needs retrain or rollback” before revenue dashboards scream.</p>
+ <p>Deliberate prediction logging also feeds continuous improvement. Pairing requests with eventual click or purchase labels builds labeled datasets for the next <a href="training-pipelines.html">training pipeline</a> run — but only if architects design join keys, sampling, and retention up front instead of scraping serving logs after an incident.</p>
+ <p>Infrastructure metrics remain necessary: GPU utilization, queue depth, and autoscaling errors explain serving outages. ML monitoring complements that layer; it does not replace it. Healthy pods plus drifting scores is a common failure mode during campaign weeks.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
- <li>A ranking (or any revenue-facing model) where wrong orderings have direct business impact.</li>
- <li>Non-stationary catalog traffic — seasonality, campaigns, new categories.</li>
- <li>Delayed labels (clicks, purchases) require proxy metrics and drift detectors between label arrivals.</li>
- <li>Canary or shadow rollouts need per-version drift and performance comparison.</li>
+ <li>Revenue- or safety-facing models where wrong outputs have direct business or compliance impact.</li>
+ <li>Non-stationary input streams: user behavior, pricing, fraud, logistics ETAs, sensor feeds.</li>
+ <li>Delayed labels (clicks, churn, chargebacks) where proxies and drift detectors must bridge the gap.</li>
+ <li>Canary or shadow rollouts that require per-version drift and performance comparison.</li>
+ <li>Regulated settings needing an auditable time series of model behavior and interventions.</li>
+ <li>Fleet or pricing models whose inputs shift with geography, season, or contract — segment dashboards are mandatory.</li>
  </ul>
 
  <h2 id="when-not-to-use">When not to use</h2>
  <ul>
- <li>One-off batch scores with no continuous serving — skip full prediction-log pipelines.</li>
- <li>Internal sanity-check models where humans review every output anyway.</li>
- <li>Truly static backtest-only models — rare in The team's live catalog.</li>
+ <li>One-time batch scoring with no continuous serving path — full prediction-log plumbing may be overkill.</li>
+ <li>Low-risk internal tools where humans review every output and errors are cheap.</li>
+ <li>Truly static backtests never connected to live data — rare for customer-facing catalog or dispatch systems.</li>
  </ul>
 
  <h2 id="typical-architecture">Typical architecture</h2>
- <p>The team's <a href="model-serving.html">serving</a> layer logs each ranking request to Kafka or BigQuery as in the diagram. Drift jobs compare live features and scores to training baselines; the ground-truth collector joins clicks when they arrive; dashboards show drift heatmaps and NDCG trends; alerts can trigger retraining or rollback.</p>
- <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+ <p>The flow below starts at <a href="model-serving.html">serving</a>: each ranking request lands in a durable prediction log. Batch or stream jobs run drift statistics; a ground-truth collector joins labels when they arrive; an accuracy engine computes ranking or classification metrics; dashboards layer feature heatmaps, score histograms, and latency; alerting routes breaches to on-call or to an <a href="mlops.html">MLOps</a> retrain trigger with human approval where appropriate.</p>
+<figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
  <div class="architecture-diagram__render mermaid">flowchart TB
  serving_layer["SERVING LAYER"]
  prediction_log_store["PREDICTION LOG STORE"]
@@ -186,47 +192,53 @@
  </details>
  <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Read top to bottom; boxes show components and lines show data or call flow.</figcaption>
  </figure>
-
- <h2 id="pros-and-cons">Pros and cons</h2>
+<h2 id="pros-and-cons">Pros and cons</h2>
  <div class="pros-cons">
  <div class="pros-cons__col pros-cons__col--pros">
  <h3>Pros</h3>
  <ul>
- <li>The team catches ranking drift before conversion dashboards move — PSI on query features often leads NDCG drops.</li>
- <li>Click joins build labeled search datasets for the next training run automatically.</li>
- <li>Drift highlights broken feature pipelines upstream of the ranker, not only model weights.</li>
- <li>Version-tagged logs support incident replay and stakeholder audits.</li>
- </ul>
+ <li>Drift on query and session features often leads NDCG drops — teams react before conversion moves.</li>
+ <li>Click joins build labeled search datasets for retraining without ad hoc log archaeology.</li>
+ <li>Upstream feature pipeline failures surface as feature drift, not only as mysteriously bad weights.</li>
+ <li>Version-tagged logs support incident replay, stakeholder review, and regulatory audit.</li>
+ <li>Proxy metrics (search CTR, add-to-cart from search) cover label delay when clicks lag impressions.</li>
+ <li>Chi-square and population-stability tests on categorical query intents catch campaign-driven mix shifts early.</li>
  </div>
  <div class="pros-cons__col pros-cons__col--cons">
  <h3>Cons</h3>
  <ul>
- <li>Click labels lag impressions — NDCG is always retrospective unless proxies are used.</li>
- <li>Holiday catalog shifts trigger false drift alerts without segment-aware thresholds.</li>
- <li>Full feature logging at search volume is costly — sampling must preserve segment stats.</li>
- <li>Bad thresholds either fatigue on-call or miss slow ranking erosion.</li>
+ <li>Click labels lag impressions — accuracy metrics are always somewhat retrospective.</li>
+ <li>Legitimate seasonality triggers false drift without segment-aware baselines and severity tiers.</li>
+ <li>Full feature logging at search volume is costly — sampling must preserve segment statistics.</li>
+ <li>Poor thresholds create alert fatigue or miss slow erosion — calibration is per-model work.</li>
+ <li>Concept drift can hide inside stable marginals — prediction and business proxies must complement KS/PSI.</li>
  </ul>
  </div>
  </div>
 
  <h2 id="implementation-notes">Implementation notes</h2>
- <p>Log <code>query_id</code>, timestamp, model version, candidate SKU list, feature vector (or hash + sample), and scores for every ranking call — same schema for canary and production.</p>
- <p>Until clicks arrive, monitor search CTR, add-to-cart from search, and score distribution stability as proxies. Stratify drift by device, category, and logged-in vs guest — aggregate stability can hide mobile-only shifts.</p>
- <p>Run KS/PSI on features in the <strong>transformed</strong> space the ranker sees (normalized price, embedding norms), not raw warehouse columns.</p>
- <p>Wire critical drift to human review before auto-retrain — a broken feature store can look like concept drift.</p>
+ <p><strong>Log schema:</strong> Capture <code>query_id</code>, timestamp, model version, candidate list, features (or hashed/sampled payloads), and scores on every ranking call — identical schema for canary and production shards.</p>
+ <p><strong>Label delay:</strong> Until clicks arrive, monitor search CTR, add-to-cart from search, and score stability. Stratify drift by device, category, and logged-in vs guest — aggregate stability can hide mobile-only shifts.</p>
+ <p><strong>Transformed space:</strong> Run KS, PSI, or chi-square on features in the space the model consumes — normalized price, embedding norms — not raw warehouse columns that never reach the graph.</p>
+ <p><strong>Human gates:</strong> Wire critical drift to review before auto-retrain; a broken feature store can mimic concept drift and poison the next training cut.</p>
+ <p><strong>Sampling:</strong> If storage cost forces sampling, prove sample rates support segment-level drift and unbiased click joins — survivorship bias in labels is a common NDCG trap.</p>
+ <p><strong>Baselines:</strong> Store training-window histograms and quantiles as versioned artifacts beside the model; drift jobs should compare live traffic to the exact slice that produced the registered artifact, not an informal “last month.”</p>
+ <p><strong>Ownership:</strong> Name a model owner on-call rotation for monitoring dashboards separate from generic platform paging — ranking teams interpret NDCG moves faster than central SRE alone.</p>
+ <p><strong>Integration with MLOps:</strong> Alert webhooks should open retrain tickets with links to drift charts and registry stages rather than only posting raw PSI numbers to a chat channel.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
- <li><strong>Alert fatigue:</strong> Black Friday traffic shifts features yearly — tune seasonal baselines and severity tiers.</li>
+ <li><strong>Alert fatigue:</strong> Holiday traffic shifts features yearly — tune seasonal baselines and severity tiers instead of one global PSI threshold.</li>
  <li><strong>Biased click joins:</strong> Logging only clicked impressions inflates NDCG — sample impressions representatively.</li>
  <li><strong>Wrong feature space:</strong> Drift on list price while the model consumes log-scaled price misses the real shift.</li>
- <li><strong>Blind auto-retrain:</strong> Retraining on a week of bad embeddings locks in the failure — validate data before pipeline trigger.</li>
+ <li><strong>Blind auto-retrain:</strong> Retraining on a week of corrupted embeddings locks in failure — validate data before pipeline trigger.</li>
+ <li><strong>APM-only ops:</strong> Green latency masks ranking collapse — require semantic dashboards in on-call runbooks.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
  <ul class="checklist">
- <li>Does every A ranking log include features, scores, model version, and request ID?</li>
- <li>What is click label delay, and which proxies fire first?</li>
+ <li>Does every ranking log include features, scores, model version, and request ID?</li>
+ <li>What is click label delay, and which proxy metrics fire first?</li>
  <li>Are drift thresholds set per segment (mobile, category, locale)?</li>
  <li>Does alerting require human approval before retrain or rollback?</li>
  <li>Is log sampling statistically valid for segment-level drift?</li>
@@ -239,6 +251,7 @@
             <li><strong>Illustrative scenario —</strong> <strong>Meridian ranking drift:</strong> PSI on session depth and category mix fires when a campaign steers traffic; score histograms shift before NDCG on delayed clicks confirms degradation.</li>
             <li><strong>Illustrative scenario —</strong> <strong>Canary comparison:</strong> Side-by-side drift and proxy CTR for v1.2 vs v1.3 during the canary window shown in the serving diagram.</li>
             <li><strong>Illustrative scenario —</strong> <strong>Retrain trigger:</strong> Sustained drift plus NDCG drop opens a ticket to rerun Catalog’s training pipeline on recent logged features and clicks.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Fraud scoring (secondary):</strong> A payments team uses the same prediction-log pattern with chargeback labels arriving weeks later, relying on proxy dispute rates between label batches.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -255,8 +268,9 @@
             <li><a href="https://docs.whylabs.ai/docs/" rel="noopener noreferrer" target="_blank">WhyLabs Documentation</a> — whylogs profiles and drift monitoring workflows.</li>
             <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/model-monitor.html" rel="noopener noreferrer" target="_blank">Amazon SageMaker Model Monitor</a> — managed data-quality and bias monitoring on endpoints.</li>
             <li><a href="https://www.oreilly.com/library/view/building-machine-learning/9781492053187/" rel="noopener noreferrer" target="_blank">Building Machine Learning Powered Applications</a> — Emmanuel Ameisen (O'Reilly) on shipping and observing ML in production.</li>
+            <li><a href="https://evidentlyai.com/blog/ml-monitoring-101" rel="noopener noreferrer" target="_blank">ML Monitoring 101 – Evidently AI</a></li>
           </ul>
-        </div>
+        </div></div>
         </div>
 
         <aside class="article-aside">

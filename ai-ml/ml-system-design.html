@@ -106,6 +106,7 @@
  <p>The team's data science team shipped strong offline NDCG in a notebook, but production search still used a static sort key. Training pulled features from nightly SQL while the API computed rolling counts in Redis, so live ranking quietly diverged from what was learned — a classic training-serving skew problem Google’s <em>Rules of ML</em> treat as a top reliability risk.</p>
  <p>Ranking also feeds on its own outputs: models trained only on clicks reinforce what was already shown. Without logged impressions, held-out evaluation, and monitoring tied to business KPIs, teams cannot tell whether a release helped shoppers or amplified a feedback loop.</p>
  <p>Platform architecture turns “we retrain when someone remembers” into versioned data, reproducible pipelines, and alerts when distributions or conversion move — the same lifecycle Azure’s MLOps v2 guidance and AWS’s Machine Learning Lens describe for managed production ML.</p>
+ <p>ML behavior is data-dependent: a partner feed glitch can shift rankings without any deploy. Reproducibility therefore covers data snapshots, container images, random seeds, and feature-store pointers — not only git SHA on the training script. Teams that treat “model shipped” as the finish line usually rediscover the same skew and leakage bugs on the next seasonal release.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
@@ -224,6 +225,8 @@
  <p><strong>One feature definition:</strong> Product popularity, user affinity, and price-band signals are registered once in the feature store and used for point-in-time offline joins and online lookups — matching Google’s guidance to test serving skew early.</p>
  <p><strong>Metadata on every artifact:</strong> Each training run records data cut, git SHA, hyperparameters, NDCG@10, and slice metrics (mobile vs desktop). Merchandising promotes only registry entries that beat the incumbent on held-out weeks.</p>
  <p><strong>Safe defaults:</strong> The ranking API falls back to a deterministic sort when the model times out, caps candidate list size for tail latency, and logs impression IDs so offline eval can join clicks without training on unlogged exposure.</p>
+ <p><strong>Environments and contracts:</strong> Mirror dev, staging, and production feature-store namespaces with isolated online stores so experiments never write training keys into live Redis. Add data-contract tests on clickstream and catalog ingestion — block training when null rates or schema drift exceed thresholds agreed with merchandising.</p>
+ <p><strong>CI for models:</strong> Package training as a repeatable pipeline job that emits artifact bundles (weights, transforms, feature manifest). Promotion gates compare slice metrics, latency in shadow traffic, and serving memory — not only headline NDCG from a single validation week.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
@@ -232,6 +235,8 @@
  <li><strong>Feedback loops:</strong> Retraining only on clicks boosted already-visible SKUs; fix by logging impressions, using inverse-propensity or random explore buckets, and monitoring diversity metrics.</li>
  <li><strong>Stale seasonal models:</strong> Holiday inventory shifted but no retrain fired; fix with calendar triggers plus business-metric monitors on conversion, not only statistical drift tests.</li>
  <li><strong>Temporal leakage:</strong> Future purchases leaked into feature windows and inflated offline NDCG; fix with strict event-time splits and point-in-time joins from the offline store.</li>
+ <li><strong>Registry without rollback:</strong> Teams promoted models but kept only the latest artifact; fix by retaining N−1 checkpoints, wiring one-click revert in serving, and rehearsing rollback in game days.</li>
+ <li><strong>Feature store partition bleed:</strong> Staging jobs wrote into production online keys; fix with per-environment API keys, ACLs, and automated checks that training queries cannot target prod serving tables.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
