@@ -99,15 +99,16 @@
           </div>
           <div class="article-content"><h2 id="what-it-is">What it is</h2>
           <p><strong>Premature optimization</strong> is spending engineering effort on speed or scale before evidence shows where time and money actually go. It shows up as clever micro-opts in cold code paths and as heavyweight architecture “for later” — Redis clusters, read replicas, and service splits — while production SLOs are still green.</p>
-          <p>The pattern operates at multiple levels of abstraction. At the code level it manifests as bit manipulation instead of readable arithmetic, manual loop unrolling, and complex data structures (balanced trees when a sorted array would suffice at the expected size). At the architecture level it manifests as caching before a slow query is identified, sharding designed for millions of users when the system has hundreds, CQRS adopted for scalability when traffic is modest, and microservices justified by “independent scale” when traffic is trivially small.</p>
-          <p>Knuth’s full warning is often shortened. He wrote that small efficiencies are usually irrelevant — “premature optimization is the root of all evil” — yet the critical few percent deserve aggressive work. That few percent is found with profiling and load tests, not instinct.</p>
+          <p>Applying performance work before correctness is settled or profiling names a bottleneck adds complexity that slows every later change and often misses the real limiter — network round trips, query plans, and accidental N+1 I/O outrank micro-opts in application code more often than intuition suggests.</p>
+          <p>The pattern operates at multiple levels of abstraction. At the code level it manifests as bit manipulation instead of readable arithmetic, manual loop unrolling, careful avoidance of operations the compiler would fold anyway, and complex data structures (balanced trees when a sorted array would suffice at the expected size). At the architecture level it manifests as caching before a slow query is identified, sharding designed for millions of users when the system has hundreds, CQRS and event sourcing adopted for scalability when traffic is modest, and microservices justified by “independent scale” when traffic is trivially small.</p>
+          <p>Knuth’s full warning is often shortened. He wrote that small efficiencies are usually irrelevant about 97% of the time — “premature optimization is the root of all evil” — yet we should not pass up opportunities in the critical few percent. That few percent is found with profiling and load tests, not instinct; guessing the hot path is systematically wrong without measurement.</p>
           <p>A common shape is rewriting hot-path arithmetic with manual struct packing and bespoke object pools before APM shows p95 latency already meets SLO under peak load — while a single database query missing an index on the real access pattern dominates end-to-end time. That is the mismatch Azure’s performance-efficiency guidance calls out when teams optimize components instead of measuring full request paths.</p>
 
           <h2 id="why-it-exists">Why it emerges</h2>
           <p>Performance-minded engineers feel productive when they shrink allocations or debate Big-O in review. Micro-optimizing a tight loop is more satisfying than waiting for staging traces or load-test output. The clever micro-optimization is intellectually satisfying in a way that readable, correct code is not, which creates a psychological bias toward optimization even when it is not warranted.</p>
           <p>Scale anxiety does the same at the architecture layer. Teams that have lived through a performance crisis develop a protective instinct: design for 100× current load so nobody is caught unprepared again. That instinct is not irrational — crises are career-defining — but the response often adds caching, sharding, async queues, and read replicas before the scale that would require them exists. The components add operational overhead and failure modes with no current benefit.</p>
           <p>Cargo culting big-tech playbooks amplifies the mistake. When widely publicized hyperscaler architectures become the default mental model, teams building modest internal tools adopt the same patterns because “that is what serious systems use.” Architecture is a set of trade-offs, not a quality badge. Patterns that fit global streaming traffic are catastrophically over-engineered for dozens of requests per minute.</p>
-          <p>The appropriate architecture satisfies <em>actual</em> constraints, not hypothetical futures that may never arrive.</p>
+          <p>The appropriate architecture satisfies <em>actual</em> constraints, not hypothetical futures that may never arrive. A dashboard for fifty daily active users does not need the same topology as a consumer product measured in millions of requests per second — yet review decks often import the latter without translating constraints.</p>
 
           <h2 id="when-to-use">How it manifests</h2>
           <ul>
@@ -117,6 +118,8 @@
             <li>Infra bills rise for CDN edges, premium cache SKUs, and extra gateway capacity with no SLO breach to justify them.</li>
             <li>Review threads spend hours on allocation strategy while nobody has opened an end-to-end trace for the slowest user-facing endpoint.</li>
             <li>Technical decisions cite “when we scale” without a validated projection of when or whether that scale arrives.</li>
+            <li>Engineers debate two design approaches for hours without checking whether either path is near a measured performance constraint.</li>
+            <li>Architecture includes CDNs, read replicas, or distributed caches with no current traffic justification, adding operational cost and failure modes.</li>
           </ul>
 
           <h2 id="when-not-to-use">How to recognize it early</h2>
@@ -221,6 +224,8 @@
                 <li><strong>Lost capacity:</strong> Weeks on micro-opts do not ship launch blockers or fix missing indexes SREs already flagged in slow-query logs.</li>
                 <li><strong>Recurring cost:</strong> Extra cache and CDN spend becomes FinOps “baseline” even when traffic flatlines seasonally.</li>
                 <li><strong>Reversibility:</strong> Architectural bets (sharding, event sourcing, multi-region caches) are harder to unwind than a bad loop; teams optimize code instead of right-sizing infra once over-provisioned capacity is “normal.”</li>
+                <li><strong>Correctness risk:</strong> Hand-optimized concurrent code and premature cache layers accept invalidation and race-condition bugs for throughput wins that profiling never proved were necessary.</li>
+                <li><strong>Opportunity cost:</strong> Capacity spent tuning cold paths does not fix missing indexes, chatty I/O, or launch blockers that traces already flagged.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -231,6 +236,8 @@
                 <li><strong>Performance budgets:</strong> Critical APIs carry p99 targets; optimize only when dashboards show sustained violation, not engineer hunch.</li>
                 <li><strong>Defer irreversible scale-out:</strong> Stay on monolith + primary database + one cache until load tests fail budgets; treat sharding and multi-region as Type 1 decisions.</li>
                 <li><strong>Measurement before launch:</strong> Instrument tracing, query timing, and resource metrics from day one so the critical 3% of code can be named from production data, not review intuition.</li>
+                <li><strong>Simple-first deployment:</strong> Ship monolith plus primary database; add cache, replicas, or splits only when load tests breach documented budgets — not when slides assume unicorn traffic.</li>
+                <li><strong>SLO-triggered work:</strong> Treat optimization like incident response: open a perf ticket only when p95 or p99 violates an agreed threshold for a full measurement window.</li>
               </ul>
             </div>
           </div>
@@ -240,6 +247,8 @@
           <p>Human intuition mis-ranks bottlenecks. Engineers overweight CPU in application code and underweight one N+1 lookup or missing index; traces often invert that ranking after a single realistic load test. Decades of experience confirm that guesswork about hot paths is systematically wrong: network round trips, query plans, and allocation patterns dominate more often than micro-opts in application code.</p>
           <p>Architectural premature optimization is harder to unwind than a bad loop. Splitting one deployable into several services “for independent scale” can mean weeks of contract tests to merge back. CQRS for a straightforward history use case is worse. The disciplined default is the simplest topology that meets <em>today’s</em> traffic and SLOs. The right question is not “will we ever need this?” but “do we need this today, and is the cost of not having it higher than the cost of adopting it now?” For most early-stage systems the answer is no.</p>
           <p>Use Bezos’s two-door frame: caching session tokens is Type 2 until traffic proves otherwise; multi-region active-active core paths are Type 1. Premature optimization promotes Type 2 bets to Type 1 commitments without evidence — microservices, distributed caches, and event-sourced cores become expensive to reverse before requirements justify them.</p>
+          <p>Establish the performance contract early: define SLOs, instrument traces from the first deployable, and run query timing against production-shaped datasets in staging. Without that baseline, “make it fast” reviews substitute folklore for data and reward the cleverest diff instead of the measured win.</p>
+          <p>When a team cannot articulate quantified upside — “p99 dropped from 800&nbsp;ms to 200&nbsp;ms at measured concurrency” — the optimization may be solving a problem that does not exist yet. Require that language in design notes the same way security reviews require threat models.</p>
 
           <h2 id="common-failure-modes">Escalation patterns</h2>
           <ul>
@@ -247,6 +256,7 @@
             <li><strong>Cache spiral:</strong> List caching ships before query fixes; stale data under peak load forces a second cache tier and a reconciliation job. Invalidation complexity introduces bugs that are harder to fix than the original performance gap.</li>
             <li><strong>Cost normalization:</strong> FinOps budgets assume premium cache clusters forever; right-sizing gets deprioritized behind feature OKRs. Over-provisioned infra survives because “we might need it at peak.”</li>
             <li><strong>Test drag:</strong> Micro-optimized paths need flaky environment-specific tests; CI time rises while product coverage stalls.</li>
+            <li><strong>Invalidation spiral:</strong> Premature caches introduce stale data incidents; fixes add sophistication until the cache layer is harder to reason about than the database it was meant to spare.</li>
           </ul>
 
           <h2 id="decision-checklist">Diagnostic checklist</h2>
