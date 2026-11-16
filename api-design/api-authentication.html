@@ -107,6 +107,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>HTTP does not carry sessions unless you add them. Sending passwords on every request exposes credentials, prevents scoped delegation to third-party apps, and offers no practical revocation path. OAuth 2.0 separates the <em>authorisation server</em> (issues tokens) from <em>resource servers</em> (consume tokens), so partners get least-privilege, time-bounded credentials without sharing user passwords.</p>
           <p>OpenID Connect adds a standard login outcome: an <code>id_token</code> (JWT) with subject and profile claims for the client, while access tokens gate API calls. That split keeps authentication policy centralised and lets dozens of microservices validate the same token format.</p>
+          <p>Machine-to-machine flows lean on client-credentials grants with narrow scopes; user-delegated flows use authorisation code with PKCE for public clients. Document which token formats each route accepts—mixing opaque introspection and local JWT validation on the same route without clarity doubles latency and complicates revocation. Auth endpoints themselves warrant stricter rate limits and anomaly detection than business APIs because they are the blast radius for credential stuffing.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -123,7 +124,7 @@
           <ul>
             <li><strong>Implicit flow</strong> — removed from OAuth 2.0 Security BCP; tokens in URL fragments leak via history and referrer. Use Authorization Code + PKCE.</li>
             <li><strong>Resource Owner Password Credentials</strong> — legacy only; trains users to type passwords into third-party apps. Prefer OIDC login redirects.</li>
-            <li><strong>Long-lived JWTs without refresh rotation</strong> — stolen bearer tokens remain valid until <code>exp</code>; pair short access tokens with refresh-token rotation (<a href="https://datatracker.ietf.org/doc/html/draft-ietf-oauth-refresh-token-rotation" rel="noopener noreferrer" target="_blank">rotation BCP</a>).</li>
+            <li><strong>Long-lived JWTs without refresh rotation</strong> — stolen bearer tokens remain valid until <code>exp</code>; pair short access tokens with refresh-token rotation per <a href="https://datatracker.ietf.org/doc/html/rfc9700" rel="noopener noreferrer" target="_blank">RFC 9700</a> (OAuth 2.0 Security BCP).</li>
             <li><strong>API keys in front-end bundles</strong> — any user can extract them; use an OAuth public client and PKCE instead.</li>
           </ul>
 
@@ -210,6 +211,13 @@
 
           <h3>API keys and mTLS</h3>
           <p>Hash API keys at rest; expose only a prefix for support lookup. Attribute every call to a consumer ID for rate limits and audit. For mTLS, map certificate SAN (SPIFFE URI, DNS) to service principals; automate rotation via the mesh or cert-manager.</p>
+
+          <h3>Token lifetimes and OAuth 2.1 practice</h3>
+          <p><a href="https://www.rfc-editor.org/rfc/rfc6749.html" rel="noopener noreferrer" target="_blank">RFC 6749</a> and <a href="https://www.rfc-editor.org/rfc/rfc6750.html" rel="noopener noreferrer" target="_blank">RFC 6750</a> define bearer usage; <a href="https://www.rfc-editor.org/rfc/rfc7519.html" rel="noopener noreferrer" target="_blank">RFC 7519</a> JWTs often carry access tokens but are not mandatory. OAuth 2.1 consolidates BCPs: public clients use PKCE (<a href="https://www.rfc-editor.org/rfc/rfc7636.html" rel="noopener noreferrer" target="_blank">RFC 7636</a>), implicit and password grants are removed from recommended profiles. Typical access-token TTLs run five to sixty minutes; refresh tokens rotate on use with reuse detection. Validate issuer, audience, and <code>exp</code> with clock skew of thirty to sixty seconds. Prefer token introspection (<a href="https://www.rfc-editor.org/rfc/rfc7662.html" rel="noopener noreferrer" target="_blank">RFC 7662</a>) for opaque tokens at resource servers when local JWT validation is insufficient.</p>
+          <h3>Detection</h3>
+          <p>Spikes in <code>401</code> without matching traffic growth suggest clock skew, wrong audience, or mass key rotation without client updates. Monitor introspection latency—central auth becoming a synchronous dependency on every request needs caching with tight TTL and breach revocation paths.</p>
+          <p>Document which flows are supported (authorisation code + PKCE for public clients, client credentials for service accounts) and explicitly ban implicit and resource-owner-password in new integrations. Rotate signing keys with overlapping JWKS keys (<code>kid</code> in header) so validators pull new keys without hard downtime.</p>
+          <p>Brute-force detection on token and login endpoints belongs beside rate limiting—authentication failures per IP and per username should feed separate counters with lower thresholds than general API quota.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
