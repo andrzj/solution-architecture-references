@@ -101,8 +101,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A read replica is a database instance that maintains a continuously updated copy of the primary (write) database by consuming the primary's replication stream (WAL in PostgreSQL, binlog in MySQL, redo log in Oracle). The replica accepts read-only queries, freeing the primary to focus exclusively on writes and critical reads. Applications route SELECT queries to replicas and INSERT/UPDATE/DELETE queries to the primary, effectively separating the read and write scaling planes.</p>
-          <p>Most cloud-managed database services support read replicas natively: AWS RDS and Aurora allow up to 15 replicas; Google Cloud SQL supports up to 10; Azure Database for PostgreSQL supports up to 5. Aurora takes this further with a shared-storage architecture where all replicas read from the same distributed storage layer, eliminating replication lag almost entirely and reducing replica creation time to seconds rather than hours for large databases.</p>
+          <p>A read replica is a read-only database instance that applies the primary's replication stream (PostgreSQL WAL, MySQL binlog, SQL Server transaction log) and serves SELECT traffic while the primary handles writes. Routing separates two scaling planes: write throughput stays bounded by the primary, while read throughput grows with the number of healthy replicas behind a connection router or proxy.</p>
+          <p>Managed engines expose replicas as first-class resources—Amazon RDS and Aurora, Google Cloud SQL, Azure Database for PostgreSQL—each with different replica limits and lag characteristics. Aurora's shared storage layer keeps replica lag typically under tens of milliseconds because replicas read from the same distributed volume instead of replaying a byte stream. Classic streaming replicas still depend on apply speed and network bandwidth between regions.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Most OLTP databases have highly asymmetric read/write ratios — typically 80–95% of operations are reads. A single write primary is often underutilized in terms of read capacity while being CPU-saturated from index scans, sorts, and aggregate queries. Read replicas allow read throughput to be scaled independently of write throughput. Adding 4 replicas with identical specs effectively multiplies read capacity by 5× at the cost of only 4 extra instances — far cheaper than sharding the database or moving to a NoSQL alternative.</p>
@@ -127,17 +127,17 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Writes hit the primary; read traffic spreads across replicas with optional read-your-writes LSN tokens.</p>
+          <p>Writes always land on the primary; a router load-balances reads across replicas and can pin sessions to the primary after writes when read-your-writes consistency matters.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    app["Application"]
-    app -->|writes| pri["Primary R/W"]
-    pri -->|WAL| r1["Replica 1"]
-    pri --> r2["Replica 2"]
-    app -->|reads| proxy["Read proxy"]
+    app["Application tier"]
+    app -->|INSERT UPDATE DELETE| pri["Primary read/write"]
+    pri -->|replication stream| r1["Read replica AZ-a"]
+    pri --> r2["Read replica AZ-b"]
+    app -->|SELECT| proxy["RDS Proxy ProxySQL PgBouncer"]
     proxy --> r1
     proxy --> r2
-    token["Read-your-writes LSN token"]</div>
+    app -.->|read-your-writes fallback| pri</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -178,7 +178,7 @@
   Replica 2 ◄─read─┘
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Primary streams WAL to replicas via proxy; Aurora shared storage reduces replica lag.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Primary replicates to read-only nodes; the router spreads SELECT traffic and can fall back to the primary for read-your-writes.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -206,9 +206,10 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Replication lag monitoring is critical.</strong> Set up CloudWatch alarms (for RDS: ReplicaLag metric), Prometheus alerts, or database-level monitoring on replica_lag_seconds. A common threshold is &gt;30 seconds, which indicates the replica is falling behind and reads from it may be significantly stale. During high write load (bulk imports, mass updates), replica lag can spike to minutes. Application code should be prepared to fall back to the primary for critical reads if replica lag exceeds a configurable threshold.</p>
-          <p><strong>Read-your-writes consistency:</strong> After a user submits a form, they expect to see their submission reflected immediately. If the subsequent page load reads from a replica with lag, the user's own data may appear absent. The standard solution is session-level read routing: immediately after a write, route the user's subsequent reads to the primary for a brief window (e.g., 30 seconds), or use PostgreSQL LSN tracking to route reads to a replica only after it has caught up to at least the write LSN. Some ORMs (Sequelize, SQLAlchemy) and database proxies (RDS Proxy) support this natively.</p>
-          <p>For non-critical reads (leaderboards, recommendations), replica staleness is typically acceptable.</p>
+          <p><strong>Measure lag before routing.</strong> Export <code>ReplicaLag</code> (RDS/Aurora), <code>pg_stat_replication</code> replay lag, or ProxySQL <code>ConnUsed</code> vs lag gauges into the same dashboard as API latency. Alert when lag exceeds the staleness budget for each query class—reporting may tolerate 60s; account balances may tolerate none.</p>
+          <p><strong>Read-your-writes routing:</strong> Three practical options: (1) sticky primary for N seconds after any write in the session; (2) return the PostgreSQL LSN or MySQL GTID with the write response and only read from a replica whose position is ≥ that token; (3) offload hot keys to <a href="caching-strategies.html">Redis</a> on the write path so the next read never touches a lagging replica. Pair replicas with a short-TTL cache only when invalidation on write is explicit—replicas are not a substitute for cache coherence.</p>
+          <p><strong>Connection pools:</strong> Size write and read pools independently. Replicas often need more connections because they absorb fan-out traffic; the primary pool should stay small enough that long transactions cannot starve writers. Use separate DSNs or proxy rules so migrations and DDL never target replicas.</p>
+          <p>For eventually consistent reads (leaderboards, recommendations), document the maximum acceptable lag in the API contract and route those endpoints only to replicas whose lag gauge is within bounds.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -231,9 +232,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>SaaS dashboard queries:</strong> An analytics dashboard performs expensive aggregate queries that take 2–10 seconds each. Routing these to a dedicated read replica prevents them from competing with OLTP writes on the primary, improving both dashboard performance and primary write latency.</li>
-            <li><strong>Content platform homepage feeds:</strong> A publishing platform serves its homepage feed (a read-heavy query joining articles, tags, and authors) from a read replica, allowing the primary to focus exclusively on new article publications and comment writes.</li>
-            <li><strong>Data export jobs:</strong> A nightly export job that reads millions of rows is directed to a replica, preventing it from holding read locks and impacting primary performance during business hours.</li>
+            <li><strong>Illustrative scenario — analytics slice:</strong> An operations dashboard runs heavy aggregates. Queries route to a dedicated replica so OLTP writes on the primary keep sub-100ms latency while dashboards run multi-second reports.</li>
+            <li><strong>Illustrative scenario — publishing feed:</strong> A content API serves homepage feeds from replicas; publish and comment writes stay on the primary with a 30-second read-pin window after each author action.</li>
+            <li><strong>Case study — Amazon Aurora:</strong> Aurora replicas share the storage volume with the writer, giving many teams replica lag low enough to serve nearly fresh reads without a separate cache tier for catalog data.</li>
+            <li><strong>Illustrative scenario — nightly export:</strong> A compliance export scans millions of rows against a cross-region replica so long table scans never contend with checkout writes in the primary region.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -245,9 +247,11 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Aurora.Replication.html" target="_blank" rel="noopener noreferrer">Amazon Aurora — Replication with Aurora Replicas</a></li>
-            <li><a href="https://www.postgresql.org/docs/current/warm-standby.html" target="_blank" rel="noopener noreferrer">PostgreSQL — Warm Standby and Streaming Replication</a></li>
-            <li><a href="https://github.com/sysown/proxysql" target="_blank" rel="noopener noreferrer">ProxySQL — GitHub repository</a> — read/write split and query routing.</li>
+            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Aurora.Replication.html" target="_blank" rel="noopener noreferrer">Amazon Aurora — replication with Aurora Replicas</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/hot-standby.html" target="_blank" rel="noopener noreferrer">PostgreSQL — hot standby and streaming replication</a></li>
+            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy.html" target="_blank" rel="noopener noreferrer">Amazon RDS Proxy — connection pooling and routing</a></li>
+            <li><a href="https://proxysql.com/documentation/read-write-split-howto/" target="_blank" rel="noopener noreferrer">ProxySQL — read/write split how-to</a></li>
+            <li><a href="https://redis.io/docs/manual/patterns/" target="_blank" rel="noopener noreferrer">Redis — caching patterns (complement replicas for hot reads)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

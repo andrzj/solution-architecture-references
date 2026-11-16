@@ -101,8 +101,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A Content Delivery Network (CDN) is a globally distributed network of proxy servers (called Points of Presence, or PoPs) that cache and serve content from locations geographically close to end users. When a user requests a resource, their request is routed by Anycast DNS to the nearest PoP. If the PoP has the content cached (a cache hit), it serves the response locally at sub-10ms latency. If not (a cache miss), it fetches from the origin server, caches the response, and serves it. Subsequent requests for the same resource from the same PoP region are served from cache without touching the origin.</p>
-          <p>CDNs were originally designed for static assets (images, CSS, JavaScript, video), but modern CDNs like Cloudflare, Fastly, and AWS CloudFront are capable of caching dynamic API responses, terminating TLS at the edge, running application logic at PoPs (edge computing via Lambda@Edge or Cloudflare Workers), providing DDoS protection, and accelerating dynamic content through optimized private backbone networks between PoPs and origin.</p>
+          <p>A content delivery network (CDN) is a distributed set of edge points of presence (PoPs) that cache HTTP responses and serve them close to end users. Anycast DNS or HTTP routing directs each request to a nearby PoP; cache hits return in single-digit milliseconds without contacting origin. On a miss the edge fetches from origin (often via an intermediate shield PoP), stores the object under rules derived from <code>Cache-Control</code> and provider-specific headers, and serves it to subsequent clients in that region.</p>
+          <p>Providers such as Cloudflare, Fastly, and Amazon CloudFront extend beyond static files: they terminate TLS, cache selective API responses, run edge functions (Cloudflare Workers, Fastly Compute@Edge, Lambda@Edge), enforce WAF rules, and ride private backbones to reduce last-mile latency to origin. CDNs complement application caches like Redis—Redis holds hot dynamic fragments; the CDN absorbs geographic fan-out and volumetric traffic.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Network latency scales with physical distance. A user in Tokyo hitting an origin server in Virginia experiences 180–220ms of round-trip latency purely from the speed of light, before any server processing time. A CDN PoP in Tokyo reduces that to under 5ms. For web applications, this difference is the gap between a responsive application and an unusable one.</p>
@@ -128,13 +128,16 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Edge PoPs serve cached assets; origin shield collapses misses; edge workers run auth and routing at the edge.</p>
+          <p>Users hit the nearest PoP; misses collapse at an origin shield before a single fetch reaches the application tier.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    user["User at edge PoP"] -->|hit| edge["Serve from edge cache"]
-    user -->|miss| shield["Origin shield"]
-    shield --> origin["Origin servers"]
-    edge --> workers["Edge functions auth A/B bot checks"]</div>
+    user["End user"]
+    user --> pop["Edge PoP"]
+    pop -->|HIT| cached["Cached response"]
+    pop -->|MISS| shield["Origin shield PoP"]
+    shield --> origin["Origin load balancer"]
+    origin --> app["App and Redis"]
+    pop --> workers["Edge worker optional auth rewrite"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -178,7 +181,7 @@
   All 100 served from shared result
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Tokyo user hits PoP, origin shield on miss, Cache-Control governs caching, workers handle edge logic.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Edge PoP serves hits locally; miss traffic funnels through origin shield to the application and optional Redis.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -208,7 +211,8 @@
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Cache-Control header strategy:</strong> The most critical CDN configuration decision is setting correct <code>Cache-Control</code> headers on origin responses. For static assets with content-addressed URLs (filenames including a hash like <code>app.a8f3b2.js</code>), use <code>max-age=31536000, immutable</code> — the content never changes so it can be cached for one year. For dynamic API responses that can be shared across users, use <code>public, max-age=300, stale-while-revalidate=60</code> — cached for 5 minutes with 60 additional seconds of stale serving while background revalidation occurs. For user-specific responses, use <code>Cache-Control: private, no-store</code> to prevent CDN caching.</p>
           <p>Use <code>Surrogate-Control</code> or <code>CDN-Cache-Control</code> headers for CDN-only TTLs that differ from browser cache TTLs.</p>
-          <p><strong>Origin Shield:</strong> Enable origin shield (CloudFront's Origin Shield, Fastly's Shielding) to designate a single intermediate PoP as the last-hop before origin. This collapses concurrent cache misses: instead of 100 PoPs worldwide each sending a miss to the origin simultaneously, they all send misses to the shield PoP, which makes a single request to origin. Origin shield reduces origin request volume by 10–50× and prevents thundering herd on cache expiry. It also improves cache hit rates because popular content stays in the shield PoP's large cache even after it's evicted from smaller regional PoPs.</p>
+          <p><strong>Origin shield:</strong> Enable CloudFront Origin Shield, Fastly shielding, or Cloudflare tiered caching so one designated PoP fetches on behalf of all edges. Concurrent misses for the same cache key collapse to one origin request—critical when TTLs expire on viral assets. Shield PoPs also retain hot objects longer than small regional caches, improving hit ratio on the edge.</p>
+          <p><strong>Fastly vs Cloudflare knobs:</strong> Fastly exposes VCL and surrogate keys for fine-grained cache keys and soft purges; Cloudflare Workers plus cache rules handle URL normalization and bot filtering before origin. Document which headers enter the cache key (<code>Vary</code>, cookies, query strings) in runbooks—misconfiguration is a common source of low hit rate or cache leakage.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -232,9 +236,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Media streaming platform:</strong> Video thumbnails and metadata API responses are cached at CDN PoPs globally. 98% of requests are served from edge cache; the origin media server handles only unique content requests, reducing origin load by 50× and delivering sub-5ms thumbnail responses worldwide.</li>
-            <li><strong>E-commerce product pages:</strong> Server-side rendered product pages are cached at CDN for 60 seconds with stale-while-revalidate. During a flash sale, 100,000 concurrent users see near-identical pages served from edge; origin only handles 1 request per 60 seconds per PoP for each product page.</li>
-            <li><strong>SaaS API acceleration:</strong> A fintech SaaS routes all API traffic through Cloudflare. Static API documentation and webhook payloads are cached; dynamic requests benefit from Cloudflare's Argo Smart Routing, which uses the fastest network path between PoPs and origin, reducing P99 latency by 30% without any caching.</li>
+            <li><strong>Illustrative scenario — media metadata:</strong> Thumbnail and JSON metadata responses cache at PoPs with long <code>max-age</code>; origin serves only novel uploads, cutting egress during viral clips.</li>
+            <li><strong>Illustrative scenario — flash sale SSR:</strong> Product pages use <code>stale-while-revalidate</code> for 60 seconds at the CDN so concurrent shoppers see edge-cached HTML while origin refreshes in the background.</li>
+            <li><strong>Case study — Fastly edge:</strong> Surrogate-key purges invalidate all PDP and listing variants when merchandising updates a SKU, without waiting for passive TTL.</li>
+            <li><strong>Case study — Cloudflare:</strong> Workers validate JWTs at the edge; cacheable public JSON uses cache rules while authenticated routes bypass cache with <code>Cache-Control: private</code>.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -246,9 +251,12 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Introduction.html" target="_blank" rel="noopener noreferrer">AWS CloudFront Developer Guide</a></li>
-            <li><a href="https://developers.cloudflare.com/cache/" target="_blank" rel="noopener noreferrer">Cloudflare Cache Documentation</a></li>
-            <li><a href="https://web.dev/articles/content-delivery-networks" target="_blank" rel="noopener noreferrer">web.dev — Content Delivery Networks</a></li>
+            <li><a href="https://developers.cloudflare.com/cache/" target="_blank" rel="noopener noreferrer">Cloudflare — cache documentation</a></li>
+            <li><a href="https://developers.cloudflare.com/workers/" target="_blank" rel="noopener noreferrer">Cloudflare Workers — edge compute</a></li>
+            <li><a href="https://www.fastly.com/documentation/guides/concepts/edge-state/cache/" target="_blank" rel="noopener noreferrer">Fastly — edge caching concepts</a></li>
+            <li><a href="https://docs.fastly.com/en/guides/about-fastly-shielding" target="_blank" rel="noopener noreferrer">Fastly — shielding (origin shield)</a></li>
+            <li><a href="https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Introduction.html" target="_blank" rel="noopener noreferrer">Amazon CloudFront — developer guide</a></li>
+            <li><a href="https://web.dev/articles/content-delivery-networks" target="_blank" rel="noopener noreferrer">web.dev — content delivery networks</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

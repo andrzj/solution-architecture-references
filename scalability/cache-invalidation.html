@@ -101,8 +101,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Cache invalidation is the process of removing or updating stale entries in a cache when the underlying data changes. Phil Karlton famously quipped that cache invalidation is one of only two hard problems in computer science. The difficulty stems from the inherent tension between performance (keep data in cache as long as possible) and correctness (ensure cached data reflects reality). Every invalidation strategy involves tradeoffs between staleness, consistency, complexity, and the risk of thundering herds on mass invalidation events.</p>
-          <p>Three primary strategies exist: <strong>TTL-based invalidation</strong> (data expires automatically after a fixed duration), <strong>event-based invalidation</strong> (the write path explicitly deletes or updates cache entries when data changes), and <strong>write-through invalidation</strong> (every write simultaneously updates the cache). Advanced techniques include tag-based invalidation (grouping related keys under a logical tag so all can be invalidated with a single operation) and probabilistic early expiration (pre-emptively refreshing entries before they expire to avoid stampedes).</p>
+          <p>Cache invalidation removes or refreshes entries when authoritative data changes so clients do not read stale values from Redis, in-process memory, or CDN edge caches. The practice balances performance (long TTLs, high hit rates) against correctness (fresh prices, permissions, and inventory). Most production systems combine passive expiry with active delete-on-write because neither alone covers every consistency requirement.</p>
+          <p><strong>TTL expiry</strong> bounds staleness without coupling writes to the cache. <strong>Event-driven invalidation</strong> deletes keys or publishes purge messages after a successful commit. <strong>Write-through</strong> updates cache and database together. At scale, <strong>tag-based</strong> invalidation (invalidate all keys for <code>product:42</code>) and <strong>surrogate keys</strong> on CDNs (Fastly, Cloudflare cache tags) avoid enumerating millions of URLs. <strong>Probabilistic early refresh</strong> reduces stampedes when a popular key expires.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Without invalidation, caches would serve stale data indefinitely. A product price updated in the database would continue to appear as the old price to all customers until the cache process is restarted. For many business domains — pricing, inventory, user permissions, account status — this is completely unacceptable. Invalidation is what allows systems to use caching aggressively while maintaining data correctness for data that changes.</p>
@@ -126,15 +126,15 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Choose passive TTL expiry, active invalidation on write, tag-based purge, or probabilistic early refresh to avoid stampedes.</p>
+          <p>After a committed write, the application deletes Redis keys, optionally fans out CDN purge API calls, and lets the next read repopulate from origin.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart TB
-    ttl["TTL expiry — simple, possibly stale"]
-    evt["Event invalidation on write"]
-    tag["Tag-based invalidation"]
-    xfetch["Probabilistic early expiration"]
-    cdn["CDN PURGE to all PoPs"]
-    ttl --> evt --> tag --> xfetch --> cdn</div>
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    write["Write API"]
+    write --> db["Database commit"]
+    db --> redis["DEL Redis keys or PUBLISH invalidate"]
+    db --> cdn["CDN purge by URL or cache tag"]
+    redis --> next["Next read cache-aside refill"]
+    cdn --> edge["Edge PoPs drop stale objects"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -173,7 +173,7 @@
   └─ Takes 5–30 seconds to propagate globally
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Invalidation strategies from TTL and event-driven deletes through tag purge, XFetch, and CDN propagation.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Committed writes trigger Redis deletes and CDN purges; the following read reloads fresh data into cache.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -201,11 +201,10 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Delete vs. update on invalidation:</strong> The safest approach is to delete (DEL) the cache key rather than updating it atomically. Updating the cache from the write path risks cache poisoning: if the write transaction rolls back after the cache update, the cache holds data that was never committed to the database. Delete-on-write is safe: the next read will miss and re-populate from the committed database state.</p>
-          <p>The pattern is: 1) write to DB; 2) on successful commit, DEL the affected cache keys.</p>
-          <p>The brief period between delete and re-population introduces one cache miss but guarantees consistency.</p>
-          <p><strong>Race condition on invalidation:</strong> The classic race: (1) Thread A reads from DB; (2) Thread B writes to DB and invalidates cache; (3) Thread A writes stale data to cache. The cache now holds the old value after the invalidation. This is inherent to cache-aside with concurrent writes and misses. Mitigation options: use a short TTL as a safety net; use optimistic locking (store a version with the cached value, only write-back if version matches current);</p>
-          <p>use CDC (Change Data Capture) to drive invalidations from the database WAL rather than the application write path, ensuring invalidations are ordered correctly relative to writes.</p>
+          <p><strong>Delete, do not overwrite:</strong> After <code>COMMIT</code>, call <code>DEL</code> (or <code>UNLINK</code> for large values) on affected Redis keys. Never push uncommitted rows into cache—rolled-back transactions poison every replica that reads the key. The next cache-aside miss reloads from the database.</p>
+          <p><strong>Redis coordination:</strong> Use keyspace notifications or pub/sub channels sparingly for cross-instance L1 invalidation; at high volume prefer explicit <code>PUBLISH cache:invalidate product:42</code> from the write service. Tag indexes can live in Redis sets (<code>SADD tag:product:42 key1 key2</code>) and delete in a Lua script for atomicity. Keep TTL as a safety net even when invalidating on write.</p>
+          <p><strong>CDN purges:</strong> Cloudflare supports purge by URL, prefix, hostname, and <a href="https://developers.cloudflare.com/cache/how-to/purge-cache/#purge-by-cache-tags">cache tags</a>; Fastly uses <a href="https://www.fastly.com/documentation/guides/concepts/edge-state/cache/surrogate-keys/">surrogate keys</a> with soft and hard purge. Purge APIs are rate-limited—batch by tag during bulk catalog updates instead of one request per object. Expect global propagation in seconds to tens of seconds; monitor API responses and retry failures.</p>
+          <p><strong>Races:</strong> A slow reader can repopulate stale data after your delete. Mitigate with version fields in cached payloads, short TTL caps, or CDC-driven invalidation ordered on the replication stream so deletes never precede visible writes.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -228,9 +227,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>CMS article publishing:</strong> When an editor publishes an updated article, the application sends a CDN purge request for the article URL and deletes the article's Redis cache key. Readers see the new content within 10 seconds (CDN propagation time).</li>
-            <li><strong>User permission changes:</strong> When an admin revokes a user's access, the application immediately DELs the user's permission cache entry in Redis, ensuring the next API request re-fetches from the database and enforces the new permissions.</li>
-            <li><strong>E-commerce pricing engine:</strong> Product prices are cached with a 5-minute TTL. When a price change event is published to Kafka, a consumer explicitly invalidates the affected product cache keys, ensuring the new price is visible within seconds rather than waiting for the 5-minute TTL.</li>
+            <li><strong>Illustrative scenario — CMS publish:</strong> On publish, the API deletes <code>article:{id}</code> in Redis and calls Cloudflare purge-by-URL; readers see updates after edge propagation instead of waiting for hour-long CDN TTL.</li>
+            <li><strong>Illustrative scenario — permission revoke:</strong> Admin revocation triggers immediate <code>DEL permissions:{userId}</code> so the next request cannot serve cached allow rules.</li>
+            <li><strong>Case study — Fastly surrogate keys:</strong> Product pages carry <code>Surrogate-Key: product-42 category-electronics</code>; one soft purge on <code>product-42</code> invalidates detail and listing fragments without URL enumeration.</li>
+            <li><strong>Illustrative scenario — price event:</strong> A pricing consumer invalidates <code>product:{id}</code> keys when Kafka price events arrive, beating the passive five-minute TTL during flash updates.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -242,9 +242,12 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://redis.io/docs/manual/keyspace-notifications/" target="_blank" rel="noopener noreferrer">Redis — Keyspace Notifications (event-driven invalidation)</a></li>
-            <li><a href="https://engineering.fb.com/2013/06/26/core-infra/tao-facebooks-distributed-data-store-for-the-social-graph/" target="_blank" rel="noopener noreferrer">Facebook TAO — Cache Invalidation at Scale</a></li>
-            <li><a href="https://docs.fastly.com/en/guides/purging" target="_blank" rel="noopener noreferrer">Fastly — Cache Purging and Invalidation Guide</a></li>
+            <li><a href="https://redis.io/docs/manual/keyspace-notifications/" target="_blank" rel="noopener noreferrer">Redis — keyspace notifications</a></li>
+            <li><a href="https://redis.io/docs/manual/pubsub/" target="_blank" rel="noopener noreferrer">Redis — pub/sub (fan-out invalidation)</a></li>
+            <li><a href="https://developers.cloudflare.com/cache/how-to/purge-cache/" target="_blank" rel="noopener noreferrer">Cloudflare — purge cache (URL, tag, prefix)</a></li>
+            <li><a href="https://www.fastly.com/documentation/guides/concepts/edge-state/cache/surrogate-keys/" target="_blank" rel="noopener noreferrer">Fastly — surrogate keys</a></li>
+            <li><a href="https://docs.fastly.com/en/guides/purging" target="_blank" rel="noopener noreferrer">Fastly — purging guide</a></li>
+            <li><a href="https://martinfowler.com/bliki/TwoHardThings.html" target="_blank" rel="noopener noreferrer">Martin Fowler — two hard things</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

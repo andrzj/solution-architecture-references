@@ -102,8 +102,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Caching is the practice of storing copies of frequently accessed data in a fast-access storage layer (in-process memory, a distributed cache like Redis, or a CDN edge node) to reduce the latency and load of retrieving that data from the authoritative source (a database, an API, or a file system). A cache hit serves the data immediately from fast storage; a cache miss fetches from the origin and optionally populates the cache for subsequent requests. The cache-to-origin latency ratio is typically 100–1000×, making caching the single most impactful performance optimization available to most systems.</p>
-          <p>Several distinct caching patterns exist, each with different consistency and complexity tradeoffs. <strong>Cache-aside</strong> (lazy loading) is the most common: the application checks the cache first, handles misses by loading from the database, and writes the result to the cache. <strong>Read-through</strong> delegates both the cache check and the origin load to a caching library or proxy, keeping application code simpler. <strong>Write-through</strong> writes to both cache and database synchronously on every write, keeping the cache always consistent. <strong>Write-behind</strong> (write-back) writes to the cache immediately and asynchronously persists to the database, optimizing write latency at the cost of potential data loss.</p>
+          <p>Caching stores frequently used data in a faster tier—process memory, a distributed store such as Redis, or a CDN edge—so requests avoid repeated work against the authoritative source (database, upstream API, object store). On a hit the caller reads from the fast tier; on a miss it loads from origin, optionally populates the cache, and returns. Latency ratios of 100× or more versus a database round trip make caching the default first lever for read-heavy systems.</p>
+          <p>Four application patterns dominate: <strong>cache-aside</strong> (application loads on miss), <strong>read-through</strong> (cache library loads transparently), <strong>write-through</strong> (synchronous cache and DB update), and <strong>write-behind</strong> (cache first, async persistence). Redis supports all four via client libraries, Lua scripts for atomic read-modify-write, and optional persistence (RDB/AOF) when the cache must survive restarts without full cold reload.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Database queries are expensive: they require network round trips, disk I/O for uncached pages, CPU for query planning and execution, and lock acquisition. For read-heavy workloads, a cache serves the same data at microsecond latency compared to millisecond database latency, and without consuming any database CPU or I/O resources. This means a small Redis cluster can absorb traffic that would otherwise require many expensive database read replicas. Cache hit ratios of 90–99% are achievable for stable reference data, translating to a 10–100× reduction in database load.</p>
@@ -128,16 +128,17 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Cache-aside, write-through, and write-behind trade off consistency, latency, and durability; L1/L2/CDN stack them.</p>
+          <p>Requests traverse L1 in-process, L2 Redis, then origin; writes choose cache-aside, write-through, or write-behind depending on durability needs.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    aside["Cache-aside: miss loads DB then populates cache"]
-    wt["Write-through: sync cache and DB"]
-    wb["Write-behind: cache now, DB async"]
-    multi["L1 in-process, L2 Redis, L3 CDN"]
-    aside --> multi
-    wt --> multi
-    wb --> multi</div>
+    client["Client"]
+    client --> cdn["CDN edge L3"]
+    cdn -->|miss| app["App instance"]
+    app --> l1["L1 in-process cache"]
+    l1 -->|miss| redis["L2 Redis cluster"]
+    redis -->|miss| db["Database origin"]
+    app -->|write-through| redis
+    redis --> db</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -182,7 +183,7 @@
   FIFO: evict oldest inserted item (rare)
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Cache-aside on miss, write-through synchronous DB, write-behind async queue, plus multi-level L1 Redis CDN.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">CDN absorbs static traffic; app instances use in-process then Redis before hitting the database on a miss.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -212,8 +213,8 @@
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Eviction and TTL tuning:</strong> TTL is the most important parameter — too short and cache hit rate drops; too long and stale data accumulates. Start with empirical measurement: P95 time between updates for the data type. For product catalogs updated hourly, TTL=5 minutes is appropriate. For user profile data updated rarely, TTL=1 hour is fine.</p>
           <p>Use LRU eviction for general caches where access patterns follow a power law (20% of keys receive 80% of traffic). Use LFU for caches where frequency of access is a better predictor of future access than recency (e.g., global top-K popular items). Use TTL-only eviction when data expires independently of access pattern (session tokens, rate limit counters).</p>
-          <p><strong>Thundering herd prevention:</strong> When a popular cache key expires, all concurrent requests that miss the cache simultaneously query the database. Prevent this with probabilistic early expiration: instead of expiring at exactly TTL, each request computes <code>if (current_time + delta &gt; expiry)</code> where delta is drawn from a probability distribution — allowing one request to regenerate the cache before it actually expires. An alternative is the "mutex on miss" pattern: the first miss acquires a distributed lock (Redis SET NX with expiry), re-fetches from DB and populates cache, while subsequent misses wait for the lock and then re-check the cache. <strong>Cache warming:</strong> After a deployment or Redis restart, the cache is cold and all requests miss simultaneously.</p>
-          <p>Implement a warm-up job that pre-populates the most frequently accessed keys from the database before routing production traffic to new instances.</p>
+          <p><strong>Redis eviction and memory:</strong> Set <code>maxmemory-policy</code> to <code>allkeys-lru</code> or <code>volatile-lru</code> per access pattern; monitor <code>evicted_keys</code> and <code>used_memory</code>. Use separate logical databases or key prefixes for session, catalog, and rate-limit data so one tenant cannot evict another's keys. For cluster mode, design keys so hot keys shard across hash slots—see Redis cluster slot guidance before pinning everything on one hashtag.</p>
+          <p><strong>Thundering herd prevention:</strong> Use probabilistic early expiration (XFetch) or a miss mutex: <code>SET lock:{key} 1 NX EX 10</code> in Redis, single loader refreshes, others re-read the key. <strong>Cache warming:</strong> After deploy or failover, run a warm-up job that preloads top-N keys from read replicas or primary before shifting traffic; pair with <a href="cache-invalidation.html">explicit invalidation</a> on writes so warm data is not stale.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -237,9 +238,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Product catalog:</strong> An e-commerce site caches product detail pages in Redis with a 5-minute TTL. 95% of product page requests are served from cache, reducing database read load by 20× and dropping median response time from 120ms to 4ms.</li>
-            <li><strong>User session storage:</strong> A horizontally scaled API tier stores user session tokens in Redis with a 30-minute TTL. Any application instance can validate a session without a database lookup, enabling stateless horizontal scaling.</li>
-            <li><strong>External API response caching:</strong> A weather service API response is cached in Redis for 10 minutes. During peak traffic, thousands of requests per second are served from the cache while only one request per 10 minutes hits the external API, staying within rate limits.</li>
+            <li><strong>Illustrative scenario — product catalog:</strong> Product detail JSON lives in Redis with five-minute TTL and <code>product:{id}</code> namespacing. Hit ratio above 95% cuts database reads roughly 20× and median latency from ~120ms to single-digit milliseconds.</li>
+            <li><strong>Illustrative scenario — session store:</strong> A stateless API fleet stores sessions in Redis with 30-minute TTL; any pod validates tokens without sticky sessions or database lookups.</li>
+            <li><strong>Case study — Cloudflare CDN:</strong> Static assets and cacheable API responses are served from edge PoPs with <code>Cache-Control</code> headers set at origin, offloading origin egress during traffic spikes.</li>
+            <li><strong>Illustrative scenario — upstream API budget:</strong> Third-party geocoding responses cache in Redis for ten minutes; one origin call per key per window keeps the integration inside vendor rate limits.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -252,9 +254,12 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://redis.io/docs/manual/patterns/" target="_blank" rel="noopener noreferrer">Redis — Common Caching Patterns and Recipes</a></li>
-            <li><a href="https://aws.amazon.com/caching/best-practices/" target="_blank" rel="noopener noreferrer">AWS — Caching Best Practices</a></li>
-            <li><a href="https://martinfowler.com/bliki/TwoHardThings.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Two Hard Things (cache invalidation)</a></li>
+            <li><a href="https://redis.io/docs/manual/patterns/" target="_blank" rel="noopener noreferrer">Redis — common caching patterns and recipes</a></li>
+            <li><a href="https://redis.io/docs/manual/eviction/" target="_blank" rel="noopener noreferrer">Redis — key eviction (maxmemory policies)</a></li>
+            <li><a href="https://redis.io/docs/manual/patterns/distributed-locks/" target="_blank" rel="noopener noreferrer">Redis — distributed locks (miss mutex / single-flight)</a></li>
+            <li><a href="https://developers.cloudflare.com/cache/" target="_blank" rel="noopener noreferrer">Cloudflare — cache and CDN behavior</a></li>
+            <li><a href="https://docs.fastly.com/products/caching" target="_blank" rel="noopener noreferrer">Fastly — edge caching product overview</a></li>
+            <li><a href="https://martinfowler.com/bliki/TwoHardThings.html" target="_blank" rel="noopener noreferrer">Martin Fowler — two hard things (cache invalidation)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
