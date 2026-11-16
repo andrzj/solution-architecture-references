@@ -100,29 +100,36 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>In distributed systems, encryption is applied at two layers: <strong>encryption in transit</strong> (protecting data moving between systems over networks using TLS) and <strong>encryption at rest</strong> (protecting stored data using symmetric encryption of storage volumes, databases, or individual fields). The dominant algorithm for symmetric encryption at rest is <strong>AES-256-GCM</strong> (Advanced Encryption Standard, 256-bit key, Galois/Counter Mode) — AES provides confidentiality, GCM provides authenticated encryption with associated data (AEAD), ensuring both confidentiality and integrity in a single operation.</p>
-          <p>For asymmetric operations (key exchange, digital signatures), RSA-4096 and ECDSA/P-256 are standard.</p>
-          <p><strong>Envelope encryption</strong> is the pattern used by all cloud KMS providers: data is encrypted with a <em>Data Encryption Key</em> (DEK) generated per-object or per-record; the DEK itself is then encrypted by a <em>Key Encryption Key</em> (KEK) managed in a KMS (AWS KMS, Azure Key Vault, GCP Cloud KMS). The encrypted DEK is stored alongside the ciphertext. This pattern solves the key management scaling problem: you never need to call the KMS for each data operation (the DEK is cached); you only call the KMS to unwrap the DEK, which limits KMS API calls and cost, while ensuring that rotating or revoking the KEK immediately invalidates all data encrypted under it. <strong>Bring Your Own Key (BYOK)</strong> is an enterprise pattern where the customer owns and controls the root KEK in a customer-managed KMS or HSM, providing cryptographic isolation from the cloud provider.</p>
+          <p><strong>Encryption patterns</strong> extend beyond default volume and TLS settings to address application-specific threats: envelope encryption with per-object data keys, field-level encryption for regulated columns, tokenisation, searchable-encryption trade-offs, and <strong>mTLS</strong> for cryptographic peer identity on east-west paths. Patterns align with <a href="https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final">NIST SP 800-57</a> key hierarchies and cloud KMS APIs—architects decide where ciphertext is created based on who must remain unable to decrypt and which queries must keep working.</p>
+          <p><strong>Tokenisation</strong> replaces PANs or government identifiers with reversible references stored in a vault, shrinking PCI scope compared with local ciphertext. <strong>Searchable encryption</strong> trades some leakage for indexability via deterministic encryption or blind indexes. <strong>mTLS</strong> proves both peer identities on east-west RPC paths, supporting Zero Trust meshes where network location is untrusted.</p>
+          <p>In distributed systems, <strong>encryption in transit</strong> protects bytes on the wire (TLS); <strong>encryption at rest</strong> protects volumes, databases, or individual fields. Symmetric work typically uses <strong>AES-256-GCM</strong> (AEAD confidentiality and integrity). Asymmetric work uses RSA-4096 or ECDSA P-256 for exchange and signatures.</p>
+          <p>In <strong>envelope encryption</strong>, a data encryption key (DEK) encrypts each object or record; a key encryption key (KEK) in AWS KMS, Azure Key Vault, or GCP Cloud KMS wraps the DEK. Stored ciphertext includes the wrapped DEK so applications decrypt locally after a single KMS unwrap—limiting API cost—while KEK rotation invalidates wrapped DEKs under retired versions. <strong>BYOK</strong> places the root KEK in a customer HSM when contracts require proof the cloud operator cannot read tenant data.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Encryption at rest ensures that physical theft of storage media, an overprivileged cloud support engineer, or a misconfigured storage bucket that becomes publicly readable cannot expose sensitive data as plaintext. Encryption in transit prevents man-in-the-middle attacks, network sniffing on untrusted networks, and passive data collection at network chokepoints. Together, these controls are mandated by virtually every data protection regulation (GDPR, HIPAA, PCI DSS) and are baseline requirements in SOC 2 Type II audits. Key management — generating, rotating, and controlling access to encryption keys — is the hardest part of encryption: a perfectly encrypted database with its encryption key stored in plaintext in the same system is effectively unencrypted.</p>
+          <p>Disk and bucket encryption do not stop authorised application users or SQL injection from reading plaintext. Field encryption and tokenisation shrink compliance scope and limit insider blast radius. mTLS binds connections to workload identity—essential for Zero Trust meshes and regulated interconnects. Regulations (GDPR, HIPAA, PCI DSS) and SOC 2 audits expect encryption in transit and at rest plus demonstrable key governance: ciphertext stored with an exposed KEK is effectively plaintext.</p>
+          <p>Platform defaults (EBS, S3 SSE, managed database TDE) are necessary but insufficient when the threat model includes application compromise or insider abuse. Architects choose where ciphertext is produced—client, service tier, or database extension—based on query needs and who must remain unable to decrypt.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All data in transit must be encrypted — TLS 1.2 minimum, TLS 1.3 preferred, with no fallback to insecure versions.</li>
-            <li>All data at rest in databases, object stores, block storage, and backups must be encrypted — provider-managed keys at minimum, customer-managed keys for sensitive or regulated data.</li>
-            <li>Mutual TLS (mTLS) for service-to-service communication in Zero Trust architectures.</li>
-            <li>Field-level encryption for the most sensitive fields (PAN, SSN, PHI) that require independent access control and audit separate from the database.</li>
-            <li>BYOK for regulated industries (financial, healthcare, government) where contractual separation of duties requires cryptographic proof the cloud provider cannot access customer data.</li>
+            <li>All data in transit—TLS 1.2 minimum, TLS 1.3 preferred, with weak protocol fallbacks disabled.</li>
+            <li>All sensitive data at rest in databases, object stores, block volumes, and backups—provider-managed keys at minimum, customer-managed keys for regulated tiers.</li>
+            <li>PCI PAN, PHI, or national ID fields needing scope reduction or extra confidentiality.</li>
+            <li>Multi-tenant SaaS where per-tenant keys limit cross-tenant decrypt after a bug.</li>
+            <li>Service meshes or gRPC estates requiring cryptographic peer authentication.</li>
+            <li>Backup and analytics pipelines that must not store decryptable PII.</li>
+            <li>Regulated BYOK scenarios where customers control root KEKs in an HSM.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Encrypting non-sensitive public data</strong>: Public static assets (CSS, JavaScript, public images) do not benefit from encryption at rest; the operational cost is not justified.</li>
-            <li><strong>Rolling your own crypto</strong>: Never implement cryptographic primitives from scratch. Use well-audited libraries (libsodium, Bouncy Castle, Go's crypto/tls). Custom implementations introduce subtle vulnerabilities that are impossible to detect without cryptographic expertise.</li>
+            <li>Do not field-encrypt columns heavily used in ad hoc SQL without deterministic or blind-index strategies.</li>
+            <li>Avoid custom envelope schemes—use KMS wrap/unwrap APIs and audited libraries.</li>
+            <li>Public static assets rarely justify at-rest encryption overhead.</li>
+            <li>Never implement primitives from scratch; use libsodium, Bouncy Castle, or platform TLS stacks.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Envelope keys wrap per-record DEKs while mesh mTLS and token services anchor trust for sensitive fields.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     subgraph write["Write path"]
@@ -189,69 +196,80 @@ mTLS SETUP:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Encryption at rest limits the damage from storage media theft, misconfigured access controls, or cloud provider access.</li>
-                <li>Envelope encryption scales efficiently — KMS is called only for key operations, not for each data operation.</li>
-                <li>Key rotation provides forward secrecy: future key compromise does not expose past data if old keys are revoked.</li>
-                <li>mTLS provides cryptographic proof of both client and server identity, beyond what TLS alone provides.</li>
-                <li>Field-level encryption enables fine-grained access control at the field level, enforced cryptographically rather than only by access control policies.</li>
+                <li>Per-tenant keys constrain blast radius of application defects.</li>
+                <li>Tokenisation keeps PAN out of application databases.</li>
+                <li>mTLS ties traffic to workload identity, not IP alone.</li>
+                <li>Envelope patterns scale with object count via cached DEKs.</li>
+                <li>Key rotation supports forward secrecy when old KEK versions are retired promptly.</li>
+                <li>Field-level encryption enforces confidentiality even when database roles are over-permissive.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Encryption adds latency and CPU overhead; AES-NI hardware acceleration on modern CPUs mitigates this, but KMS API calls add network round-trips.</li>
-                <li>Key management is operationally complex; incorrect key rotation procedures can result in data that cannot be decrypted.</li>
-                <li>BYOK adds significant operational burden: the customer is responsible for HSM availability and key backup procedures.</li>
-                <li>Encrypted fields cannot be indexed for equality or range queries without additional patterns (deterministic encryption or searchable encryption schemes).</li>
-                <li>mTLS certificate rotation must be automated; expired certificates cause outages as difficult to diagnose as other TLS errors.</li>
+                <li>Key rotation and bulk re-wrap projects are operationally heavy; mistakes can brick ciphertext.</li>
+                <li>Search and sort on encrypted fields need deterministic encryption, blind indexes, or application-side filters.</li>
+                <li>mTLS certificate lifecycle burdens large microservice fleets unless fully automated.</li>
+                <li>BYOK customers own HSM availability and backup procedures.</li>
+                <li>Client-side encryption complicates support and escrow debates.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For TLS configuration, enforce TLS 1.2 minimum with TLS 1.3 preferred. Disable weak cipher suites (RC4, DES, 3DES, MD5, SHA-1). Use forward secrecy cipher suites (ECDHE) so that future compromise of the server private key does not expose past sessions. Set HSTS (HTTP Strict Transport Security) with a long max-age (1 year) and include subdomains.</p>
-          <p>For databases, enable TLS on all connections (PostgreSQL: <code>sslmode=require</code>; MySQL: <code>require_secure_transport=ON</code>) and configure server certificate validation in the application client to prevent MITM. For S3, enable default bucket encryption with AWS-managed or customer-managed KMS keys; enforce encryption at upload with a bucket policy denying PutObject without <code>x-amz-server-side-encryption</code>.</p>
-          <p>For nonce/IV management with AES-GCM: never reuse a nonce with the same key. Generate a new random 96-bit IV for each encryption operation (12 bytes is standard for GCM). The risk of IV reuse is catastrophic for GCM — it leaks both the plaintext and the authentication key. Use a cryptographically secure random number generator (CSPRNG), not a general-purpose RNG.</p>
-          <p>Store the IV alongside the ciphertext; it is not a secret.</p>
+          <p>Generate a DEK per object or row; wrap with KMS; store ciphertext and wrapped key together. Cache DEKs briefly; never log plaintext keys. For tokenisation, use a vault-style service; format-preserving tokens only when contractually required.</p>
+          <p>Enforce TLS 1.2 minimum with TLS 1.3 preferred; disable RC4, DES, 3DES, and MD5 suites; prefer ECDHE for forward secrecy so stolen server keys cannot decrypt past sessions. Set HSTS with a one-year max-age and include subdomains where feasible. Require TLS to databases and validate server certificates in clients—<code>sslmode=require</code> on PostgreSQL and <code>require_secure_transport=ON</code> on MySQL are common baselines. For S3, enable default bucket encryption and deny <code>PutObject</code> without server-side encryption headers.</p>
+          <p>Roll out mesh mTLS with SPIFFE/SPIRE or cloud PKI; rotate certificates faster than expected compromise windows. For AES-GCM, generate a fresh random nonce per encryption—nonce reuse is catastrophic. Store the IV with ciphertext; it is not secret.</p>
+          <p>Generate one DEK per object or row; wrap with KMS; store ciphertext and wrapped key together; cache DEKs with a short TTL and never log plaintext keys. Document which pattern applies per data class in architecture decision records. For tokenisation, prefer vault-backed services; use format-preserving tokens only when contracts demand them.</p>
+          <p>Key hierarchy typically flows from an HSM or cloud KMS root to a customer master key (CMK), then to per-record DEKs, then to data. Automatic CMK rotation creates a new key version; lazy re-wrap updates encrypted DEKs over time while retaining old CMK versions to decrypt legacy rows. Per-tenant CMK aliases isolate cryptographic blast radius in multi-tenant SaaS. Never store unwrapped DEKs or CMKs alongside ciphertext in the same table without an additional access control boundary.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Encryption key stored alongside data</strong>: Storing the KMS key ID or DEK in the same database row as the ciphertext without further protection negates the security benefit — an attacker who can read the database can also read the key.</li>
-            <li><strong>No certificate validation</strong>: Accepting any certificate (InsecureSkipVerify in Go, verify=False in Python requests) provides no protection against MITM and negates TLS entirely.</li>
-            <li><strong>IV reuse in AES-GCM</strong>: Using a counter or a sequential IV that wraps around, or reusing the same IV on re-encryption of the same data, breaks GCM authentication.</li>
-            <li><strong>Weak key derivation</strong>: Deriving encryption keys from passwords using MD5 or SHA-1 without key stretching (PBKDF2/bcrypt/Argon2) allows brute-force attacks on the derived key.</li>
-            <li><strong>Certificate expiry</strong>: mTLS or internal service certificates that expire and are not auto-renewed cause immediate service outages. Automate certificate issuance and renewal with cert-manager or SPIRE.</li>
+            <li><strong>Unwrapped DEKs beside data</strong>—defeats envelope design.</li>
+            <li><strong>Single CMK for all tenants</strong>—one IAM mistake decrypts everyone.</li>
+            <li><strong>Optional mTLS</strong>—fallback to plaintext east-west under load.</li>
+            <li><strong>Tokens without vault controls</strong>—tokens become secrets themselves.</li>
+            <li><strong>Skipped re-wrap on CMK rotation</strong>—orphaned data keys.</li>
+            <li><strong>TLS verify disabled</strong>—negates transport encryption entirely.</li>
+            <li><strong>IV reuse in AES-GCM</strong>—sequential or repeating nonces break authentication guarantees.</li>
+            <li><strong>Weak key derivation</strong>—password-based keys without PBKDF2, bcrypt, or Argon2 succumb to brute force.</li>
+            <li><strong>Expired mTLS certificates</strong>—manual rotation causes sudden east-west outages.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
+            <li>Are sensitive fields mapped to encryption or tokenisation patterns with owners?</li>
+            <li>Does KMS enforce least-privilege decrypt per workload?</li>
             <li>Is all data in transit protected by TLS 1.2+ with forward-secrecy cipher suites?</li>
             <li>Is all sensitive data at rest encrypted with AES-256 (or equivalent) using KMS-managed keys?</li>
-            <li>Is envelope encryption used so that the KMS is not called for every data operation?</li>
-            <li>Is automatic key rotation configured on all KMS keys with appropriate rotation schedules?</li>
-            <li>For the most sensitive fields (PAN, SSN, PHI), is field-level encryption applied independently of database-level encryption?</li>
-            <li>Are TLS certificates auto-renewed with sufficient lead time before expiry?</li>
+            <li>Is envelope encryption used so KMS is not invoked on every read and write?</li>
+            <li>Is automatic key rotation configured with tested rollback?</li>
+            <li>Is mTLS required on critical east-west APIs with automated rotation?</li>
+            <li>Are DEKs never logged or cached beyond defined TTL?</li>
+            <li>Is there a tested plan for CMK rotation and bulk re-wrap?</li>
+            <li>Do backups inherit the same field protections as primary stores?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Healthcare application</strong>: PHI fields (diagnosis codes, medical notes) encrypted with field-level AES-256-GCM using per-patient DEKs wrapped by a customer-managed CMK in AWS KMS; database-level encryption provides a second layer for all fields.</li>
-            <li><strong>Payment processing</strong>: PCI DSS requires encryption of PANs at rest; tokenisation replaces PAN with a token in application databases; the actual PAN is stored only in an encrypted vault with independent access controls.</li>
-            <li><strong>Service mesh</strong>: Istio/Linkerd configures mTLS between all pods in the cluster; SPIFFE SVIDs issued by SPIRE provide workload identity; certs rotate every 24 hours automatically.</li>
+            <li><strong>Illustrative scenario — per-tenant SaaS</strong>: CMK alias per tenant; DEK per customer record; decrypt scoped in middleware.</li>
+            <li><strong>Healthcare application</strong>: PHI fields use AES-256-GCM with per-patient DEKs wrapped by a customer-managed CMK; database TDE adds a second layer.</li>
+            <li><strong>Payment processing</strong>: PCI requires PAN protection at rest; tokenisation in the app DB with PAN only in a hardened vault.</li>
+            <li><strong>Service mesh</strong>: Istio or Linkerd enforces mTLS; SPIRE issues 24-hour SVIDs for workload identity.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="secret-management.html">Secret Management</a> — KMS keys and certificates are secrets that require secure management.</li>
-            <li><a href="data-security.html">Data Security</a> — Field-level encryption and tokenisation for PII and regulated data.</li>
-            <li><a href="zero-trust-architecture.html">Zero Trust Architecture</a> — mTLS is a Zero Trust primitive for workload identity.</li>
+            <li><a href="secret-management.html">Secret Management</a> — Protecting keys and certificates.</li>
+            <li><a href="data-security.html">Data Security</a> — Classification driving pattern choice.</li>
+            <li><a href="zero-trust-architecture.html">Zero Trust Architecture</a> — mTLS as identity primitive.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final" target="_blank" rel="noopener noreferrer">NIST SP 800-57</a></li>
             <li><a href="https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html" target="_blank" rel="noopener noreferrer">OWASP Cryptographic Storage Cheat Sheet</a></li>
-            <li><a href="https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html" target="_blank" rel="noopener noreferrer">AWS KMS Concepts — Envelope Encryption</a></li>
-            <li><a href="https://libsodium.gitbook.io/doc/" target="_blank" rel="noopener noreferrer">libsodium: Modern Cryptography Library</a></li>
+            <li><a href="https://datatracker.ietf.org/doc/html/rfc8446" target="_blank" rel="noopener noreferrer">RFC 8446 — TLS 1.3</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

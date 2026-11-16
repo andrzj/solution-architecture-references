@@ -101,31 +101,32 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Zero Trust inverts this: <em>no request is trusted by default regardless of origin</em>.</p>
-          <p>Every access decision is made dynamically based on the verified identity of the requester, the health and compliance posture of the device, the sensitivity of the resource, and the context of the request (time, location, behaviour).</p>
-          <p>Google's <strong>BeyondCorp</strong> initiative, published as a series of papers beginning in 2014, is the canonical real-world implementation. Google migrated its entire workforce away from a VPN-based perimeter model to one where access to internal resources is granted by an Access Proxy that enforces policy based on user identity (via certificates) and device inventory state — with no assumption of safety for traffic on the corporate LAN. NIST Special Publication 800-207, published in 2020, provides the US federal government's definition of Zero Trust and identifies seven tenets, including: all data sources and services are considered resources; all communication is secured regardless of network location; access to resources is granted on a per-session basis; and access policy is dynamic and informed by multiple data sources.</p>
+          <p><strong>Zero Trust Architecture (ZTA)</strong> is a security model in which trust is never granted implicitly from network location, device type, or prior authentication. Every access attempt—human, machine, or API—is evaluated against current policy before a resource is exposed. NIST SP 800-207 formalises this as seven core tenets, including treating all data sources and computing services as resources, securing all communication paths, granting least privilege per session, and making policy decisions from continuous telemetry rather than static VLAN membership.</p>
+          <p>The mental model replaces the castle-and-moat perimeter with an <strong>identity-centric control plane</strong>. Users and workloads prove who they are (authentication), how trustworthy their device is (posture), and whether context still warrants access (authorisation). Google's <strong>BeyondCorp</strong> papers demonstrated the pattern at scale: corporate applications sit behind an access proxy that enforces policy from live identity and inventory signals instead of trusting packets that arrived on a corporate LAN. In microservice estates the same idea appears as workload identity (SPIFFE/SPIRE, cloud IAM roles) and service-mesh mTLS where each call carries cryptographic proof of the caller.</p>
+          <p>Architecturally, NIST 800-207 separates a <strong>Policy Decision Point (PDP)</strong>—the policy engine plus administrator—from <strong>Policy Enforcement Points (PEPs)</strong> that sit on the data path (ZTNA gateways, identity-aware proxies, API gateways, sidecars). Subjects (people, services, devices) never reach resources directly; the PEP intercepts, asks the PDP for an allow/deny/challenge decision, and only then forwards traffic. Continuous authorisation means the PDP may re-evaluate mid-session when risk signals change—for example, impossible travel, malware detection on the endpoint, or a spike in denied API calls from the same principal.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>The perimeter security model has failed for three structural reasons. First, <strong>the perimeter has dissolved</strong>: employees work from home, contractors access resources from unmanaged devices, workloads run in public clouds, and SaaS applications mean that "the network" is no longer a well-defined boundary. A corporate VPN extending implicit trust to a home network connected to IoT devices achieves security theatre rather than actual security. Second, <strong>lateral movement is the primary attack vector</strong>: once an attacker compromises any foothold inside the perimeter (a phishing email, a misconfigured cloud storage bucket), they can move freely between internal systems.</p>
-          <p>Microsegmentation and per-session authorization contain the blast radius of such breaches. Third, <strong>insider threat and credential compromise</strong> are among the most common causes of data breaches; a model that trusts anyone inside the perimeter by definition cannot defend against compromised insider credentials.</p>
+          <p>Traditional perimeter security assumed that anything inside the firewall was trustworthy. That assumption collapses when employees work remotely, SaaS data lives outside the VPC, contractors use unmanaged laptops, and attackers routinely land inside the network via phishing or stolen credentials. Once inside, flat networks enable <strong>lateral movement</strong>: one compromised workstation becomes a pivot to databases, admin consoles, and CI systems. Zero Trust limits blast radius by requiring explicit policy on every hop and by microsegmenting east-west traffic so a stolen cookie cannot wander the entire estate.</p>
+          <p>Regulators and breach reports converge on the same lesson: identity is now the control plane. The OWASP emphasis on broken authentication and broken access control applies equally to workforce tools and service accounts. ZTA does not replace defence in depth—it makes identity and authorisation the spine that other layers reinforce. Organisations adopting NIST 800-207 also get audit artefacts: per-session decisions, device posture evidence, and policy version history that satisfy FedRAMP, HIPAA, and SOC 2 reviewers who ask for least-privilege proof rather than network diagrams alone.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Organisations with distributed workforces where employees or contractors access resources from outside managed network perimeters.</li>
-            <li>Cloud-native or hybrid architectures where workloads span public cloud, on-premises, and SaaS environments without a meaningful network boundary.</li>
-            <li>High-security or regulated environments (financial services, healthcare, government) where per-session authorisation and audit trails are required.</li>
-            <li>Mergers and acquisitions: interconnecting two organisations without extending implicit trust between their networks.</li>
-            <li>Replacing legacy VPN infrastructure that has become a bottleneck or attack surface.</li>
+            <li>Distributed workforces where users and partners connect from homes, airports, and partner networks rather than a single corporate egress.</li>
+            <li>Hybrid or multi-cloud platforms where workloads span regions and providers without a crisp network boundary.</li>
+            <li>Regulated environments that require per-session authorisation, device compliance, and immutable access logs.</li>
+            <li>Post-breach or post-audit remediation when lateral movement or VPN bypass was a root cause.</li>
+            <li>Replacing legacy VPN concentrators that grant broad network access after a single login.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Very small organisations</strong>: The operational overhead of maintaining a Zero Trust policy engine, identity provider, and device management system may exceed the risk it mitigates for a 5-person team.</li>
-            <li><strong>Air-gapped systems</strong>: Systems with genuine physical isolation (classified networks, industrial control systems) use physical trust boundaries that may be more appropriate than software-defined Zero Trust.</li>
-            <li><strong>Legacy systems that cannot authenticate</strong>: Network-level trust may be the only option for legacy devices or protocols (ICS/SCADA, old mainframes) that lack any cryptographic identity mechanism.</li>
+            <li>Tiny teams where operating an IdP, policy engine, MDM, and ZTNA stack costs more than the realistic threat exposure—still apply Zero Trust principles at the application layer even if you cannot deploy full ZTA plumbing yet.</li>
+            <li>Genuinely air-gapped or physically isolated control systems where cryptographic identity is impractical and procedural controls dominate—document compensating controls instead of forcing OIDC on legacy PLCs.</li>
+            <li>Assets that cannot participate in modern identity protocols and require network allow-lists—treat them as exceptions with time-boxed access and heavy monitoring.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The reference flow below maps directly to NIST 800-207 PDP/PEP roles: subjects hit an enforcement point, the policy engine evaluates identity, device posture, and context, then the PEP forwards or denies toward the protected resource.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     subject["Subject&lt;br/&gt;user, workload, device"]
@@ -180,67 +181,68 @@ CONTINUOUS AUTHORIZATION:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Lateral movement is contained: a compromised credential or workload cannot freely access unrelated resources.</li>
-                <li>Enables secure remote work and cloud-native architectures without VPN bottlenecks.</li>
-                <li>Per-session authorisation provides a detailed audit trail of who accessed what, when, and from where.</li>
-                <li>Microsegmentation reduces blast radius of breaches significantly.</li>
-                <li>Aligns with regulatory requirements (NIST, FedRAMP, HIPAA) for least-privilege access.</li>
+                <li>Contains lateral movement: compromised credentials or pods cannot silently reach unrelated databases.</li>
+                <li>Enables remote work and multi-cloud without brittle VPN hairpins.</li>
+                <li>Produces rich audit trails—who accessed which resource, with what device posture, under which policy version.</li>
+                <li>Microsegmentation shrinks blast radius compared with coarse subnet ACLs.</li>
+                <li>Aligns with NIST 800-207, FedRAMP Zero Trust overlays, and industry maturity models.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Significant identity infrastructure investment required: IdP, PKI, device management, policy engine.</li>
-                <li>Per-session authorization adds latency if the policy evaluation path is not optimised.</li>
-                <li>Legacy applications that cannot present machine identities are difficult to integrate.</li>
-                <li>Policy management complexity grows with scale; incorrect policy rules can deny legitimate access (false positives causing outages).</li>
-                <li>Full ZTA maturity is a multi-year journey; partial adoption can create gaps if not carefully sequenced.</li>
+                <li>Requires mature identity infrastructure: IdP, MFA, PKI or workload identity, device management, and policy authoring.</li>
+                <li>Per-request policy evaluation adds latency unless PDP clusters are geographically distributed and cached safely.</li>
+                <li>Legacy applications without OAuth/OIDC or mTLS need wrappers or exception processes.</li>
+                <li>Policy sprawl creates operational risk—incorrect rules cause outages or silent over-permissioning.</li>
+                <li>Full maturity is a multi-year programme; partial deployments can leave gaps if sequencing is unclear.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>The BeyondCorp migration path typically follows four stages: (1) establish a strong identity foundation — federated SSO with MFA for all users and workloads via OIDC/SAML; (2) gain device visibility — enroll all devices in MDM (Jamf, Intune, Google Endpoint Management) and generate device compliance signals; (3) deploy an identity-aware proxy or ZTNA gateway in front of all internal applications and begin replacing VPN access; (4) extend Zero Trust to workload-to-workload communication using mTLS with service mesh (Istio, Linkerd) or cloud-native workload identity (AWS IAM roles, GCP Workload Identity). Begin with the most critical, highest-risk applications rather than attempting a "big bang" migration. Use a phased approach: monitor mode first (log access denials without blocking) to understand policy impact before enforcing.</p>
-          <p>For cloud-native deployments, use cloud-provider native Zero Trust services: Google BeyondCorp Enterprise, AWS Verified Access, Azure Zero Trust network access, and Cloudflare Access all provide identity-aware proxy capabilities with minimal infrastructure overhead. For workload identity in Kubernetes, SPIFFE/SPIRE provides platform-agnostic cryptographic workload identity that integrates with service meshes and secret managers.</p>
+          <p>Sequence the journey: (1) <strong>identity foundation</strong>—federated SSO with phishing-resistant MFA (FIDO2/WebAuthn) for humans and OIDC/client credentials for services per OWASP authentication guidance; (2) <strong>device visibility</strong>—MDM/EDR telemetry feeding the PDP as compliance signals; (3) <strong>application front door</strong>—ZTNA or identity-aware proxy in front of admin tools and internal web apps, retiring flat VPN access; (4) <strong>east-west Zero Trust</strong>—service mesh or cloud workload identity enforcing mTLS and authorisation on every RPC. Run new policies in monitor-only mode first: log would-be denials before enforcing to tune false positives.</p>
+          <p>Map policies to NIST 800-207 logical components explicitly in runbooks—operators should know which PDP cluster serves which PEP class (north-south ZTNA vs mesh sidecar). For Kubernetes, SPIFFE/SPIRE issues short-lived SVIDs that sidecars validate; combine with OPA or cloud IAM for attribute-aware rules. Document <strong>fail-closed vs fail-open</strong> behaviour for PDP outages; most regulated estates choose fail-closed for admin paths with a rehearsed break-glass account outside SSO. Integrate threat intelligence and SIEM alerts so a suspicious principal triggers step-up authentication or session termination.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>VPN replacement without policy change</strong>: Replacing a VPN with a ZTNA gateway that grants the same broad access as the VPN achieves nothing; Zero Trust requires per-resource, per-session policy.</li>
-            <li><strong>Orphaned service accounts</strong>: Shared, long-lived service account credentials bypass device-level trust signals; all workload identities should be short-lived and scoped.</li>
-            <li><strong>Incomplete device coverage</strong>: Contractor or BYOD devices not enrolled in MDM create blind spots in device posture signals, weakening access decisions.</li>
-            <li><strong>Policy sprawl</strong>: Organisations that create thousands of fine-grained policies without a governance model end up with unmanageable rule sets that no one understands or audits.</li>
-            <li><strong>No fallback for policy engine outages</strong>: If the PDP/PEP goes down, what happens? Fail-open grants all access (unsafe); fail-closed blocks all access (operational disaster). Design for high availability.</li>
+            <li><strong>VPN skinning</strong>: Swapping VPN for ZTNA but preserving blanket network reach—Zero Trust requires per-resource, per-session policy, not a new tunnel with the same routes.</li>
+            <li><strong>Long-lived service secrets</strong>: Shared API keys bypass device and user posture; prefer workload identity and rotated credentials from a secrets manager.</li>
+            <li><strong>Partial MDM coverage</strong>: Unmanaged contractor devices weaken posture signals; either block them or isolate into dedicated access profiles.</li>
+            <li><strong>Unowned policy lifecycle</strong>: Thousands of stale rules nobody audits; assign policy owners and quarterly reviews tied to access certification.</li>
+            <li><strong>Undefined PDP failure behaviour</strong>: Unexpected fail-open during incidents; rehearse failover and document break-glass.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is there a federated identity provider with MFA for all users and service accounts?</li>
-            <li>Are device posture signals (compliance, patch level, EDR status) integrated into access decisions?</li>
-            <li>Is per-resource, per-session authorisation enforced at a Policy Enforcement Point?</li>
-            <li>Is all communication encrypted in transit (TLS/mTLS) regardless of network location?</li>
-            <li>Is the Policy Decision Point highly available with defined fail-behavior?</li>
-            <li>Are legacy systems that cannot adopt Zero Trust documented with compensating controls?</li>
+            <li>Does every human and service identity authenticate through a federated IdP with MFA or cryptographic workload identity?</li>
+            <li>Are device posture signals (patch level, encryption, EDR health) inputs to access decisions?</li>
+            <li>Is authorisation enforced at a PEP on every path to sensitive data, not only at the perimeter?</li>
+            <li>Is all traffic encrypted in transit (TLS 1.2+ / mTLS) regardless of network zone labels?</li>
+            <li>Are PDP and PEP components highly available with tested failover?</li>
+            <li>Are legacy exceptions documented with compensating controls and expiry dates?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Remote workforce access</strong>: Engineers access internal tools via Cloudflare Access (ZTNA), which validates their Okta identity and Intune device compliance before proxying each request — no VPN client required.</li>
-            <li><strong>Microservices security</strong>: Kubernetes workloads communicate only over mTLS; Istio enforces that the payment service can only be called by services presenting valid SPIFFE SVIDs from the same trust domain.</li>
-            <li><strong>Contractor access</strong>: External contractors receive time-limited access to specific internal applications via ZTNA, scoped to their project, with no lateral visibility to other services.</li>
+            <li><strong>Illustrative scenario — Meridian Commerce:</strong> Engineers reach internal Grafana via Cloudflare Access; Okta identity and Intune compliance must pass before each HTTP request is proxied—no full-tunnel VPN.</li>
+            <li><strong>Illustrative scenario — payment mesh:</strong> Only pods with valid SPIFFE IDs in the <code>payments</code> namespace may call the ledger service; Istio enforces mTLS and denies cross-namespace calls by default.</li>
+            <li><strong>Contractor project access:</strong> ZTNA grants time-boxed access to a single Jira project and bastion-less kubectl via just-in-time cluster roles, revoking automatically when the contract ends.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="defense-in-depth.html">Defense in Depth</a> — Layered security that Zero Trust operates within.</li>
-            <li><a href="identity-and-access-management.html">Identity and Access Management</a> — The identity foundation that Zero Trust depends on.</li>
-            <li><a href="network-security.html">Network Security Architecture</a> — Microsegmentation and ZTNA at the network layer.</li>
-            <li><a href="../deployment/service-mesh.html">Service Mesh</a> — mTLS and workload identity for service-to-service Zero Trust.</li>
+            <li><a href="defense-in-depth.html">Defense in Depth</a> — Layered controls that Zero Trust strengthens via identity and segmentation.</li>
+            <li><a href="identity-and-access-management.html">Identity and Access Management</a> — Directory, SSO, and lifecycle underpinning ZTA decisions.</li>
+            <li><a href="network-security.html">Network Security Architecture</a> — Microsegmentation and ZTNA integration at the network layer.</li>
+            <li><a href="../deployment/service-mesh.html">Service Mesh</a> — mTLS PEPs for east-west Zero Trust.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-207.pdf" target="_blank" rel="noopener noreferrer">NIST SP 800-207: Zero Trust Architecture</a></li>
             <li><a href="https://cloud.google.com/beyondcorp" target="_blank" rel="noopener noreferrer">Google BeyondCorp — Zero Trust at Google</a></li>
+            <li><a href="https://owasp.org/www-project-top-ten/" target="_blank" rel="noopener noreferrer">OWASP Top 10 — authentication and access-control risks ZTA mitigates</a></li>
             <li><a href="https://spiffe.io/" target="_blank" rel="noopener noreferrer">SPIFFE: Secure Production Identity Framework For Everyone</a></li>
           </ul>
         </div>

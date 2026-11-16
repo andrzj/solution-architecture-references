@@ -100,27 +100,34 @@
           </div>
           <h1 class="article-header__title">WAF & DDoS Protection</h1>
           <p class="article-header__desc">Defending internet-facing entry points from application-layer attacks and volumetric floods.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: AWS CloudFront + WAF blocks SQLi patterns, rate-limits login paths, and Shield Advanced mitigates a 200 Gbps L3/L4 attack while origin auto-scales within budget.</p>
+          <p>A <strong>Web Application Firewall (WAF)</strong> inspects HTTP and HTTPS traffic at the edge and applies rules to block or challenge requests that match known attack signatures (SQL injection, cross-site scripting, path traversal) or custom policies (geo blocks, IP reputation, bot scores). A <strong>DDoS protection</strong> layer absorbs or scrubs volumetric and protocol floods — typically at CDN anycast scrubbing centers or cloud DDoS services — before traffic reaches your origin.</p>
+          <p>WAFs address <strong>application-layer (L7)</strong> abuse: credential stuffing on login, scraping, and crafted API payloads. DDoS services address <strong>network/volumetric (L3/L4)</strong> floods and large L7 floods that would overwhelm origin capacity even when each request is “valid.” Together they form the outer shell of <a href="defense-in-depth.html">Defense in Depth</a>; they do not replace authentication, authorisation, or input validation in application code.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Public edges are probed continuously. Origin auto-scaling alone cannot stop application-layer abuse or costly volumetric attacks. Managed edge defenses add scrubbing, bot scores, and rule packs without patching every service.</p>
+          <p>Internet-facing endpoints are probed continuously by automated scanners. Origin auto-scaling alone cannot distinguish a flash crowd from a botnet — scaling up during an attack raises cost without guaranteeing availability. Managed WAF rule packs (for example OWASP Core Rule Set) and provider bot intelligence distribute the cost of tracking new CVEs and attack variants across customers, which individual product teams cannot match.</p>
+          <p>Hiding origin IP addresses behind a CDN and scrubbing center also prevents attackers from bypassing edge controls with direct volumetric floods against a small number of origin addresses.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Internet-facing HTTP APIs and sites.</li>
-            <li>Login and checkout paths needing stricter rate limits.</li>
-            <li>Compliance requiring managed rule sets (PCI).</li>
+            <li>Any internet-facing website, API, or BFF that accepts unauthenticated or lightly authenticated traffic.</li>
+            <li>High-risk paths — login, password reset, checkout, token endpoints — with stricter rate limits and bot management.</li>
+            <li>Regulated environments (PCI DSS) that expect managed rule sets and documented edge protection.</li>
+            <li>Applications subject to scrape or inventory-harvesting where bot scores and CAPTCHA challenges reduce abuse.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Pure internal east-west traffic — use mesh policy instead.</li>
-            <li>As sole authz — WAF complements, not replaces, app controls.</li>
+            <li><strong>Pure internal east-west service mesh traffic</strong> — enforce mTLS and mesh policy instead of a perimeter WAF.</li>
+            <li><strong>As the only access control</strong> — WAF pattern matching cannot understand object-level authorisation or business logic flaws.</li>
+            <li><strong>Replacing secure coding</strong> — SQLi rules help, but parameterised queries remain mandatory.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Edge WAF and DDoS scrubbing before origin.</p>
+          <p>Terminate TLS at the CDN/WAF, apply managed and custom rules, then forward only sanitised traffic to the origin over a private link or locked-down security group. Origin must not accept traffic except from the edge provider’s IP ranges.</p>
 
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
@@ -144,65 +151,76 @@
 
 DDoS: reroute via scrubbing center; origin hidden</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Edge protection: DDoS scrubbing and CDN anycast precede WAF inspection before traffic reaches the origin.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Traffic passes through CDN scrubbing and WAF inspection with rate limits before reaching origins that accept only edge provider connections.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Managed rule updates for new CVEs.</li>
-            <li>Rate limiting at scale without app changes.</li>
-            <li>Geo and ASN blocking for incident response.</li>
-            <li>Logging for forensic replay at edge.</li>
+                <li>Managed rule updates track emerging web attack patterns without per-service patches.</li>
+                <li>Edge rate limiting and bot management scale beyond what a single origin can enforce.</li>
+                <li>Geo, ASN, and IP reputation blocks support rapid incident response.</li>
+                <li>Centralised logging gives forensic visibility before traffic hits application pods.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>False positives on JSON APIs.</li>
-            <li>Latency hop if not integrated with CDN.</li>
-            <li>Cost rises with request volume.</li>
-            <li>Complex rules become hard to test.</li>
+                <li>False positives on JSON APIs and mobile clients require tuning and exclusion lists.</li>
+                <li>Extra network hop adds latency unless WAF is integrated with the CDN PoP.</li>
+                <li>Cost grows with request volume and advanced bot features.</li>
+                <li>Complex custom rules are hard to test and may introduce regex denial-of-service risk.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with OWASP Core Rule Set in count mode, tune exclusions for APIs, then enforce. Pair WAF with origin rate limits and authentication.</p>
-          <p>Run game days simulating L7 floods; document runbook for enabling aggressive ACLs.</p>
+          <p>Deploy OWASP Core Rule Set in <strong>count</strong> (observe) mode first; review false positives on real API traffic; add targeted exclusions for known-safe JSON fields; then switch matching rules to <strong>block</strong>. Separate rule groups for HTML apps versus JSON APIs — CRS defaults assume form posts.</p>
+          <p>Pair WAF rate limits with application-level quotas and authentication. Use bot scores to challenge only suspicious traffic, not every user. For DDoS, document runbooks: who can enable aggressive geo blocks, when to enable “under attack” mode, and how to communicate to customers.</p>
+          <p>Ensure every public hostname — including marketing subdomains, legacy domains, and API gateways — points through the same edge stack. Monitor certificate transparency and DNS for shadow hostnames that leak the origin.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Bypass via alternate hostnames</strong> not behind WAF.</li>
-            <li><strong>Log-only forever</strong> — attacks unblocked.</li>
-            <li><strong>Regex DoS</strong> from pathological rules.</li>
-            <li><strong>Origin IP leak</strong> allowing direct attack.</li>
+            <li><strong>Bypass via alternate hostnames</strong> — staging or legacy DNS records expose origin without WAF.</li>
+            <li><strong>Permanent log-only mode</strong> — rules never promoted to block after tuning fatigue.</li>
+            <li><strong>Regex denial of service</strong> — catastrophic backtracking in custom WAF rules stalls the edge.</li>
+            <li><strong>Origin IP leakage</strong> — historical DNS, mail headers, or error pages reveal direct attack targets.</li>
+            <li><strong>Over-broad geo blocks</strong> — incident response blocks entire regions including paying customers.</li>
+            <li><strong>WAF as sole SQLi defence</strong> — application still vulnerable when rules are disabled or bypassed.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>All public hostnames behind WAF/CDN?</li>
-            <li>OWASP CRS tuned with API exclusions?</li>
-            <li>Login endpoints rate-limited?</li>
-            <li>DDoS playbooks documented?</li>
-            <li>Origin addresses non-routable publicly?</li>
-            <li>WAF logs shipped to SIEM?</li>
+            <li>Are all internet-facing hostnames routed through CDN/WAF with no direct origin access?</li>
+            <li>Is OWASP CRS tuned with API-specific exclusions after a count-mode observation period?</li>
+            <li>Are authentication endpoints rate-limited and bot-managed separately from static assets?</li>
+            <li>Is there a documented DDoS playbook with roles and communication templates?</li>
+            <li>Are origin security groups or firewalls limited to edge provider address ranges?</li>
+            <li>Are WAF logs shipped to SIEM with alerts on block-rate anomalies?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce</strong>: Bot control on checkout, CAPTCHA on abuse spikes.</li>
-            <li><strong>Public API</strong>: Per-API-key limits plus geo allowlist for partners.</li>
-            <li><strong>Media site</strong>: CDN caching absorbs flash crowds; WAF blocks scrapers.</li>
+            <li><strong>Illustrative scenario — e-commerce checkout:</strong> Bot control on checkout paths; sudden scraper spike triggers managed challenge without throttling legitimate card traffic.</li>
+            <li><strong>Illustrative scenario — public API:</strong> Per-API-key rate limits at the edge plus geo allowlist for partner ASNs; CRS tuned to avoid blocking JSON bodies.</li>
+            <li><strong>Case study — AWS Shield Advanced:</strong> Large L3/L4 floods mitigated at the network edge while AWS WAF blocks application-layer probes against ALB targets.</li>
+            <li><strong>Illustrative scenario — media publisher:</strong> CDN caching absorbs flash crowds; WAF blocks aggressive scrapers while cache hit ratio stays high.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="network-security.html">Network Security Architecture</a> — Broader perimeter design.</li>
-            <li><a href="api-security.html">API Security</a> — Application-layer authorization.</li>
-            <li><a href="incident-response.html">Security Incident Response</a> — Response when attacks succeed.</li>
+            <li><a href="network-security.html">Network Security Architecture</a> — Perimeter, segmentation, and DDoS strategy.</li>
+            <li><a href="api-security.html">API Security</a> — Authorisation and BOLA after traffic passes the WAF.</li>
+            <li><a href="incident-response.html">Security Incident Response</a> — Playbooks when edge controls are overwhelmed.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://owasp.org/www-project-modsecurity-core-rule-set/" target="_blank" rel="noopener noreferrer">OWASP ModSecurity Core Rule Set</a></li>
             <li><a href="https://docs.aws.amazon.com/waf/latest/developerguide/waf-chapter.html" target="_blank" rel="noopener noreferrer">AWS WAF Developer Guide</a></li>
-            <li><a href="https://docs.aws.amazon.com/whitepapers/latest/aws-best-practices-ddos-resiliency/aws-best-practices-ddos-resiliency.html" target="_blank" rel="noopener noreferrer">Cloudflare — What is a DDoS attack?</a></li>
+            <li><a href="https://docs.aws.amazon.com/whitepapers/latest/aws-best-practices-ddos-resiliency/aws-best-practices-ddos-resiliency.html" target="_blank" rel="noopener noreferrer">AWS — AWS Best Practices for DDoS Resiliency</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">

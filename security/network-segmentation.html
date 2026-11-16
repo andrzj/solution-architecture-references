@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Network Segmentation — SA References</title>
-  <meta name="description" content="Separating trust zones with firewalls, VPCs, and micro-segmentation strategies.">
+  <meta name="description" content="Network segmentation: isolated trust zones, default-deny east-west policy, VPC tiers, micro-segmentation, and Kubernetes NetworkPolicies for blast-radius limits and compliance enclaves.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,28 +99,36 @@
             <span class="badge badge--primary">Security Architecture</span>
           </div>
           <h1 class="article-header__title">Network Segmentation</h1>
-          <p class="article-header__desc">Separating trust zones with firewalls, VPCs, and micro-segmentation strategies.</p>
+          <p class="article-header__desc">Isolating trust zones with VPC tiers, security groups, micro-segmentation, and identity-aware east-west controls to limit blast radius and meet compliance boundaries.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: production databases live in a private subnet reachable only from application subnets via security group references, not from the corporate VPN except through a bastion with session recording.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p><strong>Network segmentation</strong> divides infrastructure into isolated trust zones with explicit allow rules for east-west traffic instead of implicit full mesh reachability. In cloud VPCs that usually means tiered subnets (public edge, private application, restricted data), security groups that default deny lateral movement, and optional <strong>micro-segmentation</strong> inside a tier via Kubernetes NetworkPolicies or service mesh mTLS. Segmentation limits blast radius after credential theft or workload compromise and produces audit-ready boundaries for PCI, HIPAA, and Zero Trust programmes.</p>
+          <p>Perimeter controls in <a href="network-security.html">network security architecture</a> protect north-south paths; segmentation addresses east-west lateral movement. The <a href="https://www.cisecurity.org/controls">CIS Critical Security Controls</a> (Control 13) expect segmented networks, monitored boundaries, and restricted administrative paths—architecture choices here are how many organisations satisfy those expectations.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Flat networks let lateral movement after a single compromise. Segmentation limits blast radius, supports compliance zones (PCI, HIPAA), and enables least-privilege east-west traffic in Zero Trust designs.</p>
+          <p>Flat networks assume that anyone inside the perimeter is trusted. Cloud estates break that assumption: hundreds of services share address space, VPN users reach production subnets, and one compromised pod or stolen token can scan the entire RFC1918 range. Segmentation converts implicit trust into enforced policy so a foothold in a web tier does not imply database reachability without crossing another control. VPC Flow Logs and micro-segmentation telemetry also give incident responders a narrower scope when reconstructing attacker movement.</p>
+          <p>Regulated customers require network diagrams with clear enclaves. When tiers are encoded in infrastructure-as-code, evidence for SOC 2, PCI, or ISO surveillance audits is repeatable instead of quarterly firewall screenshots.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Multi-tier web applications.</li>
-            <li>Hybrid cloud with on-prem integration.</li>
-            <li>Regulatory environments requiring cardholder or PHI enclaves.</li>
-            <li>Kubernetes clusters with namespace-level policy.</li>
+            <li>Multi-tier web applications where data stores must never accept internet-routable paths.</li>
+            <li>PCI cardholder data environments, HIPAA PHI zones, or FedRAMP scopes needing isolated processing.</li>
+            <li>Multi-tenant Kubernetes or shared VPC offerings with contractual isolation between tenants.</li>
+            <li>Zero Trust rollouts replacing flat VPN trust with identity-aware, path-specific access.</li>
+            <li>Hybrid cloud with peering or transit—segment paths so corporate LAN compromise does not imply production data reachability.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Over-segmenting tiny dev sandboxes — operational drag without benefit.</li>
-            <li>Relying only on VLANs without identity — insufficient alone.</li>
+            <li>Over-segmenting tiny sandboxes where ACL maintenance exceeds risk—use one coarse non-production VPC instead.</li>
+            <li>Subnet labels without enforced deny-by-default rules—documentation without policy is not segmentation.</li>
+            <li>Treating VLANs or subnets alone as sufficient without identity, authorization, and application controls on sensitive APIs.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Public subnets expose only load balancers and NAT; application tiers accept traffic solely from load-balancer security groups; data tiers sit in subnets without internet gateway routes and accept only application security groups on database ports. Administrative access uses PAM bastions, SSM Session Manager, or ZTNA—not unconstrained VPN into data subnets.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     inet["Internet"]
@@ -144,64 +152,75 @@ POLICY: default deny east-west; allow by label/identity</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Segmented VPC: default-deny east-west traffic; expose only the load balancer publicly and isolate databases.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Containment after initial foothold.</li>
-            <li>Clear audit boundaries per zone.</li>
-            <li>Supports compliance network diagrams.</li>
-            <li>Pairs with service mesh mTLS.</li>
+                <li>Containment after initial compromise—additional boundaries protect crown-jewel data.</li>
+                <li>Clear compliance enclaves with evidence from IaC and flow logs.</li>
+                <li>Pairs with service mesh mTLS and Zero Trust identity policies beyond IP rules.</li>
+                <li>Reduces pen-test and scan scope when non-production is truly isolated.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Complex routing and peering.</li>
-            <li>Firewall rule sprawl without IaC.</li>
-            <li>Debug friction for engineers.</li>
-            <li>Misconfigured SG opens entire VPC.</li>
+                <li>Routing complexity across peering, transit gateways, and multi-account hub-spoke designs.</li>
+                <li>Firewall and NetworkPolicy sprawl without IaC review and reachability tests.</li>
+                <li>Debugging blocked service-to-service paths requires documented flow matrices.</li>
+                <li>One misconfigured <code>0.0.0.0/0</code> rule can negate an otherwise tiered design.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Model tiers in Terraform; use security group referencing not CIDR open-world rules. Automate periodic reachability scans.</p>
-          <p>For Kubernetes, combine NetworkPolicy with cloud SGs; document required flows per service.</p>
+          <p>Model tiers in Terraform or equivalent IaC; reference security groups by ID rather than static CIDRs that drift under autoscaling. Enable VPC Flow Logs on production segments. Run periodic reachability scans or policy-as-code tests in CI to catch accidental open admin ports.</p>
+          <p>In Kubernetes, deny-by-default NetworkPolicies per namespace; align node security groups with pod CIDRs. Map hardening to CIS cloud and Kubernetes benchmarks where auditors expect benchmark scan exports. Document required flows per microservice so engineers know which allow rules are intentional.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>0.0.0.0/0 on admin ports</strong>.</li>
-            <li><strong>Shared VPC without tenant isolation</strong>.</li>
-            <li><strong>Peering transitive trust</strong> across environments.</li>
-            <li><strong>Flat Kubernetes</strong> — any pod talks to any pod.</li>
+            <li><strong>Data in private subnet, public security group</strong>—placement without restrictive groups is not segmentation.</li>
+            <li><strong>Shared VPC without tenant isolation</strong>—one broad application group behaves like a flat network.</li>
+            <li><strong>Peering transitive trust</strong>—corporate LAN paths into production via unintended routes.</li>
+            <li><strong>Flat Kubernetes</strong>—any pod talks to any pod without NetworkPolicy or RBAC boundaries.</li>
+            <li><strong>Admin VPN into data tier</strong>—engineer laptops become lateral movement bridges.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Databases in private subnets only?</li>
-            <li>Default deny between tiers?</li>
-            <li>Rules managed as IaC with review?</li>
-            <li>Reachability tests in CI?</li>
-            <li>Admin access via PAM/bastion?</li>
-            <li>Egress filtered for sensitive zones?</li>
+            <li>Are data stores in subnets with no internet gateway route and least-privilege groups?</li>
+            <li>Is east-west traffic default deny except documented flows?</li>
+            <li>Are rules managed as IaC with peer review?</li>
+            <li>Do reachability or policy tests run on a schedule or in CI?</li>
+            <li>Is admin access via PAM, SSM, or ZTNA—not open VPN into sensitive tiers?</li>
+            <li>Are flow logs enabled for incident reconstruction?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>PCI</strong>: CDE subnet with one-way flows to logging.</li>
-            <li><strong>Zero Trust</strong>: Identity-aware proxy replaces VPN to apps.</li>
-            <li><strong>Multi-account</strong>: Hub-spoke with centralized egress.</li>
+            <li><strong>Illustrative scenario — PCI CDE</strong>: Cardholder environment subnets accept only payment API traffic; logging flows one-way to SIEM; ASV scans target CDE edge only.</li>
+            <li><strong>Case study — ZTNA</strong>: Organizations replace flat VPN with identity-aware proxies that grant application paths per user and device posture.</li>
+            <li><strong>Illustrative scenario — hub-spoke multi-account</strong>: Transit gateway with inspection VPC; centralized egress filtering from data tiers.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="zero-trust-architecture.html">Zero Trust Architecture</a> — Identity-centric network access.</li>
-            <li><a href="network-security.html">Network Security Architecture</a> — Perimeter and hybrid connectivity.</li>
-            <li><a href="container-security.html">Container Security</a> — Namespace policy in Kubernetes.</li>
+            <li><a href="zero-trust-architecture.html">Zero Trust Architecture</a> — Identity-centric access complementing network zones.</li>
+            <li><a href="network-security.html">Network Security Architecture</a> — Perimeter, WAF, and hybrid connectivity.</li>
+            <li><a href="container-security.html">Container Security</a> — Kubernetes NetworkPolicy and namespace isolation.</li>
+            <li><a href="defense-in-depth.html">Defense in Depth</a> — Segmentation as the network layer.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://learn.microsoft.com/en-us/security/zero-trust/deploy/networks" target="_blank" rel="noopener noreferrer">Azure — Network segmentation guidance</a></li>
-            <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/VPC_SecurityGroups.html" target="_blank" rel="noopener noreferrer">AWS Security Groups</a></li>
-            <li><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/" target="_blank" rel="noopener noreferrer">Calico Network Policy</a></li>
+            <li><a href="https://www.cisecurity.org/controls" target="_blank" rel="noopener noreferrer">CIS Critical Security Controls</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/security/zero-trust/deploy/networks" target="_blank" rel="noopener noreferrer">Microsoft Zero Trust — Network segmentation</a></li>
+            <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/VPC_SecurityGroups.html" target="_blank" rel="noopener noreferrer">AWS VPC Security Groups</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/" target="_blank" rel="noopener noreferrer">Kubernetes NetworkPolicies</a></li>
           </ul>
+
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
           <a href="incident-response.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Incident Response</span></a>

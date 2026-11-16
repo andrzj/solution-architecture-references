@@ -104,25 +104,30 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: an employee signs into a SaaS app via corporate OIDC, completes password plus WebAuthn, receives an ID token, and the app binds a short-lived server-side session to that identity.</p>
+          <p><strong>Authentication</strong> answers whether a claimed identity is genuine before any authorisation or business logic runs. Humans prove identity with passwords, MFA, passkeys, or federated login; workloads prove identity with client certificates, signed JWTs from a trusted issuer, or cloud workload identity. The outcome is an authenticated session or token that downstream components can bind to audit logs and access policies.</p>
+          <p>Modern browser apps almost always delegate human login to an <strong>OpenID Connect</strong> provider using OAuth 2.0's Authorization Code flow with <strong>PKCE</strong>, exchanging a one-time code for ID and access tokens. The ID token carries identity claims; the access token authorises API calls—authentication and API access stay related but distinct. NIST SP 800-63 defines Authenticator Assurance Levels (AAL) for how strongly an identity was proven; regulated programmes map MFA requirements to AAL2 or AAL3.</p>
+          <p>Sessions may be server-side (opaque cookie pointing to Redis) or token-based (short-lived JWT in HttpOnly cookie). Machine-to-machine flows use client credentials or mutual TLS. OWASP's Authentication Cheat Sheet summarises baseline controls: rate limiting, secure credential storage, session expiry, and resistance to credential stuffing.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Authorization depends on trustworthy identity. Weak authentication drives account takeover and compliance failures. Centralized auth with MFA, lockout policies, and credential monitoring reduces risk versus per-app password silos.</p>
+          <p>Weak authentication is the gateway to account takeover, fraud, and data exfiltration. Per-app password databases multiply breach impact; users reuse passwords across sites, feeding credential-stuffing bots. Centralising authentication behind an IdP with MFA, device binding, and anomaly detection shrinks the attack surface. Strong authentication also enables trustworthy authorisation—RBAC and ABAC decisions are meaningless if the principal can be impersonated.</p>
+          <p>Compliance regimes (PCI DSS for admin access, HIPAA for workforce users, Zero Trust maturity models) expect phishing-resistant factors for privileged roles and documented session timeout policies. Authentication telemetry—failed logins, impossible travel, new device enrollment—feeds SOC workflows and NIST 800-207 risk-adaptive access.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Any application that distinguishes users or workloads.</li>
-            <li>At every trust boundary (internet, partner, device).</li>
-            <li>When regulations require MFA or federated workforce access.</li>
-            <li>For machines via mTLS, signed JWTs, or workload identity.</li>
+            <li>Any system distinguishing users, administrators, or service principals.</li>
+            <li>At every trust boundary facing the internet, partners, or devices.</li>
+            <li>When regulations or customer contracts mandate MFA or federated workforce access.</li>
+            <li>East-west service calls requiring cryptographic peer identity (mTLS, SPIFFE JWT-SVID).</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Anonymous public content with no abuse surface — still protect admin paths.</li>
-            <li>As a substitute for authorization decisions.</li>
+            <li>Truly public read-only content may omit login for anonymous visitors—still protect admin and write paths.</li>
+            <li>Authentication does not replace authorisation; never infer permissions from successful login alone.</li>
           </ul>
-          <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Federated login with MFA and server-side session validation.</p>
 
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The sequence below shows OIDC with PKCE, MFA at the IdP, and server-side session establishment suitable for browser applications and OWASP-aligned BFF patterns.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">sequenceDiagram
     participant Browser
@@ -152,63 +157,73 @@ PER-REQUEST: validate session, check auth_time, step-up for sensitive ops</code>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Federated authentication: OIDC with PKCE, MFA at the IdP, and server-side session validation on each request.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Federation removes duplicate password databases.</li>
-            <li>MFA and WebAuthn defeat most credential stuffing.</li>
-            <li>Central IdP yields unified sign-in audit trails.</li>
-            <li>Short-lived tokens limit replay windows.</li>
+                <li>Federated OIDC eliminates duplicated password databases and syncs MFA policy.</li>
+                <li>Passkeys and WebAuthn resist phishing better than passwords alone.</li>
+                <li>Central IdP logging supports investigations and compliance evidence.</li>
+                <li>Short-lived access tokens limit replay windows when stolen.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>IdP outage blocks dependent apps without break-glass.</li>
-            <li>Token/session debugging is harder for engineers.</li>
-            <li>Legacy clients may lack PKCE or passkey support.</li>
-            <li>Long sessions can negate MFA benefits.</li>
+                <li>IdP dependency requires HA design and rehearsed break-glass.</li>
+                <li>Token and session debugging complexity for engineers.</li>
+                <li>Legacy clients may lack PKCE or passkey support—need transitional controls.</li>
+                <li>Overly long sessions undermine MFA benefits for sensitive operations.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use OIDC Authorization Code + PKCE; avoid implicit flow. Store sessions server-side or use rotating encrypted cookies marked HttpOnly, Secure, SameSite.</p>
-          <p>Hash passwords with Argon2id/bcrypt; enforce MFA for admins; instrument login metrics and anomaly alerts.</p>
+          <p>Implement Authorization Code + PKCE for public clients; store client secrets only on confidential backends. Hash passwords with Argon2id or bcrypt where local accounts exist; never store plaintext. Enforce MFA for admin and high-value roles; prefer FIDO2/WebAuthn over SMS when possible per NIST 800-63B. Use HttpOnly, Secure, SameSite cookies for session identifiers; avoid storing bearer tokens in localStorage where XSS can exfiltrate them.</p>
+          <p>Set idle and absolute session timeouts; rotate session IDs after login to prevent fixation. Validate OIDC tokens on every API request at the gateway: signature, issuer, audience, expiry. Instrument authentication metrics—failure rate, MFA challenges, geo anomalies—and alert on spikes. Require step-up authentication for sensitive actions (wire transfers, credential changes) even within an active session.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Credential stuffing</strong>: breached password lists; use MFA, rate limits, and breached-password APIs.</li>
-            <li><strong>Session fixation</strong>: rotate session identifiers at login.</li>
-            <li><strong>JWT in localStorage</strong>: XSS theft; prefer HttpOnly cookies or memory + refresh rotation.</li>
-            <li><strong>SMS-only recovery</strong>: SIM-swap risk; prefer safer factors.</li>
+            <li><strong>Credential stuffing</strong>: No rate limits or breached-password checks—pair with MFA and IP throttling.</li>
+            <li><strong>Session fixation</strong>: Failing to mint a new session ID post-login.</li>
+            <li><strong>JWT in localStorage</strong>: XSS steals tokens—use HttpOnly cookies or memory-plus-refresh patterns.</li>
+            <li><strong>SMS-only MFA/recovery</strong>: SIM-swap risk—offer stronger factors.</li>
+            <li><strong>Implicit or resource-owner flows</strong>: Deprecated patterns exposing tokens to user agents.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Browser apps use Authorization Code + PKCE?</li>
-            <li>MFA enforced for privileged roles?</li>
-            <li>Sessions have idle and absolute TTL with rotation?</li>
-            <li>Auth events logged with correlation IDs?</li>
-            <li>Break-glass accounts documented and rare?</li>
-            <li>Passwords hashed with modern algorithms?</li>
+            <li>Do browser apps use Authorization Code + PKCE against a trusted OIDC provider?</li>
+            <li>Is MFA enforced for privileged and high-risk accounts?</li>
+            <li>Do sessions define idle and absolute TTL with rotation on privilege change?</li>
+            <li>Are authentication events logged with correlation IDs to SIEM?</li>
+            <li>Is break-glass access documented, monitored, and rare?</li>
+            <li>Are passwords hashed with modern algorithms where local auth exists?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Enterprise SSO</strong>: Okta OIDC across internal apps with FIDO2 for admins.</li>
-            <li><strong>Consumer mobile</strong>: Passkey-first with email fallback for account recovery.</li>
-            <li><strong>Service mesh</strong>: SPIFFE JWT SVIDs for east-west calls.</li>
+            <li><strong>Illustrative scenario — Meridian Commerce workforce:</strong> Okta OIDC for internal apps; FIDO2 required for production deploy approvals; sessions expire after 12 hours absolute TTL.</li>
+            <li><strong>Consumer mobile:</strong> Passkey-first registration with email magic link as recovery only on new devices.</li>
+            <li><strong>Service mesh:</strong> SPIFFE-issued JWT SVIDs authenticate gRPC between microservices without shared API keys.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="oauth2-openid-connect.html">OAuth2 &amp; OpenID Connect</a> — Standard delegated login flows.</li>
-            <li><a href="jwt-best-practices.html">JWT Best Practices</a> — Token validation after authentication.</li>
-            <li><a href="identity-and-access-management.html">Identity and Access Management</a> — Lifecycle and governance around identities.</li>
+            <li><a href="oauth2-openid-connect.html">OAuth2 &amp; OpenID Connect</a> — Protocol details for delegated login.</li>
+            <li><a href="jwt-best-practices.html">JWT Best Practices</a> — Validating tokens post-authentication.</li>
+            <li><a href="identity-and-access-management.html">Identity and Access Management</a> — Directory and lifecycle around login.</li>
+            <li><a href="zero-trust-architecture.html">Zero Trust Architecture</a> — Continuous authentication signals in policy.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html" target="_blank" rel="noopener noreferrer">OWASP Authentication Cheat Sheet</a></li>
             <li><a href="https://openid.net/specs/openid-connect-core-1_0.html" target="_blank" rel="noopener noreferrer">OpenID Connect Core 1.0</a></li>
             <li><a href="https://pages.nist.gov/800-63-3/" target="_blank" rel="noopener noreferrer">NIST SP 800-63 Digital Identity Guidelines</a></li>
+            <li><a href="https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-207.pdf" target="_blank" rel="noopener noreferrer">NIST SP 800-207 — identity in Zero Trust</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">

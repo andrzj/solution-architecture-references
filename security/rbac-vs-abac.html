@@ -100,26 +100,35 @@
           </div>
           <h1 class="article-header__title">RBAC vs ABAC</h1>
           <p class="article-header__desc">Role-Based vs Attribute-Based Access Control — structured comparison of models and use cases.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>RBAC grants permissions through roles assigned to users; ABAC grants permissions when attributes of the subject, resource, action, and environment satisfy a policy expression.</p>
-          <p>Example: RBAC — <code>billing_admin</code> may issue refunds. ABAC — same action only if <code>user.department=billing</code> and <code>refund.amount &lt; 500</code> and <code>time in business hours</code>.</p>
+          <p><strong>Role-Based Access Control (RBAC)</strong> grants permissions by assigning users to roles, and roles to permissions. Authorisation reduces to “does this user hold a role that includes this permission on this resource type?” NIST SP 800-162 defines standard RBAC models (flat, hierarchical, constrained) used in IAM products and enterprise directories.</p>
+          <p><strong>Attribute-Based Access Control (ABAC)</strong> grants access when a policy expression evaluates attributes of the <strong>subject</strong> (user, service account), <strong>resource</strong> (labels, owner, classification), <strong>action</strong> (read, export), and <strong>environment</strong> (time, IP, device posture). Decisions are dynamic: the same user may read a record at 10:00 but not export it at 22:00 from an unmanaged device.</p>
+          <p>Most production systems use a <strong>hybrid</strong>: RBAC for coarse admin versus member gates, ABAC for data-plane rules tied to sensitivity tags or tenant context.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Teams outgrow flat role lists. RBAC stays legible; ABAC adds context for regulated or dynamic environments. Architects need a deliberate choice instead of accidental hybrid logic.</p>
+          <p>Flat access control lists do not scale with headcount — every hire requires touching thousands of resources. RBAC compresses grants into roles auditors understand (“only <code>billing_admin</code> may refund”). As regulations and data classification mature, static roles cannot express “same role, different row-level outcome based on label and geography,” which pushes teams toward ABAC or policy engines (OPA, Cedar, cloud IAM condition keys).</p>
+          <p>Choosing the model deliberately avoids accidental complexity: engineers copying one-off exceptions into role matrices until nobody knows effective permissions.</p>
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>RBAC: stable org charts, SaaS tenant admin/user splits.</li>
-            <li>ABAC: healthcare, finance, data lakes with sensitivity labels.</li>
-            <li>Hybrid: RBAC for coarse gates, ABAC for data-level rules.</li>
+            <li><strong>RBAC</strong> when org structure is stable, permissions align to job functions, and auditors expect role certification campaigns.</li>
+            <li><strong>ABAC</strong> when decisions need resource labels, time windows, location, device trust, or data sensitivity (healthcare, finance, government).</li>
+            <li><strong>Hybrid</strong> when SaaS products expose tenant admin/user roles but must enforce row-level rules on exports, PHI fields, or cross-border reads.</li>
+            <li><strong>ReBAC complements</strong> (relationship-based access) for graph-shaped permissions — see <a href="authorization-models.html">Authorization Models</a> when ownership graphs dominate.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>ABAC for a 5-person startup with two roles — overkill.</li>
-            <li>RBAC alone when policies need location, time, or data tags.</li>
+            <li><strong>ABAC-only for a tiny team</strong> with two roles — policy engines and attribute pipelines cost more than a simple RBAC matrix.</li>
+            <li><strong>RBAC-only</strong> when regulators require purpose-of-use, break-glass, or label-based rules that change per record.</li>
+            <li><strong>UI hiding as authorisation</strong> — either model still requires server-side enforcement on every API.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Place a single policy decision point behind the API layer: the request carries authenticated identity; the PEP loads resource metadata and subject attributes, then asks the PDP for allow/deny. Log the decision inputs for auditors.</p>
+
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     subgraph rbac["RBAC"]
@@ -145,65 +154,75 @@
               \         |         /
                --> Policy Engine --> Allow/Deny</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">RBAC maps users through static roles; ABAC evaluates dynamic attributes and context in a policy engine.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Hybrid authorisation: RBAC narrows who may call an endpoint; ABAC evaluates record-level attributes before the handler runs.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>RBAC: easy onboarding and audits.</li>
-            <li>ABAC: fine-grained, context-aware rules.</li>
-            <li>Hybrid balances simplicity and precision.</li>
-            <li>Both map to policy-as-code tooling.</li>
+                <li>RBAC is easy to explain in access reviews and SOC evidence.</li>
+                <li>ABAC expresses fine-grained, context-aware rules without role explosion.</li>
+                <li>Hybrid keeps admin consoles simple while protecting sensitive data paths.</li>
+                <li>Both models map to policy-as-code with versioned tests in CI.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>RBAC: role explosion and privilege creep.</li>
-            <li>ABAC: harder to reason about without simulators.</li>
-            <li>Hybrid without boundaries confuses engineers.</li>
-            <li>Migration from RBAC to ABAC is political, not only technical.</li>
+                <li>RBAC suffers role explosion and privilege creep without governance.</li>
+                <li>ABAC is harder to reason about without simulators and negative tests.</li>
+                <li>Hybrid without documented boundaries confuses which layer owns a rule.</li>
+                <li>Attribute pipelines (HR, device, labels) become single points of failure.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with a small RBAC matrix; introduce ABAC where tickets repeatedly ask for 'special cases'. Encode ABAC policies in OPA/Rego or cloud IAM condition keys.</p>
-          <p>Publish a permission catalog; require security review for new attributes used in policies.</p>
+          <p>Start with a minimal RBAC matrix documented in a permission catalog. Introduce ABAC only where product or compliance repeatedly demands exceptions (“same role, different outcome”). Encode ABAC in OPA/Rego, AWS IAM condition keys, Azure ABAC on storage, or Google IAM Conditions — pick one PDP per surface to avoid divergent logic.</p>
+          <p>Treat HR and IdP groups as sources of truth for subject attributes; refresh on schedule and on session start for high-risk actions. Define explicit deny semantics when policies conflict. Emergency access (break-glass) should be time-boxed, reason-coded, and monitored.</p>
+          <p>For multi-tenant SaaS, bind every decision to <code>tenant_id</code> on both subject and resource — RBAC roles must be tenant-scoped, not global superuser unless strictly controlled.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Shadow admin</strong>: composite roles recreate superuser.</li>
-            <li><strong>Attribute drift</strong>: HR attributes stale, wrong access granted.</li>
-            <li><strong>UI-only authz</strong>: API still open without checks.</li>
-            <li><strong>Deny overrides missing</strong>: conflicting policies default unclear.</li>
+            <li><strong>Shadow admin</strong>: composite roles or nested groups recreate superuser without review.</li>
+            <li><strong>Attribute drift</strong>: stale department or clearance attributes grant outdated access.</li>
+            <li><strong>UI-only authorisation</strong>: buttons hidden but APIs return 200 for any authenticated caller.</li>
+            <li><strong>Ambiguous deny defaults</strong>: PDP returns allow when policies conflict or attributes are missing.</li>
+            <li><strong>Untested policy edits</strong>: Rego/IAM changes deploy without regression tests or shadow mode.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are roles documented with least privilege?</li>
-            <li>Do ABAC policies have owners and tests?</li>
-            <li>Is HR the source of truth for subject attributes?</li>
-            <li>Can auditors reproduce a decision?</li>
-            <li>Is there a process to retire roles?</li>
-            <li>Are emergency grants time-boxed?</li>
+            <li>Is there a documented permission catalog with least-privilege roles?</li>
+            <li>Are ABAC policies owned, versioned, and tested in CI?</li>
+            <li>Are subject attributes sourced from authoritative systems (IdP/HR)?</li>
+            <li>Can auditors reproduce a decision from logged inputs and policy version?</li>
+            <li>Is there a process to retire roles and remove stale grants?</li>
+            <li>Are break-glass grants time-boxed and alerted?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Enterprise SaaS</strong>: tenant RBAC + ABAC on export actions.</li>
-            <li><strong>Hospital EHR</strong>: ABAC on break-the-glass with mandatory reason.</li>
-            <li><strong>Data platform</strong>: sensitivity-tag ABAC on S3 prefixes.</li>
+            <li><strong>Illustrative scenario — enterprise SaaS:</strong> Tenant RBAC separates <code>admin</code> and <code>member</code>; ABAC blocks bulk export unless <code>user.mfa_recent</code> and <code>resource.tenant</code> matches.</li>
+            <li><strong>Illustrative scenario — hospital EHR:</strong> Clinicians hold RBAC roles; ABAC enforces break-the-glass with mandatory reason codes on sensitive charts.</li>
+            <li><strong>Illustrative scenario — data lake:</strong> Object tags (<code>classification=confidential</code>) drive ABAC on query engines; IAM roles alone cannot see tagged prefixes.</li>
+            <li><strong>Case study — AWS:</strong> IAM roles (RBAC-shaped) combine with resource tags and condition keys (ABAC-shaped) for least-privilege at scale.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="authorization-models.html">Authorization Models</a> — Broader model landscape.</li>
+            <li><a href="authorization-models.html">Authorization Models</a> — ReBAC, ACLs, and policy engines in context.</li>
             <li><a href="compliance-frameworks.html">Compliance Frameworks</a> — Access control evidence for audits.</li>
-            <li><a href="data-security.html">Data Security</a> — Attribute-based data protection.</li>
+            <li><a href="data-security.html">Data Security</a> — Classification labels feeding ABAC decisions.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-162/final" target="_blank" rel="noopener noreferrer">NIST SP 800-162 (RBAC)</a></li>
-            <li><a href="https://csrc.nist.gov/projects/attribute-based-access-control" target="_blank" rel="noopener noreferrer">NIST ABAC Overview</a></li>
-            <li><a href="https://csrc.nist.gov/projects/attribute-based-access-control" target="_blank" rel="noopener noreferrer">NIST ABAC Guide</a></li>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-162/final" target="_blank" rel="noopener noreferrer">NIST SP 800-162 — Guide to Attribute Based Access Control (ABAC) Definition and Considerations</a></li>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-192/final" target="_blank" rel="noopener noreferrer">NIST SP 800-192 — Verified Evaluation of Role-Based Access Control Policies</a></li>
+            <li><a href="https://www.openpolicyagent.org/docs/latest/" target="_blank" rel="noopener noreferrer">Open Policy Agent Documentation</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
