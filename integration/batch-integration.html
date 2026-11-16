@@ -101,33 +101,33 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p><strong>Batch integration</strong> moves and transforms data between systems in <em>jobs</em> that run on a schedule or external trigger, processing many records inside a defined window or dataset boundary instead of reacting to each change in real time. A run typically follows extract → transform → load steps, commits work in chunks, and records progress so a failed job can resume instead of starting over.</p>
-          <p>Common engines include <strong>Spring Batch</strong> (chunk-oriented Java jobs with a persistent job repository), <strong>Apache Spark</strong> for distributed transforms, managed services such as <strong>AWS Glue</strong> and <strong>Azure Data Factory</strong>, and cron-driven SQL or shell scripts. <strong>Microbatching</strong>—jobs every few seconds to a minute—narrows the freshness gap with streaming without adopting full stream-processing semantics.</p>
+          <p><strong>Batch integration</strong> moves or transforms data in discrete, scheduled bulk runs rather than record-by-record in real time. A job collects a defined window—all orders in the last 24 hours, all changes since the prior watermark, every file in a landing prefix—and processes the dataset in sequence before writing results to a destination. Windows are defined by clock time (nightly at 01:00 UTC), volume (every 10,000 records), or external event (object-store notification when a partner file lands).</p>
+          <p>Core frameworks include <strong>Spring Batch</strong> (chunk-oriented Java processing with a persistent <code>JobRepository</code>, restart, and retry), <strong>Apache Spark</strong> for distributed transforms, <strong>AWS Glue</strong> (managed serverless Spark with visual pipeline design), <strong>Azure Data Factory</strong> (orchestration across 90+ connectors), and cron-driven SQL or shell scripts. <strong>Microbatching</strong>—jobs every 5–60 seconds—narrows the latency gap toward streaming without stateful event-time semantics.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Many business processes are naturally periodic: payroll, regulatory filings, model retraining, and period-close accounting all assume a bounded slice of data. Streaming adds always-on compute, state management, and delivery semantics that do not pay off when stakeholders accept hourly or daily freshness.</p>
-          <p>Batch also wins on efficiency for sort-heavy aggregations, bulk database loads, and columnar file writes—operations that amortize I/O across millions of rows. A explicit processing window (“all orders closed between T₀ and T₁”) makes completeness and audit easier than inferring it from a continuous stream that may reorder or duplicate events.</p>
+          <p>Many workloads are inherently periodic: payroll once a week, regulatory filings monthly, ML retraining nightly on accumulated history. Real-time streaming adds stateful processing, exactly-once contracts, and watermark tuning that is unnecessary when the business accepts hourly or daily freshness.</p>
+          <p>Batch is also more efficient for bulk SQL inserts, sorted aggregations, and columnar file writes—large datasets processed in memory beat row-at-a-time streaming for throughput. Batch integration supports reconciliation and audit: a nightly compare between OLTP and warehouse snapshots surfaces discrepancies that continuous replication might hide after reordering or partial failures. The determinism of a named window—“records created between 00:00 and 23:59 UTC on a given date”—simplifies reasoning about completeness.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Data warehouse or lake loads where freshness of minutes to hours is acceptable and bulk writes beat row-at-a-time inserts.</li>
-            <li>Compliance or finance reports that must be reproducible for a named time window.</li>
-            <li>Feature pipelines or analytics that scan large historical datasets once per run.</li>
-            <li>Period-close settlement, billing, or reconciliation that must see the full closed interval before posting.</li>
-            <li>Migrations or backfills that intentionally touch an entire corpus in one controlled job.</li>
-            <li>Destinations that expose bulk-load APIs or maintenance windows tuned for batch ingest.</li>
+            <li>Nightly data warehouse ETL/ELT loads where sub-hourly freshness is not required and bulk columnar writes are most efficient.</li>
+            <li>Regulatory and compliance reports submitted daily or monthly that must be reproducible for a specific time window.</li>
+            <li>ML feature engineering that scans and transforms large historical datasets once per run.</li>
+            <li>End-of-day settlement, ledger reconciliation, or billing that must process the complete closed period as one logical operation.</li>
+            <li>Bulk migrations between databases, file formats, or storage tiers where the entire corpus is scanned intentionally.</li>
+            <li>Destinations with bulk-load APIs or maintenance windows where batching is far cheaper than row-by-row streaming.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Sub-minute freshness or immediate reaction to domain events—prefer <a href="streaming-integration.html">streaming integration</a> or synchronous APIs.</li>
-            <li>Low-volume, steady trickle data where a scheduler and job repository cost more than CDC or API push.</li>
-            <li>Recovery SLAs measured in seconds; a multi-hour batch re-run may violate them after failure.</li>
-            <li>Downstream chains that block on a single nightly critical path with no incremental fallback.</li>
+            <li>When business requirements demand freshness under one minute—<a href="streaming-integration.html">streaming integration</a> or synchronous APIs fit better.</li>
+            <li>Event-driven triggers where work must start immediately after a domain event (payment notification cannot wait for the next cron).</li>
+            <li>Steady low volume (for example ~100 rows per day) where scheduler and job-repository overhead exceeds a simple CDC stream or API push.</li>
+            <li>When failure recovery is extremely time-sensitive—a job that processes eight hours of data may need hours to replay after an outage.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>A scheduler or object-store event starts the job; orchestration tracks dependencies and SLA; each step reads a bounded slice, transforms in chunks, and loads with idempotent or upsert semantics. Job metadata (status, checkpoint, skip counts) lives in a repository or control table for operations and restart.</p>
+          <p>A scheduler or object-store event starts the job; orchestration tracks dependencies, upstream freshness, and SLA deadlines. Extract reads a bounded slice from databases, APIs, or files—often via replica or watermark—then transform validates, enriches, and aggregates in chunks sized to memory and transaction limits. Load writes with bulk APIs, <code>MERGE</code>/upsert, or partitioned file outputs so retries do not duplicate rows. Job metadata (status, checkpoint, skip counts, duration) lives in a <code>JobRepository</code> or control table so operators can restart failed steps without reprocessing completed chunks.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     trig["Cron / file drop"]
@@ -171,62 +171,64 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Throughput: bulk COPY, JDBC batch inserts, and Parquet writes scale better than per-record streaming for large slices.</li>
-                <li>Predictability: each run targets a known window; operators reason about completeness without watermark or late-event logic.</li>
-                <li>Checkpoint/restart: persisted step state limits rework after failure.</li>
-                <li>Cost: compute spins up for the job duration instead of running continuously.</li>
-                <li>Auditability: reruns and exports for a fixed interval satisfy many regulatory evidence requirements.</li>
+                <li>High throughput: bulk COPY, JDBC batch inserts, and Parquet writes vastly outperform row-by-row streaming on large slices.</li>
+                <li>Simpler mental model: a job processes a well-defined window deterministically—no late-event or watermark tuning.</li>
+                <li>Checkpoint/restart: Spring Batch and similar frameworks persist step state so failed jobs resume from the last committed chunk.</li>
+                <li>Lower infrastructure cost: compute runs on demand during the processing window instead of always-on streaming clusters.</li>
+                <li>Audit and compliance: a batch produces a complete, reproducible snapshot of a time window for regulators and finance.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Staleness bounded by the schedule—daily jobs imply up to 24 hours lag.</li>
-                <li>Spiky load on sources, networks, and warehouses during the run window.</li>
-                <li>Partial failure forces explicit policies on idempotent loads, compensating deletes, or full window replay.</li>
-                <li>Long reruns extend recovery time when jobs are hours in duration.</li>
-                <li>Downstream DAGs often serialize on one “nightly completed” gate.</li>
+                <li>High latency: data is only as fresh as the schedule—a daily job means up to 24 hours of staleness.</li>
+                <li>Resource spikes: large jobs stress shared OLTP, networks, and warehouses during the run window.</li>
+                <li>Partial failure handling: mid-run failures force choices between checkpoint resume, full replay, or compensating partial writes.</li>
+                <li>Long recovery: re-running a multi-hour job after failure extends data delay and may breach SLAs.</li>
+                <li>Scheduled bottleneck: downstream DAGs queue behind a single “nightly complete” gate with no incremental fallback.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>In Spring Batch, tune chunk size to memory and transaction boundaries (often 1,000–10,000 rows for JDBC; larger for object-store writes). Persist <code>JobRepository</code> state in a database, not in-memory, and cap concurrent runs of the same job to prevent overlap.</p>
-          <p>Read from replicas or incremental watermarks (<code>updated_at</code>, binlog position, or Glue job bookmarks) instead of full-table scans on OLTP primaries. Orchestrate with Airflow, EventBridge Scheduler, or similar: model dependencies, SLA sensors, and alerting on duration and row counts—not only exit code.</p>
-          <p>Define skip limits and error thresholds explicitly; “SUCCESS” with a high skip rate is a data-quality incident. For microbatching, Spark structured streaming’s <code>Trigger.AvailableNow()</code> or frequent scheduled Glue runs can deliver near-real-time freshness while keeping batch economics.</p>
+          <p>Spring Batch’s chunk model—read N items, process N, write N inside a transaction, commit, repeat—provides natural checkpoints. Persist <code>JobRepository</code> state to a relational database so jobs restart from the last committed chunk after failure. Tune chunk size to memory and transaction overhead: 1,000–10,000 rows is typical for JDBC destinations; 50,000+ for object-store writes where each put has higher fixed cost. For AWS Glue, use job bookmarks to track processed S3 prefixes or DynamoDB segments and avoid manual checkpoint files on incremental runs.</p>
+          <p>Extract from read replicas or incremental watermarks (<code>updated_at</code>, binlog position, CDC offsets) rather than full-table scans on OLTP primaries during peak hours. Cap concurrent instances of the same logical job so a slow run cannot overlap the next cron trigger. Orchestrate with Apache Airflow or AWS EventBridge Scheduler: model DAG dependencies, SLA sensors, and alerts on duration, rows processed, and skip counts—not only exit code.</p>
+          <p>For microbatching, Spark Structured Streaming’s <code>Trigger.Once()</code> or <code>Trigger.AvailableNow()</code> drains available data as one batch and exits—batch throughput with near-streaming freshness when a scheduler fires every minute. Define skip limits and error thresholds: a SUCCESS status with 15% skipped records is a data-quality incident, not a green dashboard.</p>
+          <p>Document each job’s input window, expected row counts, and idempotency guarantees in an internal runbook. Rehearse disaster recovery: restore checkpoints from backup, replay with compensating deletes, and verify downstream consumers tolerate at-least-once delivery during planned recovery drills.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Overlapping runs:</strong> a slow job meets the next cron trigger and double-loads or races on the same window.</li>
-            <li><strong>Lost checkpoints:</strong> in-memory job metadata forces full reruns after JVM death.</li>
-            <li><strong>OLTP contention:</strong> heavy extract during peak hours starves transactional workloads.</li>
-            <li><strong>Heap blowups:</strong> loading entire files or result sets before write instead of chunking.</li>
-            <li><strong>Ignored skip storms:</strong> validation failures logged but not alerted until BI diverges.</li>
+            <li><strong>Job overlap:</strong> A nightly run exceeds 24 hours; the next schedule starts before the previous finishes, causing duplicate loads or race conditions.</li>
+            <li><strong>Missing checkpoint configuration:</strong> An in-memory <code>JobRepository</code> loses all state when the JVM exits; the entire job restarts from row zero.</li>
+            <li><strong>Source database contention:</strong> A full-table scan on production OLTP during peak hours consumes I/O and degrades user-facing latency.</li>
+            <li><strong>Unbounded memory growth:</strong> A step buffers the full result set before write instead of chunking, triggering OOM as data grows.</li>
+            <li><strong>Silent partial success:</strong> The job reports SUCCESS but skipped a large fraction of rows due to validation errors; missing data surfaces only when downstream reports diverge.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does the business accept the maximum staleness implied by the schedule?</li>
-            <li>Are checkpoints durable and is only one active instance allowed per logical job?</li>
-            <li>Does extract avoid primary OLTP under load, using replicas or CDC when possible?</li>
-            <li>Are duration, rows processed, skip count, and SLA breaches monitored?</li>
-            <li>Is there a tested strategy for partial loads and idempotent replays?</li>
-            <li>Are error and skip thresholds set so “green” runs still mean trustworthy data?</li>
+            <li>Is maximum acceptable data latency compatible with the proposed batch window (hourly, daily, weekly)?</li>
+            <li>Are checkpoint and restart configured so failed jobs resume from the last committed step?</li>
+            <li>Does extract use a replica, snapshot, or incremental watermark—not the primary OLTP under load?</li>
+            <li>Are schedule duration and SLA breaches monitored with paging, not weekly log review?</li>
+            <li>Is there a tested re-run strategy when the destination already holds partial data from a failed run?</li>
+            <li>Are skip and error thresholds set so operators know whether one bad row or N failures should fail the job?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> An orchestrator triggers a nightly warehouse load: incremental extract by <code>updated_at</code>, transform in Spark or Glue, bulk load into the analytics store for morning dashboards.</li>
-            <li><strong>Illustrative scenario —</strong> A monthly billing job reads closed usage for the prior period, calculates charges, writes invoices, and emits statement files for downstream delivery.</li>
-            <li><strong>Case study —</strong> Netflix and many data platforms publicly describe large-scale Spark batch pipelines for recommendation features and reporting, complementing real-time paths where needed.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> runs an Airflow DAG at 01:00 UTC that triggers a Glue job: incremental extract from Postgres using an <code>updated_at</code> watermark, transform in Spark, bulk load into the analytics warehouse for morning BI.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> executes a Spring Batch job on the first of each month—reads closed usage for the prior period, applies discounts, writes invoice rows, and generates statement files for delivery.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> runs nightly EMR Spark jobs that scan 90 days of interaction events on object storage, compute aggregated rider features, and publish Parquet to a feature store for model training.</li>
+            <li><strong>Case study —</strong> Netflix and other large platforms publicly describe Spark batch pipelines for recommendations and reporting, complementing streaming paths only where sub-minute freshness is required.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="streaming-integration.html">Streaming Integration</a> — lower latency at higher operational cost.</li>
-            <li><a href="file-based-integration.html">File-Based Integration</a> — common batch inputs and outputs (landing zones, exports).</li>
-            <li><a href="etl-vs-elt.html">ETL vs ELT</a> — where transformation runs relative to the warehouse.</li>
-            <li><a href="change-data-capture.html">Change Data Capture</a> — incremental extract without full scans when freshness tightens.</li>
+            <li><a href="streaming-integration.html">Streaming Integration</a> — the real-time alternative; understand the latency and operational complexity tradeoff.</li>
+            <li><a href="file-based-integration.html">File-Based Integration</a> — batch jobs often read from or write to landing-zone files; a common batch input pattern.</li>
+            <li><a href="etl-vs-elt.html">ETL vs ELT</a> — dominant data-movement architectures; batch integration is often the transport mechanism for both.</li>
+            <li><a href="change-data-capture.html">Change Data Capture</a> — incremental extract for batch or micro-batch when freshness tightens without full scans.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
@@ -234,6 +236,7 @@
             <li><a href="https://docs.spring.io/spring-batch/docs/current/reference/html/index.html" target="_blank" rel="noopener noreferrer">Spring Batch — Reference documentation</a></li>
             <li><a href="https://docs.aws.amazon.com/glue/latest/dg/what-is-glue.html" target="_blank" rel="noopener noreferrer">AWS Glue — Developer guide</a></li>
             <li><a href="https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html" target="_blank" rel="noopener noreferrer">Apache Airflow — DAG concepts</a></li>
+            <li><a href="https://martinfowler.com/bliki/BatchProcessing.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Batch processing</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

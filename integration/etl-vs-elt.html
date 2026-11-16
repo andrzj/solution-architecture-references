@@ -101,30 +101,30 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p><strong>ETL (extract, transform, load)</strong> runs transformation in a pipeline or integration engine <em>before</em> shaped data lands in the destination warehouse or mart. <strong>ELT (extract, load, transform)</strong> loads raw or lightly typed data into the destination first—often cloud object storage plus a warehouse—and transforms it there with SQL, Spark, or dbt. The choice is where compute and schema commitment happen, not a branding distinction between vendors.</p>
-          <p>Classic ETL matched expensive, capacity-constrained warehouses and dedicated ETL servers (Informatica, SSIS, IBM DataStage). Cloud platforms with cheap storage and elastic SQL (Snowflake, BigQuery, Amazon Redshift, Azure Synapse) made landing raw data first practical; teams version transforms as code in the warehouse. Many estates mix both: ETL for heavy cleansing or compliance at the edge, ELT for analytics marts inside the warehouse.</p>
+          <p><strong>ETL (extract, transform, load)</strong> is a data-integration pattern: data is extracted from source systems, transformed into the target schema in a dedicated processing engine <em>outside</em> the destination, then loaded into the warehouse or mart. On-premise Oracle, Teradata, and similar platforms charged heavily for storage and offered limited in-database compute—so heavy joins, aggregates, and cleansing ran on Informatica, SSIS, or DataStage servers and only refined rows crossed the load boundary.</p>
+          <p><strong>ELT (extract, load, transform)</strong> reverses the order: connectors land raw or lightly typed data into cloud storage and the warehouse first, and transformation runs inside the destination with native SQL, Spark, or dbt models. Tools like dbt operationalize ELT by versioning transformation logic as SQL reviewed in pull requests. Massively parallel warehouses (Snowflake virtual warehouses, BigQuery slots, Redshift, Databricks SQL) made in-place transform cost-effective. The architectural choice is <em>where</em> compute and schema commitment live—not which vendor logo appears on the slide deck.</p>
+          <p>Many enterprises run a hybrid: ETL at the edge for PII masking, non-SQL enrichment, or constrained destinations; ELT inside the warehouse for analyst-owned marts and exploratory raw layers.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Operational systems are optimized for transactions, not cross-domain reporting. Integration must extract from databases, APIs, files, and streams, align schemas, enforce quality rules, and deliver datasets analysts and applications can trust. When warehouse storage was scarce, transforming upstream minimized bytes stored and simplified physical models loaded once.</p>
-          <p>ELT reframes the warehouse as the transformation engine: storage is inexpensive, compute scales elastically, and keeping raw landing zones preserves optionality when definitions change. Incremental ingestion from <a href="change-data-capture.html">change data capture</a> and managed connectors (Fivetran, Airbyte, AWS DMS, Azure Data Factory) feeds the same pattern—load first, model in SQL—with shorter time-to-insight for new sources.</p>
+          <p>ETL emerged in the 1990s when enterprise warehouses were scarce, expensive on-premise appliances. Pre-transforming before load reduced storage bills and query complexity. Dedicated ETL servers moved, joined, aggregated, and cleansed data into star or snowflake physical schemas whose shape was fixed at load time—schema design upfront was mandatory because re-landing raw history was impractical.</p>
+          <p>ELT followed cloud platforms that decouple storage from compute and scale both independently. When object storage (S3, GCS) is cheap and warehouse SQL elastic, external transformation clusters lose their cost advantage. Loading raw first preserves optionality: business rules change, and teams re-run dbt models instead of re-extracting from operational sources. <strong>Reverse ETL</strong>—pushing curated warehouse metrics back to CRMs, ad platforms, or support tools—extends the warehouse from analytics terminus to operational hub. Incremental extraction via <a href="change-data-capture.html">change data capture</a> and managed EL tools (Fivetran, Airbyte, AWS DMS, Azure Data Factory) shortens time-to-insight for new sources while keeping the same load-first, transform-in-SQL rhythm.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>ETL</strong> when the destination has limited storage or CPU and you must filter, aggregate, or mask before any byte is persisted.</li>
-            <li><strong>ETL</strong> when transforms need engines beyond warehouse SQL—graph algorithms, ML features, or calls to external validation APIs during the pipeline.</li>
-            <li><strong>ETL</strong> when compliance requires redacting or tokenizing sensitive fields before they enter the analytics environment.</li>
-            <li><strong>ELT</strong> when the target is a cloud warehouse or lakehouse with scalable SQL/Spark and separated storage and compute.</li>
-            <li><strong>ELT</strong> when analysts need retained raw history to explore, re-run models, or backfill after logic changes.</li>
-            <li><strong>ELT with dbt</strong> when transformation should live in version-controlled SQL with tests, documentation, and lineage in CI.</li>
+            <li><strong>ETL</strong> when the destination has limited storage or CPU (on-prem RDBMS, undersized managed warehouse) and raw volume would be prohibitively expensive to retain.</li>
+            <li><strong>ETL</strong> when transformation needs capabilities SQL cannot express efficiently—ML feature engineering, fuzzy deduplication, graph traversals, or synchronous calls to external validation APIs during the pipeline.</li>
+            <li><strong>ETL</strong> when compliance or data residency requires masking, tokenizing, or filtering PII <em>before</em> any record enters the analytics environment.</li>
+            <li><strong>ELT</strong> when the target is a cloud warehouse or lakehouse (Snowflake, BigQuery, Redshift, Databricks, Synapse) with elastic SQL or Spark compute.</li>
+            <li><strong>ELT</strong> when data science and analytics teams need raw, unfiltered history alongside curated marts for exploration and ad-hoc reprocessing.</li>
+            <li><strong>ELT with dbt</strong> when transformation logic should live in version-controlled SQL with pull-request review, data tests (<code>not_null</code>, <code>relationships</code>), and generated lineage documentation.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Do not run a heavyweight ETL server when warehouse-native SQL and dbt already meet quality and scheduling needs.</li>
-            <li>Do not land completely unvalidated garbage into raw zones without structural checks—fail fast at extract or staging.</li>
-            <li>Do not force batch ETL tools onto sub-minute freshness requirements—use streaming integration or CDC instead.</li>
-            <li>Do not combine extract, complex transform, and load in one opaque script—stages should restart independently with clear observability.</li>
+            <li>Do not operate a heavyweight ETL cluster when the warehouse and dbt already meet quality, scheduling, and lineage needs—the operational tax rarely pays off.</li>
+            <li>Do not load completely raw, unparsed payloads into ELT raw zones without structural validation; discovering corrupt rows in mart models delays remediation.</li>
+            <li>Do not force batch-oriented ETL tools onto sub-minute freshness—use stream processing (Flink, Kafka Streams) or CDC-fed micro-batches instead.</li>
+            <li>Do not combine extract, complex transform, and load in one opaque script—distinct restartable stages improve testability and observability.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -167,79 +167,74 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>ELT pros</h3>
               <ul>
-                <li>Raw history remains available for new models without re-extracting from operational sources.</li>
-                <li>SQL models in dbt are reviewable, testable, and approachable for analytics engineers.</li>
-                <li>Warehouse compute scales for large transforms without operating separate ETL clusters.</li>
-                <li>Faster iteration when business rules change—rebuild marts from raw, not re-pull sources.</li>
-                <li>Built-in lineage and documentation patterns in modern transformation frameworks.</li>
+                <li>Raw data preserved in the warehouse; transformations re-run when requirements change without re-extracting from sources.</li>
+                <li>SQL logic version-controlled and tested via dbt—accessible to analytics engineers without a dedicated ETL operations team.</li>
+                <li>Cloud warehouse compute scales to large transforms; no separate transformation cluster to patch and capacity-plan.</li>
+                <li>Faster iteration: prototype models in SQL and promote to production without provisioning new infrastructure.</li>
+                <li>Lineage and documentation built into dbt—upstream and downstream dependencies traceable for impact analysis.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>ELT cons / ETL strengths</h3>
               <ul>
-                <li>Raw zones may store regulated data that must be masked earlier—ETL enforces policy at ingress.</li>
-                <li>Ad hoc full-table dbt runs can spike warehouse spend without guardrails.</li>
-                <li>ELT needs a capable SQL/Spark platform; weak destinations cannot absorb in-place transforms.</li>
-                <li>Non-SQL logic (complex dedupe, ML, external enrichment) still wants Spark or ETL engines.</li>
-                <li>Ingestion and query pricing on some clouds penalize wide raw tables if not lifecycle-managed.</li>
+                <li>Raw landing zones may retain PII requiring governance; ETL can mask and filter before data ever reaches analytics storage.</li>
+                <li>Warehouse compute costs spike when large dbt models full-scan multi-terabyte raw tables on every schedule.</li>
+                <li>ELT requires a capable destination; underpowered on-prem databases cannot absorb heavy in-place transformation.</li>
+                <li>Complex transforms (ML, external APIs, fuzzy matching) remain awkward or impossible in pure SQL ELT.</li>
+                <li>Some clouds charge for ingestion or repeated scans of wide raw tables—lifecycle and partition pruning matter.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For ELT, use managed extract/load (Fivetran, Airbyte, AWS Glue connectors, Azure Data Factory copy activities) into a <code>raw</code> schema or lake path. Layer dbt models: staging renames and casts, intermediate joins, marts for consumption. Apply dbt tests and freshness checks; orchestrate with Airflow, Dagster, or cloud schedulers.</p>
-          <p>For ETL, separate landing on object storage, transform on Spark (EMR, Dataproc, Databricks), and idempotent load via <code>MERGE</code> or warehouse bulk APIs. AWS Glue and Azure Data Factory provide managed ETL with lineage hooks; Apache Camel can orchestrate file/API extracts in hybrid estates. Use incremental watermarks or CDC instead of nightly full extracts when sources grow.</p>
-          <p>Document batch interfaces with AsyncAPI or internal catalogs when pipelines are event-triggered. Align retention and encryption on raw layers with security policy; reverse ETL tools should respect operational write conflicts with explicit merge rules.</p>
+          <p>For modern ELT, use Fivetran or Airbyte for extract and load—managed connectors handle incremental sync, schema drift detection, and retries across hundreds of SaaS and database sources. Land into a dedicated <code>raw</code> schema or lake path. Build dbt layers: <code>staging</code> models rename and cast columns; <code>intermediate</code> models encode joins and business rules; <code>mart</code> models expose reporting-ready aggregates. Apply dbt tests and source freshness checks; orchestrate with Airflow, Dagster, or cloud-native schedulers.</p>
+          <p>For Spark-style ETL, structure distinct restartable stages: extract to a landing zone on S3 or GCS, transform on EMR, Dataproc, or Databricks, load via JDBC or warehouse bulk APIs (<code>COPY INTO</code> on Snowflake, <code>bq load</code> on BigQuery). Use checkpoint directories for stateful stream stages. Prefer <code>MERGE</code> over blind <code>INSERT</code> so reruns stay idempotent. AWS Glue and Azure Data Factory provide managed ETL with job bookmarks and lineage hooks; Apache Camel can orchestrate hybrid file and API extracts.</p>
+          <p>Use CDC or high-water marks instead of nightly full-table extracts as sources grow. Document pipeline contracts in internal catalogs or AsyncAPI when jobs are event-triggered. Align raw-layer retention and encryption with security classification; reverse-ETL syncs need explicit conflict rules so warehouse pushes do not overwrite concurrent edits in operational CRMs.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Schema drift:</strong> Connector or API changes leave new columns unmapped; marts silently degrade.</li>
-            <li><strong>Runaway warehouse cost:</strong> Full-scan models on huge raw tables run on every schedule without cost alerts.</li>
-            <li><strong>Quality after load:</strong> Invalid rows reach marts because checks ran only in a forgotten staging step.</li>
-            <li><strong>Non-incremental extract:</strong> Full reloads time out as source volumes grow.</li>
-            <li><strong>Reverse ETL clobber:</strong> Warehouse pushes overwrite concurrent edits in operational CRMs.</li>
+            <li><strong>Schema drift breaks EL jobs:</strong> A source adds or renames a column; the connector fails or silently loads nulls into raw tables; downstream dbt aggregates drift for weeks.</li>
+            <li><strong>Runaway warehouse costs:</strong> A dbt model full-scans a multi-terabyte raw table on every run; cost spikes surface only on the monthly cloud invoice.</li>
+            <li><strong>No data quality gates in ETL:</strong> Invalid records (negative prices, impossible dates) load into the warehouse; reports show wrong figures until someone audits staging.</li>
+            <li><strong>Big-bang load without incremental extract:</strong> Jobs re-read entire source tables each run; runtime grows until jobs time out.</li>
+            <li><strong>Reverse ETL double-write:</strong> Warehouse sync overwrites changes users made directly in the operational CRM, causing confusion and data loss.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does the destination support scalable in-warehouse transformation?</li>
-            <li>Must raw sensitive data ever land in the analytics environment?</li>
-            <li>Do transforms require capabilities beyond SQL?</li>
-            <li>Is historical raw retention required for reprocessing?</li>
-            <li>Who owns transformation code—platform engineers or analytics?</li>
-            <li>Are extracts incremental and idempotent end to end?</li>
+            <li>Is the destination a cloud warehouse that supports scalable in-database SQL transformation?</li>
+            <li>Must raw sensitive data ever land in the analytics environment, or only cleaned shapes?</li>
+            <li>Does transformation logic require capabilities beyond SQL (ML, external APIs, complex algorithms)?</li>
+            <li>Are PII or residency rules compatible with retaining raw history in the warehouse?</li>
+            <li>Do analysts or analytics engineers own SQL transformation via dbt with review and test discipline?</li>
+            <li>Are extract and load strategies incremental and idempotent end to end?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> SaaS billing data lands in Snowflake via a connector; dbt builds subscription marts while raw invoices remain for audit re-runs.</li>
-            <li><strong>Illustrative scenario —</strong> An on-prem ETL job de-identifies clinical extracts before they touch a constrained Oracle warehouse.</li>
-            <li><strong>Case study —</strong> dbt Labs popularized warehouse-native transformation as code—the pattern most cloud analytics teams label ELT today.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Harborline Retail</strong> loads billing, CRM, and product Postgres replicas into Snowflake via connectors; dbt builds a customer-360 mart while raw invoice JSON remains for audit re-runs.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Summit Outfitters</strong> runs an on-prem ETL pipeline that de-identifies clinical-adjacent wellness program extracts before they reach a capacity-constrained Oracle warehouse.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Crestwave Commerce</strong> syncs lifetime-value scores from BigQuery to its sales CRM via reverse ETL, with merge keys and timestamps so rep edits in the CRM are not blindly overwritten.</li>
+            <li><strong>Case study —</strong> dbt Labs popularized warehouse-native transformation as code—the pattern most cloud analytics teams now label ELT.</li>
+          </ul>
+
+          <h2 id="related-patterns">Related patterns</h2>
+          <ul>
+            <li><a href="change-data-capture.html">Change Data Capture</a> — CDC provides low-latency incremental extraction for ELT pipelines, replacing batch polling of wide OLTP tables.</li>
+            <li><a href="batch-integration.html">Batch Integration</a> — Classic ETL jobs are a batch-integration flavor; compare schedule and SLA against streaming or micro-batch alternatives.</li>
+            <li><a href="../data-architecture/data-warehouse.html">Data Warehouse</a> — Curated warehouse tiers remain the usual publish target after transform logic in either pattern.</li>
+            <li><a href="../data-architecture/data-lakehouse.html">Data Lakehouse</a> — Lakehouse platforms often combine ELT with dbt or Spark on Delta Lake, Iceberg, or Hudi.</li>
+            <li><a href="file-based-integration.html">File-Based Integration</a> — Partner file drops still implement the extract leg when APIs or change logs are unavailable.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://docs.getdbt.com/docs/introduction" target="_blank" rel="noopener noreferrer">dbt — Transformations in the warehouse</a></li>
+            <li><a href="https://www.fivetran.com/blog/what-is-elt" target="_blank" rel="noopener noreferrer">What is ELT? — Fivetran</a></li>
             <li><a href="https://docs.aws.amazon.com/glue/latest/dg/what-is-glue.html" target="_blank" rel="noopener noreferrer">AWS Glue — Serverless ETL</a></li>
             <li><a href="https://learn.microsoft.com/en-us/azure/data-factory/introduction" target="_blank" rel="noopener noreferrer">Azure Data Factory overview</a></li>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageTranslator.html" target="_blank" rel="noopener noreferrer">Enterprise Integration Patterns — Message Translator (pipeline transforms)</a></li>
-            <li><a href="https://martinfowler.com/articles/data-mesh-principles.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Data mesh principles (context for domain-owned pipelines)</a></li>
-          </ul>
-
-<h2 id="related-patterns">Related patterns</h2>
-          <ul>
-            <li><a href="change-data-capture.html">Change Data Capture</a> — CDC supplies the extract leg of ELT when you need incremental freshness instead of polling source tables on a schedule.</li>
-            <li><a href="batch-integration.html">Batch Integration</a> — Traditional ETL jobs are a batch-integration flavor; compare schedule and SLA against streaming or micro-batch alternatives.</li>
-            <li><a href="../data-architecture/data-warehouse.html">Data Warehouse</a> — Curated warehouse tiers remain the usual publish target after transform logic in either ETL or ELT.</li>
-            <li><a href="../data-architecture/data-lakehouse.html">Data Lakehouse</a> — Lakehouse platforms favor ELT with dbt- or Spark-style transforms directly on open table formats.</li>
-            <li><a href="file-based-integration.html">File-Based Integration</a> — File drops still implement extract stages when partners cannot expose APIs or change logs.</li>
-          </ul>
-
-          <h2 id="further-reading">Further reading</h2>
-          <ul>
-            <li><a href="https://docs.getdbt.com/docs/introduction" target="_blank" rel="noopener noreferrer">dbt Documentation — The standard ELT transformation tool</a></li>
-            <li><a href="https://www.fivetran.com/blog/what-is-elt" target="_blank" rel="noopener noreferrer">What is ELT? — Fivetran</a></li>
-            <li><a href="https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html" target="_blank" rel="noopener noreferrer">Spark Structured Streaming Guide — for ETL with Spark</a></li>
+            <li><a href="https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html" target="_blank" rel="noopener noreferrer">Spark Structured Streaming — for ETL stages that blend batch and stream</a></li>
+            <li><a href="https://martinfowler.com/articles/data-mesh-principles.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Data mesh principles (domain-owned pipelines)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

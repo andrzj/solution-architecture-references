@@ -102,12 +102,13 @@
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
           
-          <p>An <strong>anti-corruption layer (ACL)</strong> is a boundary component that translates between your domain model and an external or legacy system so foreign concepts never leak into core business logic. Eric Evans introduced the pattern in <em>Domain-Driven Design</em>; Martin Fowler and the <a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer" target="_blank" rel="noopener noreferrer">Azure Architecture Center</a> describe the same idea for microservice and cloud migrations: the ACL is the only place that speaks the legacy dialect.</p>
-          <p>Structurally it combines a <strong>facade</strong> (stable inward-facing API), an <strong>adapter</strong> (protocol and SDK calls to the external system), and <strong>translators</strong> that map payloads both ways—analogous to Enterprise Integration Patterns <em>Gateway</em> and <em>Message Translator</em>. The ACL may be a library module, a dedicated adapter microservice, or integration routes in Apache Camel or MuleSoft that sit between bounded contexts.</p>
+          <p>An <strong>anti-corruption layer (ACL)</strong> is a boundary component that translates between your domain model and an external or legacy system so foreign concepts never leak into core business logic. Eric Evans introduced the pattern in <em>Domain-Driven Design</em> for upstream/downstream context relationships where the external model is awkward or hostile; Martin Fowler and the <a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer" target="_blank" rel="noopener noreferrer">Azure Architecture Center</a> describe the same idea for microservice and cloud migrations: the ACL is the only place that speaks the legacy dialect.</p>
+          <p>Structurally it combines a <strong>facade</strong> (stable inward-facing API your application calls), an <strong>adapter</strong> that speaks the external protocol—SOAP, gRPC, JDBC, vendor SDKs, or message bindings—and <strong>translators</strong> that map payloads in both directions. That split mirrors Enterprise Integration Patterns <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/Gateway.html" target="_blank" rel="noopener noreferrer"><em>Gateway</em></a> and <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageTranslator.html" target="_blank" rel="noopener noreferrer"><em>Message Translator</em></a>. The ACL may be a library module inside one service, a dedicated adapter microservice that owns a single boundary, or integration routes in Apache Camel or MuleSoft between bounded contexts.</p>
+          <p>In DDD context mapping, the ACL sits on the downstream side of an upstream/downstream relationship: your model is the translation target, and the foreign model stops at the edge. That differs from a <em>conformist</em> context that adopts the upstream schema wholesale, or an <em>open host service</em> that publishes a stable outward API—here you deliberately insulate inward code from awkward partner semantics.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Partner APIs, ERP exports, and decades-old databases encode assumptions—opaque status integers, overloaded “customer” records, currency in minor units—that make sense locally but poison a clean domain model if copied verbatim. Without a translation boundary, every schema tweak or vendor upgrade forces refactors across services that should not know those details.</p>
-          <p>The ACL concentrates coupling in one replaceable seam. Your ubiquitous language stays expressive inside the boundary; when the external system is swapped or retired—often as part of a <a href="https://martinfowler.com/bliki/StranglerFigApplication.html" target="_blank" rel="noopener noreferrer">strangler-fig migration</a>—you change translators and adapters, not domain rules. That separation is the same inward dependency rule as hexagonal architecture: domain ports face inward, ACL implements outward.</p>
+          <p>Legacy and vendor systems encode decades of local trade-offs: customer identifiers as prefixed strings, order status as integers documented only in old runbooks, product rows that mash SKU, price tier, and bundle into one flat record. Partner APIs, ERP exports, and mainframe feeds share the same problem—opaque codes, overloaded nouns, money in minor units. If new domain code imports those shapes directly, accidental complexity becomes permanent coupling.</p>
+          <p>Without a translation boundary, every schema tweak or vendor upgrade forces refactors across services that should not know those details. The ACL concentrates coupling in one replaceable seam. Inside the boundary you keep expressive types—typed <code>CustomerId</code>, explicit <code>OrderStatus</code>, separated aggregates—while translators absorb ugly mapping. When the external system is swapped or retired—often during a <a href="https://martinfowler.com/bliki/StranglerFigApplication.html" target="_blank" rel="noopener noreferrer">strangler-fig migration</a>—you change adapters and translators, not domain rules. That matches hexagonal architecture: ports face inward, the ACL implements outward.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -117,11 +118,12 @@
             <li>High-risk semantic gaps—time zones, money, units of measure, ambiguous status enumerations—where silent mistranslation becomes a production bug.</li>
             <li>Event or message integration where you want <a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents</a> or domain events on the inside and proprietary wire formats only at the edge.</li>
             <li>When multiple consumers must share one stable inward contract while the upstream source remains volatile.</li>
+            <li>Two internal bounded contexts whose ubiquitous languages diverged and cannot agree on a shared kernel.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Both sides already share the same bounded-context language and schema—prefer conformist or shared-kernel relationships over extra translation.</li>
+            <li>Both sides already share the same bounded-context language and schema—prefer conformist or shared-kernel relationships over extra translation (per Evans’s context-mapping vocabulary).</li>
             <li>The integration is a one- or two-field passthrough with no semantic risk; inline mapping in the application layer is enough.</li>
             <li>The external dependency is a short-lived bridge with a fixed sunset—formal ACL investment may not pay back before decommission.</li>
             <li>Ultra-low-latency paths where translation cost dominates and a denormalized read model or cache is the better trade-off.</li>
@@ -182,17 +184,20 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Keep ACL types and legacy SDK imports out of the domain package. Application services depend on domain-defined ports; the ACL module provides adapters and publishes no legacy types upward. Document the outward contract with <a href="https://www.asyncapi.com/" target="_blank" rel="noopener noreferrer">AsyncAPI</a> or OpenAPI when the boundary is message- or HTTP-based so consumers know the stable inward shape.</p>
-          <p>Implement translators as explicit, unit-tested functions with golden fixtures captured from sandbox or recorded traffic. Use Camel <code>transform</code> / <code>marshal</code> steps or MuleSoft DataWeave in integration-centric estates; in microservices, a small dedicated adapter service with resilience (timeouts, circuit breakers, bulkheads) is often clearer. Map upstream errors to domain failures with actionable codes—do not leak SOAP faults or raw HTTP bodies.</p>
-          <p>For CDC or queue ingress, normalize to CloudEvents or internal domain events in the ACL so downstream services never parse vendor-specific envelopes. Pair with contract tests (Pact) or consumer-driven fixtures when the external API changes often. Metrics on translation latency, mapping failures, and stale cache hits belong at this boundary.</p>
+          <p>Own all external knowledge in the ACL module. Domain and application layers depend only on inward ports—<code>OrderRepository</code>, <code>CustomerGateway</code>, and similar interfaces—not on vendor SDKs, SOAP stacks, or legacy DTO packages. Nothing in the domain package imports the ACL; dependency always points inward. Document message or HTTP boundaries with <a href="https://www.asyncapi.com/" target="_blank" rel="noopener noreferrer">AsyncAPI</a> or OpenAPI so partners see the stable inward contract, not the legacy wire format.</p>
+          <p>Implement translators as explicit, unit-tested functions with golden fixtures from sandbox traffic or recorded production samples. Use Camel <code>transform</code> / <code>marshal</code> steps or MuleSoft DataWeave in integration-centric estates; in microservices, a dedicated adapter service with timeouts, circuit breakers, and bulkheads often isolates failure better than a fat library. Map upstream errors to domain exceptions with meaningful names—never let raw HTTP status, SOAP faults, or vendor error codes bubble into business services.</p>
+          <p>For CDC or queue ingress, normalize to CloudEvents or internal domain events in the ACL so downstream consumers never parse vendor envelopes. Use contract tests (Pact) or replay suites when the external API churns. Emit metrics on translation latency, mapping failures, and circuit-open events at this boundary; that is where integration regressions show up first.</p>
+          <p>Exercise outbound paths in the same test suites as reads: idempotency keys, partial-update semantics, and mandatory legacy fields on write differ from GET mapping and are where production skew usually appears. During strangler cutovers, compare ACL responses from the new store and the legacy source before routing production traffic.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Leaky boundary:</strong> Legacy DTOs or SDK exceptions propagate into domain services, reintroducing the coupling the ACL was meant to block.</li>
-            <li><strong>Rules in translators:</strong> Conditional mapping encodes business policy that belongs in the domain layer.</li>
-            <li><strong>One-way mapping:</strong> Inbound translation works but outbound commands still send legacy field shapes, corrupting writes.</li>
-            <li><strong>Untranslated errors:</strong> Opaque upstream failures surface as generic 500s with no correlation for support.</li>
-            <li><strong>Fixture rot:</strong> Tests pass on stale samples while production payloads drift after a silent vendor release.</li>
+            <li><strong>Leaky boundary:</strong> Legacy DTOs, SDK types, or vendor exceptions appear in domain services, reintroducing the coupling the ACL was meant to block.</li>
+            <li><strong>Rules in translators:</strong> Conditional mapping such as “if legacy status 07 and region US, treat as shipped” encodes policy that belongs in domain code, not the translator.</li>
+            <li><strong>One-way mapping:</strong> Inbound reads translate correctly but outbound writes still emit legacy field shapes, silently corrupting data at the source.</li>
+            <li><strong>Untranslated errors:</strong> Opaque upstream failures surface as generic 500s with no correlation id for support or retry decisions.</li>
+            <li><strong>Fixture rot:</strong> Unit tests pass on hardcoded samples while production payloads drift after a silent vendor or mainframe release.</li>
+            <li><strong>Stale read-through cache:</strong> The adapter caches legacy responses with an oversized TTL, so domain code serves inventory or entitlement data that lags the authoritative system.</li>
+            <li><strong>Dual-write skew:</strong> A strangler ACL persists to the new datastore but the legacy callback fails; dashboards look healthy while the two sources disagree on truth.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -207,22 +212,13 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> A new order microservice reads fulfillment status through an ACL that maps legacy numeric codes to a domain <code>ShipmentState</code> enum while the monolith remains authoritative during strangler cutover.</li>
-            <li><strong>Illustrative scenario —</strong> A checkout service uses per-provider ACL modules so Stripe and a regional wallet both map to the same <code>PaymentOutcome</code> type.</li>
+            <li><strong>Illustrative scenario —</strong> At Harborline Retail, a new order microservice reads fulfillment status through an ACL that maps mainframe numeric codes to a domain <code>ShipmentState</code> enum while the monolith remains authoritative during strangler cutover.</li>
+            <li><strong>Illustrative scenario —</strong> Crestwave Commerce runs per-provider ACL modules so two payment gateways both map to the same <code>PaymentOutcome</code> type, keeping checkout logic provider-agnostic.</li>
+            <li><strong>Illustrative scenario —</strong> Summit Outfitters syncs catalogue data from a legacy material-master feed; the ACL converts flat ERP rows into a clean <code>Product</code> aggregate with unit-of-measure and status mapping isolated at the edge.</li>
             <li><strong>Case study —</strong> Microsoft documents the anti-corruption layer as a first-class Azure architecture pattern for isolating microservices from external and legacy dependencies during modernization programs.</li>
           </ul>
 
-          <h2 id="further-reading">Further reading</h2>
-          <ul>
-            <li><a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank" rel="noopener noreferrer">Bounded Context — Martin Fowler</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer" target="_blank" rel="noopener noreferrer">Anti-Corruption Layer — Azure Architecture Center</a></li>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageTranslator.html" target="_blank" rel="noopener noreferrer">Enterprise Integration Patterns — Message Translator</a></li>
-            <li><a href="https://camel.apache.org/components/latest/eips/message-translator.html" target="_blank" rel="noopener noreferrer">Apache Camel — Message Translator EIP</a></li>
-            <li><a href="https://docs.mulesoft.com/api-led-connectivity/" target="_blank" rel="noopener noreferrer">MuleSoft — API-led connectivity</a></li>
-            <li><a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents specification</a></li>
-          </ul>
-
-<h2 id="related-patterns">Related patterns</h2>
+          <h2 id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="canonical-data-model.html">Canonical Data Model</a> — An ACL frequently maps foreign payloads into a team-owned canonical schema instead of exposing proprietary formats at context boundaries.</li>
             <li><a href="../foundations/bounded-contexts.html">Bounded Contexts</a> — Eric Evans positions the anti-corruption layer as the integration pattern that keeps upstream models from polluting a bounded context’s ubiquitous language.</li>
@@ -232,9 +228,14 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank" rel="noopener noreferrer">Bounded Context — Martin Fowler (includes ACL context)</a></li>
-            <li><a href="https://docs.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer" target="_blank" rel="noopener noreferrer">Anti-Corruption Layer pattern — Azure Architecture Center</a></li>
+            <li><a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank" rel="noopener noreferrer">Bounded Context — Martin Fowler</a></li>
             <li><a href="https://martinfowler.com/bliki/DomainDrivenDesign.html" target="_blank" rel="noopener noreferrer">Domain-Driven Design — Martin Fowler</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer" target="_blank" rel="noopener noreferrer">Anti-Corruption Layer — Azure Architecture Center</a></li>
+            <li><a href="https://www.domainlanguage.com/ddd/reference/" target="_blank" rel="noopener noreferrer">Domain-Driven Design Reference — Eric Evans</a></li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageTranslator.html" target="_blank" rel="noopener noreferrer">Enterprise Integration Patterns — Message Translator</a></li>
+            <li><a href="https://camel.apache.org/components/latest/eips/message-translator.html" target="_blank" rel="noopener noreferrer">Apache Camel — Message Translator EIP</a></li>
+            <li><a href="https://docs.mulesoft.com/api-led-connectivity/" target="_blank" rel="noopener noreferrer">MuleSoft — API-led connectivity</a></li>
+            <li><a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents specification</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
