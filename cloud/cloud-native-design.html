@@ -108,8 +108,9 @@
           <p>The <strong>12-factor app methodology</strong> (originally codified by Heroku) remains the foundational checklist: one codebase, declared dependencies, config in the environment, attached backing services, separated build/release/run stages, stateless processes, port binding, horizontal scale-out, disposability, dev/prod parity, logs as streams, and one-off admin tasks. Cloud-native design extends those factors with replace-not-patch infrastructure, infrastructure-as-code, GitOps workflows, and managed services where they reduce undifferentiated operations. The companion article <a href="cloud-native.html">Cloud-Native Principles</a> covers the organizational and platform context; this page is the implementation checklist for service teams.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Traditional enterprise applications were designed for fixed, long-lived servers—a model that breaks under cloud economics. When instances can be terminated without notice (spot/preemptible VMs), when traffic spikes tenfold in minutes (viral events, end-of-quarter batch), and when deployments happen dozens of times per day, any architecture that relies on server identity, in-process state, or manual configuration becomes a liability. Cloud-native design emerged to match application architecture to the operational reality of shared, elastic, API-driven infrastructure.</p>
-          <p>The business driver is equally important: cloud bills scale linearly with resource consumption. An application that cannot scale down during quiet periods wastes money; one that cannot scale up during demand peaks loses revenue or reputation. Cloud-native statelessness and disposability directly enable both directions of elasticity. Managed services further shift the operational burden from engineering teams to the cloud provider, freeing developers to focus on product rather than patching operating systems.</p>
+          <p>Enterprise applications built for named servers assume you can SSH in, patch in place, and treat processes as pets. Public cloud fleets are the opposite: VMs and containers are cattle that can be reclaimed for maintenance, preemption, or autoscale. NIST SP 800-145 describes cloud as on-demand, elastic, and measured service—application design must assume replacement, not repair.</p>
+          <p>Frequent releases and horizontal scale only work when artifacts are immutable and configuration lives outside the binary. The CNCF defines cloud native as scalable applications in dynamic, automated environments; the <a href="https://12factor.net/" target="_blank" rel="noopener noreferrer">Twelve-Factor App</a> checklist codified the early practice: stateless processes, attached backing services, and disposability so orchestrators can restart, relocate, and multiply instances without data loss.</p>
+          <p>Consumption pricing rewards architectures that scale down when idle and scale out when busy. Externalizing state to managed databases, caches, and object stores lets compute shrink while data stays durable—matching the economics and resilience goals described in hyperscaler operational excellence guidance.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -123,10 +124,10 @@
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Tightly-coupled legacy systems</strong> with shared mutable state and hard-coded hostnames that cannot be refactored in a single effort — a phased Strangler Fig approach is more realistic.</li>
-            <li><strong>High-performance computing workloads</strong> (MPI jobs, GPU clusters) that need persistent, low-latency inter-node communication and benefit from stateful, long-running processes.</li>
-            <li><strong>Strict data sovereignty</strong> requirements that prohibit storing configuration or telemetry in cloud-provider managed services without additional controls.</li>
-            <li><strong>Small, stable teams</strong> with a single, rarely-updated application — the tooling overhead (container registries, orchestrators, secrets managers) may outweigh the operational savings.</li>
+            <li>Legacy monoliths with shared mutable state and host-specific configuration should migrate gradually via strangler patterns instead of a big-bang container lift.</li>
+            <li>Tightly coupled MPI, GPU, or low-latency HPC jobs need long-lived, colocated processes rather than disposable pods that restart frequently.</li>
+            <li>Regulated data cannot use provider-managed config or telemetry stores until contractual and encryption controls satisfy sovereignty requirements.</li>
+            <li>A single small application with rare releases may run more cheaply on managed PaaS or a right-sized VM than on a full Kubernetes and GitOps toolchain.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -173,47 +174,48 @@ Kubernetes Cluster
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Horizontal elasticity enables cost-efficient scale-up and scale-down automatically.</li>
-                <li>Immutable deployments eliminate configuration drift and make rollbacks trivial.</li>
-                <li>Managed services reduce operational toil: no patching OS, no managing replication.</li>
-                <li>Dev/prod parity reduces "works on my machine" bugs and improves release confidence.</li>
-                <li>Fast startup and disposability enable rapid autoscaling and self-healing orchestration.</li>
+                <li>Stateless, horizontally scaled services align with Kubernetes and cloud autoscalers so capacity follows traffic without manual fleet sizing.</li>
+                <li>Immutable images and Git-driven deploys make rollbacks a redeploy of a known digest instead of undoing live server edits.</li>
+                <li>Managed databases, queues, and identity services shift patching and replication to the provider’s SLA boundary.</li>
+                <li>Build, release, and run separation enforces dev/prod parity when the same artifact promotes across environments.</li>
+                <li>Fast-starting, disposable processes work with liveness probes and orchestrator restarts after node or zone failure.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Significant tooling investment: container orchestration, CI/CD pipelines, secrets management all have learning curves.</li>
-                <li>Stateless design forces complex session management (sticky sessions or external session stores).</li>
-                <li>Vendor-specific managed services create lock-in that is expensive to reverse.</li>
-                <li>Distributed tracing and debugging across ephemeral containers is more complex than traditional application logs.</li>
-                <li>Cold start latency in serverless/autoscaled tiers can degrade user experience without careful warm-up strategies.</li>
+                <li>Registries, pipelines, secrets stores, and cluster operations add platform skills beyond application code alone.</li>
+                <li>User sessions and uploads require external stores or tokens because local disk is not durable across restarts.</li>
+                <li>Deep integration with proprietary managed APIs increases migration cost when providers differ materially.</li>
+                <li>Tracing across short-lived replicas needs centralized logging and correlation IDs, not single-host log tailing.</li>
+                <li>Scale-to-zero and cold autoscale can violate latency targets unless you keep minimum replicas or warmup hooks.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with the 12-factor checklist and treat each factor as a testable gate in your CI pipeline. Configuration validation (factor III) can be enforced with tools like <code>envsub</code> or Kubernetes admission webhooks that reject pods missing required environment variables. For immutable infrastructure, every deployment should produce a new container image with a content-addressed tag (SHA digest, not <code>:latest</code>); use <code>docker buildx build --provenance=true --sbom=true</code> to produce a signed SBOM alongside every image. Container images should be based on distroless or minimal base images (Google distroless, Chainguard) to reduce attack surface.</p>
-          <p>Externalize all configuration using a secrets manager (AWS Secrets Manager, HashiCorp Vault, GCP Secret Manager) and inject values at runtime via init containers or sidecar agents rather than baking secrets into images. For local development parity, use devcontainers (VS Code Dev Containers spec) or Docker Compose with the same image tags used in production. Kubernetes liveness and readiness probes enforce disposability: a pod that fails its readiness probe is removed from the load balancer immediately, enabling zero-downtime deployments. Set <code>terminationGracePeriodSeconds</code> to accommodate in-flight request draining (typically 30–60 s).</p>
+          <p>Map each <a href="https://12factor.net/" target="_blank" rel="noopener noreferrer">Twelve-Factor</a> practice to a verifiable CI gate: declared dependencies in lockfiles, config from environment or sealed secrets, and admin tasks as one-off jobs rather than SSH sessions. Publish container images with immutable tags tied to git SHA; avoid floating <code>:latest</code> in production manifests.</p>
+          <p>Inject secrets from AWS Secrets Manager, Azure Key Vault, or Google Secret Manager at runtime—never in image layers or public environment variables in source control. Use readiness and liveness probes so orchestrators only route traffic after dependencies are healthy, and handle SIGTERM so in-flight HTTP requests drain during rolling updates and autoscale-in. Pair with OpenGitOps-style declarative sync so cluster state matches version-controlled manifests.</p>
+          <p>Prefer minimal base images and supply-chain attestations where your policy requires them; pin provider SDK versions and test rollbacks in staging with the same artifact you will promote to production.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>State in container local filesystem:</strong> Writing session data, uploads, or caches to the container's ephemeral disk causes data loss on pod restart. Use object storage or an external cache.</li>
-            <li><strong>Config in image layers:</strong> Baking environment-specific config (dev/prod database URLs) into the container image breaks the build-once/run-anywhere principle and leaks secrets into registries.</li>
-            <li><strong>Long-lived pet containers:</strong> Treating containers as VMs (SSHing in to debug, applying ad-hoc patches) introduces drift and makes the immutable image source unreliable.</li>
-            <li><strong>Missing graceful shutdown:</strong> Applications that do not handle SIGTERM and drain in-flight requests cause request errors during rolling deployments or autoscale-in events.</li>
-            <li><strong>Cloud-native theatre:</strong> Running monolithic, stateful apps inside containers without architectural change — "container washing" adds complexity without gaining elasticity or resilience.</li>
+            <li><strong>Ephemeral disk as database:</strong> Uploads, sessions, or job checkpoints written to container-local storage vanish on restart and break autoscale and self-heal assumptions.</li>
+            <li><strong>Environment baked into images:</strong> Separate images per environment defeat build-once-run-anywhere and leak credentials in registries or layer caches.</li>
+            <li><strong>Container pets:</strong> Manual patches, SSH debugging, and snowflake nodes undermine immutable deploys and audit trails.</li>
+            <li><strong>Instant kill on SIGTERM:</strong> Ignoring graceful shutdown drops requests when pods terminate during deploys or node drains.</li>
+            <li><strong>Lift-and-shift theatre:</strong> Monoliths in containers without externalized state gain complexity without elasticity or blast-radius benefits.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are all environment-specific values (URLs, credentials, feature flags) injected at runtime rather than baked into artifacts?</li>
-            <li>Can any instance of the application be terminated and restarted without data loss or service disruption?</li>
-            <li>Are application logs written to stdout/stderr and collected by the platform, rather than managed by the app itself?</li>
-            <li>Does your CI pipeline produce an immutable, tagged artifact (container image, Lambda ZIP) from a clean environment?</li>
-            <li>Is backing state (sessions, uploads, queues) stored in an externally-managed service rather than on the instance?</li>
-            <li>Does your application start cleanly within seconds (cold start ≤ 15 s) to support autoscaling responsiveness?</li>
-            <li>Are health check endpoints implemented so the orchestrator can detect and replace unhealthy instances automatically?</li>
+            <li>Are credentials, feature flags, and endpoint URLs supplied at deploy time rather than compiled into artifacts?</li>
+            <li>Can you terminate any replica at random and restore service without losing durable data or corrupting user sessions?</li>
+            <li>Do applications emit structured logs on stdout/stderr for platform collection per factor XI guidance?</li>
+            <li>Does CI produce a signed or digest-pinned artifact that staging and production both run?</li>
+            <li>Is durable state confined to managed stores with defined backup and replication responsibilities?</li>
+            <li>Does startup plus readiness succeed within your autoscaling latency budget under realistic config load?</li>
+            <li>Do health endpoints distinguish “alive” from “ready to serve traffic” for orchestrators and load balancers?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -236,10 +238,10 @@ Kubernetes Cluster
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://12factor.net/" target="_blank" rel="noopener noreferrer">The Twelve-Factor App</a></li>
-            <li><a href="https://www.cncf.io/blog/2018/11/19/cloud-native-is-about-attitude-not-altitude/" target="_blank" rel="noopener noreferrer">Cloud Native is About Attitude, Not Altitude — CNCF</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/dotnet/architecture/cloud-native/definition" target="_blank" rel="noopener noreferrer">What is cloud native? — .NET Architecture Guide</a></li>
-            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/operational-excellence-pillar/welcome.html" target="_blank" rel="noopener noreferrer">Operational Excellence Pillar — AWS Well-Architected Framework</a></li>
-            <li><a href="https://open-gitops.github.io/" target="_blank" rel="noopener noreferrer">OpenGitOps Principles — OpenGitOps</a></li>
+            <li><a href="https://github.com/cncf/toc/blob/main/DEFINITION.md" target="_blank" rel="noopener noreferrer">CNCF Cloud Native Definition</a></li>
+            <li><a href="https://csrc.nist.gov/pubs/sp/800/145/final" target="_blank" rel="noopener noreferrer">NIST SP 800-145: Definition of Cloud Computing</a></li>
+            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/operational-excellence-pillar/operational-excellence-pillar.html" target="_blank" rel="noopener noreferrer">Operational Excellence pillar overview — AWS Well-Architected Framework</a></li>
+            <li><a href="https://open-gitops.github.io/#principles" target="_blank" rel="noopener noreferrer">OpenGitOps principles</a></li>
           </ul>
 
         </div>
