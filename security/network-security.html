@@ -103,10 +103,12 @@
           <h2 id="what-it-is">What it is</h2>
           <p><strong>Network security architecture</strong> designs north-south and east-west controls—perimeter protection, segmentation, encryption, and monitoring—for cloud and hybrid estates. At the edge, <strong>WAF</strong> and DDoS services filter HTTP abuse; inside the VPC, <strong>security groups</strong> (stateful, ENI-scoped) and <strong>NACLs</strong> (stateless, subnet-scoped) enforce default deny. <strong>NGFW</strong> and cloud network firewall products add deep inspection, TLS termination where policy allows, and IDS/IPS signatures on selected paths.</p>
           <p><strong>East-west</strong> traffic is service-to-service lateral movement; <strong>north-south</strong> is user or partner ingress. Historically teams hardened only the perimeter, which let an internal foothold roam freely. Modern designs pair VPC tiers, Kubernetes <strong>NetworkPolicies</strong>, service-mesh mTLS, and optional hub inspection VPCs with transit gateways. <strong>PrivateLink</strong> (and equivalents) keeps SaaS consumption off the public internet. Programmes aligned with <a href="zero-trust-architecture.html">Zero Trust</a> still need these network controls—identity never replaces segmentation.</p>
+          <p><a href="https://csrc.nist.gov/publications/detail/sp/800-207/final">NIST SP 800-207</a> describes ZTNA as application-level per-session access brokered through a policy engine—not a VPN that grants subnet-wide reach. CIS Critical Security Control 13 maps to continuous vulnerability management at the perimeter and includes documenting which subnets may talk to which peers. OWASP guidance for web apps assumes an edge WAF on paths that accept untrusted HTTP.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Attackers continuously scan internet-facing assets. Flat internal networks let stolen VPN or SSO sessions pivot across subnets. Network architecture turns implicit trust into enforced paths so reconnaissance and lateral movement are slower and noisier. PCI segmentation, HIPAA technical safeguards, and similar frameworks expect documented enclaves and monitored boundaries.</p>
           <p>DDoS, web exploits, and lateral movement remain among the most common incident patterns. A WAF can block injection attempts even when application code is still vulnerable, buying time for a fix. Correctly tiered VPCs force a compromised web instance through another security group before it can reach a database listener. VPC Flow Logs and NGFW telemetry surface anomalies that application logs miss.</p>
+          <p>Cloud threat research consistently ranks misconfigured security groups among the fastest paths from public internet to data stores. North-south controls buy time; east-west microsegmentation limits how far ransomware or cryptominers spread once a workload is compromised. Aligning flow-log retention with PCI, HIPAA, or FedRAMP expectations turns network telemetry into audit evidence, not only an IR afterthought.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -216,16 +218,19 @@ ZTNA (Zero Trust Network Access):
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Place WAF and DDoS in front of public ALBs or CDNs; enable managed rule sets with custom exceptions tested in count mode before enforce. Design VPC tiers with separate subnets and security groups; default deny east-west except documented flows. Enable VPC Flow Logs and DNS query logging to a central security account.</p>
-          <p>Use PrivateLink for SaaS consumption; broker admin access via SSM Session Manager or ZTNA instead of permanent VPN. Automate security group and NACL definitions in Terraform with policy checks in CI. For Kubernetes, enforce NetworkPolicies with a CNI that supports them (Calico, Cilium, Antrea); Cilium can express L7 rules where needed.</p>
+          <p>Design security groups with least privilege: each group allows only the protocol and port required from a specific source—prefer referencing another security group over broad CIDR blocks. Never use <code>0.0.0.0/0</code> on ingress except public load balancers on 443. Start AWS WAF with the OWASP Core Rule Set in count mode for one to two weeks, tune false positives, then switch to block; add rate-based rules to auto-block IPs exceeding a threshold per five-minute window.</p>
+          <p>Use PrivateLink for SaaS consumption; broker admin access via SSM Session Manager or ZTNA instead of permanent VPN. Automate security group and NACL definitions in Terraform with policy checks in CI. For Kubernetes, enforce NetworkPolicies with a CNI that supports them (Calico, Cilium, Antrea). The default Kubernetes network is allow-all between pods; once a namespace has any NetworkPolicy, traffic not explicitly allowed is denied—define both ingress and egress policies for production workloads. Cilium with eBPF can enforce HTTP path-level rules (for example allow only <code>GET /health</code>) beyond IP and port.</p>
+          <p>Ship flow logs to a SIEM with alerts on denied connection spikes, unexpected east-west paths, and new outbound destinations. Document inspection points in architecture reviews so TLS decryption—where privacy policy permits—does not leave blind spots on encrypted lateral paths.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>0.0.0.0/0 on admin ports</strong>—SSH/RDP exposed globally.</li>
-            <li><strong>Database in a public subnet</strong>—a mistaken security group change exposes the listener to the internet.</li>
-            <li><strong>Flat shared VPC</strong>—tenants reach each other's data tiers.</li>
-            <li><strong>WAF in log-only mode forever</strong>—attacks continue while teams only collect metrics.</li>
-            <li><strong>No egress filtering</strong>—compromised hosts beacon and exfiltrate freely.</li>
-            <li><strong>Peering transitive trust</strong>—corporate LAN paths into production without inspection.</li>
+            <li><strong>0.0.0.0/0 on admin ports</strong>: SSH or RDP from any IP is among the most scanned misconfigurations in cloud estates; bots find open ports within hours of exposure.</li>
+            <li><strong>Database in a public subnet</strong>: Even with a restrictive security group today, one rule edit or attachment mistake publishes the listener to the internet—keep data tiers in private subnets with no internet gateway route.</li>
+            <li><strong>Flat shared VPC</strong>: Multi-team shared networks let one compromised workload reach another tenant's data tier without crossing an inspection point.</li>
+            <li><strong>WAF in log-only mode forever</strong>: Count mode is for tuning; leaving it permanent gives metrics without blocking—document a calendar exit to enforce mode.</li>
+            <li><strong>No egress filtering</strong>: Inbound-only hardening still lets compromised instances beacon, pull payloads, and exfiltrate over outbound 443.</li>
+            <li><strong>Peering transitive trust</strong>: Corporate LAN reach into production VPCs without an inspection hop recreates perimeter trust inside the cloud.</li>
+            <li><strong>Overlapping NACL deny/allow rules</strong>: NACL rules evaluate in number order; a low-number allow can defeat a higher-number deny for the same flow—test rule ordering in staging.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -237,6 +242,9 @@ ZTNA (Zero Trust Network Access):
             <li>Is admin access brokered without permanent VPN into production?</li>
             <li>Are network rules defined in IaC with automated drift detection?</li>
             <li>Was east-west reachability tested after the last major VPC change?</li>
+            <li>Is a WAF deployed in block mode on every internet-facing web property?</li>
+            <li>Is east-west traffic inspected via NGFW, mesh mTLS, or both?</li>
+            <li>Are Kubernetes NetworkPolicies deny-by-default for production namespaces?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -245,6 +253,8 @@ ZTNA (Zero Trust Network Access):
             <li><strong>Illustrative scenario — PCI CDE</strong>: Segmented VPC; ASV scans hit the edge only; database subnet without an internet gateway route.</li>
             <li><strong>Illustrative scenario — hybrid ops</strong>: Direct Connect to an inspection VPC; egress via a centralized firewall.</li>
             <li><strong>Kubernetes zero-trust networking</strong>: Cilium NetworkPolicies with L7 enforcement—the payment service accepts only HTTP POST <code>/charge</code> from the order service.</li>
+            <li><strong>Multi-tier web application</strong>: Public ALB in a public subnet; app tier security group allows 8080 only from the ALB group; database tier allows 5432 only from the app group—no path from the internet to the listener by design.</li>
+            <li><strong>SaaS DDoS stack</strong>: Global CDN absorbs volumetric traffic; regional WAF rate-limits abusive IPs; origin sees only scrubbed HTTP.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -261,6 +271,8 @@ ZTNA (Zero Trust Network Access):
             <li><a href="https://learn.microsoft.com/en-us/security/zero-trust/deploy/networks" target="_blank" rel="noopener noreferrer">Microsoft Zero Trust — Networks</a></li>
             <li><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/" target="_blank" rel="noopener noreferrer">Kubernetes Network Policies</a></li>
             <li><a href="https://www.cisecurity.org/controls" target="_blank" rel="noopener noreferrer">CIS Critical Security Controls</a></li>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-207/final" target="_blank" rel="noopener noreferrer">NIST SP 800-207 — Zero Trust Architecture</a></li>
+            <li><a href="https://owasp.org/www-project-top-ten/" target="_blank" rel="noopener noreferrer">OWASP Top 10</a></li>
           </ul>
 
 

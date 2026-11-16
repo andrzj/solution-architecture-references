@@ -103,10 +103,12 @@
           <h2 id="what-it-is">What it is</h2>
           <p><strong>HTTP security headers</strong> are outbound directives that tell browsers how to load, frame, and connect to your application. They form a client-side enforcement layer complementary to server-side validation—when reflected XSS slips through, <strong>Content-Security-Policy (CSP)</strong> can still block execution. Core headers include <strong>HSTS</strong> (force HTTPS), <strong>X-Content-Type-Options: nosniff</strong> (block MIME sniffing), <strong>frame-ancestors / X-Frame-Options</strong> (clickjacking), and <strong>Referrer-Policy</strong> (limit URL leakage).</p>
           <p>Modern isolation headers—<strong>Cross-Origin-Opener-Policy (COOP)</strong>, <strong>Cross-Origin-Embedder-Policy (COEP)</strong>, and <strong>Cross-Origin-Resource-Policy (CORP)</strong>—enable cross-origin isolation required for SharedArrayBuffer and mitigate Spectre-class side channels. <strong>Permissions-Policy</strong> disables sensitive browser APIs (camera, geolocation, payment) your app does not need. Correct <strong>CORS</strong> configuration remains part of API security: browsers enforce same-origin unless you explicitly and safely delegate.</p>
+          <p>The <a href="https://owasp.org/www-project-secure-headers/">OWASP Secure Headers Project</a> publishes recommended values for production baselines. CIS benchmarks for web servers and CDNs call out HSTS, CSP, and framing controls as low-cost hardening that applies even when legacy application code cannot be refactored quickly.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Many attacks exploit browser behaviour—mixed content downgrade, MIME confusion, clickjacked admin clicks, token theft via Referer—not application logic bugs alone. Headers ship defences that apply uniformly across frameworks and legacy pages when set at CDN or reverse proxy layers. OWASP Secure Headers guidance and MDN document baseline sets suitable for production without waiting for every codebase path to be hardened.</p>
           <p>CSP can neutralise XSS impact even when an attacker injects script—the browser refuses execution when the source is not allowlisted. HSTS prevents SSL stripping on hostile networks. These controls cost little to deploy centrally but materially reduce well-understood client-side attack classes.</p>
+          <p>OWASP ASVS verification chapters reference CSP, HSTS, and cookie flags as measurable requirements—headers give auditors artefact-free evidence via automated scans (Mozilla Observatory, securityheaders.com) rather than manual code walkthroughs of every template.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -215,16 +217,19 @@ CSP REPORT-ONLY MODE (safe rollout):
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Define headers in CDN response policies, ingress controllers, or API gateways so application teams cannot omit them on new endpoints. Roll CSP from report-only to enforce over several sprints; fix violations before blocking. Prefer nonces over <code>unsafe-inline</code>; externalise scripts where possible.</p>
-          <p>Stage HSTS with short <code>max-age</code>, validate all subdomains, then increase duration. For multi-origin APIs, validate the <code>Origin</code> header against an allowlist and echo the matched origin—never combine <code>Access-Control-Allow-Origin: *</code> with credentials. Test with securityheaders.com, Mozilla Observatory, or CSP Evaluator before production enforce.</p>
+          <p>Generate a cryptographically random nonce per HTML response and pass it to templates so inline scripts carry a matching <code>nonce</code> attribute—injected script without that nonce fails CSP. Include <code>base-uri 'self'</code>, <code>form-action 'self'</code>, and <code>frame-ancestors 'none'</code> (or an explicit allowlist) on high-value apps. Use <code>upgrade-insecure-requests</code> during HTTPS migration.</p>
+          <p>Stage HSTS with short <code>max-age</code>, validate all subdomains, then increase duration before considering preload list submission. For multi-origin APIs, validate the <code>Origin</code> header against an allowlist and echo the matched origin—never combine <code>Access-Control-Allow-Origin: *</code> with credentials. Restrict <code>Access-Control-Allow-Methods</code> and headers to what the API actually uses.</p>
+          <p>Pipe CSP violation reports to a collector or SIEM; spike in <code>script-src</code> violations often precedes active XSS probing. Test with securityheaders.com, Mozilla Observatory, or CSP Evaluator before production enforce; add regression tests in CI that curl key routes and assert header presence.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>CSP with unsafe-inline</strong>—effectively disables script injection protection.</li>
-            <li><strong>Wildcard CORS on authenticated APIs</strong>—cross-site browsers can read sensitive JSON responses.</li>
-            <li><strong>HSTS missing on API hostnames</strong>—users hit HTTP first hop before redirect.</li>
-            <li><strong>Framing allowlists too broad</strong>—partner iframes enable clickjacking of privileged actions.</li>
-            <li><strong>No monitoring of CSP reports</strong>—attacks go unnoticed until fraud losses appear.</li>
-            <li><strong>Analytics workarounds</strong>—teams add <code>unsafe-inline</code> instead of allowlisting specific third-party origins.</li>
+            <li><strong>CSP with unsafe-inline</strong>: Attackers who achieve HTML injection can still run arbitrary script because the browser permits inline execution.</li>
+            <li><strong>Wildcard CORS on authenticated APIs</strong>: A malicious site can trigger credentialed fetches and read JSON responses when <code>Allow-Origin</code> echoes attacker-controlled origins incorrectly.</li>
+            <li><strong>HSTS missing on API hostnames</strong>: Mobile clients and scripts may hit plain HTTP on first request, enabling sslstrip on captive portals.</li>
+            <li><strong>Framing allowlists too broad</strong>: Partner domains that allow embedding your admin UI enable clickjacked transfers or role changes.</li>
+            <li><strong>No monitoring of CSP reports</strong>: Probing continues until chargebacks or account takeover alerts surface the issue.</li>
+            <li><strong>Analytics workarounds</strong>: Tag managers push teams toward <code>unsafe-inline</code> instead of nonce-based or hosted-script allowlists.</li>
+            <li><strong>Duplicate or conflicting headers</strong>: CDN and origin both set CSP with different values—browsers apply unpredictable combinations; standardise on one layer.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -235,6 +240,8 @@ CSP REPORT-ONLY MODE (safe rollout):
             <li>Is CORS limited to explicit origins without credential leakage patterns?</li>
             <li>Are headers owned in IaC or CDN policy with CI checks for drift?</li>
             <li>Was the site scored with an external header analyser after the last major release?</li>
+            <li>Do cookie-backed sessions use <code>Secure</code>, <code>HttpOnly</code>, and appropriate <code>SameSite</code> alongside transport headers?</li>
+            <li>Is COOP/COEP configured only where isolation is required, with CORP on static assets?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -242,6 +249,7 @@ CSP REPORT-ONLY MODE (safe rollout):
             <li><strong>Illustrative scenario — CDN-hosted SPA</strong>: CloudFront response headers policy applies CSP, HSTS, and frame-ancestors to cached static bundles.</li>
             <li><strong>Illustrative scenario — regulated web app</strong>: Server generates per-request script nonces; CSP violations stream to SIEM; domain is HSTS-preloaded.</li>
             <li><strong>Illustrative scenario — WASM compute</strong>: COOP/COEP enabled; subresources carry CORP headers for cross-origin isolation compliance.</li>
+            <li><strong>Banking portal</strong>: Strict CSP with nonce-only scripts, <code>frame-ancestors 'none'</code>, and short-lived session cookies—Observatory grade A on every release candidate.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

@@ -103,10 +103,12 @@
           <h2 id="what-it-is">What it is</h2>
           <p><strong>Software supply chain security</strong> protects every hop from commit to running artifact: source integrity, dependency hygiene, build pipeline trust, registry policy, and deploy-time verification. A <strong>Software Bill of Materials (SBOM)</strong> in CycloneDX or SPDX format inventories components for rapid CVE impact analysis. <strong>SLSA</strong> levels describe build isolation and provenance maturity; <strong>Sigstore Cosign</strong> signs images with OIDC-bound identities verified at Kubernetes admission.</p>
           <p><strong>Software composition analysis (SCA)</strong> matches lockfiles and container layers against NVD, OSV, and vendor feeds. Container scanners (Trivy, Grype, Snyk Container) catch OS package CVEs that library-only tools miss. Provenance attestations plus signature verification close the gap between trusting a mutable tag and knowing which commit produced a digest.</p>
+          <p><a href="https://csrc.nist.gov/publications/detail/sp/800-218/final">NIST SP 800-218</a> and CISA’s SBOM guidance expect organisations to maintain dependency inventory and respond to newly disclosed CVEs with measurable timelines. SLSA Build levels document how isolated, authenticated pipelines produce non-forgeable provenance—admission controllers can reject artifacts that lack expected attestations.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Applications are mostly third-party code—Log4Shell showed teams unaware of transitive Log4j usage until exploitation began. Pipeline compromise (SolarWinds-style) proves signed binaries can still be malicious if build systems are hijacked. Executive Order 14028 and customer procurement clauses increasingly mandate SBOMs, vulnerability response SLAs, and provenance. Without inventory and signed builds, incident response and customer notifications stall on manual archaeology.</p>
           <p>Modern services can be 80–95% dependencies by line count. An SBOM lets you query exposure in minutes when the next Log4j-scale CVE lands. SLSA provenance makes it cryptographically verifiable that an artifact came from an expected pipeline running expected source—detecting build-pipeline tampering before deploy.</p>
+          <p>OWASP dependency-risk guidance and CIS Control 2 emphasise inventory of software assets—SBOMs are the machine-readable fulfilment of that control for each release artifact.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -120,6 +122,7 @@
           <ul>
             <li>SLSA level 3–4 hermetic builds cost more—prioritise for widely consumed artifacts; still generate SBOM at level 1 for internal tools.</li>
             <li>Do not defer SCA because “we have few dependencies”—transitive graphs explode quickly.</li>
+            <li>Do not treat SBOM export alone as compliance—without gates and verification, inventory does not stop bad deploys.</li>
           </ul>
 
 <h2 id="typical-architecture">Typical architecture</h2>
@@ -200,6 +203,7 @@ COSIGN KEYLESS SIGNING:
                 <li>Signed provenance detects unexpected build origins before deploy.</li>
                 <li>Policy gates block critical CVEs and unsigned images automatically.</li>
                 <li>VEX documents mitigations for non-exploitable findings, reducing noise.</li>
+                <li>CISA and EO 14028 procurement language increasingly expects SPDX or CycloneDX with each deliverable.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -210,22 +214,26 @@ COSIGN KEYLESS SIGNING:
                 <li>Hermetic builders require pipeline redesign and cached artifact strategy.</li>
                 <li>Admission policies can halt deploys when signing infrastructure fails.</li>
                 <li>Keyless Sigstore transparency logs may be unsuitable for some proprietary release models.</li>
+                <li>Dual signing models (keyless plus long-lived keys) add operational complexity during rotation events.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Generate SBOMs in CI from lockfiles (Syft, CycloneDX plugins) and attach them to releases. Fail builds on critical CVEs with SLA exceptions tracked in GRC. Sign container images with Cosign keyless via GitHub/GitLab OIDC; verify in Kyverno or OPA Gatekeeper policies. Record SLSA provenance with build attestations stored alongside artifacts.</p>
-          <p>Pin dependency versions in committed lockfiles; pin container bases by digest, not mutable tags, and let Renovate or Dependabot open update PRs. Maintain a central registry allowlist and mirror approved base images internally. Practice Log4Shell-style drills: query SBOM, open incidents, and measure time-to-scope. Use EPSS and VEX to triage noise from truly exploitable findings.</p>
+          <p>Protect default branches: require code review, block force-push, and enable secret scanning on push. Run SCA on every PR and again at image build—transitive updates can land between merge and release. Store SBOMs immutably with the artifact digest so forensic rollback matches the BOM customers received.</p>
+          <p>Pin dependency versions in committed lockfiles; pin container bases by digest, not mutable tags, and let Renovate or Dependabot open update PRs. Maintain a central registry allowlist and mirror approved base images internally. Admission policies should deny unsigned images, images from unknown registries, and digests failing CVE severity thresholds unless a signed VEX documents accepted risk.</p>
+          <p>Practice Log4Shell-style drills: query SBOM, open incidents, and measure time-to-scope. Use EPSS and VEX to triage noise from truly exploitable findings. For SLSA level 2+, run builds on hosted CI with signed provenance; level 3 adds isolated builders and verified source revision tied to the attestation.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>SBOM generated once</strong>—not updated per release, useless during incidents.</li>
-            <li><strong>Scan libraries only</strong>—OS packages in container base remain vulnerable.</li>
-            <li><strong>Sign but never verify</strong>—clusters accept unsigned images under pressure.</li>
-            <li><strong>Pin tags not digests</strong>—registry tag mutation bypasses intended version.</li>
-            <li><strong>No VEX process</strong>—teams ignore SCA noise until real CVEs hide inside.</li>
-            <li><strong>No post-build monitoring</strong>—CVEs disclosed after release go undetected until the next build.</li>
+            <li><strong>SBOM generated once</strong>: Stale CycloneDX files mislead incident response when dependencies changed three releases ago.</li>
+            <li><strong>Scan libraries only</strong>: A vulnerable <code>openssl</code> in the base image survives while npm dependencies look clean.</li>
+            <li><strong>Sign but never verify</strong>: Emergency deploys bypass admission policies; tampered images schedule when someone disables the webhook.</li>
+            <li><strong>Pin tags not digests</strong>: Registry tag reuse swaps digest under the same label—Kubernetes pulls unexpected bytecode.</li>
+            <li><strong>No VEX process</strong>: Developers mute SCA forever; the next critical CVE hides in suppressed noise.</li>
+            <li><strong>No post-build monitoring</strong>: NVD publishes a flaw Tuesday; production still runs Friday's image with no registry rescan alert.</li>
+            <li><strong>Typosquat dependency</strong>: A rushed <code>npm install</code> pulls a similarly named package with no review gate on publish.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -236,6 +244,8 @@ COSIGN KEYLESS SIGNING:
             <li>Is build provenance stored and queryable for forensic rollback?</li>
             <li>Can you answer customer impact within one hour of a major CVE publication?</li>
             <li>Is there a documented process for VEX and emergency dependency patches?</li>
+            <li>Are default branches protected with required reviews and no direct pushes?</li>
+            <li>Does registry continuous scanning re-evaluate deployed digests when CVEs publish?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -243,6 +253,7 @@ COSIGN KEYLESS SIGNING:
             <li><strong>Case study — Log4Shell-style response</strong>: CycloneDX SBOM query lists affected services; VEX marks non-reachable transitive paths.</li>
             <li><strong>Illustrative scenario — procurement</strong>: Enterprise customers receive SBOM plus SLSA attestations with each quarterly release.</li>
             <li><strong>Illustrative scenario — Sigstore admission</strong>: Kyverno verifies Cosign signatures from CI OIDC; tampered images never schedule.</li>
+            <li><strong>Private registry mirror</strong>: Approved base images replicate internally; admission denies pulls from public Docker Hub except the mirror digest.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -259,6 +270,8 @@ COSIGN KEYLESS SIGNING:
             <li><a href="https://www.cisa.gov/sbom" target="_blank" rel="noopener noreferrer">CISA SBOM Guidance</a></li>
             <li><a href="https://docs.sigstore.dev/" target="_blank" rel="noopener noreferrer">Sigstore Documentation</a></li>
             <li><a href="https://cyclonedx.org/" target="_blank" rel="noopener noreferrer">CycloneDX SBOM Standard</a></li>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-218/final" target="_blank" rel="noopener noreferrer">NIST SP 800-218 — SSDF</a></li>
+            <li><a href="https://owasp.org/www-project-dependency-check/" target="_blank" rel="noopener noreferrer">OWASP Dependency-Check</a></li>
           </ul>
 
 
