@@ -90,30 +90,31 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>Fan-out / fan-in (also called scatter-gather) is a pattern where a coordinator <em>fans out</em> a request or task to N independent workers simultaneously, waits for all (or enough) of them to complete, then <em>fans in</em> the results by aggregating them into a single response. The key benefit is latency: instead of calling N services serially (total latency = sum of individual latencies), you call them in parallel (total latency ≈ slowest individual latency). This is how API gateways assemble composite pages, how search engines rank across multiple indices in parallel, and how insurance quote engines collect bids from multiple carriers.</p>
-          <p>Fan-out can be implemented synchronously (fire N async calls and await all) or asynchronously (publish N messages to a queue, collect results on a reply topic). Synchronous fan-out is simpler and appropriate when all workers need to respond before the caller can proceed. Asynchronous fan-out via a message queue decouples the coordinator from the workers and is appropriate for long-running tasks or when the caller does not wait for a combined response.</p>
+          <p><strong>Fan-out / fan-in</strong> (EIP <em>Scatter-Gather</em>, also called broadcast–aggregate) is a pattern where a coordinator dispatches the same logical request to multiple independent workers in parallel, then merges their responses—fully or partially—before returning a single outcome to the caller. EIP describes the fan-out as a broadcast and the fan-in as an aggregator that collects correlated replies.</p>
+          <p>Synchronous implementations issue parallel HTTP or gRPC calls (or language-level tasks) and block until a deadline. Asynchronous implementations publish work to queues or topics—often with <a href="correlation-ids.html">correlation identifiers</a> on each branch—and collect replies on a dedicated reply channel, which suits long-running or decoupled workflows on Kafka, RabbitMQ, or NATS.</p>
+          <p>End-to-end latency approaches the slowest branch (plus aggregation overhead) instead of the sum of serial calls, which is why BFF layers, quote engines, and search federators rely on the pattern.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Many real-world operations require input from multiple independent sources: compare prices from 5 carriers, enrich a user profile from 3 data providers, validate an order against 4 rules engines. Doing these serially creates compound latency and means one slow dependency blocks everything. Fan-out/fan-in collapses serial chains into parallel branches, dramatically reducing perceived latency and improving throughput. AWS Step Functions' Parallel state, Kubernetes Jobs with parallelism, and map-reduce all implement variations of this pattern at different scales.</p>
+          <p>Real operations often need independent inputs from several systems: carrier pricing, fraud scores, inventory checks, or regional search indexes. Serial calls compound latency and let one straggler block the entire user journey. Fan-out/fan-in runs those dependencies concurrently and gives the aggregator explicit control over deadlines, partial results, and failure semantics.</p>
+          <p>The same structure appears at different scales—from in-process parallel maps to AWS Step Functions Parallel states, Kubernetes indexed Jobs, and map–reduce stages—whenever work can be partitioned and results reduced.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Multi-vendor comparison</strong> — requesting price quotes, availability, or risk assessments from multiple independent providers simultaneously.</li>
-            <li><strong>Parallel enrichment</strong> — augmenting an entity with data from multiple independent sources (geolocation, credit score, fraud score, user preferences) before returning a composite response.</li>
-            <li><strong>Composite page assembly</strong> — a Backend for Frontend calls product, inventory, pricing, and recommendation services in parallel to assemble a product detail page.</li>
-            <li><strong>Parallel data processing</strong> — splitting a large dataset into shards, processing each shard independently, then combining results (map-reduce pattern).</li>
+            <li><strong>Multi-provider quotes:</strong> You must request prices, risk scores, or availability from several vendors under one user-facing deadline.</li>
+            <li><strong>Parallel enrichment:</strong> A composite API gathers geolocation, credit, fraud, and preference data from separate services before responding.</li>
+            <li><strong>Page or API aggregation:</strong> A BFF or gateway loads product, stock, pricing, and recommendations concurrently for one screen or payload.</li>
+            <li><strong>Embarrassingly parallel batch work:</strong> You shard a dataset, process shards independently, and merge statistics or indexes in a reduce step.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>When steps are sequential and dependent</strong> — if step B requires the output of step A, fan-out does not help; use a pipeline instead.</li>
-            <li><strong>Very large fan-out (hundreds of workers)</strong> — creating hundreds of goroutines/threads or HTTP connections simultaneously can exhaust resources; use a bounded worker pool with a queue instead.</li>
-            <li><strong>When partial results are unacceptable</strong> — if all N responses are mandatory (e.g., financial settlement across all counterparties), a single worker failure propagates to the entire operation; model this carefully with compensating actions.</li>
+            <li><strong>Strict pipelines:</strong> When step B needs A’s output, fan-out adds complexity without latency benefit; use a sequential workflow instead.</li>
+            <li><strong>Unbounded parallelism:</strong> Fanning out to hundreds of simultaneous tasks can exhaust connections or memory; use a bounded pool with a work queue.</li>
+            <li><strong>All-or-nothing outcomes:</strong> When every branch must succeed (for example multi-party settlement), partial-result policies and compensating actions must be designed explicitly.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The coordinator launches N parallel tasks. Each result is placed in a channel or reply topic. A fan-in aggregator collects results as they arrive. A deadline timer fires after the configured timeout; at that point the aggregator processes all results received so far, treating missing results as timeouts/partial responses.</p>
-          <p>Results are merged into a composite response returned to the caller.</p>
+          <p>A coordinator issues N parallel invocations, each tagged with a shared correlation identifier. Results arrive on callbacks, futures, or reply messages. An aggregator accumulates them until all required branches finish or a global deadline expires, then merges, sorts, or filters into one response.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     coord["Coordinator"]
@@ -149,62 +150,64 @@
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Latency reduction — P99 latency approaches the slowest single worker instead of the sum of all workers.</li>
-              <li>Resilience — one slow or failed worker does not block the entire operation when partial results are acceptable.</li>
-              <li>Scales naturally — add more worker types to include more data sources without changing latency.</li>
-              <li>Clean separation — each worker is independently deployed, scaled, and owned.</li>
+              <li>User-visible latency tracks the slowest branch rather than the sum of serial call times.</li>
+              <li>Partial-result policies let slow or failed workers degrade gracefully when the business allows it.</li>
+              <li>New data sources join as additional parallel branches without rewriting the entire caller.</li>
+              <li>Each worker remains independently deployable, scalable, and owned by a separate team.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>Complexity — managing parallel execution, correlation, timeouts, and partial results is significantly more complex than serial calls.</li>
-              <li>Resource amplification — N parallel calls means N times the connection, memory, and CPU usage at peak.</li>
-              <li>Hardest worker determines overall latency — the aggregator waits until the deadline, so slow or stuck workers consume the full budget.</li>
-              <li>Error correlation — matching response fragments back to the original request requires correlation IDs tracked in the aggregator state.</li>
+              <li>Aggregators must manage deadlines, correlation state, partial merges, and error taxonomy.</li>
+              <li>Peak resource use multiplies with branch count—connections, memory, and thread pools all spike together.</li>
+              <li>Stragglers consume the full deadline budget, so tail latency still dominates perceived speed.</li>
+              <li>Missing or wrong correlation identifiers mis-attribute replies and corrupt merged responses.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Deadline, not per-call timeout:</strong> Set a single deadline for the entire fan-out operation (e.g., 500 ms), not a timeout per worker. Workers that have not responded by the deadline are treated as partial/unavailable. Propagate the deadline to workers so they can abort early if they know the result won't arrive in time (context deadline in Go, gRPC deadlines).</p>
-          <p><strong>Partial result handling:</strong> Define the minimum required responses before the aggregator can return a useful result. For multi-vendor pricing: any non-empty subset is useful. For security validation across 4 rule engines: all 4 must pass. Encode this policy explicitly rather than hard-coding the expected count.</p>
-          <p><strong>Async fan-out via message queue:</strong> Publish N messages to a work queue with a shared <code>correlationId</code>. Workers publish results to a reply topic keyed by <code>correlationId</code>. The coordinator subscribes to the reply topic and aggregates results until all are received or the deadline fires. This approach supports long-running fan-out (minutes, not milliseconds) and does not require the coordinator to hold open N connections.</p>
-          <p><strong>AWS Step Functions Parallel state:</strong> The Parallel state starts N branches simultaneously; all branches must complete (or one must fail to abort) before the state machine advances. Each branch can be a long-running workflow. Use Map state instead when the set of workers is dynamic (N items from an array), which is map-reduce at the workflow level.</p>
+          <p>Define one <strong>global deadline</strong> for the scatter-gather operation and propagate it on each branch (gRPC deadlines, HTTP <code>Context</code>, or workflow timer). Treat branches that miss the deadline as timed out according to your partial-result policy rather than giving each call its own unrelated timeout.</p>
+          <p>Document <strong>minimum viable responses</strong>: quote comparison may need any two carriers; four-engine fraud checks may require all four passes. Encode quorum rules in configuration, not magic constants.</p>
+          <p>For <strong>async fan-out</strong>, publish branch tasks with a shared <a href="correlation-ids.html">correlation ID</a> and collect replies on a dedicated topic or inbox (RabbitMQ reply-to, Kafka reply topic, NATS request–reply). CloudEvents <code>subject</code> and extension attributes can carry correlation metadata for interoperable envelopes.</p>
+          <p>In <strong>AWS Step Functions</strong>, Parallel state runs fixed branches; Map state fan-outs over an array when N is data-driven. For large N, stage work through a queue and aggregate incrementally instead of spawning unbounded inline branches.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Aggregator holds state forever:</strong> If a worker never responds and the deadline is not enforced, the aggregator leaks memory for each in-flight correlation.</li>
-            <li><strong>Unbounded fan-out:</strong> Coordinator fans out to all items in an unbounded list, creating thousands of goroutines and exhausting resources.</li>
-            <li><strong>Ignoring partial results incorrectly:</strong> A required worker fails silently; the aggregator returns a "complete" result missing critical data.</li>
-            <li><strong>Result mix-up:</strong> Workers publish results without the original correlation ID; the aggregator assigns results to the wrong operation.</li>
+            <li><strong>Aggregator memory leak:</strong> Missing deadline enforcement leaves correlation state allocated when a branch never replies.</li>
+            <li><strong>Unbounded fan-out:</strong> The coordinator spawns one task per list element without a cap, exhausting threads or sockets.</li>
+            <li><strong>Silent partial failure:</strong> A required branch errors but the aggregator still returns success without critical fields.</li>
+            <li><strong>Reply mismatch:</strong> Workers omit correlation identifiers, so results attach to the wrong parent operation.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are all N tasks truly independent (no data dependencies between them)? If not, use a pipeline.</li>
-            <li>Is a deadline set for the entire fan-out operation, not per-worker timeouts?</li>
-            <li>Is the partial result policy explicitly defined (minimum required responses, handling of unavailable workers)?</li>
-            <li>Is fan-out bounded (fixed N workers, not dynamic list growth)?</li>
-            <li>Does each worker's response include the correlation ID to allow correct fan-in aggregation?</li>
-            <li>Is aggregator state cleaned up (TTL or explicit delete) after the operation completes or times out?</li>
+            <li>Are all branches independent with no hidden data dependencies between them?</li>
+            <li>Is there a single operation-level deadline propagated to every branch?</li>
+            <li>Is the partial-result or quorum policy written down and tested?</li>
+            <li>Is fan-out bounded when N is driven by user-supplied lists or catalog size?</li>
+            <li>Does every branch response carry the same correlation identifier as the parent request?</li>
+            <li>Is aggregator state evicted via TTL, completion callback, or explicit delete after timeout?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Insurance quote aggregator:</strong> Fan out to 6 carrier pricing APIs simultaneously; fan in the top 3 results received within 400 ms; return partial results if fewer respond.</li>
-            <li><strong>Search results assembly:</strong> Fan out to product index, seller index, and sponsored content simultaneously; fan in and merge ranked results; guarantee 200 ms deadline.</li>
-            <li><strong>Parallel image processing:</strong> Fan out an uploaded image to thumbnail generator, virus scanner, EXIF extractor, and CDN uploader in parallel; fan in status of each operation before marking upload complete.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> fans a pricing BFF out to multiple carrier APIs under a deadline, fans in the lowest fares, and marks slow or failed branches unavailable.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> loads catalogue, inventory, price, and recommendations in parallel on a product detail BFF and merges partial failures before returning the page.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> fans an upload intake out to virus scan, thumbnail, metadata, and CDN promotion workers and marks a shipment complete only when required branches succeed.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="competing-consumers.html">Competing Consumers</a> — fan-out to a pool of identical workers from a shared queue.</li>
-            <li><a href="request-response.html">Request-Response</a> — the synchronous building block for each individual fan-out call.</li>
-            <li><a href="correlation-ids.html">Correlation IDs</a> — essential for matching fan-in responses back to the originating fan-out.</li>
+            <li><a href="competing-consumers.html">Competing Consumers</a> — many identical workers share one queue; scatter-gather targets distinct branches.</li>
+            <li><a href="request-response.html">Request-Response</a> — synchronous invocation primitive for each fan-out leg.</li>
+            <li><a href="correlation-ids.html">Correlation IDs</a> — tie branch replies back to the originating request.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/amazon-states-language-parallel-state.html" rel="noopener noreferrer" target="_blank">AWS Step Functions Parallel State</a> — managed parallel branching in workflows.</li>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/BroadcastAggregate.html" rel="noopener noreferrer" target="_blank">Scatter-Gather Pattern</a> — Hohpe &amp; Woolf EIP canonical description.</li>
-            <li><a href="https://go.dev/blog/pipelines" rel="noopener noreferrer" target="_blank">Go Concurrency Patterns: Pipelines and Cancellation</a> — practical fan-out/fan-in implementation in Go.</li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/BroadcastAggregate.html" rel="noopener noreferrer" target="_blank">Scatter-Gather — Enterprise Integration Patterns (Hohpe &amp; Woolf)</a></li>
+            <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/amazon-states-language-parallel-state.html" rel="noopener noreferrer" target="_blank">Parallel State — AWS Step Functions Developer Guide</a></li>
+            <li><a href="https://go.dev/blog/pipelines" rel="noopener noreferrer" target="_blank">Go Concurrency Patterns: Pipelines and Cancellation — The Go Blog</a></li>
+            <li><a href="https://cloudevents.io/" rel="noopener noreferrer" target="_blank">CloudEvents Specification — CNCF</a></li>
+            <li><a href="https://microservices.io/patterns/apigateway.html" rel="noopener noreferrer" target="_blank">API Gateway — microservices.io (Chris Richardson)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

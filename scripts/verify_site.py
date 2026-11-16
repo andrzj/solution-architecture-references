@@ -45,6 +45,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "api-design",
         "big-data",
         "cloud",
+        "communication-patterns",
     }
 )
 

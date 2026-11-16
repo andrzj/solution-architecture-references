@@ -90,30 +90,33 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Routing patterns push filtering and dispatch decisions to the infrastructure layer — the broker, an intermediary router service, or the message envelope itself — ensuring messages arrive only at handlers that need them, with less compute wasted and clearer data contracts.</p>
-          <p>The foundational routing strategies are: <strong>content-based routing</strong> (route based on payload or header values), <strong>topic-per-event-type routing</strong> (each event type has a dedicated topic), <strong>routing slip</strong> (the message carries a list of destinations to visit in order), and <strong>process manager</strong> (a stateful coordinator decides the next destination based on accumulated state). These are not mutually exclusive; production systems often combine them.</p>
+          <p><strong>Message routing</strong> is the set of patterns that decide which downstream channel or handler receives each message without hard-wiring every producer to every consumer address. Enterprise Integration Patterns (EIP) documents core routers such as the <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/ContentBasedRouter.html" rel="noopener noreferrer" target="_blank">Content-Based Router</a>, <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageRouter.html" rel="noopener noreferrer" target="_blank">Message Router</a>, <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/RoutingSlip.html" rel="noopener noreferrer" target="_blank">Routing Slip</a>, and <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/ProcessManager.html" rel="noopener noreferrer" target="_blank">Process Manager</a>.</p>
+          <p>Routing can live in the broker (Kafka topic names, RabbitMQ exchanges and routing keys, Amazon SNS filter policies, Google Pub/Sub filters), in an integration framework (Apache Camel, Spring Integration), or in a dedicated stateless router consumer that republishes to downstream topics. The goal is the same: subscribers receive only the traffic they understand, and unmatched messages land on explicit dead-letter paths instead of disappearing.</p>
+          <p>Routing pairs naturally with <a href="command-pattern.html">command</a> versus <a href="event-notification.html">event</a> semantics: commands route point-to-point to one handler queue; events route to topics where many subscriptions apply their own filters.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without explicit routing, the alternatives are: (a) broadcast everything to all consumers and let them filter locally — this causes O(consumers × messages) unnecessary work; or (b) embed routing logic in the producer — this couples the producer to every consumer's existence and address. Routing patterns decouple producers from consumers by moving dispatch decisions to a neutral intermediary layer, enabling producers and consumers to evolve independently.</p>
+          <p>If every consumer subscribed to a firehose and filtered locally, CPU and deserialization cost would scale with the product of publishers and uninterested consumers. If every producer embedded destination addresses, adding a subscriber would require redeploying producers. Routing intermediaries keep address knowledge out of domain services so teams can add consumers or split queues by changing broker configuration or router rules.</p>
+          <p>Operational concerns—region, tenant, priority, compliance tier—also belong in routing metadata (headers or attributes) so the same business event can fan out to the correct isolated pipelines without duplicating publisher code per geography.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Multiple event types on a shared bus</strong> — an order service publishes <code>order.created</code>, <code>order.confirmed</code>, <code>order.cancelled</code>; different consumers need different subsets.</li>
-            <li><strong>Multi-step workflows</strong> — a document processes through normalisation → validation → enrichment → archival, each as a separate consumer; the routing slip pattern encodes the pipeline in the message envelope.</li>
-            <li><strong>Regional or tenant routing</strong> — messages must be directed to the correct regional deployment or tenant-specific handler based on a header value.</li>
-            <li><strong>Dead-letter routing</strong> — failed messages must be routed to a dedicated dead-letter queue (DLQ) rather than silently dropped or blocking the main queue.</li>
+            <li>One inbound stream carries many event or command types and each downstream service should see only its subset.</li>
+            <li>Sequential pipelines (validate, enrich, archive) need explicit next-hop instructions via routing slip or topic chaining.</li>
+            <li>Multi-tenant or multi-region deployments require header-driven steering to the correct queue or cluster.</li>
+            <li>You must guarantee a dead-letter path for poison or unroutable messages instead of silent drop.</li>
+            <li>Sagas or process managers choose the next participant based on persisted workflow state.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>When all consumers need all messages</strong> — broadcast via pub/sub is the right tool; routing adds complexity with no benefit.</li>
-            <li><strong>Complex conditional routing as a substitute for good domain modeling</strong> — if your router has 50 rules, the domain model is likely wrong; consider splitting the service or redesigning the event schema.</li>
-            <li><strong>When routing logic changes frequently</strong> — dynamic routing tables are powerful but become operational risk if modified continuously; prefer convention (topic-per-event-type) for stable systems.</li>
+            <li>Every subscriber legitimately needs every message—use <a href="pub-sub.html">pub/sub</a> without selective routers.</li>
+            <li>Routing rule tables grow so large they encode business policy that belongs in domain services; refactor boundaries or event taxonomy first.</li>
+            <li>Broker-native routing already matches your predicates and you would duplicate it in custom code without added expressiveness.</li>
+            <li>You require global ordering across all message types on one router instance—that bottleneck fights horizontal scale.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Content-based routing inspects message headers or payload and directs the message to one of N queues. Topic-per-event-type routing relies on the broker's native subscription model (SNS filter policies, Kafka topic names, AMQP routing keys). The routing slip pattern embeds a list of queue destinations in the message envelope; each consumer reads from its slot, processes, and forwards to the next slot. The process manager pattern is a stateful service that queries its database to determine the next routing decision.</p>
+          <p>Producers publish to an ingress topic or exchange with typed headers (event type, region, tenant, priority). A content-based router—broker filter, Camel <code>choice</code> flow, or lightweight republisher—evaluates predicates and forwards to dedicated queues. Routing-slip messages embed an ordered list of steps; each worker completes its step and advances the pointer. Stateful process managers read workflow ids from messages, load state, and emit the next command or event to the appropriate destination. Every branch includes a default route to a dead-letter queue monitored by alerts.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     msg["Incoming message&lt;br/&gt;type, region, priority"]
@@ -155,63 +158,70 @@ Routing Slip Pattern
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Decouples producers from consumers — producers do not need to know which consumers exist.</li>
-              <li>Reduces wasted compute — consumers only receive messages they need to process.</li>
-              <li>Routing slip enables lightweight sequential workflows without a central orchestrator.</li>
-              <li>Topic-per-event-type creates explicit, discoverable data contracts.</li>
+              <li>Producers stay stable when new consumers appear because addressing moves to routers or broker bindings.</li>
+              <li>Consumers avoid deserializing irrelevant traffic, which saves CPU and keeps failure domains smaller.</li>
+              <li>Routing slips express linear pipelines without a heavyweight orchestration engine for simple sequences.</li>
+              <li>Topic-per-type conventions make contracts grepable in AsyncAPI and infrastructure repos.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>Routing logic is a single point of failure if centralised — a misconfigured router sends messages to the wrong queue or drops them silently.</li>
-              <li>Content-based routing that inspects payload requires deserialisation at the broker or router, adding CPU cost and schema coupling.</li>
-              <li>Routing slip tightly couples workflow structure to the message format; adding a step requires updating the message schema.</li>
-              <li>Process manager adds statefulness to messaging infrastructure — requires a persistent store and complicates scaling.</li>
+              <li>Central routers become failure magnets when misconfigured; changes need review and canary testing.</li>
+              <li>Payload-based rules couple routers to serialization formats and slow hot paths.</li>
+              <li>Routing slips version with workflow shape; new steps require coordinated envelope and consumer updates.</li>
+              <li>Process managers introduce state stores and recovery logic alongside messaging ops.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Broker-native routing (prefer this):</strong> Use the broker's built-in routing capabilities before adding custom routing services. SNS supports attribute-based filter policies that route to different SQS queues at zero extra latency. Kafka routes by topic name and partition key. RabbitMQ uses exchange types (direct, topic, headers, fanout) and routing keys.</p>
-          <p>These are battle-tested, scalable, and require no extra infrastructure.</p>
-          <p><strong>Content-based routing in code:</strong> When broker-native routing is insufficient (complex conditions, multi-field logic), implement a lightweight router consumer: subscribe to an incoming topic, inspect the message, publish to the appropriate downstream topic, ACK the original. Keep routing logic stateless and purely functional (no side effects) so the router can be scaled horizontally without coordination.</p>
-          <p><strong>Dead-letter routing:</strong> Every queue or topic should have an associated dead-letter queue (DLQ) that captures messages that fail to process after N retries. DLQs should be monitored with alerts, and a runbook should document the remediation steps (replay, manual intervention, discard). Never silently discard messages; route to DLQ instead.</p>
-          <p><strong>Routing in Apache Camel / Spring Integration:</strong> These frameworks provide a Content-Based Router EIP implementation: <code>&lt;choice&gt;&lt;when&gt;&lt;simple&gt;${header.type} == 'order'&lt;/simple&gt;&lt;to uri="activemq:order-queue"/&gt;&lt;/when&gt;&lt;otherwise&gt;&lt;to uri="activemq:unknown-dlq"/&gt;&lt;/otherwise&gt;&lt;/choice&gt;</code>. The <em>otherwise</em> clause is critical — always handle unmatched messages.</p>
+          <p><strong>Prefer broker features:</strong> Use SNS subscription filter policies, RabbitMQ topic exchanges, Kafka topic boundaries, and SQS dead-letter redrive policies before building bespoke routers. Document binding names beside AsyncAPI channels.</p>
+          <p><strong>Header-first predicates:</strong> Route on message attributes (<code>type</code>, <code>tenant</code>, <code>region</code>) rather than parsing large JSON bodies at the edge unless necessary.</p>
+          <p><strong>Stateless republishers:</strong> Custom routers should only read, decide, and forward—no business side effects—so you can scale them horizontally behind competing consumers.</p>
+          <p><strong>Dead letters:</strong> Configure DLQs on every queue, monitor depth, and document replay versus discard. AWS, RabbitMQ, and Google Pub/Sub each document DLQ wiring patterns in their broker guides.</p>
+          <p><strong>Integration frameworks:</strong> Apache Camel’s <a href="https://camel.apache.org/components/latest/eips/choice-eip.html" rel="noopener noreferrer" target="_blank">Choice</a> and <a href="https://camel.apache.org/components/latest/eips/routingSlip-eip.html" rel="noopener noreferrer" target="_blank">Routing Slip</a> EIPs implement EIP semantics with mandatory <code>otherwise</code> branches to catch unmatched messages.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Missing otherwise/default route:</strong> A content-based router with no default sends unmatched messages to a black hole. Always define a catch-all route to a DLQ.</li>
-            <li><strong>Routing key typos:</strong> A producer publishes to <code>order.creatd</code> instead of <code>order.created</code>; no consumer is subscribed; messages are silently dropped. Validate topic/routing key names at startup with schema registry checks.</li>
-            <li><strong>Routing slip infinite loop:</strong> A step re-inserts its own queue into the routing slip; the message circulates forever. Validate routing slip on ingress and cap the maximum step count.</li>
-            <li><strong>Router bottleneck:</strong> A centralised routing service processes all messages sequentially; under high load it becomes the bottleneck for the entire system. Scale routing logic horizontally or push it into the broker.</li>
+            <li><strong>No default route:</strong> Unmatched messages disappear; always forward unknown predicates to a DLQ or alert topic.</li>
+            <li><strong>Typoed routing keys:</strong> Producers publish to mistyped topic names with no subscribers; validate names in CI against a catalog.</li>
+            <li><strong>Routing slip loops:</strong> A step forwards back to itself; cap step counts and validate slips at ingress.</li>
+            <li><strong>Hot router instance:</strong> A single-threaded router saturates before workers do; shard routers or push rules into the broker.</li>
+            <li><strong>Filter drift:</strong> SNS or Pub/Sub filters desync from producer attributes after deploy; contract tests should publish sample messages per environment.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Can broker-native routing (SNS filter policies, Kafka topics, RabbitMQ routing keys) serve the need without custom code?</li>
-            <li>Does every routing path have an explicit default/otherwise route to a DLQ?</li>
-            <li>Are routing key / topic names validated at startup against the schema registry?</li>
-            <li>Is the routing logic stateless so it can scale horizontally?</li>
-            <li>If using a routing slip, is the maximum step count validated and capped?</li>
-            <li>Is dead-letter routing monitored with alerts and a documented runbook?</li>
+            <li>Can broker-native bindings express the routing rules without a custom service?</li>
+            <li>Does every decision branch include a catch-all path to a monitored DLQ?</li>
+            <li>Are topic, queue, and routing key names validated in CI or registry checks?</li>
+            <li>Is router logic stateless (or is state explicitly owned by a process manager store)?</li>
+            <li>For routing slips, is there a maximum step count and schema version?</li>
+            <li>Can traces or correlation ids follow messages across each routing hop?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Multi-region payment processing:</strong> Payments are routed to regional processors based on the <code>region</code> header; high-value payments additionally routed to a fraud review queue via a content-based router.</li>
-            <li><strong>Document normalisation pipeline:</strong> Incoming documents route to format-specific normalizers (PDF handler, Word handler, HTML handler) via a content-based router on the <code>contentType</code> header.</li>
-            <li><strong>Notification dispatch:</strong> A single <code>notification.requested</code> event routes to email handler, SMS handler, or push notification handler based on the user's notification preferences encoded in the message header.</li>
+            <li><strong>Illustrative scenario —</strong> An order event bus carries multiple <code>type</code> values; SNS filter policies fan <code>order.shipped</code> to logistics queues while analytics queues subscribe only to financial events.</li>
+            <li><strong>Illustrative scenario —</strong> A document ingestion routing slip lists normalize, virus-scan, and archive queues; each worker advances the slip after success.</li>
+            <li><strong>Illustrative scenario —</strong> A notification router reads channel preference headers and forwards the same request event to email, SMS, or push workers without the publisher knowing which channels apply.</li>
+            <li><strong>Case study —</strong> Enterprise Integration Patterns (Hohpe and Woolf) codified content-based routing and routing slips as integration vocabulary still mirrored in Camel and Spring Integration today.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="pub-sub.html">Publish/Subscribe</a> — the underlying mechanism for topic-based routing.</li>
-            <li><a href="message-queues.html">Message Queues</a> — the destination queues routing directs messages to.</li>
-            <li><a href="correlation-ids.html">Correlation IDs</a> — essential for tracing a message's path through routing hops.</li>
+            <li><a href="pub-sub.html">Publish/Subscribe</a> — broadcast transport underlying topic routing.</li>
+            <li><a href="message-queues.html">Message Queues</a> — point-to-point targets for routed commands and tasks.</li>
+            <li><a href="command-pattern.html">Command Pattern</a> — commands require single-destination routing.</li>
+            <li><a href="correlation-ids.html">Correlation IDs</a> — follow messages through multiple routing hops.</li>
+            <li><a href="../distributed-systems/saga-pattern.html">Saga Pattern</a> — process managers route the next saga step.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/ContentBasedRouter.html" rel="noopener noreferrer" target="_blank">Content-Based Router (EIP)</a> — canonical definition and patterns.</li>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/RoutingTable.html" rel="noopener noreferrer" target="_blank">Routing Slip Pattern (EIP)</a> — dynamic sequential routing in message envelopes.</li>
-            <li><a href="https://camel.apache.org/components/latest/eips/choice-eip.html" rel="noopener noreferrer" target="_blank">Apache Camel Choice EIP</a> — content-based routing in practice.</li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/ContentBasedRouter.html" rel="noopener noreferrer" target="_blank">Content-Based Router — Enterprise Integration Patterns</a></li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/RoutingSlip.html" rel="noopener noreferrer" target="_blank">Routing Slip — Enterprise Integration Patterns</a></li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/ProcessManager.html" rel="noopener noreferrer" target="_blank">Process Manager — Enterprise Integration Patterns</a></li>
+            <li><a href="https://docs.aws.amazon.com/sns/latest/dg/sns-message-filtering.html" rel="noopener noreferrer" target="_blank">Amazon SNS message filtering — attribute-based subscription policies</a></li>
+            <li><a href="https://www.rabbitmq.com/tutorials/tutorial-five-python" rel="noopener noreferrer" target="_blank">RabbitMQ topic exchanges tutorial — routing keys and bindings</a></li>
+            <li><a href="https://camel.apache.org/components/latest/eips/choice-eip.html" rel="noopener noreferrer" target="_blank">Apache Camel Choice EIP — conditional routing in integration routes</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

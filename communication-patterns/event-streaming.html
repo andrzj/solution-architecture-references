@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Event Streaming — SA References</title>
-  <meta name="description" content="Event Streaming with Apache Kafka: topics, partitions, consumer groups, offsets, log compaction, exactly-once semantics, stream-table duality, Kafka Streams vs Flink, and consumer lag monitoring.">
+  <meta name="description" content="Event streaming: durable partitioned logs, Kafka consumer groups and offsets, replay and retention, log compaction, delivery semantics, and stream processing.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>(function(){const t=localStorage.getItem('sa-refs-theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);})();</script>
 </head>
@@ -84,40 +84,39 @@
         <div class="article-header">
           <div class="article-header__tags"><span class="badge badge--primary">Communication Patterns</span><span class="badge badge--muted">Async</span><span class="badge badge--muted">Streaming</span></div>
           <h1 class="article-header__title">Event Streaming</h1>
-          <p class="article-header__desc">A continuous, durable, replayable log of ordered events — Kafka's architecture, exactly-once semantics, stream-table duality, and how streaming differs from traditional queuing.</p>
+          <p class="article-header__desc">Event streaming treats business activity as a durable, partitioned, replayable log—so many consumers read, resume, and reprocess the same events independently.</p>
           <div class="article-header__meta"><span>⏱ 14 min read</span></div>
         </div>
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>Apache Kafka is the canonical implementation: events are appended to <strong>partitions</strong> within a <strong>topic</strong>; partitions are distributed across broker nodes for parallelism and replicated across nodes for fault tolerance. A <strong>consumer group</strong> is a logical subscriber — each partition is assigned to exactly one member of the group, giving both fan-out (multiple groups read the same topic independently) and parallelism (partitions within a group are processed concurrently).</p>
-          <p>Every consumer tracks its position via an <strong>offset</strong> — a monotonically increasing integer per partition — so it can replay from any historical point or resume from where it left off.</p>
-          <p>This model differs fundamentally from queues: data is not deleted on consumption; it is retained for a configurable period (hours, days, or indefinitely with <strong>log compaction</strong>). This makes Kafka both a message broker and a durable event store, enabling event replay, new consumer bootstrapping, and audit trails without a separate archival system.</p>
+          <p><strong>Event streaming</strong> is a communication and persistence pattern where producers append records to an ordered, partitioned log and consumers read forward at their own pace, retaining a cursor (<em>offset</em>) per partition. Unlike classic queues that delete messages after acknowledgment, streams retain data for a policy-defined period or under log compaction, which enables replay, audit, and late-arriving consumers.</p>
+          <p><strong>Apache Kafka</strong> is the reference implementation: topics split into partitions spread across brokers; consumer groups assign each partition to one member for parallelism while separate groups each receive the full stream. The model generalizes to managed offerings and other log brokers, but the core idea—durable ordered logs as the integration backbone—is what distinguishes streaming from point-to-point queuing.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Traditional message queues delete messages after consumption. This is fine for task dispatch, but leaves no history. Systems needing to rebuild state (new microservice bootstrapping, recovering from data corruption, training ML models on historical events) require the raw event history. Kafka's log-centric design was born at LinkedIn to decouple data pipelines — activity feeds, metrics, log aggregation — all running off the same durable event backbone.</p>
-          <p>The result is a single source of truth for system events that every downstream system can consume independently, at its own pace, and replay at will.</p>
+          <p>Task queues optimize for “process once and forget,” which is ideal for background jobs but weak when new services must bootstrap from history, analytics needs the same facts as operations, or compliance requires a tamper-evident trail. A retained log lets every downstream system catch up and re-read without rewiring producers.</p>
+          <p>Kafka emerged at LinkedIn to unify activity tracking, operational metrics, and pipeline ingestion on one durable bus; microservices.io and event-driven architectures now treat the stream as the integration contract rather than a transient handoff buffer.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Event sourcing or CQRS write-side store</strong> — events are the primary source of truth; projections are derived by replaying them.</li>
-            <li><strong>Multiple independent consumers</strong> — analytics, search indexing, caching, ML feature pipelines all consuming the same event stream without interference.</li>
-            <li><strong>Audit trail requirements</strong> — financial transactions, compliance events, user activity logs needing permanent, tamper-evident history.</li>
-            <li><strong>Real-time stream processing</strong> — computing rolling aggregates, detecting anomalies, joining streams with tables.</li>
-            <li><strong>Cross-datacenter replication</strong> — MirrorMaker 2 (or Confluent Replicator) replicates topics across regions for disaster recovery or geo-distributed processing.</li>
+            <li>Event sourcing or CQRS where derived read models are rebuilt by replaying the log.</li>
+            <li>Multiple independent consumers (search, cache warming, analytics, ML features) over the same fact stream.</li>
+            <li>Audit and compliance paths that require retained, ordered evidence of what happened.</li>
+            <li>Continuous processing—aggregations, joins, windows—via Kafka Streams, Flink, or similar engines.</li>
+            <li>Geo-replication of topics when disaster recovery or regional processing needs a copy of the log.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Simple task queues</strong> — Kafka's operational overhead (ZooKeeper/KRaft, partition rebalancing, offset management) is excessive for basic work queues; SQS or RabbitMQ is simpler.</li>
-            <li><strong>Very small scale</strong> — Kafka's minimum cluster footprint (3 brokers for production replication) makes it disproportionate for low-volume systems.</li>
-            <li><strong>Request-response semantics</strong> — Kafka is strictly one-way pub/sub; implementing RPC over Kafka is an anti-pattern.</li>
-            <li><strong>When exactly-once is business-critical without careful tuning</strong> — exactly-once semantics in Kafka require idempotent producers + transactional APIs; misconfiguration silently falls back to at-least-once.</li>
+            <li>Simple job queues where messages should disappear after one worker succeeds; SQS or RabbitMQ are lighter operationally.</li>
+            <li>Very low volume without replay needs, where a multi-broker cluster is disproportionate cost.</li>
+            <li>Request-response interactions; streaming is one-way unless you layer request-reply patterns on top.</li>
+            <li>Exactly-once end-to-end processing without investing in idempotent producers, transactions, and consumer design—defaults are at-least-once.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>A topic is split into partitions, each an ordered, append-only log. Producers write to a partition determined by the message key's hash. Each partition is replicated to N brokers (replication factor 3 is standard). Consumer groups each maintain an independent offset cursor per partition, stored in the internal <code>__consumer_offsets</code> topic.</p>
-          <p>A Kafka Streams application reads input topics, performs stateful computations (joins, aggregations using RocksDB state stores), and writes results to output topics — all within a single JVM process.</p>
+          <p>Producers append to topic partitions, usually choosing partition via message key hash so related events co-locate for ordering. Brokers replicate partitions for fault tolerance; consumer groups commit offsets to track progress independently per group.</p>
+          <p>Stream processors consume input topics, maintain state (RocksDB in Kafka Streams, keyed state in Flink), and emit derived topics—implementing the stream-table duality described in Kafka’s documentation (changelog topics back materialized views).</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     prod["Producers&lt;br/&gt;keyed by order_id"]
@@ -152,69 +151,70 @@ CG:analytics    CG:inventory    CG:fraud
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Replayability — replay from any offset for new consumers, bug fixes, or backfills.</li>
-              <li>High throughput — sequential disk I/O and batched sends enable millions of events/sec on modest hardware.</li>
-              <li>Independent consumers — multiple consumer groups each receive all events; no fan-out plumbing required.</li>
-              <li>Durable event store — events persist for days or indefinitely, serving as both bus and archive.</li>
-              <li>Log compaction — for change-log topics, retain only the latest value per key, bounding disk usage while preserving full state.</li>
+              <li>Consumers can reset offsets to replay history for new services, fixes, or regulatory requests.</li>
+              <li>Sequential disk writes and batching yield high throughput on commodity hardware when tuned properly.</li>
+              <li>Separate consumer groups read the same topic without custom fan-out wiring.</li>
+              <li>Retention policies keep the log as both transport and short- to medium-term archive.</li>
+              <li>Log compaction retains the latest record per key on changelog topics, bounding storage for entity state.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>Operational complexity — cluster management, partition rebalancing, retention policy tuning, and schema registry require dedicated expertise.</li>
-              <li>Partition count is fixed at creation (increasing requires manual reassignment and temporary performance impact).</li>
-              <li>Consumer group rebalancing causes brief processing pauses when members join or leave.</li>
-              <li>Exactly-once semantics require transactional producers and careful configuration — the default is at-least-once.</li>
-              <li>Not suitable for long-retention random access at scale — Kafka is a log, not a queryable database.</li>
+              <li>Cluster operations—broker upgrades, partition movement, ACLs, and quota tuning—need platform skills.</li>
+              <li>Partition counts are painful to shrink; expanding partitions rebalances keys and can disturb ordering assumptions.</li>
+              <li>Consumer group rebalance pauses processing when members churn unless cooperative protocols and static membership are used.</li>
+              <li>End-to-end exactly-once needs idempotent producers, transactions, and careful consumer configuration.</li>
+              <li>Kafka is optimized for append and sequential read, not ad hoc random queries at warehouse scale.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Partition count:</strong> Choose initial partition count generously — you cannot easily decrease it later, and increasing it requires partition reassignment. Rule of thumb: target 1 partition per consumer instance at peak load, with headroom for growth. Common starting points: 12, 24, or 48 partitions for most topics.</p>
-          <p><strong>Log compaction:</strong> Enable compaction (<code>cleanup.policy=compact</code>) for changelog topics (entity state changes keyed by entity ID). Kafka retains only the latest message per key, bounding storage. A null-value (tombstone) message deletes the key from the compacted log. Compaction runs in the background and does not affect producers or consumers.</p>
-          <p><strong>Exactly-once semantics (EOS):</strong> Requires <code>enable.idempotence=true</code> on the producer (prevents duplicates from retries) and transactional APIs (<code>initTransactions()</code>, <code>beginTransaction()</code>, <code>commitTransaction()</code>) when producing to multiple partitions or topics atomically. Consumer-side EOS requires reading with <code>isolation.level=read_committed</code> to skip uncommitted transactional messages.</p>
-          <p><strong>Kafka Streams vs Flink:</strong> Kafka Streams is a Java library that runs in-process — no separate cluster, simple deployment, ideal for straightforward enrichment, filtering, and aggregation. Apache Flink is a full stream processing framework supporting complex event processing, stateful joins across streams, watermarking for event-time semantics, and large-scale analytics — at the cost of a separate Flink cluster to manage.</p>
-          <p><strong>Consumer lag monitoring:</strong> Track <code>consumer_lag</code> (end offset − consumer offset) per partition per consumer group. Alert when lag exceeds a threshold relative to the topic's throughput rate. Use Burrow, Cruise Control, or Confluent Control Center. Lag growth indicates consumers are falling behind the produce rate — a leading indicator of SLA breach.</p>
+          <p>Plan partition count up front for peak consumer parallelism; increasing partitions later requires reassignment and may change per-key ordering guarantees (<a href="https://kafka.apache.org/documentation/#intro_concepts_and_terms" target="_blank" rel="noopener noreferrer">Kafka concepts</a>).</p>
+          <p>Use <code>cleanup.policy=compact</code> on changelog topics that mirror table state; tombstone records (null value) remove keys during compaction (<a href="https://kafka.apache.org/documentation/#compaction" target="_blank" rel="noopener noreferrer">log compaction</a>).</p>
+          <p>For stronger delivery guarantees, enable idempotent producers and transactional writes where needed; consumers that must skip open transactions set <code>isolation.level=read_committed</code> (<a href="https://kafka.apache.org/documentation/#semantics" target="_blank" rel="noopener noreferrer">delivery semantics</a>).</p>
+          <p>Pick Kafka Streams for library-embedded topology on existing JVM services; choose Flink when you need a dedicated cluster, event-time watermarks, and large stateful joins across many streams.</p>
+          <p>Monitor consumer lag (end offset minus committed offset) per partition and alert before retention would delete unread data.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Uncontrolled partition rebalancing:</strong> Frequent restarts or deployments trigger rebalancing storms, pausing all consumers in the group. Mitigate with static membership (<code>group.instance.id</code>) and incremental cooperative rebalancing.</li>
-            <li><strong>Under-replicated partitions:</strong> A broker falling behind replication creates under-replicated partitions, risking data loss if the leader fails. Monitor <code>UnderReplicatedPartitions</code> metric; alert at > 0.</li>
-            <li><strong>Log retention expiry before consumer catch-up:</strong> If a consumer falls too far behind and retention expires, it loses messages permanently. Use long retention or compact+delete policy for critical topics.</li>
-            <li><strong>Schema evolution breaking consumers:</strong> A producer adds a required field without a compatible schema; consumers on old schema versions crash on deserialisation. Use a schema registry with BACKWARD compatibility enforcement.</li>
-            <li><strong>Hot partition due to poor key selection:</strong> All messages land on one partition because a low-cardinality key was chosen (e.g., all messages keyed as "global"), creating a throughput bottleneck.</li>
+            <li>Rapid membership changes trigger rebalance storms that stall all consumers in the group.</li>
+            <li>Under-replicated partitions during broker failure increase risk of lost data if leaders fail before catching up.</li>
+            <li>Consumers fall behind retention and permanently lose messages they never read.</li>
+            <li>Breaking schema changes crash consumers that still deserialize older layouts.</li>
+            <li>Low-cardinality message keys create hot partitions that limit end-to-end throughput.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Do consumers need to replay historical events? If yes, Kafka's durable log is a strong fit.</li>
-            <li>Are there multiple independent consumer groups needing the same events? Kafka's consumer group model handles this natively.</li>
-            <li>Is the partition key chosen to distribute load evenly and preserve ordering requirements?</li>
-            <li>Is a schema registry deployed with compatibility rules enforced on topic schemas?</li>
-            <li>Is consumer lag monitored per group per partition, with alerts configured?</li>
-            <li>Is the replication factor ≥ 3 and <code>min.insync.replicas ≥ 2</code> for durability?</li>
-            <li>For exactly-once requirements: are idempotent producers and transactional APIs enabled and tested?</li>
+            <li>Do any consumers need to read from arbitrary historical positions?</li>
+            <li>Will multiple independent groups consume the same topic?</li>
+            <li>Does the message key balance shards while preserving per-entity ordering?</li>
+            <li>Are schemas governed with compatibility rules and contract tests?</li>
+            <li>Is lag monitored per group and partition with retention-aware alerts?</li>
+            <li>Are replication factor and <code>min.insync.replicas</code> set for the durability tier you promise?</li>
+            <li>If exactly-once is required, are producer and consumer EOS settings tested under failure injection?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Event sourcing backbone:</strong> All domain events (order placed, payment captured, shipment dispatched) written to Kafka; microservices rebuild their read models by replaying the event log from offset 0.</li>
-            <li><strong>Real-time fraud detection:</strong> Transaction events stream through a Kafka Streams topology that joins with account risk profiles and emits alerts for suspicious patterns within 50 ms.</li>
-            <li><strong>Data warehouse CDC pipeline:</strong> A Debezium connector captures database change events, writes them to Kafka, and a Flink job transforms and loads them into Snowflake for analytics — providing sub-minute data freshness.</li>
+            <li><strong>Illustrative scenario —</strong> Domain services append order lifecycle events to a shared topic while read models rebuild projections by replaying from the earliest retained offset.</li>
+            <li><strong>Case study —</strong> Uber and LinkedIn publicly describe Kafka-backed pipelines for log aggregation, metrics, and stream processing at organizational scale.</li>
+            <li><strong>Case study —</strong> Debezium documents change-data-capture connectors that write database changes to Kafka for downstream stream processors or warehouse loaders.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="pub-sub.html">Publish/Subscribe</a> — simpler, lighter-weight variant without log retention and replay.</li>
-            <li><a href="transactional-outbox.html">Transactional Outbox</a> — reliable way to write domain events into Kafka from a database transaction.</li>
-            <li><a href="competing-consumers.html">Competing Consumers</a> — parallelism within a consumer group across partitions.</li>
-            <li><a href="../architecture-styles/event-sourcing.html">Event Sourcing</a> — architectural pattern that uses a streaming log as the primary data store.</li>
+            <li><a href="pub-sub.html">Publish/Subscribe</a> covers lighter broadcast semantics without long retention.</li>
+            <li><a href="transactional-outbox.html">Transactional Outbox</a> reliably publishes to Kafka after database commits.</li>
+            <li><a href="competing-consumers.html">Competing Consumers</a> explains parallelism inside one consumer group across partitions.</li>
+            <li><a href="../architecture-styles/event-sourcing.html">Event Sourcing</a> uses the stream as the system of record.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://kafka.apache.org/documentation/" rel="noopener noreferrer" target="_blank">Apache Kafka Documentation</a> — authoritative reference for all configuration and concepts.</li>
-            <li><a href="https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/" rel="noopener noreferrer" target="_blank">Exactly-Once Semantics in Kafka</a> — Confluent deep dive on EOS implementation.</li>
-            <li><a href="https://www.confluent.io/blog/kafka-streams-tables-part-1-event-streaming/" rel="noopener noreferrer" target="_blank">Streams and Tables in Kafka</a> — the stream-table duality explained.</li>
-            <li><a href="https://flink.apache.org/what-is-flink/flink-architecture/" rel="noopener noreferrer" target="_blank">Apache Flink Architecture</a> — Flink's stateful stream processing model.</li>
+            <li><a href="https://kafka.apache.org/documentation/#gettingStarted" rel="noopener noreferrer" target="_blank">Apache Kafka — Introduction</a></li>
+            <li><a href="https://kafka.apache.org/documentation/#semantics" rel="noopener noreferrer" target="_blank">Apache Kafka — Delivery semantics</a></li>
+            <li><a href="https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/" rel="noopener noreferrer" target="_blank">Confluent — Exactly-once semantics in Kafka</a></li>
+            <li><a href="https://debezium.io/documentation/reference/stable/index.html" rel="noopener noreferrer" target="_blank">Debezium — Connector documentation</a></li>
+            <li><a href="https://flink.apache.org/what-is-flink/flink-architecture/" rel="noopener noreferrer" target="_blank">Apache Flink — Architecture</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

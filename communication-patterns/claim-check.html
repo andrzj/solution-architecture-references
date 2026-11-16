@@ -90,30 +90,30 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>The claim check pattern (also called reference-based messaging) splits a large message into two parts: the <em>payload</em> is stored in an external store (S3 bucket, Azure Blob Storage, GCS), and a lightweight <em>claim check</em> — a reference token containing the storage URL or object key — is sent through the message broker. The consumer receives the claim check, fetches the payload from the external store using the reference, processes it, and optionally deletes it. The broker never sees the large data.</p>
-          <p>The pattern is named after a luggage claim check: you drop your bag (payload) at the baggage counter (blob store) and receive a ticket (claim check token). The ticket travels with you (through the broker) and you redeem it at the destination to retrieve your luggage.</p>
+          <p>The <strong>Claim Check</strong> pattern (EIP <em>Store in Library</em>, also called reference-based messaging) stores bulky message bodies in external object storage and sends only a lightweight <em>claim check</em>—URL, object key, or pre-signed token—through the broker. Consumers redeem the check with a GET against S3, Azure Blob, GCS, or similar, then process bytes locally while the broker carries kilobyte-scale routing metadata.</p>
+          <p>The luggage analogy still fits: drop the bag at the counter (blob store), carry the ticket through the trip (queue or topic), and collect the bag at the destination (consumer fetch). Kafka, RabbitMQ, SQS, and NATS all benefit when default message size limits or memory pressure would otherwise block large binaries.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Message brokers impose message size limits that are typically measured in kilobytes to single-digit megabytes: SQS default limit is 256 KB, RabbitMQ default is 128 MB but performance degrades sharply above a few MB, Kafka default is 1 MB. When payloads exceed these limits — scanned documents, images, audio, large JSON reports, binary files — the message cannot be sent at all or degrades broker performance for all other tenants. The claim check pattern removes this constraint by keeping the broker responsible only for routing small reference tokens and moving bulk data to cheap, high-capacity object storage.</p>
+          <p>Brokers enforce practical size ceilings—SQS 256&nbsp;KB per message, Kafka often 1&nbsp;MB by default, RabbitMQ tolerates larger frames but punishes multi-megabyte bodies with memory and replication cost. Embedding PDFs, imagery, or model artifacts inline fails outright or harms neighbors on shared clusters.</p>
+          <p>Object storage is cheap at scale and built for large sequential reads. Claim check keeps the messaging tier responsible for routing and backpressure while bulk bytes live where throughput and retention policies belong.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Large payloads exceeding broker limits</strong> — any message over ~64 KB that would exceed or stress your broker's limits (256 KB for SQS, custom for RabbitMQ/Kafka).</li>
-            <li><strong>Binary data</strong> — images, PDFs, audio, video thumbnails, serialised ML model outputs that are impractical to base64-encode into a message.</li>
-            <li><strong>Fan-out with large shared data</strong> — in a pub/sub topology, one stored payload can be referenced by hundreds of subscriber messages rather than duplicating the data in each message.</li>
-            <li><strong>Audit and replay requirements</strong> — the external store becomes a durable, queryable archive of all large payloads; the broker message provides lightweight routing metadata.</li>
+            <li><strong>Oversized payloads:</strong> Bodies would exceed broker limits or noticeably inflate broker RAM and replication bandwidth.</li>
+            <li><strong>Binary artifacts:</strong> Images, PDFs, media, and serialized model outputs are awkward to base64 inside JSON events.</li>
+            <li><strong>Shared large objects:</strong> Pub/sub fan-out references one stored object from many small messages instead of duplicating bytes per subscriber.</li>
+            <li><strong>Retention and audit:</strong> The object store becomes the durable archive; the message carries routing, correlation, and content-type metadata only.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Small payloads (&lt;10 KB)</strong> — the extra round-trip to the external store adds latency and complexity for no benefit.</li>
-            <li><strong>Ultra-low latency pipelines</strong> — every consumer must make an extra HTTP call to fetch the payload; this adds tens of milliseconds per message.</li>
-            <li><strong>When the external store is unavailable</strong> — a claim check pointing at an expired or deleted object causes consumer failures; the claim check is only as reliable as the backing store.</li>
+            <li><strong>Tiny messages:</strong> Sub–10&nbsp;KB payloads pay an extra round trip without meaningful broker savings.</li>
+            <li><strong>Sub-millisecond paths:</strong> An additional object-store GET per message adds latency incompatible with tight realtime SLAs.</li>
+            <li><strong>Unreliable object lifecycle:</strong> If TTL or deletion races are unmanaged, consumers fetch missing objects and fail repeatedly.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Producer stores the payload in the external store and receives a reference URL or key. Producer constructs a small message containing the reference, metadata, and routing headers. Producer publishes the small message to the broker. Consumer receives the message, extracts the reference, fetches the payload from external storage, processes it, and ACKs the message.</p>
-          <p>After processing, the consumer may delete the payload or leave it for the TTL to expire.</p>
+          <p>The producer writes the payload to object storage, builds a compact message with storage reference, checksum, content type, and correlation identifiers, and publishes to the broker. The consumer retrieves the object, validates optional hashes, processes, acknowledges the broker message, then deletes or leaves the object per lifecycle policy.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">sequenceDiagram
     participant P as Producer
@@ -155,64 +155,65 @@ Consumer
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Removes broker size limits — payloads of arbitrary size are supported.</li>
-              <li>Reduces broker memory and bandwidth — the broker handles only tiny reference messages.</li>
-              <li>Enables payload sharing — a single stored object can be referenced by many messages.</li>
-              <li>Natural audit trail — the external store serves as a durable record of all processed payloads.</li>
+              <li>Brokers carry small control messages while payloads scale to object-store sizes.</li>
+              <li>Broker memory, replication, and network usage stay predictable under large artifacts.</li>
+              <li>One stored object can back many subscriber messages in fan-out topologies.</li>
+              <li>Object versioning and lifecycle rules provide durable audit and replay surfaces.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>Extra latency — consumer must make an additional round-trip to fetch the payload.</li>
-              <li>Additional operational dependency — the external store (S3/blob) becomes a required component in the message pipeline.</li>
-              <li>Reference lifecycle management — payloads must be deleted after processing to avoid unbounded storage growth; TTL must be chosen carefully.</li>
-              <li>Security surface — the object reference must be protected; an unauthorised party that intercepts the message can retrieve the payload if they can access the store.</li>
+              <li>Every consumer pays an extra object-store GET before processing begins.</li>
+              <li>The pipeline now depends on storage availability, IAM, and lifecycle automation.</li>
+              <li>Orphaned or expired objects break redelivery unless TTL and delete rules align with ACK semantics.</li>
+              <li>Leaked pre-signed URLs or loose bucket policies expose data if references are intercepted.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Pre-signed URLs vs object keys:</strong> There are two strategies for the claim check token. Option A: store the object key (e.g., <code>jobs/2024-01/abc123.pdf</code>) and grant consumers IAM access to the bucket. This is simpler but requires consumers to have permanent S3 read permissions. Option B: include a pre-signed URL with a short TTL (e.g., 30 minutes).</p>
-          <p>This allows consumers without bucket credentials to fetch the payload — useful for cross-account or third-party consumers — but the URL must be generated at publish time, and expiry must align with maximum consumer processing latency.</p>
-          <p><strong>Storage lifecycle and TTL:</strong> Configure S3 lifecycle rules to delete objects after N days based on the prefix or tag. A common approach: set a TTL of 7 days on the payload bucket. If the consumer is healthy, it processes messages well within this window. If the consumer is down for more than 7 days, the payload is gone and the message is a broken reference — handle this as a dead-letter case.</p>
-          <p><strong>Security:</strong> Never store sensitive payloads without server-side encryption (S3 SSE-KMS or SSE-S3). Ensure the bucket is not publicly accessible. If using pre-signed URLs, generate them with the minimum TTL necessary and validate the content hash on retrieval to detect tampering. Treat the claim check message as sensitive if the URL reveals information about the stored data.</p>
-          <p><strong>Observability impact:</strong> Log the claim check reference at every stage (publish, fetch, process, delete) so that distributed traces can link log lines to specific payloads. Without this, debugging a failed consumer is difficult because the log message only contains a reference URL, not the payload content.</p>
+          <p>Choose between <strong>object keys plus IAM</strong> for in-account consumers and <strong>pre-signed URLs</strong> for cross-account or third-party fetchers. Pre-signed expiry must exceed worst-case queue lag plus processing time—often ten times p99 processing duration.</p>
+          <p>Include <strong>metadata</strong> in the broker message: content type, size, checksum, <a href="correlation-ids.html">correlation ID</a>, and optional CloudEvents attributes so observability does not require opening the blob. Kafka users may instead use the <a href="https://kafka.apache.org/documentation/#large_records" rel="noopener noreferrer" target="_blank">large-record</a> path only when cluster policy allows; claim check remains the portable default across SQS, RabbitMQ, and NATS.</p>
+          <p>Configure <strong>lifecycle rules</strong> on prefixes or tags, and delete objects only after successful broker ACK (or rely on TTL with DLQ handling for expired references). Pair upload plus publish with the <a href="transactional-outbox.html">transactional outbox</a> to avoid orphaned blobs when the producer crashes between PUT and publish.</p>
+          <p>Encrypt at rest (SSE-KMS or SSE-S3), deny public ACLs, and validate hashes after GET when tamper detection matters.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Expired pre-signed URL:</strong> Consumer is slow to process; by the time it tries to fetch the payload, the pre-signed URL has expired — HTTP 403. Set URL TTL to at least 10× the maximum expected processing time.</li>
-            <li><strong>Payload already deleted:</strong> A consumer crashes after fetching but before ACKing; the message is redelivered but the payload was already deleted by a previous attempt. Ensure consumers do not delete payloads during processing — delete only after ACK.</li>
-            <li><strong>Storage unavailable:</strong> S3 or blob storage is temporarily unavailable; the consumer cannot fetch the payload and fails. Implement exponential backoff with dead-lettering for storage fetch failures.</li>
-            <li><strong>Reference not stored atomically:</strong> Producer stores the payload but crashes before publishing the message; the payload is orphaned in storage. Implement periodic orphan cleanup or use the transactional outbox pattern for the publish step.</li>
+            <li><strong>Expired pre-signed URL:</strong> Slow consumers hit HTTP 403 when URL lifetime is shorter than end-to-end latency.</li>
+            <li><strong>Premature delete:</strong> A consumer deletes the object before ACK, so redelivery cannot fetch the body again.</li>
+            <li><strong>Storage outage:</strong> S3 or Blob errors fail processing unless fetch retries with backoff and DLQ escalation.</li>
+            <li><strong>Orphan PUT:</strong> Payload lands in storage but no message publishes, leaving unreachable objects until garbage collection runs.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the payload large enough to justify the extra round-trip (rule of thumb: &gt;64 KB)?</li>
-            <li>Is server-side encryption enabled on the payload store?</li>
-            <li>Is the payload store bucket/container private (not public)?</li>
-            <li>Is storage lifecycle/TTL configured to prevent unbounded object accumulation?</li>
-            <li>Does the consumer delete the payload only after successfully ACKing the message?</li>
-            <li>Is the claim check URL/key logged at each processing stage for observability?</li>
-            <li>If using pre-signed URLs, is the TTL set to at least 10× the maximum processing latency?</li>
+            <li>Does payload size exceed broker limits or stress cluster memory (typically above ~64&nbsp;KB)?</li>
+            <li>Is server-side encryption enabled on the payload bucket or container?</li>
+            <li>Are buckets private with least-privilege IAM or short-lived pre-signed access?</li>
+            <li>Do lifecycle rules cap retention and cost for unprocessed objects?</li>
+            <li>Does deletion happen only after successful message acknowledgment?</li>
+            <li>Are object keys or URLs logged with correlation IDs at publish, fetch, and delete?</li>
+            <li>If pre-signed URLs are used, does TTL cover queue backlog plus p99 processing time?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Document processing pipeline:</strong> Users upload contracts (multi-MB PDFs); producer stores in S3 and enqueues a claim check; OCR consumer fetches and extracts text; search indexer consumer fetches and indexes content — both consumers access the same stored payload.</li>
-            <li><strong>Event-driven video transcoding:</strong> Upload service stores raw video in S3, publishes a claim check message; transcoding workers fetch the video, produce variants, and store outputs back to S3 under new keys.</li>
-            <li><strong>Cross-account data sharing:</strong> Publisher in Account A stores data in S3 and issues a pre-signed URL; message with URL is published to an SNS topic shared with Account B consumers who have no direct S3 access.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> stores multi-megabyte customs PDFs in object storage while SQS carries claim checks so OCR and search consumers fetch the same object key independently.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>FieldOps</strong> upload workers store inspection photos in object storage, publish Kafka messages with references, and transcode workers write new keys for derivatives.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> stores partner catalog dumps in one account, embeds pre-signed URLs in SNS notifications, and workers in another account fetch without permanent cross-account bucket credentials.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="message-queues.html">Message Queues</a> — the broker infrastructure the claim check passes through.</li>
-            <li><a href="competing-consumers.html">Competing Consumers</a> — multiple consumers may fetch the same claim check payload concurrently.</li>
-            <li><a href="transactional-outbox.html">Transactional Outbox Pattern</a> — ensures the claim check message is published atomically with the database record of the upload.</li>
+            <li><a href="message-queues.html">Message Queues</a> — channels that carry claim-check tokens instead of raw bytes.</li>
+            <li><a href="competing-consumers.html">Competing Consumers</a> — parallel workers that each redeem the same reference safely when processing is idempotent.</li>
+            <li><a href="transactional-outbox.html">Transactional Outbox Pattern</a> — atomic publish of claim-check messages with database commits.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/StoreInLibrary.html" rel="noopener noreferrer" target="_blank">Claim Check Pattern (EIP)</a> — Hohpe &amp; Woolf original description.</li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/claim-check" rel="noopener noreferrer" target="_blank">Claim Check Pattern — Azure Architecture Center</a> — implementation guidance with Azure Blob + Service Bus.</li>
-            <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/ShareObjectPreSignedURL.html" rel="noopener noreferrer" target="_blank">AWS S3 Pre-Signed URLs</a> — generating time-limited access tokens for claim check references.</li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/StoreInLibrary.html" rel="noopener noreferrer" target="_blank">Store in Library (Claim Check) — Enterprise Integration Patterns (Hohpe &amp; Woolf)</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/claim-check" rel="noopener noreferrer" target="_blank">Claim-Check Pattern — Azure Architecture Center</a></li>
+            <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/ShareObjectPreSignedURL.html" rel="noopener noreferrer" target="_blank">Sharing objects with presigned URLs — Amazon S3 User Guide</a></li>
+            <li><a href="https://kafka.apache.org/documentation/#large_records" rel="noopener noreferrer" target="_blank">Large Records — Apache Kafka Documentation</a></li>
+            <li><a href="https://www.rabbitmq.com/docs/maxmessage-size" rel="noopener noreferrer" target="_blank">Maximum Message Size — RabbitMQ Documentation</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
