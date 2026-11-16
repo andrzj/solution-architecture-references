@@ -103,10 +103,12 @@
           <p>An <strong>API gateway</strong> is the controlled entry point for north-south API traffic. It terminates TLS, authenticates callers, enforces coarse authorization and rate limits, routes requests to upstream services, and injects observability context—without exposing internal hostnames, ports, or topology to clients.</p>
           <p>Gateways implement a <strong>cross-cutting pipeline</strong> (authn/authz, throttling, WAF, protocol translation, request/response transformation) described in microservices literature and cloud reference architectures. They complement <strong>service meshes</strong> (east-west mTLS and policy) and optional <strong>BFFs</strong> (client-specific aggregation behind the gateway).</p>
           <p>Implementations range from self-managed Kong or Envoy Gateway to managed AWS API Gateway, Azure API Management, and Kubernetes <strong>Gateway API</strong> resources—same pattern, different operational models.</p>
+          <p>Gateways also terminate long-lived connections—WebSockets, server-sent events, and gRPC streams—where naive reverse proxies buffer incorrectly or drop HTTP/2 flow-control signals. Choosing an L7 implementation that understands streaming semantics prevents subtle production failures that unit tests on JSON REST never catch.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Without a gateway, every service would duplicate JWT validation, quota enforcement, TLS configuration, and trace header propagation—leading to inconsistent security and painful audits. A gateway gives platform teams one place to apply organisation-wide policy while product teams focus on domain code.</p>
           <p>Clients need a stable external URL and contract even when services split, merge, or move behind gRPC. The gateway abstracts churn and can translate protocols (HTTP/JSON at the edge, gRPC inside) or route API versions to different upstream clusters.</p>
+          <p>Security operations teams also gain a choke point for bot scoring, geo policy, and emergency kill switches—without redeploying every microservice when a partner key is compromised or a route must be quarantined during an investigation.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -196,6 +198,9 @@ Patterns
           <h3>Rate limiting and resilience</h3>
           <p>Apply per-consumer and per-route quotas (see <a href="api-rate-limiting.html">API Rate Limiting</a>). Configure upstream timeouts, retry limits (only for idempotent routes), and circuit breakers per route. Return <a href="https://www.rfc-editor.org/rfc/rfc9457.html" rel="noopener noreferrer" target="_blank">RFC 9457</a> problem details on gateway-generated errors.</p>
 
+          <h3>Request transformation and protocol bridging</h3>
+          <p>Gateways can rewrite paths, inject standard headers, strip dangerous query parameters, and map external JSON to internal gRPC via transcoding filters. Keep transformations declarative and reviewed like routing rules—opaque Lua that encodes business rules becomes undeployed debt. Validate transformed bodies against the upstream OpenAPI contract in CI where possible.</p>
+
           <h3>Gateway deployment patterns</h3>
           <ul>
             <li><strong>Central edge cluster</strong> — Kong/Envoy behind global load balancer; good for multi-region public APIs.</li>
@@ -206,6 +211,9 @@ Patterns
 
           <h3>Mesh and BFF coexistence</h3>
           <p>Use the gateway for external clients; mesh for internal mTLS and L7 policy between services. Place BFFs behind the gateway when mobile and web need different aggregates—the gateway still handles auth and quotas; BFFs stay thin orchestrators.</p>
+
+          <h3>Observability at the edge</h3>
+          <p>Gateway access logs are often the only complete record of north-south traffic: client IP, route, consumer identity, latency, and upstream status. Propagate W3C <code>traceparent</code> on every hop and avoid stripping client-supplied correlation IDs unless they fail validation. Per-route RED metrics (rate, errors, duration) on the gateway surface SLOs that domain services alone cannot compute, because they never see failed auth or throttled requests.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

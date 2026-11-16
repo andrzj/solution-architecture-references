@@ -102,10 +102,12 @@
 <h2 id="what-it-is">What it is</h2>
           <p>The <strong>Backend for Frontend (BFF)</strong> pattern gives each major client experience its own backend service that shapes data and protocols for that UI. Instead of one generic API for web, mobile, and partners, a BFF sits behind the gateway (or alongside it), calls domain microservices, aggregates results, applies presentation rules, and returns a response tuned to one client class.</p>
           <p>Sam Newman popularized the term in microservice literature: the team that ships the frontend also owns the BFF, so screen changes do not depend on every domain team publishing new endpoints. The BFF is an integration and adaptation layer—not a home for core business invariants.</p>
+          <p>BFFs typically speak HTTP/JSON (or GraphQL) to clients and gRPC or REST to internal services. They may hold short-lived session state—device tokens, checkout ids, feature-flag snapshots—but durable business state still belongs in domain databases owned downstream. Treat the BFF as a presentation-tier service with its own SLO, not as a throwaway proxy.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>A single REST surface forces compromises. Mobile needs small payloads and stable list cards; web dashboards need wide joins; partners need bulk exports and different auth. One API team becomes a bottleneck, and every client pays for fields others require. BFFs move composition next to the consumer, keep domain services focused on nouns and rules, and let product teams iterate vertically.</p>
           <p>The cost is more deployable services, duplicated integration code if unmanaged, and frontend squads maintaining server runtimes—trade-offs that pay off when client divergence is real, not cosmetic.</p>
+          <p>When the BFF pattern lands well, release cadence for a mobile screen decouples from ledger or inventory services: the experience team ships a new card layout by changing resolver or handler code without waiting for a platform-wide API version bump.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -179,9 +181,11 @@ Alternative: one GraphQL BFF — clients differ by query document</code></pre>
           <h2 id="implementation-notes">Implementation notes</h2>
           <h3>What belongs in the BFF</h3>
           <p>Aggregate for one view, map DTOs to UI models, apply channel caching, orchestrate auth handshakes (device login, partner consent). Keep pricing, inventory invariants, and ledger rules in domain services.</p>
+          <p>Version BFF routes independently from domain APIs: prefix mobile paths (<code>/mobile/v3/home</code>) so old app binaries keep working while domain services move on internal contracts. Deprecation headers on BFF responses give app stores time to force upgrades without freezing backend evolution.</p>
 
           <h3>Parallel fan-out and resilience</h3>
           <p>Call downstream services concurrently with a parent timeout; fail partial screens gracefully or return degraded data with explicit flags. Use circuit breakers and bulkheads so one slow dependency does not freeze every endpoint.</p>
+          <p>When one downstream dependency is optional for a screen—recommendations beside order history, for example—return partial JSON with explicit <code>degraded: true</code> flags instead of failing the entire response. Mobile clients can hide empty sections; web clients can show skeleton placeholders. Document which fields are best-effort so QA scripts assert the right behaviour.</p>
 
           <h3>Shared libraries and contracts</h3>
           <p>Extract generated clients, retry policies, and auth validators into versioned packages or an internal SDK. Pair with <a href="contract-testing.html">contract tests</a> so service response changes are caught before production BFF deploys.</p>
@@ -191,6 +195,15 @@ Alternative: one GraphQL BFF — clients differ by query document</code></pre>
 
           <h3>Controlling proliferation</h3>
           <p>Merge similar clients (iOS + Android → mobile BFF). Require a written justification for new BFFs. Cap count via architecture review. Prefer experience APIs for shared read models before cloning services.</p>
+
+          <h3>Error translation and caching</h3>
+          <p>Map downstream 5xx and validation errors into stable, client-friendly envelopes—mobile apps often cache error copy and retry rules. Set cache headers on read-heavy BFF responses when data is safe to memoise (public catalog tiles) but never cache personalised account payloads without explicit TTL and cache-key discipline tied to the authenticated principal.</p>
+
+          <h3>Team topology</h3>
+          <p>Conway’s law applies: if mobile, web, and partner squads sit in different groups, three BFFs often emerge naturally. Platform engineering can supply golden-path templates (observability, auth, generated clients) so each squad does not reinvent mTLS, retries, and structured logging. Rotation or paired on-call between frontend and BFF owners prevents “throw over the wall” incidents when screens fail only in production fan-out paths.</p>
+
+          <h3>Security boundary</h3>
+          <p>BFFs see tokens and PII—treat them as tier-one services: patch cadence, secret storage, and dependency scanning match core APIs. Avoid logging full bearer tokens or raw payment payloads even when debugging screen issues; correlation ids and hashed user identifiers suffice for triage.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
