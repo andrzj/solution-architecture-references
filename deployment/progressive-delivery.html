@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Progressive Delivery — SA References</title>
-  <meta name="description" content="Feature flags, canary, and A/B testing as a unified continuous delivery discipline.">
+  <meta name="description" content="Progressive delivery: combining canary deploys, feature flags, and metric gates for controlled production exposure.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,104 +99,143 @@
             <span class="badge badge--primary">Deployment & Delivery</span>
           </div>
           <h1 class="article-header__title">Progressive Delivery</h1>
-          <p class="article-header__desc">Feature flags, canary, and A/B testing as a unified continuous delivery discipline.</p>
+          <p class="article-header__desc">Progressive delivery unifies continuous deployment with controlled exposure—traffic shaping, SLI gates, feature flags, and fast rollback when error budgets burn.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: Argo Rollouts sends 10% traffic to new version, watches error rate, promotes or aborts automatically.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p><strong>Progressive delivery</strong> is a delivery discipline that combines continuous deployment with deliberate, measurable exposure of change to production users. Coined in the GitOps and cloud-native community (notably James Governor and Weaveworks), it extends “ship often” with “expose slowly”: new versions, features, or configuration reach only a slice of traffic or users until service-level indicators (SLIs) and business metrics confirm safety.</p>
+          <p>The practice layers three mechanisms: <strong>deployment controls</strong> (canary, blue-green, or rolling updates that run multiple versions concurrently), <strong>application controls</strong> (<a href="feature-flags.html">feature flags</a> that gate behavior inside a single binary), and <strong>verification</strong> (automated analysis against baseline metrics, error budgets, and custom promotion templates). Progressive delivery is the umbrella; canary releases and percentage rollouts are common implementations—not synonyms for the whole discipline.</p>
+          <p>Mature teams treat promotion as a closed loop: deploy → observe → expand or abort. Tools such as Argo Rollouts, Flagger, Spinnaker, and cloud deployment APIs encode steps, pauses, and analysis hooks so humans are not the bottleneck on every incremental weight increase.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Faster releases demand smaller blast radius than all-at-once rolls. Progressive delivery operationalizes risk management with measurable gates.</p>
+          <p>Staging environments approximate production but rarely reproduce long-tail traffic mixes, partner failures, or data skew at scale. Big-bang deploys convert residual uncertainty into an all-users incident. Progressive delivery accepts that some defects surface only under real load, and constrains blast radius while generating statistical signal: if 2% of requests exhibit elevated 5xx rates, only that slice is affected while automation or operators halt promotion.</p>
+          <p>It also aligns delivery with <a href="../observability/slos-and-error-budgets.html">SLOs and error budgets</a>: rapid deploy velocity is sustainable only when failed promotions automatically stop burning budget. Feature flags add a second throttle—behavior can be disabled even when the new container image is already everywhere.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>High-impact customer features.</li>
-            <li>Microservices with measurable SLIs.</li>
-            <li>Organizations practicing continuous deployment.</li>
+            <li>Customer-facing services with measurable SLIs and enough traffic for canary analysis within minutes.</li>
+            <li>High-impact flows—checkout, authentication, payments—where partial exposure is preferable to full cutover.</li>
+            <li>Organizations practicing continuous deployment that need guardrails beyond “hope staging caught it.”</li>
+            <li>Experiments and phased product launches that combine infrastructure canaries with in-app flag targeting.</li>
+            <li>Platform teams standardizing promotion templates (error rate, latency, saturation) across many microservices.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Low-risk internal batch jobs.</li>
-            <li>When observability cannot distinguish versions.</li>
+            <li>Very low-traffic services where a canary slice never gathers statistically meaningful samples in an acceptable window.</li>
+            <li>Breaking schema or API changes that cannot run old and new versions side by side—plan expand/contract migrations first.</li>
+            <li>Teams without version-tagged metrics; promotion decisions become guesswork.</li>
+            <li>Batch or offline jobs where “traffic percentage” is meaningless—use staged inputs or shadow processing instead.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>A progressive delivery controller orchestrates replica sets or routes, queries observability backends, and either increases weight or triggers rollback. Feature flags provide parallel mitigations at the logic layer.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart LR
-    deploy["Deploy canary"]
-    observe["Observe SLIs"]
-    expand["Expand traffic"]
-    rollback["Rollback or flag off"]
-    deploy --> observe
-    observe --> expand
-    observe --> rollback</div>
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    cd["CD pipeline"]
+    canary["Canary / new version"]
+    stable["Stable version"]
+    mesh["Traffic router"]
+    obs["Metrics + SLO analysis"]
+    promote["Promote weight"]
+    abort["Abort / rollback"]
+    flags["Feature flags"]
+    cd --> canary
+    cd --> stable
+    mesh --> canary
+    mesh --> stable
+    canary --> obs
+    obs --> promote
+    obs --> abort
+    flags --> abort</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>PROGRESSIVE DELIVERY:
+              <pre class="architecture-diagram__canvas"><code>PROGRESSIVE DELIVERY LOOP:
 
-  Deploy --> Canary slice --> Observe SLIs
-                    |
-            pass --> expand traffic
-            fail --> rollback / flag off</code></pre>
+  Deploy new version (small replica count or low weight)
+        |
+        v
+  Observe SLIs vs baseline (error rate, latency, business KPI)
+        |
+   +----+----+
+   |         |
+  pass      fail
+   |         |
+   v         v
+ increase   rollback replica set OR
+ weight     disable feature flag OR
+            shift traffic to stable pool</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Progressive delivery: ship to a slice, watch SLIs, then expand traffic or roll back based on error budget burn.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Progressive delivery closes the loop between deployment, metric analysis, promotion, and rollback—with optional feature-flag mitigation.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Limits customer impact.</li>
-            <li>Automates promotion decisions.</li>
-            <li>Encourages good metrics.</li>
-            <li>Aligns with error budgets.</li>
+                <li>Limits customer impact while still exercising production realism on every change.</li>
+                <li>Automates promotion against objective gates, reducing release-day heroics.</li>
+                <li>Combines infra-level and app-level controls for defense in depth.</li>
+                <li>Feeds post-incident learning: failed analyses produce artifacts (queries, thresholds) for the next rollout.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Requires mature telemetry.</li>
-            <li>Complex routing setup.</li>
-            <li>Longer total deploy time.</li>
-            <li>False positives on noisy metrics.</li>
+                <li>Requires mature telemetry—metrics by version, trace tags, and dashboards per rollout.</li>
+                <li>Longer wall-clock time from commit to full exposure; not every stakeholder accepts gradualism.</li>
+                <li>False positives from noisy metrics can abort healthy releases; tuning baselines is ongoing work.</li>
+                <li>Dual-version operation complicates debugging and doubles resource use during promotion.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Define promotion analysis templates (success rate, latency, business KPI). Integrate feature flags for instant mitigation.</p>
-          <p>Tag metrics and traces with version or rollout step.</p>
+          <p>Define <strong>AnalysisTemplates</strong> (Argo Rollouts) or equivalent metric queries before the first production canary. Compare canary to stable baseline, not absolute thresholds alone—diurnal traffic shifts otherwise cause spurious aborts. Tag metrics and traces with <code>version</code>, <code>rollout_id</code>, or <code>deployment</code> labels so dashboards isolate the slice.</p>
+          <p>Pair every progressive deploy of risky logic with an ops feature flag default-off. Wire manual abort buttons in the control plane and runbooks that state order of operations: flag off first (instant), then traffic shift, then scale-down. Document minimum observation windows per step; “promote because CI passed” defeats the purpose.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Canary not representative</strong> of load.</li>
-            <li><strong>Metrics lag</strong> promotes too early.</li>
-            <li><strong>Sticky sessions</strong> skew exposure.</li>
-            <li><strong>No manual abort</strong> path.</li>
+            <li><strong>Unrepresentative canary:</strong> Single replica on quiet nodes misses GC or cache effects visible only at fleet scale.</li>
+            <li><strong>Metric lag:</strong> Promotion interval shorter than observability scrape or aggregation delay.</li>
+            <li><strong>Session stickiness:</strong> Users never hit the canary slice, producing false confidence.</li>
+            <li><strong>Flag/binary mismatch:</strong> New code at 100% traffic while flag still routes most users to legacy logic—analysis interprets the wrong variant.</li>
+            <li><strong>No manual abort:</strong> Automation-only paths without an incident commander's kill switch.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>SLI gates defined?</li>
-            <li>Traffic splitting tested?</li>
-            <li>Automatic abort wired?</li>
-            <li>Flags for kill switch?</li>
-            <li>Dashboard per rollout?</li>
-            <li>Post-deploy review?</li>
+            <li>Are promotion and abort criteria defined per service with baseline-relative SLI queries?</li>
+            <li>Can metrics and traces filter by deployment version or rollout step?</li>
+            <li>Is there a feature-flag kill switch for the same change set?</li>
+            <li>Are minimum pause durations documented and enforced in the controller?</li>
+            <li>Does the runbook specify flag-off versus traffic-shift order?</li>
+            <li>Is there a post-rollout review when analysis aborts or barely passes?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Argo Rollouts</strong>: AnalysisTemplates on Prometheus queries.</li>
-            <li><strong>LaunchDarkly</strong>: Percentage rollout with observability.</li>
-            <li><strong>Service mesh</strong>: Weighted routes per subset.</li>
+            <li><strong>Illustrative scenario —</strong> RideRelay’s booking API uses Argo Rollouts: 5% weight for ten minutes, automated Prometheus error-rate comparison against stable, then 25% and 50% with latency gates before full promotion.</li>
+            <li><strong>Illustrative scenario —</strong> FieldOps ships a mobile-backend change with LaunchDarkly at 10% of enterprise tenants while Kubernetes runs a 20% infrastructure canary—either layer can halt exposure independently.</li>
+            <li><strong>Case study —</strong> The Google SRE workbook’s <a href="https://sre.google/workbook/canarying-releases/" rel="noopener noreferrer" target="_blank">canarying releases</a> chapter describes metric-driven promotion and rollback patterns that underpin modern progressive delivery controllers.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="canary-releases.html">Canary Releases</a> — Canary mechanics.</li>
-            <li><a href="feature-flags.html">Feature Flags</a> — Decouple release.</li>
-            <li><a href="release-strategies.html">Release Strategies</a> — Strategy catalog.</li>
+            <li><a href="canary-releases.html">Canary Releases</a> — Traffic-shaped deploys with automated analysis.</li>
+            <li><a href="feature-flags.html">Feature Flags</a> — Application-layer exposure control and kill switches.</li>
+            <li><a href="rollback-strategies.html">Rollback Strategies</a> — What happens when analysis fails.</li>
+            <li><a href="release-strategies.html">Release Strategies</a> — Catalog of deploy shapes progressive delivery composes.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://argoproj.github.io/argo-rollouts/" target="_blank" rel="noopener noreferrer">Argo Rollouts</a></li>
-            <li><a href="https://www.split.io/blog/what-is-progressive-delivery/" target="_blank" rel="noopener noreferrer">Split — Progressive delivery overview</a></li>
-            <li><a href="https://opengitops.dev/" target="_blank" rel="noopener noreferrer">Weaveworks — GitOps and progressive delivery</a></li>
+            <li><a href="https://sre.google/workbook/canarying-releases/" rel="noopener noreferrer" target="_blank">Google SRE Workbook — Canarying releases</a></li>
+            <li><a href="https://argoproj.github.io/argo-rollouts/" rel="noopener noreferrer" target="_blank">Argo Rollouts</a></li>
+            <li><a href="https://www.split.io/blog/what-is-progressive-delivery/" rel="noopener noreferrer" target="_blank">Split — What is progressive delivery?</a></li>
+            <li><a href="https://martinfowler.com/articles/feature-toggles.html" rel="noopener noreferrer" target="_blank">Martin Fowler — Feature Toggles</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
