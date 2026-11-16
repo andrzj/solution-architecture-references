@@ -104,21 +104,22 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Kubernetes on public cloud combines a <strong>managed control plane</strong> (EKS, AKS, GKE) with customer-managed worker nodes or serverless node pools. The API server, scheduler, and controllers reconcile desired state stored in etcd while kubelets run containers on nodes.</p>
-          <p>Cloud integrations add load balancers, persistent disks, and IAM federation via cloud controller managers and workload identity.</p>
+          <p><strong>Kubernetes architecture on cloud</strong> is the split between a provider-managed <strong>control plane</strong> (API server, scheduler, controllers, etcd) and a customer-operated <strong>data plane</strong> (nodes, pods, networking plugins). Hyperscaler offerings — Amazon EKS, Azure AKS, Google GKE — run and patch the control plane; you supply compute (managed node groups, spot pools, or serverless backends such as Fargate or GKE Autopilot) and declare workloads through the standard Kubernetes API.</p>
+          <p>The portable object model — Pods, Deployments, Services, Ingress — is defined by the <a href="https://www.cncf.io/projects/kubernetes/" target="_blank" rel="noopener noreferrer">CNCF-hosted Kubernetes project</a>. Cloud-specific integration happens through cloud controller managers and workload identity (IRSA on AWS, Workload Identity on GKE, managed identity on AKS) so Services can provision load balancers and PersistentVolumeClaims can attach managed disks without bespoke glue code.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Teams need one portable orchestration API across regions and providers without operating etcd and control plane HA themselves.</p>
-          <p>Managed Kubernetes shifts undifferentiated control plane toil to the provider while preserving the Kubernetes extension ecosystem.</p>
+          <p>Self-managed Kubernetes requires multi-AZ etcd backups, API server HA, certificate rotation, and upgrade sequencing — work that does not differentiate most products.</p>
+          <p>Managed control planes let platform teams focus on node strategy, tenancy, and add-ons while keeping manifests portable across regions and vendors.</p>
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Microservices on cloud with GitOps or CI/CD deploy pipelines.</li>
-            <li>Platforms offering namespaces or virtual clusters to internal teams.</li>
-            <li>Workloads needing autoscaling, rolling updates, and service discovery uniformly.</li>
+            <li>Multiple containerized services that share one cluster and need uniform deploy, scale, and discovery.</li>
+            <li>Internal platform teams vending namespaces or virtual clusters with guardrails (quotas, network policies, admission).</li>
+            <li>Workloads that benefit from Horizontal Pod Autoscaler, rolling updates, and cloud load balancer integration.</li>
           </ul>
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Single-service teams better served by Cloud Run, App Service, or ECS Fargate.</li>
-            <li>Organizations without capacity to operate ingress, CSI, and CNI lifecycle.</li>
+            <li>A single stateless API where serverless containers (Cloud Run, Fargate) or PaaS (App Service) suffice.</li>
+            <li>Teams without bandwidth to own CNI upgrades, ingress controllers, and storage classes after the control plane is managed.</li>
+            <li>Latency-sensitive systems where mesh sidecars and extra hops are unacceptable without careful design.</li>
           </ul>
           <h2 id="typical-architecture">Typical architecture</h2>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
@@ -156,49 +157,51 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Provider SLA on control plane availability.</li>
-            <li>Integrated IAM and VPC networking.</li>
-            <li>Same manifests across dev/stage/prod regions.</li>
+                <li>Provider-operated control plane with published SLAs and automated patching.</li>
+                <li>Native hooks to cloud IAM, VPC, load balancers, and block storage.</li>
+                <li>Portable workloads: the same API objects run on every major cloud and on-premises distributions.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Node and add-on operations remain customer responsibility.</li>
-            <li>Complex networking (service mesh, mTLS) adds ops load.</li>
-            <li>Cost visibility requires labeling and cost allocation tools.</li>
+                <li>Nodes, networking plugins, and ingress remain customer operational scope.</li>
+                <li>Cluster sprawl and unfettered namespaces inflate cost without quotas and labeling.</li>
+                <li>Advanced security (mesh mTLS, policy engines) adds latency and expertise requirements.</li>
               </ul>
             </div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use separate node pools for system vs application workloads. Enable control plane audit logs and restrict <code>cluster-admin</code> to break-glass roles.</p>
-          <p>Install ingress, cert-manager, and cluster autoscaler via versioned Helm/GitOps bundles owned by the platform team.</p>
+          <p>Isolate platform add-ons (ingress, DNS, metrics) on dedicated node pools or taints so application bursts cannot evict critical system pods. Enable audit logging on the managed API endpoint and treat <code>cluster-admin</code> as break-glass only, with day-to-day access via namespace-scoped RBAC or cloud IAM federation.</p>
+          <p>Align cluster version skew with the <a href="https://kubernetes.io/releases/version-skew-policy/" target="_blank" rel="noopener noreferrer">Kubernetes version skew policy</a>: upgrade control plane first, then node groups. Pin add-on versions (CNI, CSI, ingress) to tested bundles delivered through GitOps rather than ad hoc helm upgrades.</p>
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>API throttling during storms:</strong> Controllers or CI flood API server — use client-side QPS limits.</li>
-            <li><strong>Spot interruption without PDB:</strong> Batch node drains take down services — configure PDBs and graceful termination.</li>
+            <li><strong>Control plane API saturation:</strong> Mass apply or runaway controllers hit request limits — rate-limit CI and operators; watch <code>apiserver_request_total</code> and 429 responses.</li>
+            <li><strong>Spot or node upgrades without PDBs:</strong> Concurrent drains drop below minimum replicas — enforce PodDisruptionBudgets and graceful termination hooks.</li>
+            <li><strong>Over-wide network exposure:</strong> Public API endpoints or wide security groups — prefer private endpoints, authorized networks, and zero-trust access.</li>
           </ul>
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the control plane endpoint private with audited access?</li>
-            <li>Are addons versioned and upgraded on a schedule?</li>
-            <li>Are workloads spread across AZs with topology constraints?</li>
+            <li>Is the API endpoint reachable only over private networking or approved CIDRs?</li>
+            <li>Are node pools, CNI, and ingress versions tracked and upgraded on a calendar?</li>
+            <li>Do production Deployments use topology spread or anti-affinity across availability zones?</li>
+            <li>Is workload identity configured instead of long-lived cloud keys in Secrets?</li>
           </ul>
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>EKS retail:</strong> IRSA for S3 access; Karpenter for spot/on-demand blend; private API with SSO integration.</li>
+            <li><strong>Illustrative scenario —</strong> A platform team runs EKS with a private API endpoint, Karpenter blending spot and on-demand, IRSA per microservice, and GitOps-promoted manifests across dev and prod accounts.</li>
           </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="container-orchestration.html">Container Orchestration</a> — Cluster operations on cloud.</li>
-            <li><a href="service-mesh.html">Service Mesh in Cloud</a> — L7 policy layer.</li>
-            <li><a href="../deployment/gitops.html">GitOps</a> — Declarative cluster management.</li>
+            <li><a href="container-orchestration.html">Container Orchestration</a> — Operating clusters and workloads on cloud Kubernetes.</li>
+            <li><a href="service-mesh.html">Service Mesh in Cloud</a> — L7 security and traffic policy above Services.</li>
+            <li><a href="../deployment/gitops.html">GitOps</a> — Declarative cluster and app delivery.</li>
           </ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://kubernetes.io/docs/concepts/" target="_blank" rel="noopener noreferrer">Kubernetes Concepts</a></li>
-            <li><a href="https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html" target="_blank" rel="noopener noreferrer">Amazon EKS</a></li>
-            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected Framework</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/overview/" target="_blank" rel="noopener noreferrer">Kubernetes — Cluster architecture overview</a></li>
+            <li><a href="https://kubernetes.io/docs/setup/best-practices/cluster-large/" target="_blank" rel="noopener noreferrer">Kubernetes — Operating large clusters</a></li>
+            <li><a href="https://docs.aws.amazon.com/eks/latest/best-practices/introduction.html" target="_blank" rel="noopener noreferrer">Amazon EKS Best Practices Guide</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">

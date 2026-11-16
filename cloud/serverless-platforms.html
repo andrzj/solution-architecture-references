@@ -104,21 +104,22 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Choosing a platform is choosing an operational contract — max duration, VPC access, observability hooks, and deployment size limits all vary.</p>
+          <p><strong>Serverless platforms</strong> are managed cloud runtimes that execute functions or containers without you operating servers. The major classes are <strong>function platforms</strong> (AWS Lambda, Azure Functions, Google Cloud Functions), <strong>container serverless</strong> (Google Cloud Run, Azure Container Apps, AWS App Runner), and <strong>Kubernetes-based scale-to-zero</strong> (Knative on GKE, EKS, or AKS).</p>
+          <p>Each platform publishes a contract: maximum duration, memory and CPU coupling, VPC integration model, concurrency limits, deployment artifact size, and pricing granularity. Choosing one is choosing how much control you retain versus how much operations the provider absorbs.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Teams want to ship functions or containers without patching OS images or planning cluster capacity.</p>
-          <p>Event-driven workloads fit per-invocation billing better than always-on VMs.</p>
+          <p>Teams need faster paths from code to production than building and patching VM or node fleets.</p>
+          <p>Hyperscalers productized autoscaling runtimes so event-driven and bursty workloads share the same elastic substrate.</p>
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>HTTP APIs with variable traffic and tolerance for occasional cold starts (mitigated with provisioned concurrency).</li>
-            <li>Event processors (S3, EventBridge, Pub/Sub) with short runtimes.</li>
-            <li>Containerized services needing scale-to-zero on Kubernetes (Knative, Cloud Run).</li>
+            <li>Short-lived handlers wired to HTTP, queues, or cloud events on the provider you already standardize on.</li>
+            <li>Container images that must scale to zero but do not need full cluster operations (Cloud Run, Container Apps).</li>
+            <li>Multi-service platforms already on Kubernetes that want Knative-style scale-to-zero without a separate FaaS toolchain.</li>
           </ul>
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Long-running batch (>15 min on Lambda) or sustained high CPU without burst pricing advantage.</li>
-            <li>Legacy apps requiring bespoke kernel modules or multicast networking.</li>
+            <li>Workloads exceeding platform timeouts or needing GPU always-on capacity.</li>
+            <li>Systems requiring kernel customization, multicast, or fixed host affinity.</li>
+            <li>Steady high utilization where reserved containers or VMs win on unit economics.</li>
           </ul>
           <h2 id="typical-architecture">Typical architecture</h2>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
@@ -153,49 +154,52 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Minimal ops for many event-driven use cases.</li>
-            <li>Fine-grained billing for spiky workloads.</li>
-            <li>Managed patching and scaling of runtime.</li>
+                <li>Rapid deploy cycles and automatic scaling without cluster sizing.</li>
+                <li>Consumption billing fits spiky and event-driven shapes.</li>
+                <li>Native hooks to identity, logging, and event sources per cloud.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Vendor limits on package size, concurrency, and execution time.</li>
-            <li>Cold starts affect latency-sensitive APIs unless warmed.</li>
-            <li>Local dev and integration testing differ from production.</li>
+                <li>Hard limits on duration, package size, and concurrency vary by vendor.</li>
+                <li>VPC-attached functions add cold-start penalty on some platforms.</li>
+                <li>Local dev and integration tests diverge from cloud behavior.</li>
               </ul>
             </div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Prototype on the platform your org already bills and secures (IAM integration, logging). Measure cold starts with realistic package sizes before committing.</p>
-          <p>Use asynchronous patterns for long work: queue + worker function instead of one long invocation.</p>
+          <p>Standardize on the cloud where billing, identity, and compliance already live. Benchmark cold and warm latency with real dependency graphs and artifact sizes. For Lambda in VPC, prefer current networking models that amortize ENI setup; where possible keep data-plane dependencies on public endpoints or PrivateLink patterns documented for that runtime.</p>
+          <p>Split long work across queues and step workflows instead of one invocation. For Cloud Run and Knative, set min instances only where tail latency demands it. Review cost and reliability guidance in the <a href="https://docs.aws.amazon.com/wellarchitected/latest/serverless-applications-lens/welcome.html" target="_blank" rel="noopener noreferrer">Serverless Applications Lens</a> before production cutover.</p>
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Concurrency stampede:</strong> Thousands of parallel invocations exhaust downstream DB connections — use pools or queue throttling.</li>
-            <li><strong>VPC cold start:</strong> ENI attach adds seconds — use newer hyperplane networking or avoid VPC when possible.</li>
+            <li><strong>Account concurrency exhaustion:</strong> One hot function starves others — reserve concurrency per critical function.</li>
+            <li><strong>VPC cold starts:</strong> Legacy ENI attach patterns add seconds — adopt platform-recommended networking.</li>
+            <li><strong>Wrong platform class:</strong> Shipping long-running jobs to FaaS instead of container batch or workflow engines.</li>
           </ul>
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are p99 cold start and warm latency measured in production-like packages?</li>
-            <li>Is max duration and memory headroom sufficient for worst-case input?</li>
-            <li>Are dead-letter queues and idempotency implemented for async handlers?</li>
+            <li>Does worst-case runtime fit the platform timeout with headroom?</li>
+            <li>Are cold-start and warm p99 documented for production package sizes?</li>
+            <li>Is async processing backed by DLQs, idempotency keys, and replay runbooks?</li>
+            <li>For Kubernetes paths, is Knative operational ownership assigned to the platform team?</li>
           </ul>
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Image processor:</strong> Lambda on S3 events with Step Functions for multi-step workflow; CloudWatch alarms on DLQ depth.</li>
+            <li><strong>Illustrative scenario — multi-step media job:</strong> Lambda on storage events orchestrates via Step Functions; DLQ depth alarmed in the monitoring stack.</li>
+            <li><strong>Illustrative scenario — Knative service:</strong> Internal HTTP API on GKE with Knative Serving; scales to zero nights, min scale during business hours.</li>
           </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="serverless-architecture.html">Serverless Architecture</a> — Architectural patterns on FaaS.</li>
-            <li><a href="../architecture-styles/serverless.html">Serverless Style</a> — When serverless fits system design.</li>
-            <li><a href="../decision-guides/kubernetes-vs-serverless.html">Kubernetes vs Serverless</a> — Platform decision guide.</li>
+            <li><a href="serverless-architecture.html">Serverless Architecture</a> — Composition patterns across FaaS and managed data.</li>
+            <li><a href="kubernetes.html">Kubernetes Architecture</a> — When Knative or cluster-backed serverless is the host.</li>
+            <li><a href="../architecture-styles/serverless.html">Serverless Style</a> — System-design view of serverless boundaries.</li>
           </ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/welcome.html" target="_blank" rel="noopener noreferrer">AWS Lambda Developer Guide</a></li>
-            <li><a href="https://cloud.google.com/run/docs" target="_blank" rel="noopener noreferrer">Google Cloud Run</a></li>
-            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected Framework</a></li>
+            <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/welcome.html" target="_blank" rel="noopener noreferrer">AWS Lambda — Developer Guide</a></li>
+            <li><a href="https://knative.dev/docs/" target="_blank" rel="noopener noreferrer">Knative — Documentation</a></li>
+            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/serverless-applications-lens/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected — Serverless Applications Lens</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
