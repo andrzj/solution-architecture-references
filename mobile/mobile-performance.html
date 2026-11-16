@@ -102,13 +102,21 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
+          <p><strong>Mobile performance engineering</strong> is the discipline of measuring and improving how an app behaves on real devices: how fast it reaches an interactive first screen, how smoothly it renders motion, how efficiently it uses the network and battery, and how reliably it avoids freezes and crashes under memory pressure.</p>
+          <p>Unlike server-side performance tuning, mobile work is constrained by hardware diversity, operating-system throttling, intermittent connectivity, and strict main-thread rules. Success is defined by user-perceived metrics (startup time, frame rate, battery drain) and by platform vitals (ANR rate, janky frames, MetricKit reports)—not by synthetic lab scores alone.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Studies consistently show that mobile users abandon apps after a startup time exceeding 3–5 seconds, and that janky scrolling (dropped frames) is among the top reasons for negative reviews. Mobile hardware is also heterogeneous — a feature that runs smoothly on a flagship phone may be unusable on an entry-level device with a low-end CPU and limited RAM. Performance work must target the p90 device in the user base, not the developer's flagship test device.</p>
+          <p>App stores and OS vendors increasingly surface performance data to users (Android vitals, iOS performance reports in Xcode Organizer). Poor vitals can limit discoverability and trigger automated warnings. Treating performance as an architecture concern—alongside security and offline sync—prevents expensive retrofitting after scale.</p>
 
           <h2 id="when-to-use">When to use</h2>
-          <p>Performance optimization applies continuously across the app lifecycle. Startup performance should be instrumented from day one; frame rate monitoring should run in CI (via UI test traces); network efficiency should be reviewed in API design. The techniques described here become particularly critical when an app has reached a meaningful user base, when performance regressions are appearing in crash/ANR reports, or when the app is targeting markets where entry-level Android devices are dominant.</p>
+          <ul>
+            <li>From the first production release: instrument startup, frame time, and memory in debug and staging builds.</li>
+            <li>When the app targets emerging markets or a broad Android device matrix where low-RAM phones dominate.</li>
+            <li>When Play Console or MetricKit reports regressions in startup, ANR, or janky frames.</li>
+            <li>When features add heavy SDKs, large images, maps, or real-time streams that stress CPU, GPU, and radio.</li>
+            <li>Before major marketing campaigns or store featuring, when first-impression latency drives retention.</li>
+          </ul>
 
                     <h2 id="when-not-to-use">When not to use</h2>
           <ul>
@@ -118,13 +126,18 @@
           </ul>
 
 <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Performance work spans a pipeline from launch to steady-state use: startup path optimisation, render loop budgeting, network and power-aware I/O, and observability feeding CI and production dashboards.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart LR
-    cold["Cold start&lt;br/&gt;process create"]
-    warm["Warm start&lt;br/&gt;activity resume"]
-    render["First frame / TTID"]
-    cold --> render
-    warm --> render</div>
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    launch["Startup path&lt;br/&gt;cold / warm / hot"]
+    ui["Main thread&lt;br/&gt;16.7ms frame budget"]
+    io["Background I/O&lt;br/&gt;DB / network / decode"]
+    power["Power-aware schedulers&lt;br/&gt;WorkManager / BGTask"]
+    obs["Metrics&lt;br/&gt;vitals / signposts / CI benchmarks"]
+    launch --> ui
+    io --> ui
+    ui --> obs
+    power --> io</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -217,7 +230,7 @@ ANR PREVENTION (Android)
   → Monitor: ANR rate in Play Console Vitals (target < 0.47%)
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Startup performance path: cold and warm starts both aim to reach interactive first frame quickly.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Mobile performance layers: startup reaches the first interactive frame; background work feeds the UI within frame budget; schedulers and metrics close the loop.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -245,6 +258,8 @@ ANR PREVENTION (Android)
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Baseline Profiles (Android):</strong> Android's ART runtime interprets bytecode until it JIT-compiles hot methods at runtime. Baseline Profiles capture which code paths are hot (via Macrobenchmark) and deliver pre-compiled profiles with the APK, so those paths are AOT-compiled on first install. Generate profiles using the <code>BaselineProfileRule</code> in the <code>:baseline-profile</code> Gradle module, targeting your critical user journeys (startup, main list scroll, checkout flow). Re-generate on every significant change to those journeys.</p>
           <p><strong>Image loading:</strong> Image decoding is one of the highest sources of memory pressure and frame drops on mobile. Always decode images asynchronously using a purpose-built library (Glide or Coil on Android; Kingfisher or SDWebImage on iOS). These libraries handle disk caching, downsampling to display size, memory cache with LRU eviction, and asynchronous decoding off the main thread. Never use <code>BitmapFactory.decodeFile()</code> or <code>UIImage(named:)</code> for large images on the main thread.</p>
+          <p><strong>Budgets in CI:</strong> Define thresholds per journey (e.g. cold start p90 &lt; 2s on a reference low-end device profile). Run Macrobenchmark or XCTest performance tests on merge; fail the build on regression beyond an agreed slack. Pair automated tests with periodic manual traces on physical devices—emulators skew GPU and I/O behaviour.</p>
+          <p><strong>List rendering:</strong> Prefer diff-based updates (DiffUtil, <code>ListAdapter</code>, or equivalent) over full adapter refreshes. Pre-measure or use stable item heights where possible to avoid layout thrash during fast scroll. On SwiftUI, isolate expensive views with <code>EquatableView</code> or split state so unrelated changes do not redraw the whole tree.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -266,8 +281,9 @@ ANR PREVENTION (Android)
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Social media feed:</strong> Prefetch next page of posts when user is 10 items from the bottom; use DiffUtil for incremental list updates; decode images asynchronously at display size; defer analytics SDK initialization to after first frame.</li>
-            <li><strong>Ride-hailing app:</strong> Baseline Profiles for map initialization (heavy startup path); use significant location changes instead of continuous GPS when trip is not active; load map tiles asynchronously off main thread.</li>
+            <li><strong>Illustrative scenario — social feed:</strong> Prefetch the next page when the user is near the list end; use diff-based list updates; decode thumbnails at display resolution; defer non-critical SDK init until after the first frame.</li>
+            <li><strong>Illustrative scenario — on-demand transport:</strong> Ship Baseline Profiles for map-heavy cold start; switch to significant-location updates when no trip is active; decode map tiles and polylines off the main thread.</li>
+            <li><strong>Case study — large-scale Android apps:</strong> Teams using Play Console Android vitals and Macrobenchmark commonly treat startup and janky-frame regressions as release blockers, similar to crash-rate gates.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
