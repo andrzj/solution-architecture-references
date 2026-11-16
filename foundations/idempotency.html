@@ -124,10 +124,12 @@
  <h2 id="what-it-is">What it is</h2>
  <p>An <strong>idempotent</strong> operation leaves the system in the same state whether you run it once or many times with the same intent. Set balance to $5 twice—you still have $5. Increment twice—you added two, which is not idempotent.</p>
  <p>Networks drop responses, clients retry, and brokers redeliver messages. Without idempotency, a harmless retry becomes a double charge, duplicate row, or second email. Design for safe retries and duplicates become wasted work, not corruption.</p>
+ <p>Idempotency keys bind one logical intent to one outcome: repeating the same key must return the same response body, while reusing a key with different parameters should fail fast instead of masking a client bug.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
  <p>Delivery guarantees cluster around at-most-once (may lose), at-least-once (may duplicate), and exactly-once (hard and expensive). Most production pipelines choose at-least-once because it is resilient; idempotent handlers turn "processed twice" into "same outcome as once."</p>
  <p>HTTP already encodes this split: GET, PUT, and DELETE are defined as idempotent; POST is not. Browsers and proxies may retry safe methods; POST needs keys or dedupe because side effects are expected.</p>
+ <p><a href="../distributed-systems/saga-pattern.html">Sagas</a> retry timed-out steps; compensation handlers must tolerate duplicate delivery the same way forward steps do. Stable keys derived from <code>sagaId</code> and step name keep choreography safe when the orchestrator cannot tell success from a lost ACK.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
@@ -136,6 +138,8 @@
  <li>Design for it on queue and stream consumers that use at-least-once brokers.</li>
  <li>Design for it on webhook endpoints, because senders retry on non-2xx responses.</li>
  <li>Design for it on saga or choreography steps that can rerun after timeouts.</li>
+ <li>Design for it on mobile offline outboxes that drain queued POSTs when connectivity returns.</li>
+ <li>Design for it on admin replay tools that re-drive failed jobs from an operations console.</li>
  </ul>
 
  <h2 id="when-not-to-use">When not to use</h2>
@@ -143,10 +147,13 @@
  <li>Side-effecting operations should default to idempotent design unless duplicates are explicitly harmless.</li>
  <li>Reads need no extra idempotency machinery, because they are idempotent by nature.</li>
  <li>When you truly need end-to-end exactly-once semantics, pair idempotency keys with a transactional outbox or broker features — keys alone are not enough.</li>
+ <li>When an operation is intentionally append-only (audit events, immutable ledger entries), use a unique business key per append instead of recycling keys.</li>
  </ul>
 
  <h2 id="typical-architecture">Typical architecture</h2>
  <p>The usual pattern is an <strong>idempotency key</strong>: the client sends a stable id (often a UUID) per logical action. The server looks up the key—if seen, return the stored response; if not, run the work, persist key plus outcome, then respond. The sequence diagram shows that flow.</p>
+ <p>Gateways and BFFs should forward keys unchanged to domain services; stripping headers breaks dedupe when the edge times out but the origin already committed work. Document required headers in OpenAPI and enforce them in contract tests the same way you enforce auth scopes.</p>
+ <p>Rate-limit idempotency table growth: archive completed keys after TTL to cold storage for dispute investigations, but keep hot indexes bounded so lookup latency stays flat as traffic grows.</p>
  <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
  <div class="architecture-diagram__render mermaid">sequenceDiagram
  participant C as Client
@@ -213,6 +220,8 @@
  <li>At-least-once messaging stays simple and reliable.</li>
  <li>Many flows avoid two-phase commit when steps can safely rerun.</li>
  <li>Blips and pod restarts recover with automatic retry instead of manual repair.</li>
+ <li>Saga steps can rerun without manual reconciliation when keys are deterministic.</li>
+ <li>Clients gain freedom to backoff aggressively once keys are mandatory on mutating APIs.</li>
  </ul>
  </div>
  <div class="pros-cons__col pros-cons__col--cons">
@@ -222,32 +231,46 @@
  <li>Keys expire—retries outside the window may run twice (payments often use 24h).</li>
  <li>Physical or external effects (email sent, printer fired) cannot be un-done by dedupe alone.</li>
  <li>Per-pod memory caches break idempotency behind load balancers.</li>
+ <li>Payload fingerprinting and saga key schemes complicate API governance.</li>
+ <li>Cached replay bodies must stay compatible as response schemas evolve.</li>
  </ul>
  </div>
  </div>
 
  <h2 id="implementation-notes">Implementation notes</h2>
- <p><strong>Idempotency key storage:</strong> All instances must share one store—Redis, DynamoDB, or a relational table—not process memory. Commit the key and the business outcome in one transaction when possible so you never charge without recording the key, or record the key without finishing the work. For external calls (payment gateways), outbox or similar patterns keep local state durable before you confirm upstream.</p>
- <p><strong>Database-level idempotency:</strong> PostgreSQL <code>INSERT ... ON CONFLICT (idempotency_key) DO NOTHING</code>, SQLite <code>INSERT OR IGNORE</code>, and MySQL <code>INSERT IGNORE</code> make create paths safe. Updates like <code>UPDATE orders SET status='paid' WHERE order_id=? AND status='pending'</code> are naturally idempotent—the second run updates zero rows. Version columns add optimistic locking when you need stricter guards.</p>
- <p><strong>Idempotent message consumers:</strong> Persist processed message ids (or business ids) and check before side effects. Kafka offsets help inside the consumer group, but HTTP calls, emails, and DB writes still need application-level dedupe.</p>
+ <p><strong>Idempotency key storage:</strong> Every replica must read the same store—Redis conditional sets, DynamoDB attribute_not_exists, or a relational unique index—not a pod-local map. Persist key, response code, and serialized body together with the business write when the database allows one transaction. Return identical HTTP semantics on replay so mobile clients treat timeouts as safe.</p>
+ <p><strong>Key design:</strong> Accept <code>Idempotency-Key</code> on POST (and other unsafe verbs your style guide lists). Clients mint one UUID per user gesture; sagas use <code>{sagaId}:{step}</code>. Store a hash of normalized request fields—duplicate keys with different amounts must answer <code>409 Conflict</code>, not the prior payment id.</p>
+ <p><strong>Database-level idempotency:</strong> PostgreSQL <code>INSERT ... ON CONFLICT (idempotency_key) DO NOTHING RETURNING id</code> tells you insert vs duplicate in one round trip. Conditional updates such as <code>UPDATE orders SET status='paid' WHERE order_id=? AND status='pending'</code> noop on the second attempt. Version columns add optimistic guards when multiple writers share a row.</p>
+ <p><strong>Outbox and gateways:</strong> Commit local state and an outbox event before calling Stripe or another processor with the same idempotency key the API accepted. Workers that crash after the provider succeeds but before the ACK can still finish by reading the stored outcome.</p>
+ <p><strong>Idempotent message consumers:</strong> Insert <code>message_id</code> or a business natural key before side effects. Kafka offsets are not enough when the handler sends email or calls HTTP—saga compensations should record <code>(sagaId, step)</code> completion before telling the orchestrator the undo succeeded.</p>
+ <p><strong>Testing:</strong> Property tests that fire the same keyed request N times in parallel should always yield one row and identical responses. Chaos tests that kill the pod after the provider succeeds but before the HTTP response should still leave the client able to retry safely.</p>
+ <p><strong>API standards:</strong> Publish idempotency header requirements in your organization’s OpenAPI ruleset—Spectral or equivalent linters can fail CI when mutating routes omit documented key support on payment and provisioning paths.</p>
+ <p><strong>Runbooks:</strong> When support replays a failed payment, operators should reuse the customer’s original idempotency key in the internal tool rather than minting a new one—document that procedure beside DLQ replay steps so night shifts do not accidentally double-capture during manual recovery.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
- <li><strong>Deduped API, duplicate email:</strong> Key stops double charge but code still sends mail on every entry path.</li>
- <li><strong>Key reuse with different payload:</strong> Same key, different amount—server must reject mismatched replays.</li>
- <li><strong>TTL too short:</strong> Offline mobile client retries after expiry and pays twice.</li>
- <li><strong>Local key cache:</strong> Retry hits another pod with an empty map—work runs again.</li>
+ <li><strong>Guarded API, leaky side effects:</strong> Payment dedupes but confirmation email fires on every code path.</li>
+ <li><strong>Key collision across intents:</strong> Same key with a new amount replays the old capture unless payload hashes are enforced.</li>
+ <li><strong>Expired key window:</strong> An offline client retries after TTL and creates a second charge.</li>
+ <li><strong>Sharded memory store:</strong> Load balancer lands the retry on a pod that never saw the first attempt.</li>
+ <li><strong>Racing first requests:</strong> Parallel POSTs with one key both pass lookup—only a unique constraint or conditional write should win.</li>
+ <li><strong>External success, local gap:</strong> Provider captures funds but the service dies before the idempotency row commits—reconcile by provider id before responding.</li>
+ <li><strong>Saga step keyed by transport only:</strong> Orchestrator retries generate fresh HTTP ids and bypass dedupe unless business keys are stable.</li>
+ <li><strong>Non-idempotent undo:</strong> <code>releaseHold</code> invoked twice drives inventory negative.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
  <ul class="checklist">
  <li>Does this path have side effects that must not double on retry?</li>
  <li>Can clients send a stable idempotency key per logical operation?</li>
+ <li>Do saga forward and compensation steps share deterministic key rules?</li>
  <li>Is the key store shared by every replica of the service?</li>
  <li>Are key insert and side effect committed together when the datastore allows?</li>
- <li>Does TTL cover realistic client retry horizons?</li>
- <li>Are downstream calls, emails, and events guarded the same way?</li>
- <li>For consumers, is dedupe persisted by message id, not only in RAM?</li>
+ <li>Does the API reject same-key requests whose payload fingerprint differs?</li>
+ <li>Does TTL cover offline client and orchestrator retry horizons?</li>
+ <li>Are emails, webhooks, outbox events, and provider calls deduped equally?</li>
+ <li>For consumers, is dedupe persisted by message or business key, not RAM only?</li>
+ <li>Do tests cover parallel duplicates and post-crash replay?</li>
  </ul>
 
  <h2 id="example-use-cases">Example use cases</h2>
@@ -256,19 +279,23 @@
             <li><strong>Illustrative scenario —</strong> Meridian’s Order service uses <code>INSERT ... ON CONFLICT (idempotency_key) DO NOTHING</code> so flaky checkout clients do not spawn duplicate orders when the response is lost.</li>
             <li><strong>Illustrative scenario —</strong> Fulfillment’s <code>OrderPlaced</code> consumer records processed event ids in DynamoDB — at-least-once Kafka delivery acknowledges duplicates without creating a second pick task.</li>
             <li><strong>Illustrative scenario —</strong> Meridian’s payment-processor webhook handler stores delivery ids — the processor’s retries on non-2xx responses replay the same outcome instead of posting ledger entries twice.</li>
+            <li><strong>Illustrative scenario —</strong> Checkout saga at Meridian keys <code>{sagaId}:capture</code> and <code>{sagaId}:release</code> — orchestrator timeouts replay compensation without double-releasing stock.</li>
+            <li><strong>Illustrative scenario —</strong> Meridian’s finance batch replayer passes the same <code>Idempotency-Key</code> when operators re-submit a stuck payout file—ledger postings dedupe even though the browser session is new.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="eventual-consistency.html">Eventual Consistency</a> — at-least-once delivery in eventually consistent systems is the primary driver for needing idempotent consumers.</li>
-            <li><a href="backward-compatibility.html">Backward Compatibility</a> — idempotency keys and retry behavior are part of the API contract and must be considered during API evolution.</li>
+            <li><a href="eventual-consistency.html">Eventual Consistency</a> — explains why brokers and replicas redeliver work consumers must dedupe.</li>
+            <li><a href="backward-compatibility.html">Backward Compatibility</a> — evolving APIs must keep key semantics stable across versions.</li>
+            <li><a href="../distributed-systems/saga-pattern.html">Saga Pattern</a> — depends on idempotent forward and compensating handlers.</li>
+            <li><a href="../reliability/retry-pattern.html">Retry Pattern</a> — safe only when operations are idempotent or keyed.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://stripe.com/docs/api/idempotent_requests" rel="noopener noreferrer" target="_blank">Stripe: Idempotent Requests</a> — Stripe's production implementation of idempotency keys, a gold-standard reference.</li>
-            <li><a href="https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/" rel="noopener noreferrer" target="_blank">Making Retries Safe with Idempotent APIs — AWS Builder's Library</a> — Amazon's in-depth treatment of idempotency in production distributed systems.</li>
-            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/idempotent-receiver.html" rel="noopener noreferrer" target="_blank">Idempotent Receiver — Martin Fowler</a> — pattern-level treatment of safe retries and duplicate handling.</li>
+            <li><a href="https://stripe.com/docs/api/idempotent_requests" rel="noopener noreferrer" target="_blank">Stripe: Idempotent Requests</a> — reference behavior for header format, replay, and error codes.</li>
+            <li><a href="https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/" rel="noopener noreferrer" target="_blank">Making Retries Safe with Idempotent APIs — AWS Builder's Library</a> — AWS patterns for keyed writes across microservices.</li>
+            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/idempotent-receiver.html" rel="noopener noreferrer" target="_blank">Idempotent Receiver — Martin Fowler</a> — receiver-side dedupe as a distributed-systems pattern.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

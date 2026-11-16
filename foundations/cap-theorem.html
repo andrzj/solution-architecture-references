@@ -124,10 +124,12 @@
  <h2 id="what-it-is">What it is</h2>
  <p>CAP is the shorthand for a constraint on distributed data stores: you cannot simultaneously promise that every read is up to date (<strong>consistency</strong>), that every request gets a response (<strong>availability</strong>), and that the system keeps working when the network fails (<strong>partition tolerance</strong>). Partitions happen in real deployments, so the practical fork is what you do when nodes cannot talk: refuse some requests (CP) or keep answering with data that might be stale (AP).</p>
  <p>A regional shopping cart can lean AP—users keep adding items even if replicas lag—while capturing payment often needs CP behavior so two nodes never disagree about whether money moved.</p>
+ <p>In CAP, <strong>consistency</strong> means linearizability: every client observes a single ordered history of operations, as if one copy of the data existed. Weaker models—causal, read-your-writes, eventual—still matter in production; CAP names the strongest guarantee you cannot keep alongside full availability when the network partitions.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
  <p>Before CAP was widely understood, teams treated distributed databases like bigger single-node databases: add replication, hope the network cooperates, and assume strong consistency plus high availability. Eric Brewer's formulation (later proved by Gilbert and Lynch) made the limit explicit. The question stops being "which database is fastest?" and becomes "what must this data do when the network splits?"</p>
  <p>CAP also surfaces a recurring production surprise: picking a store marketed as "consistent" and "always on," then learning that under partition either writes stall or reads return old values. Naming CP vs AP behavior up front forces failure-mode design, not just happy-path throughput.</p>
+ <p>Partitions are not rare edge cases. Switch failures, misconfigured security groups, AZ brownouts, and rolling deploys that isolate quorum members all create split-brain windows. Architects who plan only for the happy path discover CAP during incidents when writes succeed on two sides of a bridge.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
@@ -135,6 +137,7 @@
  <li>Use it when you write down consistency requirements per use case, because ledger lines and like counts do not belong in the same bucket.</li>
  <li>Use it when you define partition behavior — error, degrade, or deliberately read stale data.</li>
  <li>Use it when you explain to stakeholders why “always consistent and always available” is not a checkbox feature.</li>
+ <li>Use it when you design failover: promoted secondaries, stretched clusters, and multi-region active-active all assume partition behavior you must name.</li>
  </ul>
 
  <h2 id="when-not-to-use">When not to use</h2>
@@ -225,6 +228,7 @@
  <p><strong>CP systems:</strong> During a partition, isolated minorities stop accepting writes (and sometimes reads) rather than serve data that might be wrong. ZooKeeper and etcd use consensus (Zab and Raft) so acknowledged writes are agreed cluster-wide; minority sides go quiet. Reach for these when correctness beats brief outage—locks, leader election, cluster config.</p>
  <p><strong>AP systems:</strong> Every reachable replica keeps serving traffic; replicas may diverge until replication catches up. Cassandra's tunable levels (ONE, QUORUM, ALL) and DynamoDB's default AP posture target feeds, carts, and preferences where availability and latency matter more than strict global agreement.</p>
  <p><strong>Tunable consistency:</strong> Many stores let you raise consistency per read or write. QUORUM/QUORUM in Cassandra approximates strong behavior at higher latency; ONE favors speed and accepts stale reads. The CAP label is a default posture, not a fixed setting—document the level you use for each critical path.</p>
+ <p><strong>CA and operations:</strong> Single-node PostgreSQL or a co-located primary/replica pair can be strongly consistent and highly available until the network splits independent failure domains. Health checks and client routing must match that reality: promoting a replica without fencing the old primary recreates partition ambiguity even on “CA” hardware.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
@@ -256,15 +260,15 @@
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="pacelc-theorem.html">PACELC Theorem</a> — the refinement of CAP that accounts for latency trade-offs in normal (non-partition) operation.</li>
-            <li><a href="eventual-consistency.html">Eventual Consistency</a> — the consistency model used by AP systems and how it behaves in practice.</li>
-            <li><a href="quality-attributes.html">Quality Attributes</a> — consistency and availability are two of the most architecture-significant quality attributes.</li>
+            <li><a href="pacelc-theorem.html">PACELC Theorem</a> — extends CAP with latency-versus-consistency choices when the network is healthy.</li>
+            <li><a href="eventual-consistency.html">Eventual Consistency</a> — what AP designs promise users after partitions heal and replicas converge.</li>
+            <li><a href="quality-attributes.html">Quality Attributes</a> — consistency and availability remain among the highest-stakes attribute conflicts in distributed design.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/" rel="noopener noreferrer" target="_blank">CAP Twelve Years Later — Eric Brewer, InfoQ</a> — Brewer's own retrospective on CAP and its practical implications.</li>
-            <li><a href="https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html" rel="noopener noreferrer" target="_blank">Please Stop Calling Databases CP or AP — Martin Kleppmann</a> — a critical analysis of CAP's limitations and common misapplications.</li>
+            <li><a href="https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/" rel="noopener noreferrer" target="_blank">CAP Twelve Years Later — Eric Brewer, InfoQ</a> — Brewer’s later reflection on how teams should apply the theorem in production.</li>
+            <li><a href="https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html" rel="noopener noreferrer" target="_blank">Please Stop Calling Databases CP or AP — Martin Kleppmann</a> — why one-line CP/AP labels often mislead when picking or operating datastores.</li>
             <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/" rel="noopener noreferrer" target="_blank">Patterns of Distributed Systems — Martin Fowler</a> — practical patterns for replication, partitioning, and consistency trade-offs in production.</li>
           </ul>
         </div>

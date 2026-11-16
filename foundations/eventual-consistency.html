@@ -124,10 +124,12 @@
  <h2 id="what-it-is">What it is</h2>
  <p><strong>Eventual consistency</strong> means replicas may disagree for a while, but if writes stop, every copy converges to the same state. It does not say how long convergence takes, and any single read might lag the latest write. Different clients can see different values at the same moment.</p>
  <p>Amazon's Dynamo paper made the trade-off mainstream: accept writes locally, replicate in the background, and live with brief divergence instead of waiting for global agreement on every request. That pattern powers carts, caches, and global scale when stale beats unavailable.</p>
+ <p>Convergence is guaranteed only after writes quiesce—there is no bound on how long replicas may disagree while replication is active. CRDT merges and well-chosen session guarantees narrow the practical window without turning the store into a globally linearizable system.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
  <p>Strong consistency needs coordination—read paths must confirm they have the newest write, which adds cross-replica round trips, fails when peers are down, and gets expensive across regions. At web scale, paying that cost on every read is often worse than tolerating temporary mismatch.</p>
  <p>Eventual consistency lets each replica serve independently while anti-entropy or gossip catches up later. DNS is the familiar example: a record change can take hours to spread, yet resolvers answer instantly from local state billions of times per day.</p>
+ <p>Bounded contexts in microservices amplify the pattern: Order, Inventory, and Fulfillment each hold authoritative local state and learn about foreign changes through events—downstream readers should assume lag unless an API explicitly offers a linearizable read model.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
@@ -137,6 +139,8 @@
  <li>Choose it for metrics and analytics that are approximate by nature.</li>
  <li>Choose it for CDN and edge caches that are intentionally TTL-stale.</li>
  <li>Choose it for telemetry streams where each reading is a time-stamped fact, not an authoritative balance.</li>
+ <li>Choose CRDT-backed collaborative fields when multiple writers edit the same logical document from different regions.</li>
+ <li>Choose it for read models rebuilt from an event log where consumers explicitly track offsets and versions.</li>
  </ul>
 
  <h2 id="when-not-to-use">When not to use</h2>
@@ -145,6 +149,7 @@
  <li>Do not use it for inventory with oversell risk when two nodes might both think one unit remains.</li>
  <li>Do not use it for permissions or authorization where a revoked grant must disappear quickly.</li>
  <li>Do not use it for workflows where two readers could make conflicting irreversible decisions on divergent data.</li>
+ <li>Do not use it when regulators require provable read-after-write freshness without client session aids.</li>
  </ul>
 
  <h2 id="typical-architecture">Typical architecture</h2>
@@ -216,6 +221,8 @@
  <li>Replicas keep serving through partitions and partial outages.</li>
  <li>Throughput grows with replica count instead of hitting a coordination ceiling.</li>
  <li>Multi-region deployments can favor local writes with async cross-region catch-up.</li>
+ <li>CRDT-backed fields converge without a dedicated merge coordinator.</li>
+ <li>Session tokens can give one user a tighter view without paying global quorum on every read.</li>
  </ul>
  </div>
  <div class="pros-cons__col pros-cons__col--cons">
@@ -225,32 +232,45 @@
  <li>Concurrent writes need merge rules (LWW, vector clocks, CRDTs, or app logic).</li>
  <li>No bound on staleness—"eventual" can stretch to seconds under load.</li>
  <li>Developers must label which operations are safe on possibly stale reads.</li>
+ <li>Event-driven boundaries stack replica lag on top of consumer delay.</li>
+ <li>Incident analysis needs version metadata, not only wall-clock timestamps.</li>
  </ul>
  </div>
  </div>
 
  <h2 id="implementation-notes">Implementation notes</h2>
- <p><strong>Last-write-wins (LWW):</strong> Tag writes with timestamps; highest timestamp wins on merge. Simple and common in Cassandra and DynamoDB, but clock skew can drop the "losing" write with no error to the client. Hybrid logical clocks reduce but do not remove that risk. LWW is tolerable when conflicts are rare and writes are sparse.</p>
- <p><strong>CRDTs:</strong> Data structures whose merge is commutative and deterministic—G-Counters for distributed counts, OR-Sets for add/remove sets. Good for collaborative state and counters where LWW would lose increments.</p>
- <p><strong>Session guarantees:</strong> Many products pair eventual storage with read-your-writes or sticky routing so a user who just saved does not see their old profile on refresh. That does not help other clients, but it removes the worst UX bugs.</p>
+ <p><strong>Last-write-wins (LWW):</strong> Tag each mutation with a timestamp; the highest tag wins on merge. Cassandra and DynamoDB default here. Clock skew can discard a legitimate update while still returning success to the writer—hybrid logical clocks (HLCs) couple physical time with per-node counters to reduce but not eliminate that risk. Reserve LWW for low-contention fields where losers can be reconstructed from an audit log.</p>
+ <p><strong>Vector clocks:</strong> Attach a per-replica counter vector to each version so the store can flag concurrent siblings instead of picking a silent winner. Application code merges siblings, shows both values, or branches like Riak. Expect larger payloads and explicit merge code in the service layer.</p>
+ <p><strong>CRDTs:</strong> Pick types whose merge is commutative and associative—<strong>G-Counter</strong> for grow-only counts, <strong>PN-Counter</strong> when increments and decrements must compose, <strong>OR-Set</strong> for add/remove membership without lost elements. State-based CRDTs ship snapshots; op-based CRDTs replicate operations. Use them for collaborative lists, distributed presence, and any counter LWW would flatten to one winner.</p>
+ <p><strong>Repair paths:</strong> Gossip with Merkle trees finds divergent ranges; read repair fixes hot keys on the query path. Size replication throughput for peak write rate so repair keeps pace—otherwise dashboards showing "millisecond eventual" lie during traffic spikes.</p>
+ <p><strong>Session guarantees:</strong> Sticky routing, local-quorum reads after local writes, or client-held min-read timestamps implement read-your-writes and monotonic reads for one session. Document which REST endpoints require session tokens versus which accept arbitrary replica lag.</p>
+ <p><strong>Observability:</strong> Export per-replica lag histograms, repair queue depth, and sibling-conflict counters so SLOs reference measured staleness instead of marketing copy. Alert when convergence p99 exceeds the threshold product committed to in ADRs.</p>
+ <p><strong>API contracts:</strong> Mark read endpoints that may return stale bodies with explicit version or <code>asOf</code> fields so clients do not infer linearizable inventory from eventually consistent browse responses.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
- <li><strong>LWW and skew:</strong> Faster clock wins; a valid write vanishes without an error.</li>
- <li><strong>Unbounded eventual:</strong> Replication backlog turns "milliseconds" into seconds under peak write rate.</li>
- <li><strong>Broken read-your-writes:</strong> Load balancer sends the next read to a cold replica—users think save failed.</li>
- <li><strong>LWW counters:</strong> Concurrent increments collapse to one winner instead of summing—use CRDT counters instead.</li>
+ <li><strong>Clock skew with LWW:</strong> The faster node’s timestamp wins; the slower writer believes its update stuck.</li>
+ <li><strong>Replication backlog:</strong> Under load, convergence stretches from milliseconds to seconds while SLOs still assume the happy path.</li>
+ <li><strong>Session routing bug:</strong> Post-save refresh hits a cold replica—users resubmit and create duplicates.</li>
+ <li><strong>Scalar counter under LWW:</strong> Parallel increments collapse to one bump—use CRDT counters or centralized aggregation.</li>
+ <li><strong>Oversell on stale stock:</strong> Two checkouts read different replica quantities—hold inventory with conditional writes or a CP reserve store.</li>
+ <li><strong>Monotonic-read break:</strong> Pagination walks backward in time when reads bounce across replicas.</li>
+ <li><strong>Saga visibility lag:</strong> UI polls Fulfillment while Payment events are still in the broker backlog.</li>
+ <li><strong>Live repair surprise:</strong> Anti-entropy rewrites keys applications treated as immutable after first write.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
  <ul class="checklist">
  <li>Which entities must be strongly consistent vs eventually consistent?</li>
- <li>What merge strategy applies: LWW, vector clocks, CRDTs, or custom?</li>
- <li>Do interactive paths offer session guarantees where UX needs them?</li>
- <li>What is the worst-case convergence time under peak load, and is it acceptable?</li>
- <li>Are financial, medical, or legal writes excluded from eventual stores?</li>
- <li>Have replication and partition behavior been chaos-tested?</li>
- <li>Is the consistency choice recorded in an ADR with use-case rationale?</li>
+ <li>What merge strategy applies per field: LWW, vector clocks, CRDT, or application merge?</li>
+ <li>Are counters and sets modeled with CRDT types instead of scalar LWW columns?</li>
+ <li>Do interactive APIs publish session guarantees where UX demands them?</li>
+ <li>What is measured p99 convergence under peak writes for each consumer?</li>
+ <li>Are money, inventory holds, permissions, and legal records excluded from eventual stores?</li>
+ <li>Do event consumers and saga steps stay idempotent through convergence windows?</li>
+ <li>Have partition, repair, and backlog scenarios been chaos-tested?</li>
+ <li>Are consistency rules documented per API operation, not only per cluster?</li>
+ <li>Does an ADR capture measurable acceptance criteria for staleness?</li>
  </ul>
 
  <h2 id="example-use-cases">Example use cases</h2>
@@ -259,20 +279,23 @@
             <li><strong>Illustrative scenario —</strong> Meridian’s catalog CDN caches product images and list prices with TTL staleness; the checkout BFF re-reads authoritative price from Inventory before payment capture.</li>
             <li><strong>Illustrative scenario —</strong> <code>OrderPlaced</code> events reach Fulfillment seconds after Payment accepts capture — warehouse pick lists converge without locking Order and Fulfillment in one distributed transaction.</li>
             <li><strong>Illustrative scenario —</strong> Meridian’s merchandising CMS tolerates nightly deploy downtime; editors accept minutes of lag on draft previews while the customer-facing catalog prioritizes read availability over immediate consistency with the CMS.</li>
+            <li><strong>Illustrative scenario —</strong> A family wishlist at Meridian uses an OR-Set CRDT at the edge so concurrent edits converge; checkout still reads authoritative price from Inventory before capture.</li>
+            <li><strong>Illustrative scenario —</strong> During a regional partition, Meridian’s session service pins shoppers to the replica that accepted their last cart write so read-your-writes holds even though other regions still show older line items.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="cap-theorem.html">CAP Theorem</a> — eventual consistency is the consistency model of AP systems in the CAP framework.</li>
-            <li><a href="pacelc-theorem.html">PACELC Theorem</a> — eventual consistency (EL) vs strong consistency (EC) is the core EL/EC trade-off in PACELC.</li>
-            <li><a href="idempotency.html">Idempotency</a> — at-least-once delivery in eventually consistent systems makes idempotent consumers a necessity.</li>
+            <li><a href="cap-theorem.html">CAP Theorem</a> — names the AP side of the partition trade-off that most eventual stores implement.</li>
+            <li><a href="pacelc-theorem.html">PACELC Theorem</a> — compares EL versus EC latency when the network is healthy, not only during splits.</li>
+            <li><a href="idempotency.html">Idempotency</a> — required at consumers because replication and messaging are usually at-least-once.</li>
+            <li><a href="../distributed-systems/saga-pattern.html">Saga Pattern</a> — stitches multi-service workflows without one globally consistent database.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" rel="noopener noreferrer" target="_blank">Dynamo: Amazon's Highly Available Key-value Store</a> — the foundational paper describing eventual consistency in production at Amazon scale.</li>
-            <li><a href="https://www.allthingsdistributed.com/2008/12/eventually_consistent.html" rel="noopener noreferrer" target="_blank">Eventually Consistent — Werner Vogels</a> — a clear and practical explanation of eventual consistency and session guarantees by Amazon's CTO.</li>
-            <li><a href="https://crdt.tech/" rel="noopener noreferrer" target="_blank">CRDT.tech</a> — a comprehensive reference on Conflict-free Replicated Data Types.</li>
+            <li><a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" rel="noopener noreferrer" target="_blank">Dynamo: Amazon's Highly Available Key-value Store</a> — original design notes for quorum-free writes and hinted handoff.</li>
+            <li><a href="https://www.allthingsdistributed.com/2008/12/eventually_consistent.html" rel="noopener noreferrer" target="_blank">Eventually Consistent — Werner Vogels</a> — Vogels on session guarantees and what “eventual” means in production.</li>
+            <li><a href="https://crdt.tech/" rel="noopener noreferrer" target="_blank">CRDT.tech</a> — catalog of conflict-free types, proofs, and implementation libraries.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
