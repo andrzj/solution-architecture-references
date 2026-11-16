@@ -121,6 +121,8 @@ message User {
           <h2 id="why-it-exists">Why it exists</h2>
           <p>REST over JSON is universal but pays parsing cost and lacks a first-class IDL across languages. Large organizations needed contract-first RPC with compact wire formats and generated clients—capabilities earlier internal stacks provided privately. gRPC standardizes that: one <code>.proto</code> drives servers and clients in Go, Java, Python, and others, with HTTP/2 allowing many concurrent RPCs per TCP connection without head-of-line blocking at the application layer.</p>
           <p>It deliberately targets trusted networks and platform teams who can operate HTTP/2-aware proxies, health probes, and schema registries—not arbitrary browser clients without an adapter.</p>
+          <p>Generated stubs also shorten cross-team integration: consumers compile against tagged proto releases instead of hand-maintaining HTTP client wrappers that drift from informal JSON examples on a wiki. Pin proto module versions in lock files the same way you pin service container images.</p>
+          <p>Compression (gzip or snappy on the wire), keepalive pings, and max connection age tuning matter at high QPS: they reduce bandwidth on east-west links and prevent stale TCP sessions from pinning traffic to drained nodes during rolling deploys.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -195,6 +197,7 @@ Health: grpc.health.v1.Health/Check + Watch</code></pre>
           <h2 id="implementation-notes">Implementation notes</h2>
           <h3>Protobuf evolution</h3>
           <p>In proto3, reserve removed field numbers and names. Prefer <code>optional</code> or explicit presence where needed. Never change the wire type of an existing number. Lint and breaking-change checks in CI (<a href="https://buf.build/docs/breaking/overview" target="_blank" rel="noopener noreferrer">Buf breaking rules</a>) catch unsafe edits before deploy.</p>
+          <p>Package and version namespaces in file paths (<code>users.v1</code>, <code>users.v2</code>) let old and new services coexist during migrations—clients import the major version they understand while servers register both services behind separate ports or routes if needed.</p>
 
           <h3>Deadlines and status codes</h3>
           <p>Always attach a deadline to client contexts; propagate it on outbound calls. Map <code>UNAVAILABLE</code> and <code>DEADLINE_EXCEEDED</code> to retry policies; treat <code>INVALID_ARGUMENT</code> as non-retryable. See <a href="https://grpc.io/docs/guides/error/" target="_blank" rel="noopener noreferrer">gRPC error handling</a>.</p>
@@ -204,9 +207,16 @@ Health: grpc.health.v1.Health/Check + Watch</code></pre>
 
           <h3>Browser and gateway paths</h3>
           <p>gRPC-Web proxies translate browser-safe framing to native gRPC. <a href="https://connectrpc.com/docs/protocol" target="_blank" rel="noopener noreferrer">Connect</a> speaks gRPC-compatible RPC over HTTP/1.1 or HTTP/2 without trailers browsers cannot read. API gateways can transcode JSON/REST to gRPC for external consumers.</p>
+          <p>For public REST facades, publish OpenAPI derived from proto annotations (grpc-gateway, Buf generate plugins) so edge documentation stays aligned with the canonical IDL instead of diverging handwritten YAML.</p>
 
           <h3>Health and reflection</h3>
           <p>Implement <code>grpc.health.v1.Health</code> per <a href="https://grpc.io/docs/guides/health-checking/" target="_blank" rel="noopener noreferrer">gRPC health checking</a> and point Kubernetes probes at <code>grpc-health-probe</code>. Enable server reflection only outside production so tools like <code>grpcurl</code> can discover services.</p>
+
+          <h3>Service mesh and OpenTelemetry</h3>
+          <p>Istio, Linkerd, and Envoy sidecars terminate mutual TLS and emit per-stream metrics without changing application stubs. OpenTelemetry gRPC instrumentation propagates trace context in metadata alongside business headers—avoid double-counting latency when both the mesh and the SDK emit spans; pick one hop as the source of truth for SLO dashboards.</p>
+
+          <h3>Connection management</h3>
+          <p>Channel options such as <code>max_connection_age</code> and <code>keepalive_time</code> (language-specific names vary) help load balancers redistribute long-lived HTTP/2 sessions after autoscaling events. Document recommended client defaults in internal developer portals so polyglot consumers do not each tune by trial and error. Load tests should mix unary and streaming RPCs so autoscalers see realistic connection churn.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
