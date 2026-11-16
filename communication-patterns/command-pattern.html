@@ -93,10 +93,11 @@
           <p><strong>Command messaging</strong> packages an imperative request—“perform this action with this data”—as a typed message routed to exactly one logical handler. In Gregor Hohpe and Bobby Woolf’s catalog, a <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/CommandMessage.html" rel="noopener noreferrer" target="_blank">Command Message</a> contrasts with an <a href="event-notification.html">event notification</a>: events describe facts that already happened; commands express desired mutations that may be accepted or rejected.</p>
           <p>Commands are point-to-point: one command type maps to one owning service or aggregate handler. That ownership boundary is how microservices keep write consistency without multiple writers applying the same instruction. On the CQRS write path (see <a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">CQRS</a> and <a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">saga</a> orchestration on microservices.io), APIs and sagas emit commands; handlers enforce invariants and emit domain events when state changes commit.</p>
           <p>Whether the command travels in-process on a mediator bus or asynchronously through RabbitMQ, Amazon SQS, or Kafka keyed topics, the envelope carries identity metadata (command id, correlation id, issuer, timestamp) so operators can trace, deduplicate, and audit write intent separately from resulting events.</p>
+          <p>Commands align with authorization models: you can gate “who may issue <code>CancelShipment</code>” separately from “who may read shipment status.” Event subscribers typically consume facts; command handlers evaluate policy before mutation. That distinction matters in regulated domains where intent and outcome must be auditable as separate records.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Generic REST bodies hide intent: the same <code>POST</code> shape might create, amend, or cancel depending on undocumented conventions. Named command types make write operations explicit in logs, metrics, and message traces, and they give you a single place to enforce authorization, validation, and idempotency before domain logic runs.</p>
-          <p>Async command dispatch also decouples client-facing latency from handler duration: the edge acknowledges receipt (or enqueues) while workers process at sustainable throughput, which is how order, payment, and fulfilment boundaries survive traffic spikes without holding HTTP connections open across slow downstream checks.</p>
+          <p>Async command dispatch also decouples client-facing latency from handler duration: the edge acknowledges receipt (or enqueues) while workers process at sustainable throughput, which is how write-heavy bounded contexts survive traffic spikes without holding HTTP connections open across slow downstream checks.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -176,6 +177,7 @@ PlaceOrderHandler
               <li>Framework conventions differ across MediatR, Axon, NServiceBus, and custom buses, complicating polyglot estates.</li>
             </ul></div>
           </div>
+          <p>Commands shine when write authorization, auditing, and single-writer semantics matter; events shine when many readers need the same fact. A common anti-pattern is emitting commands onto analytics topics—downstream teams treat them as notifications and skip authorization checks that the command handler would have enforced.</p>
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Envelope:</strong> Include <code>commandId</code>, <code>correlationId</code>, <code>issuedAt</code>, <code>issuedBy</code>, and a stable <code>commandType</code> string. Handlers deduplicate on <code>commandId</code> so broker redelivery does not repeat side effects.</p>
@@ -183,6 +185,9 @@ PlaceOrderHandler
           <p><strong>Failure taxonomy:</strong> Map technical failures (timeout, serialization error) to retry and dead-letter policies; map business rejections to non-retry responses so poison loops do not form.</p>
           <p><strong>Routing:</strong> Use typed destinations—dedicated queues, routing keys, or Kafka topics per command—and consult <a href="message-routing.html">message routing</a> patterns when a gateway fans in many command types.</p>
           <p><strong>Outcomes:</strong> Successful handlers persist and publish events through the <a href="transactional-outbox.html">transactional outbox</a> so commands and downstream notifications stay consistent.</p>
+          <p><strong>Broker binding:</strong> route commands on stable aggregate keys—RabbitMQ direct exchange with routing key <code>AdjustInventory</code> to one queue, or Kafka topic per command type with key=<code>aggregate_id</code>. Never broadcast commands on pub/sub topics; subscribers that misinterpret events as commands create competing writers.</p>
+          <p><strong>Reply correlation:</strong> async commands that need outcomes should carry <code>replyTo</code> queue or callback URL plus <code>correlationId</code> so the handler publishes <code>CommandAccepted</code> or <code>CommandRejected</code> without blocking the ingress thread—mirror AMQP RPC patterns or use a dedicated status resource for HTTP clients.</p>
+          <p><strong>Observability:</strong> metric per <code>commandType</code> for acceptance rate, rejection rate, and queue age; alert when rejection spikes (business rule change) versus error spikes (downstream outage). Command age p95 above minutes often means handler saturation, not broker failure.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

@@ -97,6 +97,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>A single consumer serialises processing: if producers enqueue faster than one instance can handle, backlog grows without bound and latency for the oldest messages climbs. Competing consumers turn pool size into a throughput knob—the queue buffers bursts while the fleet drains work at a sustainable rate.</p>
           <p>Because consumers are interchangeable and usually stateless, operations can replace crashing nodes, roll deployments gradually, and tie replica count to observable signals such as queue depth, oldest-message age, or Kafka consumer lag. Throughput decouples from the speed of any one machine.</p>
+          <p>The pattern fails when messages are not idempotent and the broker redelivers: doubling consumers doubles the rate at which duplicates hit the database. Always pair scale-out with inbox deduplication or natural idempotency keys before chasing throughput. Similarly, scaling consumers beyond partition count on Kafka yields idle pods—capacity planning starts with partition design, not replica count alone.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -113,6 +114,7 @@
             <li><strong>Per-entity serialization:</strong> Concurrent updates to the same aggregate from different consumers can cause lost updates unless you partition by entity key (for example SQS <code>MessageGroupId</code> or a dedicated partition per key).</li>
             <li><strong>Broadcast to every subscriber:</strong> Competing consumers deliver each message once; use <a href="pub-sub.html">pub/sub</a> when every downstream system needs its own copy.</li>
           </ul>
+          <p>Autoscaling on queue depth alone can overshoot during short spikes: combine depth with processing rate and cap maximum replicas to protect databases and partner APIs. Cold-start latency on serverless consumers may increase oldest-message age temporarily—factor startup time into scaling policies.</p>
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Producers enqueue to a durable channel. Each consumer polls (or is pushed) a batch, acquires a lease or prefetch slot, processes, then acknowledges. Failed or abandoned work becomes visible again after the visibility timeout or nack policy. Autoscaling watches depth or lag; KEDA and similar controllers can scale Kubernetes deployments to zero when no messages are waiting.</p>
@@ -173,6 +175,9 @@ Autoscaler watches:
           <p>For <strong>Kafka consumer groups</strong>, parallelism is bounded by partition count—plan partition count up front. For queue brokers, scale consumer replicas freely but cap maximum instances to protect databases and partner APIs.</p>
           <p>When order matters per entity, route by key into FIFO <code>MessageGroupId</code> lanes, Kafka partitions, or NATS ordered consumers so only one consumer sequence applies updates for that key.</p>
           <p>Pair competing consumers with the <a href="inbox-pattern.html">inbox pattern</a> or idempotent handlers so redelivery does not double-charge or double-send.</p>
+          <p><strong>Kafka consumer groups:</strong> each partition is assigned to at most one consumer in the group at a time; maximum parallel consumers equals partition count unless you add partitions (irreversible shrink). Set <code>max.poll.interval.ms</code> above worst-case batch processing or the coordinator revokes partitions mid-work—classic source of duplicate processing after rebalance. Cooperative sticky assignors reduce stop-the-world rebalances during rolling deploys.</p>
+          <p><strong>Graceful shutdown:</strong> on SIGTERM, stop polling, finish in-flight messages, commit offsets or ACK, then exit—Kubernetes preStop hooks should align with broker lease duration. Deploys that kill pods at 30&nbsp;s while handlers need 120&nbsp;s recreate redelivery storms.</p>
+          <p><strong>Autoscaling signals:</strong> KEDA and cloud autoscalers scale on queue depth, Kafka lag, or oldest-message age—not CPU alone. Target roughly one consumer per partition on Kafka; on SQS, scale until oldest age stabilizes rather than chasing zero depth during bursts.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -210,7 +215,7 @@ Autoscaler watches:
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/CompetingConsumers.html" rel="noopener noreferrer" target="_blank">Competing Consumers — Enterprise Integration Patterns (Hohpe &amp; Woolf)</a></li>
-            <li><a href="https://www.rabbitmq.com/docs/consumer-prefetch" rel="noopener noreferrer" target="_blank">Consumer Prefetch — RabbitMQ Documentation</a></li>
+            <li><a href="https://www.rabbitmq.com/tutorials/tutorial-two-java" rel="noopener noreferrer" target="_blank">RabbitMQ — Work queues and prefetch</a></li>
             <li><a href="https://kafka.apache.org/documentation/#consumerconfigs" rel="noopener noreferrer" target="_blank">Kafka Consumer Configuration — Apache Kafka Documentation</a></li>
             <li><a href="https://keda.sh/docs/latest/scalers/aws-sqs/" rel="noopener noreferrer" target="_blank">KEDA AWS SQS Scaler — Kubernetes Event-driven Autoscaling</a></li>
             <li><a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html" rel="noopener noreferrer" target="_blank">Idempotent Consumer — microservices.io (Chris Richardson)</a></li>

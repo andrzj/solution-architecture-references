@@ -97,10 +97,11 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Microservices routinely hit the <strong>dual-write problem</strong>: “update the aggregate, then publish an event.” Publish-before-commit risks phantom events; commit-then-publish risks lost events if the process crashes or the broker is down. XA/2PC across database and broker is rarely viable—many stacks do not support it, and coupling every service to both stores is undesirable.</p>
           <p>Richardson’s formulation adds an ordering constraint: events for the same aggregate should reach consumers in the order the application emitted them, even across multiple application instances. Persisting messages in the outbox inside the transaction gives the database a durable, ordered queue the relay can drain without the application holding an open transaction across the network.</p>
+          <p>The outbox is not a magic exactly-once pipe: relay retries duplicate broker messages; consumers still need inbox or idempotency. The guarantee is narrower and still valuable—no committed business state without an eventual publish intent recorded, and no publish intent without committed state. Monitoring unpublished row count is as important as monitoring broker lag because a silent relay pause looks like healthy Kafka while workflows freeze.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Database update plus domain event publication</strong> — e.g. persist an order and emit <code>order.placed</code> in one logical unit of work.</li>
+            <li><strong>Database update plus domain event publication</strong> — persist aggregate state and enqueue the matching domain event in one logical unit of work.</li>
             <li><strong>Saga or process-manager steps</strong> — each step that mutates local state and must notify the next participant.</li>
             <li><strong>Regulated or revenue-critical flows</strong> — silent message loss after a successful commit is unacceptable.</li>
             <li><strong>Broker or network instability</strong> — the service commits locally; the relay catches up when the broker recovers.</li>
@@ -178,6 +179,9 @@ Relay Process (CDC variant - Debezium):
           <p><strong>Retention and pruning:</strong> Delete or partition away published rows after a retention window. Unbounded tables slow inserts and polls. Time-based partitioning plus partition drops scales better than row-by-row deletes at high volume.</p>
           <p><strong>Observability:</strong> Metric unpublished outbox depth, relay error rate, publish lag (time from <code>created_at</code> to broker ack), and broker consumer lag. Alert when unpublished count grows monotonically.</p>
           <p><strong>Consumer side:</strong> Treat relay delivery as at-least-once. Pair with the <a href="inbox-pattern.html">inbox pattern</a> or Richardson’s <a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html" rel="noopener noreferrer" target="_blank">idempotent consumer</a> so duplicate events do not duplicate business effects.</p>
+          <p><strong>Envelope standards:</strong> map outbox rows to <a href="https://cloudevents.io/" rel="noopener noreferrer" target="_blank">CloudEvents</a> in the relay adapter so <code>id</code>, <code>type</code>, <code>source</code>, and <code>time</code> propagate for tracing and idempotent consumers. Debezium’s outbox router SMT can embed CloudEvent headers directly from column mappings.</p>
+          <p><strong>Latency expectations:</strong> polling relays often add hundreds of milliseconds to seconds of publication lag; CDC paths commonly reach sub-second when connector lag is healthy. SLO dashboards should chart <code>now() - created_at</code> for unpublished rows at p95, not only relay process uptime.</p>
+          <p><strong>Common mistake:</strong> updating business tables and publishing to Kafka in the same request thread without outbox—Kafka ack after DB commit still fails if the process crashes between the two, or if the broker rejects the record. The outbox row must commit in the same transaction as the domain write; publish always happens later.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -223,6 +227,7 @@ Relay Process (CDC variant - Debezium):
             <li><a href="https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html" rel="noopener noreferrer" target="_blank">Debezium Outbox Event Router (reference)</a> — configuration for CDC-driven outbox publishing to Kafka.</li>
             <li><a href="https://debezium.io/documentation/reference/stable/" rel="noopener noreferrer" target="_blank">Debezium Documentation</a> — connector setup, CDC semantics, and operational tuning.</li>
             <li><a href="https://www.kamilgrzybek.com/design/the-outbox-pattern/" rel="noopener noreferrer" target="_blank">The Outbox Pattern</a> — Kamil Grzybek’s implementation-oriented walkthrough (outbox plus inbox).</li>
+            <li><a href="https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md" rel="noopener noreferrer" target="_blank">CloudEvents Specification v1.0.2</a> — portable event envelopes from outbox relays.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
