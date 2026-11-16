@@ -100,53 +100,75 @@
           </div>
           <h1 class="article-header__title">JWT Best Practices</h1>
           <p class="article-header__desc">Secure JWT issuance, validation, rotation, and anti-patterns to avoid.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: an API gateway validates a JWT's RS256 signature using the IdP JWKS, checks <code>exp</code> and <code>aud</code>, then forwards trusted claims to upstream services.</p>
+          <p>A <strong>JSON Web Token (JWT)</strong> is a compact, URL-safe token format (RFC 7519) with a signed (JWS) or signed-and-encrypted (JWE) payload. In security architectures, JWTs most often appear as <strong>OIDC ID tokens</strong> (identity claims about the authenticated user), <strong>OAuth 2.0 access tokens</strong> (authorization to call APIs), and <strong>workload identity assertions</strong> (for example SPIFFE JWT-SVIDs). The verifier checks cryptographic integrity and semantic claims — issuer, audience, expiry — before trusting any embedded roles or scopes.</p>
+          <p>JWTs are <em>self-contained</em>: once issued, a resource server can validate them with the issuer’s public keys without a central session lookup, which scales well at API gateways and service meshes. That property also makes <strong>revocation</strong> harder unless tokens are short-lived, paired with introspection, or bound to a client context (DPoP, mTLS).</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>JWTs enable stateless verification at the edge, but incorrect validation causes critical vulnerabilities. Documented best practices reduce alg confusion, replay, and scope leakage.</p>
+          <p>Custom signed cookies and proprietary token formats fragmented API security. JWTs plus JWKS endpoints give a standard way to distribute verification keys, rotate signing material, and express claims understood across languages and vendors. However, JWT libraries are easy to misuse — algorithm confusion, skipped audience checks, and accepting unsigned tokens have led to critical CVEs — so RFC 8725 and industry cheat sheets codify validation rules architects should treat as non-negotiable defaults.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>OIDC ID tokens and OAuth access tokens.</li>
-            <li>Short-lived service credentials between trusted issuers.</li>
-            <li>Signed webhooks with embedded metadata.</li>
+            <li>OIDC ID tokens and JWT-form OAuth access tokens from a known issuer with published JWKS.</li>
+            <li>Short-lived credentials between services in a trust domain (mesh, internal APIs) when TTL and key rotation are automated.</li>
+            <li>Signed webhooks or callback payloads where the receiver verifies issuer signature and claim semantics out of band.</li>
+            <li>Federated authorisation hints at the edge — gateways validate once and forward normalised claims to backends.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Long-term session storage — use server-side sessions instead.</li>
-            <li>Carrying large PII payloads — prefer references.</li>
+            <li><strong>Long-lived browser sessions</strong> — prefer opaque server-side sessions in HttpOnly cookies; JWTs in <code>localStorage</code> are trivial to steal via XSS.</li>
+            <li><strong>Large PII payloads</strong> — JWTs are not encrypted by default in JWS form; carry subject identifiers and fetch details server-side.</li>
+            <li><strong>Immediate revocation requirements</strong> without introspection, deny lists, or sub-minute TTL — self-contained JWTs remain valid until <code>exp</code>.</li>
+            <li><strong>Symmetric HS256</strong> shared across dozens of microservices — one leak forges tokens for every consumer; prefer asymmetric keys per issuer.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Validation belongs as close to the trust boundary as practical: API gateway or sidecar verifies signature and mandatory claims, then attaches trusted identity metadata to upstream requests (headers or request context). Backends should still enforce object-level authorisation — JWT scopes are hints, not a substitute for ownership checks.</p>
+
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    req["Authorization: Bearer JWT"]
-    gw["Gateway"]
-    jwks["JWKS cache&lt;br/&gt;kid match"]
-    val["Verify sig, iss, aud, exp, nbf"]
-    authz["Scope / roles check"]
-    up["Upstream service"]
-    req --> gw --> jwks --> val --> authz --> up</div>
+    client["Client"]
+    gw["API gateway / Envoy JWT filter"]
+    jwks["JWKS cache&lt;br/&gt;kid → JWK"]
+    val["Validate alg, sig, iss, aud, exp, nbf"]
+    scope["Scope / role mapping"]
+    svc["Microservice"]
+    client -->|Authorization Bearer| gw
+    gw --> jwks
+    gw --> val
+    val --> scope
+    scope -->|mTLS + trusted headers| svc</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>JWT VALIDATION PIPELINE:
 
-  Authorization: Bearer <JWT>
+  Authorization: Bearer &lt;JWT&gt;
         |
         v
-  [Gateway] parse header.alg
-        |
-        +--> fetch JWKS (cache + kid match)
-        |
-        v
-  verify signature + iss + aud + exp + nbf
-        |
-        v
-  optional: scope / roles check --> upstream</code></pre>
+  [Gateway]
+    1. Parse header — reject missing / unexpected typ
+    2. Allowlist alg (RS256, ES256) — reject "none"
+    3. Resolve kid → fetch JWKS (cache + stale-while-revalidate)
+    4. Verify signature
+    5. Validate iss, aud (this API), exp, nbf, clock skew ≤ 60s
+    6. Optional: scope contains required permission
+    7. Strip token; forward X-User-Id / X-Scopes to origin only on mTLS hop
+
+REVOCATION OPTIONS:
+  - Short TTL (5–15 min) + refresh rotation
+  - OAuth token introspection (RFC 7662)
+  - Sender-constrained tokens (DPoP / mTLS cert hash claim)
+
+NEVER:
+  - Log Authorization headers
+  - Pass JWTs in query strings
+  - Trust client-side "decode" without signature verify</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">JWT validation at the gateway: fetch JWKS, verify claims, then enforce scopes before proxying upstream.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">JWT validation at the edge: JWKS lookup, strict claim checks, then scoped forwarding to services over a trusted hop.</figcaption>
           </figure>
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
