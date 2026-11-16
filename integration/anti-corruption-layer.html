@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Anti-Corruption Layer — SA References</title>
-  <meta name="description" content="A translation layer that protects your domain model from corruption by legacy or external system semantics.">
+  <meta name="description" content="An anti-corruption layer translates between your domain and external systems so legacy semantics never contaminate core business logic.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,37 +96,39 @@
             <span class="badge badge--muted">DDD</span>
           </div>
           <h1 class="article-header__title">Anti-Corruption Layer</h1>
-          <p class="article-header__desc">A translation layer between bounded contexts that prevents the concepts and semantics of an external or legacy system from contaminating your domain model.</p>
+          <p class="article-header__desc">An anti-corruption layer translates at the integration boundary so your domain model stays independent of legacy and vendor schemas.</p>
           <div class="article-header__meta"><span>⏱ 9 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
           
-          <p>Mechanically, an ACL is typically composed of three collaborating components: a <strong>Facade</strong> that presents a simplified, stable interface to the external system; an <strong>Adapter</strong> that calls the external system using its native protocol and data structures; and a <strong>Translator</strong> (or set of translators) that converts the external model to and from the internal domain model. In a microservices context, the ACL is often an entire adapter service that sits between two services and owns the translation responsibility for that boundary.</p>
+          <p>An <strong>anti-corruption layer (ACL)</strong> is a boundary component that translates between your domain model and an external or legacy system so foreign concepts never leak into core business logic. Eric Evans introduced the pattern in <em>Domain-Driven Design</em>; Martin Fowler and the <a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer" target="_blank" rel="noopener noreferrer">Azure Architecture Center</a> describe the same idea for microservice and cloud migrations: the ACL is the only place that speaks the legacy dialect.</p>
+          <p>Structurally it combines a <strong>facade</strong> (stable inward-facing API), an <strong>adapter</strong> (protocol and SDK calls to the external system), and <strong>translators</strong> that map payloads both ways—analogous to Enterprise Integration Patterns <em>Gateway</em> and <em>Message Translator</em>. The ACL may be a library module, a dedicated adapter microservice, or integration routes in Apache Camel or MuleSoft that sit between bounded contexts.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Legacy enterprise systems accumulate decades of design decisions that were reasonable at the time but are now impediments: customer IDs are encoded as 10-digit strings with embedded type prefixes, "order status" is an integer code whose meaning is documented only in a 1998 mainframe manual, and "product" conflates the physical SKU, the pricing tier, and the promotional bundle in a single flat record. If your new domain service directly imports these concepts, it will carry those accidental complexities forever. When the legacy system changes, breakage propagates into your domain logic.</p>
-          <p>The ACL provides freedom to evolve independently. The internal domain model can use clean, expressive types — <code>CustomerId</code> as a typed value object, <code>OrderStatus</code> as an explicit enum, <code>Product</code> as a properly separated aggregate — while the ACL handles all the grotesque mapping. When the legacy system is eventually replaced, only the ACL changes; the domain model and all business logic built on it remain intact.</p>
+          <p>Partner APIs, ERP exports, and decades-old databases encode assumptions—opaque status integers, overloaded “customer” records, currency in minor units—that make sense locally but poison a clean domain model if copied verbatim. Without a translation boundary, every schema tweak or vendor upgrade forces refactors across services that should not know those details.</p>
+          <p>The ACL concentrates coupling in one replaceable seam. Your ubiquitous language stays expressive inside the boundary; when the external system is swapped or retired—often as part of a <a href="https://martinfowler.com/bliki/StranglerFigApplication.html" target="_blank" rel="noopener noreferrer">strangler-fig migration</a>—you change translators and adapters, not domain rules. That separation is the same inward dependency rule as hexagonal architecture: domain ports face inward, ACL implements outward.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Integrating with a legacy system whose data model uses outdated, inconsistent, or poorly named concepts that you don't want mirrored in your new service.</li>
-            <li>Consuming a third-party vendor API (payment gateway, shipping carrier, CRM) where the vendor's model differs from your ubiquitous language.</li>
-            <li>Migrating a monolith to microservices incrementally: the strangler fig pattern carves out new services while the ACL bridges the new service to the legacy monolith's database or API.</li>
-            <li>Two bounded contexts within the same organization that have diverging ubiquitous languages and cannot agree on a shared kernel.</li>
-            <li>High-risk interfaces where a subtle semantic mismatch could cause business logic errors (e.g., currency units, timezone handling, status code interpretation).</li>
-            <li>When you need to swap the external dependency in the future without cascading changes to domain logic.</li>
+            <li>Integrating with legacy or vendor systems whose nouns, codes, and lifecycles conflict with your ubiquitous language.</li>
+            <li>Incremental decomposition where a new service must read or write through a monolith API or database during migration.</li>
+            <li>Third-party boundaries (payments, shipping, CRM) where you need a neutral internal model and the freedom to change providers.</li>
+            <li>High-risk semantic gaps—time zones, money, units of measure, ambiguous status enumerations—where silent mistranslation becomes a production bug.</li>
+            <li>Event or message integration where you want <a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents</a> or domain events on the inside and proprietary wire formats only at the edge.</li>
+            <li>When multiple consumers must share one stable inward contract while the upstream source remains volatile.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>The external context uses the same ubiquitous language as your domain — the translation layer is overhead without benefit; use a Conformist or Shared Kernel relationship instead.</li>
-            <li>Extremely simple integrations with one or two fields — an informal mapping in the service is cleaner than a full ACL abstraction.</li>
-            <li>When the external system is temporary (e.g., a migration bridge that will disappear in 3 months) — the investment in a formal ACL may not be justified.</li>
-            <li>Real-time, high-performance paths where every translation microsecond matters — consider caching or denormalized views instead.</li>
+            <li>Both sides already share the same bounded-context language and schema—prefer conformist or shared-kernel relationships over extra translation.</li>
+            <li>The integration is a one- or two-field passthrough with no semantic risk; inline mapping in the application layer is enough.</li>
+            <li>The external dependency is a short-lived bridge with a fixed sunset—formal ACL investment may not pay back before decommission.</li>
+            <li>Ultra-low-latency paths where translation cost dominates and a denormalized read model or cache is the better trade-off.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Domain code depends on inward ports (repositories, gateways). The ACL implements those ports, calls the legacy system through its native client, and owns all mapping and error translation at the edge.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     domain["Your domain&lt;br/&gt;Order service"]
@@ -160,57 +162,67 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Domain model stays clean and expressive, free from legacy naming and structural constraints.</li>
-                <li>Replacing or upgrading the external system only requires updating the ACL, not domain logic.</li>
-                <li>The ACL is a natural seam for testing: domain logic can be unit tested against mock translators; integration tests focus on the ACL boundary.</li>
-                <li>Explicit translation surfaces subtle semantic mismatches (units, timezones, status codes) that would otherwise be hidden bugs.</li>
-                <li>Enables incremental strangler-fig migrations by decoupling the migration timeline from the domain evolution timeline.</li>
+                <li>Keeps domain types and rules free of foreign field names, magic numbers, and vendor SDK types.</li>
+                <li>External replacement or upgrade is localized to the ACL instead of rippling through business services.</li>
+                <li>Creates a test seam: mock inward ports for domain tests, contract or recorded-traffic tests for the boundary.</li>
+                <li>Surfaces semantic mismatches explicitly instead of hiding them in shared DTOs.</li>
+                <li>Supports strangler-fig and dual-write cutovers by absorbing temporary integration quirks.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Additional layer of code to write, test, and maintain; can feel like boilerplate for simple cases.</li>
-                <li>Translation may be lossy if the external model contains information that has no representation in the domain model.</li>
-                <li>Performance overhead of translation on every call; caching can help but adds complexity.</li>
-                <li>The ACL must evolve as both the domain model and the external system evolve — it can become a maintenance burden if the external system changes frequently.</li>
-                <li>Teams may underinvest in the ACL (treating it as "just plumbing"), allowing it to accumulate business logic that belongs in the domain service.</li>
+                <li>Extra code, fixtures, and monitoring for a layer that feels like “plumbing” until the first vendor change.</li>
+                <li>Translation can be lossy when the external model carries fields with no domain counterpart.</li>
+                <li>Per-call mapping adds latency; caching must respect staleness and invalidation rules.</li>
+                <li>The ACL must track evolution on both sides; frequent upstream changes can make it a bottleneck team.</li>
+                <li>Risk of creeping business rules in translators when domain modeling is deferred.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Implement the ACL as a package or module that owns all knowledge of the external system. The domain layer should depend only on domain interfaces (e.g., <code>OrderRepository</code>, <code>CustomerGateway</code>) defined in the domain or application layer. The ACL module provides concrete implementations of those interfaces and imports all legacy-specific types, XML/SOAP libraries, or vendor SDKs. Nothing in the domain package should import anything from the ACL package — the dependency flows inward.</p>
-          <p>This is the same rule as Ports and Adapters / Hexagonal Architecture.</p>
-          <p>For complex legacy systems, write comprehensive translator tests with real sample payloads from the external system captured in test fixtures. Use contract testing tools like Pact to verify the ACL remains compatible with the actual external system's behavior over time. When the external system returns error codes, translate them to domain exceptions with meaningful names rather than letting the HTTP status or SOAP fault propagate. Consider adding metrics and circuit breaker logic in the ACL adapter to contain failures from the external system.</p>
+          <p>Keep ACL types and legacy SDK imports out of the domain package. Application services depend on domain-defined ports; the ACL module provides adapters and publishes no legacy types upward. Document the outward contract with <a href="https://www.asyncapi.com/" target="_blank" rel="noopener noreferrer">AsyncAPI</a> or OpenAPI when the boundary is message- or HTTP-based so consumers know the stable inward shape.</p>
+          <p>Implement translators as explicit, unit-tested functions with golden fixtures captured from sandbox or recorded traffic. Use Camel <code>transform</code> / <code>marshal</code> steps or MuleSoft DataWeave in integration-centric estates; in microservices, a small dedicated adapter service with resilience (timeouts, circuit breakers, bulkheads) is often clearer. Map upstream errors to domain failures with actionable codes—do not leak SOAP faults or raw HTTP bodies.</p>
+          <p>For CDC or queue ingress, normalize to CloudEvents or internal domain events in the ACL so downstream services never parse vendor-specific envelopes. Pair with contract tests (Pact) or consumer-driven fixtures when the external API changes often. Metrics on translation latency, mapping failures, and stale cache hits belong at this boundary.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Leaky ACL:</strong> External system types (DTOs, error codes, SDK objects) are used directly in domain services instead of being translated, causing the external model to contaminate domain logic.</li>
-            <li><strong>Business logic in the ACL:</strong> Developers add conditional logic ("if legacy status = 07 AND region = US, then treat as shipped") in the translator instead of encoding it as domain rules.</li>
-            <li><strong>Missing inverse translation:</strong> The ACL translates inbound messages but forgets to handle outbound commands properly, causing writes to the external system with incorrect field values.</li>
-            <li><strong>No error translation:</strong> HTTP 400 from the legacy system propagates as a generic exception to the domain, hiding information about what actually went wrong.</li>
-            <li><strong>Stale fixtures:</strong> The external system silently changes its API or payload structure; the ACL's unit tests use hardcoded fixtures and pass, while production integration fails.</li>
+            <li><strong>Leaky boundary:</strong> Legacy DTOs or SDK exceptions propagate into domain services, reintroducing the coupling the ACL was meant to block.</li>
+            <li><strong>Rules in translators:</strong> Conditional mapping encodes business policy that belongs in the domain layer.</li>
+            <li><strong>One-way mapping:</strong> Inbound translation works but outbound commands still send legacy field shapes, corrupting writes.</li>
+            <li><strong>Untranslated errors:</strong> Opaque upstream failures surface as generic 500s with no correlation for support.</li>
+            <li><strong>Fixture rot:</strong> Tests pass on stale samples while production payloads drift after a silent vendor release.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does the external system's domain language conflict with your ubiquitous language?</li>
-            <li>Are there semantic mismatches in key fields (status codes, currencies, units of measure)?</li>
-            <li>Do you need to replace or swap the external system in the future without changing domain logic?</li>
-            <li>Is this integration worth the investment in a formal translation layer vs. inline mapping?</li>
-            <li>Have you defined the domain interfaces that the ACL will implement?</li>
-            <li>Do you have a contract testing strategy to catch external API changes?</li>
+            <li>Does the external model conflict with your ubiquitous language or aggregate boundaries?</li>
+            <li>Are there known semantic traps (money, time, units, status codes) on this interface?</li>
+            <li>Will you need to replace or dual-run the external system within the system’s lifetime?</li>
+            <li>Is a formal ACL cheaper than the cost of domain refactors on every upstream change?</li>
+            <li>Have you defined inward ports and forbidden legacy imports above the ACL?</li>
+            <li>Do you have contract or replay tests for both directions of translation?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Strangler-fig migration:</strong> A team extracts an Order microservice from a monolith. The ACL wraps the monolith's SOAP-based order API, translating between the new domain model and the legacy DB schema until the monolith's order module can be decommissioned.</li>
-            <li><strong>Payment gateway integration:</strong> A checkout service integrates with Stripe and PayPal. Each gateway has its own model for PaymentIntent, Charge, and Dispute. An ACL per gateway maps these to the domain's neutral <code>PaymentResult</code> type, so the checkout service is unaware of which gateway was used.</li>
-            <li><strong>ERP product catalogue sync:</strong> An e-commerce platform syncs product data from SAP. The ACL translates SAP's "Material Master" records (with MARA, MAKT, MVKE tables) into the platform's clean <code>Product</code> aggregate, handling unit-of-measure conversions and status code mapping.</li>
+            <li><strong>Illustrative scenario —</strong> A new order microservice reads fulfillment status through an ACL that maps legacy numeric codes to a domain <code>ShipmentState</code> enum while the monolith remains authoritative during strangler cutover.</li>
+            <li><strong>Illustrative scenario —</strong> A checkout service uses per-provider ACL modules so Stripe and a regional wallet both map to the same <code>PaymentOutcome</code> type.</li>
+            <li><strong>Case study —</strong> Microsoft documents the anti-corruption layer as a first-class Azure architecture pattern for isolating microservices from external and legacy dependencies during modernization programs.</li>
           </ul>
 
-          <h2 id="related-patterns">Related patterns</h2>
+          <h2 id="further-reading">Further reading</h2>
+          <ul>
+            <li><a href="https://martinfowler.com/bliki/BoundedContext.html" target="_blank" rel="noopener noreferrer">Bounded Context — Martin Fowler</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer" target="_blank" rel="noopener noreferrer">Anti-Corruption Layer — Azure Architecture Center</a></li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageTranslator.html" target="_blank" rel="noopener noreferrer">Enterprise Integration Patterns — Message Translator</a></li>
+            <li><a href="https://camel.apache.org/components/latest/eips/message-translator.html" target="_blank" rel="noopener noreferrer">Apache Camel — Message Translator EIP</a></li>
+            <li><a href="https://docs.mulesoft.com/api-led-connectivity/" target="_blank" rel="noopener noreferrer">MuleSoft — API-led connectivity</a></li>
+            <li><a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents specification</a></li>
+          </ul>
+
+<h2 id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="canonical-data-model.html">Canonical Data Model</a> — The ACL often translates to/from a canonical schema rather than directly between two proprietary formats.</li>
             <li><a href="../foundations/bounded-contexts.html">Bounded Contexts</a> — The ACL is a DDD pattern for managing relationships between bounded contexts.</li>
