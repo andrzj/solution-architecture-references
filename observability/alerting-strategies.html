@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Alerting Strategies — SA References</title>
-  <meta name="description" content="Alerting strategies: combating alert fatigue, symptom-based vs cause-based alerts, SLO-based alerting, error budget burn rate, and on-call routing with PagerDuty.">
+  <meta name="description" content="Google SRE alerting: urgent actionable novel pages, symptom versus cause, SLO multi-window burn-rate alerts, Alertmanager routing, and eliminating alert fatigue.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -95,40 +95,46 @@
             <span class="badge badge--primary">Observability &amp; Operations</span>
           </div>
           <h1 class="article-header__title">Alerting Strategies</h1>
-          <p class="article-header__desc">Designing effective alerting systems: fighting alert fatigue, symptom-based vs cause-based alerting, SLO-based burn rate alerts, alert severity levels, and on-call routing patterns with PagerDuty.</p>
+          <p class="article-header__desc">Google SRE alerting philosophy: page humans only when urgent, actionable, and novel; prefer symptom over cause; use multi-window SLO burn rates; route and inhibit with Alertmanager and on-call tools.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Alerting is the mechanism that notifies engineers when systems require human attention. Effective alerting is not about detecting every anomaly — it is about detecting every situation that requires a human to act, and nothing else. <strong>Alert fatigue</strong> occurs when on-call engineers receive too many alerts, most of which are false positives, low-urgency, or self-resolving. The result is desensitisation — engineers learn to dismiss alerts, and real incidents are missed or responded to slowly.</p>
-          <p>Google's SRE philosophy defines a good alert as one that is <em>urgent, actionable, and novel</em>: urgent (requires response now), actionable (the responder can do something meaningful), and novel (not already handled by automation).</p>
-          <p><strong>Symptom-based alerting</strong> alerts on user-visible impact — high error rate, high latency, service unavailability. This is preferred because it aligns with user experience: if users are not impacted, an alert should not wake up an engineer. <strong>Cause-based alerting</strong> alerts on potential causes before they cause user impact — disk 80% full, CPU at 90%, memory pressure. Cause-based alerts are useful for predictive capacity management but should not be paging alerts; they should be tickets or low-urgency notifications.</p>
-          <p>The majority of paging alerts should be symptom-based.</p>
-          <p><strong>SLO-based alerting with error budget burn rate</strong> is the most sophisticated and effective approach. Rather than alerting on a fixed threshold (error rate &gt; 1%), burn rate alerts ask: "at the current error rate, how quickly are we consuming our 30-day error budget?" A fast burn rate (consuming the budget 14× faster than normal) warrants an immediate page. A slow but sustained elevated burn rate (3× normal over 6 hours) warrants a ticket or lower-urgency notification. This approach naturally prioritises alerts by user impact — a brief 5% error rate that lasts 10 minutes consumes little error budget; a sustained 0.5% error rate over 48 hours consumes far more.</p>
+          <p><strong>Alerting</strong> is the subset of monitoring that notifies a human to take action now. Google’s SRE book draws a sharp line: monitoring includes dashboards, exploratory graphs, and log analysis; <em>alerting</em> is only for conditions where a prompt human response will materially reduce user impact or data loss. Everything else belongs in tickets, dashboards, or automated remediation — not on a pager.</p>
+          <p>A paging alert should satisfy three properties — <strong>urgent</strong> (waiting until tomorrow harms users or SLOs), <strong>actionable</strong> (the responder can do something concrete in the short term), and <strong>novel</strong> (automation is not already handling it, and the same condition is not already an open incident). Alerts that fail any of these tests become noise.</p>
+          <p><strong>Symptom-based</strong> rules fire on user-visible degradation: elevated error ratio, latency above SLO, failed synthetic journey. <strong>Cause-based</strong> rules fire on internal precursors: disk filling, certificate expiry, queue depth. The monitoring chapter recommends paging primarily on symptoms tied to the <strong>Four Golden Signals</strong> (latency, traffic, errors, saturation). Cause-based signals are still valuable — as capacity tickets, daily emails, or dashboard annotations — but paging on causes trains on-call to ignore pages when users are unaffected.</p>
+          <p><strong>SLO burn-rate alerting</strong> (detailed in the SRE Workbook) pages when the current error rate would exhaust the rolling error budget too quickly. Multi-window rules pair a long window (confirms sustained impact) with a short window (catches spikes), reducing false positives from blips. Burn-rate alerts align paging with the same SLI definitions used for reliability reporting — not ad-hoc thresholds copied from a blog post.</p>
+          <p><strong>Alert fatigue</strong> is the predictable result of violating these rules: hundreds of low-value pages, desensitised responders, and slower response when a genuine outage arrives.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Naive alerting (alert on any anomaly, page on every threshold breach) is common and dysfunctional. Teams with high alert volumes train themselves to ignore alerts — this is documented as "alarm fatigue" in both IT operations and medical literature. The consequences are missed incidents, engineer burnout, poor on-call quality of life, and ultimately turnover. Principled alerting design, grounded in SLO-based burn rate analysis, produces alerting systems that page only when user impact is occurring or imminent, dramatically reducing alert volume while improving mean time to detection (MTTD) for real incidents.</p>
+          <p>Distributed systems generate endless metric anomalies; humans do not scale. The SRE approach treats on-call time as a scarce resource: every page should save user-observable reliability that automation cannot. Teams that page on every threshold breach experience documented alarm fatigue — responders mute channels, incidents are detected via customer complaints, and attrition rises. Symptom- and SLO-based design collapses page volume while improving detection of real budget burn.</p>
+          <p>Alertmanager-style routing (grouping, inhibition, silences) exists because failures cascade: one root symptom should produce one coordinated page, not fifty copies as each dependency retries. Runbooks linked from alert annotations close the loop between “something fired” and “here is what to try first.”</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All production systems with on-call engineers — effective alerting design is a reliability and quality-of-life requirement.</li>
-            <li>Systems with defined SLOs — SLO-based burn rate alerting is the recommended approach for services with explicit reliability commitments.</li>
-            <li>Teams experiencing alert fatigue — a structured alert audit and redesign is a high-value reliability investment.</li>
+            <li>Any service with an on-call rotation — define explicit severity levels and which severities page versus ticket.</li>
+            <li>Services with published or internal SLOs — implement multi-window burn-rate rules per critical SLI.</li>
+            <li>After mergers or dashboard sprawl — run an alert audit: delete or downgrade rules that never required human action in 30 days.</li>
+            <li>Post-incident hardening — add symptom alerts and runbooks for gaps exposed in review, not only more cause thresholds.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Not applicable — all teams with production systems need some alerting strategy. The question is only which approach.</li>
+            <li>Paging on metrics with no runbook and no recent successful drill — if responders routinely shrug, demote or delete the rule.</li>
+            <li>Using static error-rate thresholds when SLOs exist — burn rate incorporates budget context; fixed 1% pages at the wrong times.</li>
+            <li>Alerting on logs at high volume without sampling — prefer metric recording rules or log-based metrics with tight cardinality.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Evaluation happens in the metrics tier; Alertmanager (or equivalent) deduplicates, routes by severity, and hands off to on-call tooling.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    prom["Prometheus / Grafana"]
+    sli["SLI recording rules"]
+    rules["Burn-rate alert rules"]
     am["Alertmanager"]
-    route["Routing + inhibition"]
-    page["PagerDuty / Opsgenie"]
-    prom --> am --> route --> page</div>
+    route["Route / inhibit / group"]
+    page["On-call / chat"]
+    sli --> rules --> am --> route --> page</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>ALERTING ARCHITECTURE:
@@ -197,7 +203,7 @@ ALERT RUNBOOK:
   4. Mitigation steps (how to fix common causes)
   5. Escalation path</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Alerting path: metric rules fire in Alertmanager, which routes by severity to on-call with suppression and grouping.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">SLI recording rules feed burn-rate alert rules; Alertmanager groups and inhibits before notifying on-call.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -205,62 +211,67 @@ ALERT RUNBOOK:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>SLO-based burn rate alerting directly ties alerts to user impact, automatically prioritising incidents by their rate of error budget consumption rather than arbitrary thresholds.</li>
-                <li>Dual burn rate windows (short + long) reduce false positives: requiring both a short-window and long-window rate to be elevated confirms a sustained problem rather than a transient spike.</li>
-                <li>Symptom-based alerting ensures engineers are only paged when users are actually affected, rather than for every internal anomaly that self-resolves.</li>
+                <li>Burn-rate pages track error-budget consumption — prioritisation follows user impact, not whichever threshold was guessed first.</li>
+                <li>Multi-window AND conditions filter single-scrape spikes while still catching sustained degradation.</li>
+                <li>Symptom paging plus ticketed cause alerts preserve capacity foresight without waking people for healthy-looking services.</li>
+                <li>Grouped alerts and inhibition keep one incident to one coordinated notification.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>SLO-based burn rate alerting requires well-defined, correctly measured SLOs as a prerequisite — teams without established SLOs cannot implement burn rate alerts without first doing the SLO definition work.</li>
-                <li>Burn rate alerts can miss short-lived but high-impact incidents (a 100% error rate for 5 minutes consumes little budget but significantly impacts users during that window) — requires a short fast-burn window to catch these.</li>
-                <li>Alert routing logic in PagerDuty/OpsGenie requires maintenance as teams and services change; stale routing means pages go to wrong teams.</li>
+                <li>Burn-rate rules require trustworthy SLIs — garbage numerators produce confident wrong pages.</li>
+                <li>Mis-tuned fast-burn multipliers miss brief total outages; tune short windows for critical journeys.</li>
+                <li>Routing trees rot as teams reorganise — stale services page former employees.</li>
+                <li>Over-reliance on automation to “fix” alerts without deleting rules recreates fatigue under new names.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with an alert audit: list every alert, its last 30 days of firing history, and whether each firing required human action. Alerts that fired without requiring action are candidates for deletion or demotion to lower severity. Google recommends that 100% of pages should require human action — any alert that regularly fires without action should be eliminated. This audit alone typically reduces alert volume by 50% in teams that have accumulated alerts over years.</p>
-          <p>Every alert must have a runbook linked in the annotation. On-call engineers paged at 03:00 should be able to follow a runbook to diagnose and mitigate the most common causes within minutes, even without full context. Runbooks should be kept current — a runbook that describes a system that no longer exists is worse than no runbook, because it wastes investigation time. Treat runbooks as code: maintain them in version control, review changes with the same rigour as code changes, and run "fire drills" (test the runbook with a simulated incident) to validate they are accurate.</p>
+          <p>Run a quarterly <strong>alert audit</strong>: export firing history, mark each rule as actionable or not, delete or downgrade the rest. Google’s guidance is blunt — if a page does not regularly require human intervention, remove it. Record SLI error ratios as Prometheus (or equivalent) recording rules before writing burn expressions so alert YAML stays readable.</p>
+          <p>Implement workbook burn tiers: a <strong>fast burn</strong> (for example 14× over 1h and 5m) pages immediately; a <strong>moderate burn</strong> (6× over 6h and 30m) pages with lower urgency; a <strong>slow burn</strong> (3× over 3d) opens a ticket. Attach <code>runbook_url</code> and <code>dashboard</code> annotations to every page. Require <code>for:</code> durations on volatile metrics.</p>
+          <p>Configure inhibition so a top-level symptom alert (synthetic journey failed, SLO fast burn) suppresses dependent cause alerts (pod restart loop, CPU high on workers). Define severity-to-channel mapping in on-call tooling and test with scheduled game days.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Alerting on causes rather than symptoms</strong>: Paging on CPU &gt; 80% or memory &gt; 85% when there is no user impact trains engineers to ignore alerts. Page on symptoms (latency, errors), file tickets on causes (resource pressure).</li>
-            <li><strong>No runbooks</strong>: Engineers receive an alert at 03:00 with no context on what the alert means or how to respond — investigation time is wasted on diagnosis that a runbook could eliminate.</li>
-            <li><strong>Alert storms during incidents</strong>: A single root cause triggers 50 dependent alerts; alert grouping and inhibition rules in AlertManager must suppress downstream alerts when the root cause alert is firing.</li>
-            <li><strong>Flapping alerts with no hysteresis</strong>: Alerts that fire and resolve every few minutes because the metric oscillates around the threshold; add a <code>for</code> duration (e.g., <code>for: 5m</code>) to require sustained breach before alerting.</li>
+            <li><strong>Paging on saturation alone</strong>: CPU at 90% with flat latency and error rate is a ticket, not a 03:00 page — pair saturation with symptom signals.</li>
+            <li><strong>Missing runbooks</strong>: Alerts without links force rediscovery during incidents; treat missing runbooks as alert misconfiguration.</li>
+            <li><strong>Alert storms</strong>: No grouping/inhibition — one dependency failure pages every downstream service.</li>
+            <li><strong>Flapping</strong>: No <code>for</code> window or hysteresis on metrics that oscillate at the threshold.</li>
+            <li><strong>Duplicate paths</strong>: Grafana alerts and Prometheus alerts on the same condition with different thresholds — consolidate evaluation.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are all paging alerts symptom-based (user-facing impact)?</li>
-            <li>Is every alert linked to a current runbook with diagnostic and mitigation steps?</li>
-            <li>Are SLO-based burn rate alerts implemented for critical user journeys?</li>
-            <li>Are alert severity levels defined with explicit response time SLAs?</li>
-            <li>Is alert grouping/inhibition configured to suppress cascading alerts during incidents?</li>
-            <li>Has an alert audit been performed in the last 6 months to eliminate noisy/unnecessary alerts?</li>
+            <li>Does every paging rule map to a user-visible symptom or SLO burn rate?</li>
+            <li>Is each page urgent, actionable, and novel under the SRE definition?</li>
+            <li>Are multi-window burn-rate alerts live for top user journeys?</li>
+            <li>Do all pages link to current runbooks and dashboards?</li>
+            <li>Are inhibition rules tested for cascading failure scenarios?</li>
+            <li>Has alert volume per on-call shift been reviewed in the last quarter?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Alert fatigue remediation</strong>: Team receiving 200+ alerts/week performs audit; 60% are cause-based alerts that never required action (CPU, disk, queue depth within normal range); demoted to tickets or dashboards; paging alerts drop to 15/week, all actionable, on-call quality of life significantly improved.</li>
-            <li><strong>SLO burn rate alert catches slow degradation</strong>: A new dependency (third-party API) starts returning 5xx on 0.3% of requests — below any fixed threshold alert but consuming error budget at 3× the expected rate; slow burn alert fires after 6 hours; team investigates and finds the upstream degradation before it escalates.</li>
-            <li><strong>On-call routing by severity</strong>: P1 alert (checkout down) pages on-call mobile at any hour; P2 alert (elevated latency) sends Slack message to #incidents channel during business hours, pages after hours; P3 (disk at 80%) creates Jira ticket for next sprint.</li>
+            <li><strong>Illustrative scenario —</strong> A team deletes 120 cause-based pages and keeps 18 symptom and burn-rate rules; mean pages per week drop from 180 to 12; MTTR on real outages improves because responders treat pages seriously.</li>
+            <li><strong>Illustrative scenario —</strong> Slow 0.4% error rate from a degraded dependency fires a 3× burn ticket before any customer escalation; rollback completes with 40% of monthly budget remaining.</li>
+            <li><strong>Case study —</strong> Google’s SRE Workbook documents multi-window burn alerting as the default for SLO-backed services, replacing static error-ratio thresholds.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — The foundation for burn rate alerting.</li>
-            <li><a href="metrics-and-monitoring.html">Metrics and Monitoring</a> — The data source for alert evaluation.</li>
-            <li><a href="../security/incident-response.html">Incident Response</a> — What happens after an alert fires.</li>
+            <li><a href="sli-slo-sla.html">SLI / SLO / SLA</a> — Definitions burn-rate alerts consume.</li>
+            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — Budget policy when alerts fire.</li>
+            <li><a href="runbooks.html">Runbooks</a> — Linked from every page.</li>
+            <li><a href="synthetic-monitoring.html">Synthetic Monitoring</a> — Black-box symptom probes.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://sre.google/workbook/alerting-on-slos/" target="_blank" rel="noopener noreferrer">Google SRE Workbook: Alerting on SLOs</a></li>
-            <li><a href="https://sre.google/sre-book/monitoring-distributed-systems/" target="_blank" rel="noopener noreferrer">Google SRE — Monitoring Distributed Systems</a></li>
-            <li><a href="https://prometheus.io/docs/alerting/latest/alertmanager/" target="_blank" rel="noopener noreferrer">Prometheus AlertManager Docs</a></li>
+            <li><a href="https://sre.google/workbook/alerting-on-slos/" target="_blank" rel="noopener noreferrer">Google SRE Workbook — Alerting on SLOs</a></li>
+            <li><a href="https://sre.google/sre-book/monitoring-distributed-systems/" target="_blank" rel="noopener noreferrer">Google SRE Book — Monitoring Distributed Systems</a></li>
+            <li><a href="https://prometheus.io/docs/alerting/latest/alertmanager/" target="_blank" rel="noopener noreferrer">Prometheus Alertmanager</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

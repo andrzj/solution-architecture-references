@@ -99,109 +99,157 @@
             <span class="badge badge--primary">Observability & Operations</span>
           </div>
           <h1 class="article-header__title">SLI / SLO / SLA</h1>
-          <p class="article-header__desc">Service level indicators, objectives, and agreements — reliability measurement done right.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">The Google SRE hierarchy for reliability measurement: service level indicators derived from user journeys, service level objectives as internal targets with error budgets, and service level agreements as customer-facing contracts with margin below SLO.</p>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: SLI = successful checkout ratio; SLO = 99.9% monthly; SLA = 99.5% with credits if breached.</p>
+          <p><strong>Service level indicators (SLIs)</strong>, <strong>service level objectives (SLOs)</strong>, and <strong>service level agreements (SLAs)</strong> form a layered vocabulary for measuring and committing to reliability. Google’s SRE model treats them as distinct on purpose so engineering, product, and legal do not argue past each other about whether the system is “up.”</p>
+          <p>A <strong>service level indicator (SLI)</strong> is a quantitative measure of some aspect of service behaviour that matters to users — not to operators. Common SLI types from the SRE book include <em>availability</em> (the proportion of valid requests served successfully), <em>latency</em> (the proportion of requests faster than a threshold), <em>quality</em> (correctness of output), and <em>throughput</em> (sustained capacity). SLIs are almost always expressed as ratios: good events divided by valid events, measured over a rolling window (typically 28 or 30 days).</p>
+          <p>A <strong>service level objective (SLO)</strong> is an internal target for an SLI — for example, “99.9% of checkout requests return a successful response within 500&nbsp;ms over a rolling 30-day window.” The SLO is agreed between engineering and product; missing it is an engineering signal that triggers error-budget policy, not a contract breach. A <strong>service level agreement (SLA)</strong> is a business contract that promises a subset of SLOs to customers, often with financial remedies. SLAs are typically set <em>looser</em> than internal SLOs to leave headroom — engineering should never promise customers a target tighter than the team can sustain with measured margin.</p>
+          <p>The distinction matters operationally: breaking an SLO consumes error budget and may freeze risky releases; breaking an SLA has revenue, legal, and relationship consequences. Many services define SLOs without publishing SLAs at all (internal platforms, B2C products without uptime clauses).</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without shared definitions, teams debate whether the system is 'up'. SLI/SLO/SLA vocabulary aligns engineering, product, and legal on reliability expectations and error budgets.</p>
+          <p>Without agreed SLIs, “availability” means different things to different teams — uptime of a health endpoint, ping success from one data centre, or percentage of completed user transactions. That ambiguity makes alerting arbitrary (“CPU is high, page someone”) and makes incident severity debates unproductive. The SRE approach anchors measurement in <strong>user journeys</strong>: identify critical tasks users perform, define what “good” means for each task, and measure that with SLIs. SLOs translate those measurements into explicit reliability goals that feed error budgets, burn-rate alerts, and release policy. SLAs, when needed, externalise a conservative slice of those goals.</p>
+          <p>The monitoring chapter of the SRE book emphasises that measurement should support decisions: SLOs tell you when reliability investment competes with feature velocity; SLIs provide the raw signal; SLAs bound customer expectations.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Customer-facing services with availability goals.</li>
-            <li>Platform teams serving internal developers.</li>
-            <li>Negotiating enterprise contracts.</li>
+            <li>User-facing services where degraded reliability directly affects revenue, trust, or safety — define at least one SLI/SLO per critical journey (login, search, checkout, API read/write).</li>
+            <li>Platform or infrastructure teams whose “users” are other engineers — SLOs on build success rate, artifact pull latency, or control-plane availability align platform work with developer productivity.</li>
+            <li>Enterprise sales or regulated offerings that require contractual uptime or latency commitments — pair internal SLOs with SLAs that include measurement methodology and exclusion windows.</li>
+            <li>Organisations adopting SRE practices — SLI/SLO definition is prerequisite work for burn-rate paging and error-budget governance.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>SLO on every internal script — focus on user journeys.</li>
-            <li>SLA stricter than measured SLO without margin.</li>
+            <li>Batch pipelines, one-off scripts, or admin tools with no direct user journey — simpler operational monitoring (job success alerts, queue depth) avoids SLO ceremony without benefit.</li>
+            <li>Defining dozens of SLOs per service — Google recommends a small set of user-centric SLOs; too many dilute focus and make budgets meaningless.</li>
+            <li>Signing an SLA stricter than historical SLI performance without engineering sign-off — you will breach the contract and burn goodwill, not just error budget.</li>
+            <li>Using only infrastructure metrics (CPU, disk, pod count) as SLIs — these are white-box signals useful for diagnosis, not substitutes for user-observable SLIs.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Measurement flows from user-observable events through aggregation to SLO evaluation; SLAs sit outside the technical path as policy wrappers.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    journey["User journey"]
-    sli["SLI metric"]
-    slo["SLO target"]
-    sla["SLA contract"]
-    journey --> sli --> slo --> sla</div>
+    journey["Critical user journey"]
+    events["Good / valid events"]
+    sli["SLI ratio"]
+    slo["SLO + error budget"]
+    policy["Release / alerting policy"]
+    sla["SLA contract optional"]
+    journey --> events --> sli --> slo --> policy
+    slo -.-> sla</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>HIERARCHY:
+              <pre class="architecture-diagram__canvas"><code>SLI / SLO / SLA HIERARCHY (Google SRE):
 
-  User journey --> SLI (metric)
-                      |
-                      v
-                    SLO (target)
-                      |
-                      v
-                    SLA (contract, optional)</code></pre>
+1. USER JOURNEY
+   Example: "Complete a purchase"
+
+2. SLI DEFINITION (ratio)
+   Availability SLI:
+     good = HTTP 2xx on POST /checkout within 500ms
+     valid = all POST /checkout attempts (exclude client 4xx if policy says so)
+     SLI = sum(good) / sum(valid) over 30d rolling window
+
+   Latency SLI (distribution):
+     good = requests with latency &lt;= 300ms
+     valid = all successful requests
+     SLI = proportion fast enough
+
+3. SLO TARGET
+   Target: 99.9% availability + 95% of requests &lt; 300ms
+   Error budget: 0.1% of valid events ≈ 43.2 min/month at constant load
+
+4. MEASUREMENT SOURCES (black-box + white-box)
+   - Load balancer / API gateway access logs (user-visible)
+   - Synthetic probes (baseline when traffic is low)
+   - Application metrics with business labels (careful cardinality)
+   NOT: internal /health-only probes as sole SLI
+
+5. SLA (optional, external)
+   Published: 99.5% monthly with defined measurement + credits
+   Internal SLO 99.9% leaves ~0.4% margin for contract safety
+
+POLICY HOOKS:
+   SLO burn rate → paging (see Alerting Strategies)
+   Budget remaining → release freeze or extra validation</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">SLI, SLO, SLA hierarchy: measure user-observable signals, set internal targets, and contract externally when needed.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">User journeys produce good/valid event ratios (SLIs); SLOs and error budgets drive alerting and release policy; SLAs optionally promise a subset externally.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Clarifies reliability priorities.</li>
-            <li>Feeds error-budget policies.</li>
-            <li>Improves customer trust.</li>
-            <li>Guides alerting on user impact.</li>
+                <li>Shared vocabulary ends “is it up?” debates — everyone references the same SLI definition and SLO window.</li>
+                <li>User-journey SLIs align monitoring and paging with symptoms users actually feel, matching the SRE preference for symptom-based alerts.</li>
+                <li>SLO targets plus error budgets create objective input to release decisions instead of subjective risk arguments.</li>
+                <li>Looser SLAs with tighter internal SLOs protect customers while giving engineering room to absorb incidents.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Bad SLIs measure ops, not users.</li>
-            <li>SLA penalties without engineering input.</li>
-            <li>Too many SLOs dilute focus.</li>
-            <li>Gaming metrics to meet targets.</li>
+                <li>Choosing wrong SLIs (health-check uptime, mean latency without thresholds) produces green dashboards during user-visible outages.</li>
+                <li>Multi-window SLOs across many microservices require coordination — overlapping SLOs without ownership create alert noise.</li>
+                <li>SLA penalties negotiated without SLO data lead to unreachable promises or expensive credits.</li>
+                <li>Teams may game SLIs (excluding error classes, narrowing “valid” events) to meet targets without improving user experience.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Derive SLIs from user journeys (success rate, latency percentiles). Set SLOs with error budget policies; keep SLAs slightly looser with observability proof.</p>
-          <p>Document exclusion windows for maintenance; publish SLO dashboards to stakeholders.</p>
+          <p>Start from the SRE workbook’s user-journey template: list critical journeys, define good and valid events per journey, then pick one or two SLI types per journey (often availability plus latency). Prefer <strong>black-box</strong> measurement at the edge (load balancer logs, API gateway, synthetic probes) for what users experience; use <strong>white-box</strong> service metrics for diagnosis, not as the sole SLI unless they correlate tightly with user outcomes.</p>
+          <p>Set initial SLO targets from historical SLI data: measure 90 days of production traffic, find the worst plausible month, and set the SLO slightly below that performance so the budget is not exhausted on day one. Document how client errors (4xx) are treated — many APIs count only 5xx and timeouts as “bad,” while validation failures are “valid but not good” or excluded entirely; the choice must match product expectations.</p>
+          <p>Publish an SLO dashboard showing current SLI, target, error budget remaining, and projected exhaustion date. Review quarterly with product and leadership. When introducing SLAs, include the measurement method (data source, aggregation interval, maintenance exclusions) in the contract appendix so disputes are technical, not rhetorical.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Availability only</strong> — ignores latency.</li>
-            <li><strong>Internal probe as SLI</strong> — not user-observed.</li>
-            <li><strong>No multi-window burn alerts</strong>.</li>
-            <li><strong>SLA without measurement method</strong>.</li>
+            <li><strong>Availability-only SLOs</strong>: A service returns 200 quickly with wrong or empty payloads — combine availability with correctness or latency SLIs where quality matters.</li>
+            <li><strong>Health endpoint as SLI</strong>: Probes that never traverse auth, data stores, or business logic report “100% up” while checkout fails — measure at the journey boundary.</li>
+            <li><strong>SLA tighter than SLO</strong>: Sales commits 99.95% while engineering targets 99.9% — incidents become contractual breaches instead of budget events.</li>
+            <li><strong>No agreed valid events</strong>: Denominator disputes (are 429 rate limits “bad” or “valid”?) make SLI ratios meaningless until policy is written.</li>
+            <li><strong>Static calendar-month windows only</strong>: Rolling windows smooth seasonality; calendar months can hide slow burns that exhaust budget at month boundaries unpredictably.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>SLIs tied to user journeys?</li>
-            <li>SLO windows and targets written?</li>
-            <li>Error budgets calculated?</li>
-            <li>SLA margin below SLO?</li>
-            <li>Dashboards customer-visible where needed?</li>
-            <li>Review cadence scheduled?</li>
+            <li>Are SLIs defined as good/valid ratios on critical user journeys, not only infrastructure metrics?</li>
+            <li>Are good events and valid events documented, including treatment of 4xx, timeouts, and partial failures?</li>
+            <li>Are SLO targets justified by historical SLI data with explicit rolling window length?</li>
+            <li>Is error budget calculated and visible to engineering and product?</li>
+            <li>If SLAs exist, are they looser than internal SLOs with published measurement methodology?</li>
+            <li>Are burn-rate alerts tied to the same SLI definitions used for reporting?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>API</strong>: Availability SLI on 2xx/allowed 4xx; latency p99 SLO 300ms.</li>
-            <li><strong>Retail</strong>: Checkout success SLI during peak.</li>
-            <li><strong>Platform</strong>: Build success rate SLO for CI service.</li>
+            <li><strong>Illustrative scenario —</strong> A payments API defines availability SLI as successful authorisations within 800&nbsp;ms over all authenticated POSTs; SLO 99.95% over 30 days; SLA in enterprise contracts at 99.9% with credits — engineering freezes feature work when budget drops below 15%.</li>
+            <li><strong>Illustrative scenario —</strong> A search product adds latency SLI: proportion of queries under 200&nbsp;ms; discovers availability SLO is met while p95 latency degrades — product prioritises index optimisation because latency SLO burns budget faster than error rate.</li>
+            <li><strong>Case study —</strong> Google’s SRE materials describe services that publish internal SLOs to align release velocity with reliability; customer SLAs, when offered, deliberately lag internal targets to preserve margin.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — Operating with budgets.</li>
-            <li><a href="alerting-strategies.html">Alerting Strategies</a> — Burn-rate alerts.</li>
-            <li><a href="synthetic-monitoring.html">Synthetic Monitoring</a> — Proactive SLI probes.</li>
+            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — Operating policies once SLIs and targets exist.</li>
+            <li><a href="alerting-strategies.html">Alerting Strategies</a> — Multi-window burn-rate paging on SLI error ratios.</li>
+            <li><a href="metrics-and-monitoring.html">Metrics and Monitoring</a> — Four Golden Signals and RED metrics that feed SLIs.</li>
+            <li><a href="synthetic-monitoring.html">Synthetic Monitoring</a> — Black-box probes when live traffic is sparse.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
+            <li><a href="https://sre.google/sre-book/service-level-objectives/" target="_blank" rel="noopener noreferrer">Google SRE Book — Service Level Objectives</a></li>
+            <li><a href="https://sre.google/sre-book/monitoring-distributed-systems/" target="_blank" rel="noopener noreferrer">Google SRE Book — Monitoring Distributed Systems</a></li>
             <li><a href="https://sre.google/workbook/implementing-slos/" target="_blank" rel="noopener noreferrer">Google SRE Workbook — Implementing SLOs</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/well-architected/reliability/metrics" target="_blank" rel="noopener noreferrer">Azure Well-Architected — Reliability metrics</a></li>
-            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/service-level-agreements.html" target="_blank" rel="noopener noreferrer">AWS Builders Library — Availability metrics</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
-          <a href="slos-and-error-budgets.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">SLOs &amp;amp; Error Budgets</span></a>
+          <a href="slos-and-error-budgets.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">SLOs and Error Budgets</span></a>
           <a href="health-checks.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Health Checks</span></a>
         </nav>
       </div>
