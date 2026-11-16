@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Feature Flags & Observability — SA References</title>
-  <meta name="description" content="Decoupling deployment from release and measuring feature impact with observability.">
+  <meta name="description" content="Instrumenting feature flags so rollouts, experiments, and kill switches are visible in metrics, traces, and logs.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,105 +99,134 @@
             <span class="badge badge--primary">Observability & Operations</span>
           </div>
           <h1 class="article-header__title">Feature Flags & Observability</h1>
-          <p class="article-header__desc">Decoupling deployment from release and measuring feature impact with observability.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">Instrumenting feature flags so rollouts, experiments, and kill switches are visible in metrics, traces, and logs.</p>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: 5% canary receives new ranking algorithm; dashboards compare error rate and latency by flag value.</p>
+          <p>Feature flags decouple <em>deployment</em> (code present in production) from <em>release</em> (code exercised by users). Observability for flags means every evaluation that affects behavior is visible in telemetry: metrics broken down by flag key and variant, trace attributes that follow requests across services, and structured log fields for debugging “why did this user see behavior B?”</p>
+          <p>Without instrumentation, progressive delivery becomes guesswork: a canary at 5% may look healthy in aggregate while the canary cohort’s error rate is unacceptable—or a kill switch may be off while cached SDK state still routes traffic to a broken path. Treat flag state as a first-class dimension of observability, with bounded cardinality and consistent evaluation context (user, tenant, region, app version).</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Progressive delivery requires measurable impact. Flag observability ensures experiments and rollbacks are data-driven, not guesswork.</p>
+          <p>Teams adopt flags to reduce blast radius and accelerate experimentation. Those benefits only hold if you can compare variants on the same SLIs you use for production health—latency, error rate, conversion, resource usage—and roll back on data within minutes. Flag observability also accelerates incident response: during an outage, knowing which cohort received a new variant narrows the search space dramatically.</p>
+          <p>Open standards (for example OpenFeature) and vendor integrations increasingly export flag context into OpenTelemetry. The architectural goal is the same: one place to query “errors for <code>checkout_redesign=true</code> in region eu-west.”</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Canary releases and A/B tests.</li>
-            <li>Kill switches for risky features.</li>
-            <li>Long-lived entitlements for enterprise tenants.</li>
+            <li>Canary releases, percentage rollouts, and A/B tests where decisions depend on measured impact.</li>
+            <li>Kill switches for risky features where disabling must not require a full redeploy.</li>
+            <li>Per-tenant or per-segment entitlements in B2B products—observability proves correct targeting.</li>
+            <li>Shadow or dark launches where new code runs without user-visible effect but still emits comparative metrics.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Permanent configuration masquerading as flags — use config service.</li>
-            <li>Flags without audit of who changed them.</li>
+            <li>Stable, long-lived configuration (feature tiers, rate limits)—use a configuration service with normal change control.</li>
+            <li>Flags changed in production without audit logs—observability cannot replace governance.</li>
+            <li>High-cardinality targeting (per-user variant labels on every metric)—will explode time-series cost; aggregate or sample instead.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Applications evaluate flags via an SDK or agent backed by a flag management service. Telemetry pipelines attach flag key and variant at request boundaries; dashboards and alerts group SLIs by those dimensions during rollouts.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart LR
-    sdk["App SDK"]
-    ld["Flag service"]
-    metrics["Metrics / traces"]
-    sdk --> ld
-    sdk --> metrics</div>
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    req["Incoming request"]
+    sdk["Flag SDK / OpenFeature"]
+    svc["Flag management service"]
+    app["Application logic"]
+    otel["Metrics, traces, logs"]
+    dash["Dashboards + SLO alerts"]
+    req --> sdk
+    svc --> sdk
+    sdk --> app
+    app --> otel
+    otel --> dash</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>FLAG + OBSERVABILITY:
 
-  Request --> [Flag SDK] --> variant
-                |               |
-                v               v
-            metrics labels   trace attributes
-                \               /
-                 v             v
-              Compare variants in Grafana</code></pre>
+  Request --> SDK evaluates context (user, tenant)
+                 |
+                 +--> variant applied in app code
+                 |
+                 v
+  Emit: trace attributes + low-cardinality metric labels
+                 |
+                 v
+  Dashboards: compare variants on error rate, latency, SLIs
+                 |
+                 v
+  Rollout controller: promote or kill based on burn rate</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Feature flags: SDK evaluates configuration locally while telemetry correlates flag state with release metrics.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Flag evaluation feeds application behavior and parallel telemetry export so rollouts can be judged on user-impacting signals per variant.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Instant rollback without redeploy.</li>
-            <li>Targeted exposure limits blast radius.</li>
-            <li>Experiment analysis built-in.</li>
-            <li>Pairs with progressive delivery.</li>
+                <li>Fast rollback by toggling exposure without rebuilding artifacts.</li>
+                <li>Variant-level SLIs make canary and A/B decisions evidence-based.</li>
+                <li>Kill switches limit blast radius when a feature misbehaves after deploy.</li>
+                <li>Correlates incidents with recent flag changes in timelines and traces.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Flag debt if not removed.</li>
-            <li>Combinatorial test explosion.</li>
-            <li>Caching stale flag state.</li>
-            <li>Extra cardinality in metrics.</li>
+                <li>Flag debt multiplies code paths—observability labels do not remove testing burden.</li>
+                <li>Stale SDK cache can desync perceived vs actual rollout state.</li>
+                <li>Poor cardinality discipline on flag labels can inflate metrics cost.</li>
+                <li>Client-only evaluation is bypassable; server-side truth is required for security-sensitive flags.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Emit flag key and variant on traces and metrics with bounded cardinality. Automate staleness reports for flags older than 90 days.</p>
-          <p>Use consistent evaluation context (user id, tenant, region).</p>
+          <p>Standardize attribute names (<code>feature_flag.key</code>, <code>feature_flag.variant</code>) across services and propagate via OpenTelemetry context. Restrict metric labels to a bounded set of flag keys under active rollout; log detailed evaluation at debug level with sampling.</p>
+          <p>Define SDK failure modes explicitly: fail closed for kill switches that protect stability, fail open only when business accepts risk—document which is which per flag. Server-side evaluation is mandatory for entitlements, pricing, and authorization.</p>
+          <p>Automate hygiene: reports for flags older than 90 days without changes, mandatory removal tickets when rollout completes, and synthetic checks that assert both variants (where safe) emit expected telemetry.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Client-side only flags</strong> bypassed.</li>
-            <li><strong>Defaults wrong</strong> on SDK outage.</li>
-            <li><strong>Unbounded variants</strong> in metrics.</li>
-            <li><strong>No audit trail</strong> on changes.</li>
+            <li><strong>Client-only gating</strong>: Sensitive features enforced in mobile or browser code are trivially bypassed.</li>
+            <li><strong>Wrong defaults when the flag service is unreachable</strong>: SDK serves stale “on” while operators believe the kill switch worked.</li>
+            <li><strong>Unbounded variant labels</strong>: Per-user IDs in metric dimensions overwhelm the time-series backend.</li>
+            <li><strong>No change audit</strong>: Incidents cannot be correlated with who enabled a flag at what time.</li>
+            <li><strong>Aggregate dashboards hide canary regression</strong>: Rollout continues because global error rate looks flat.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Server-side evaluation for auth features?</li>
-            <li>Variants labeled in metrics/traces?</li>
-            <li>Kill switch tested?</li>
-            <li>Flag cleanup process?</li>
-            <li>Audit who changed production flags?</li>
-            <li>SDK failure mode defined?</li>
+            <li>Are security- and billing-related flags evaluated server-side only?</li>
+            <li>Do traces and metrics include flag key and variant with bounded cardinality?</li>
+            <li>Are kill switches tested in staging and exercised in game days?</li>
+            <li>Is there a defined flag removal process after full rollout?</li>
+            <li>Are production flag changes audited with actor, time, and old/new values?</li>
+            <li>Is SDK offline behavior documented per flag (fail open vs closed)?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>B2B</strong>: Tenant-specific beta features.</li>
-            <li><strong>Mobile</strong>: Remote config with observability hooks.</li>
-            <li><strong>ML ranking</strong>: Shadow mode metrics before full rollout.</li>
+            <li><strong>Illustrative scenario — ranking canary:</strong> <strong>RideRelay</strong> routes 5% of search traffic to a new ranker; dashboards compare p99 latency and error rate by <code>ranker_v2</code> variant; automatic promotion halts when burn rate exceeds threshold.</li>
+            <li><strong>Illustrative scenario — enterprise beta:</strong> B2B tenant allowlists gate a beta API; logs and metrics include <code>tenant_id</code> in traces (not as metric labels) to verify only contracted tenants received the feature.</li>
+            <li><strong>Case study — progressive delivery at scale:</strong> Large product organizations document flag-driven rollouts with automatic rollback when SLIs regress; public write-ups from vendors and practitioners describe tying experimentation to core monitoring stacks.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="../deployment/feature-flags.html">Feature Flags (Deployment)</a> — Delivery-focused flag patterns.</li>
-            <li><a href="synthetic-monitoring.html">Synthetic Monitoring</a> — Probes per variant.</li>
-            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — Guardrails during rollouts.</li>
+            <li><a href="../deployment/feature-flags.html">Feature Flags (Deployment)</a> — Lifecycle and delivery patterns for toggles.</li>
+            <li><a href="distributed-tracing.html">Distributed Tracing</a> — Propagating flag context across services.</li>
+            <li><a href="synthetic-monitoring.html">Synthetic Monitoring</a> — Probes per variant or cohort.</li>
+            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — Rollout guardrails based on burn rate.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/articles/feature-toggles.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Feature Toggles</a></li>
-            <li><a href="https://docs.launchdarkly.com/home/observability" target="_blank" rel="noopener noreferrer">LaunchDarkly Observability</a></li>
+            <li><a href="https://martinfowler.com/articles/feature-toggles.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Feature toggles</a></li>
             <li><a href="https://openfeature.dev/docs/reference/intro" target="_blank" rel="noopener noreferrer">OpenFeature specification</a></li>
+            <li><a href="https://opentelemetry.io/docs/demo/feature-flag-service/" target="_blank" rel="noopener noreferrer">OpenTelemetry Demo — Feature flag service</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
