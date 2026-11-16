@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Database Per Service — SA References</title>
-  <meta name="description" content="The microservices data ownership pattern — each service owns its private database, preventing coupling through shared schemas and enabling independent deployment.">
+  <meta name="description" content="Database per service gives each microservice exclusive ownership of its datastore so schema changes stay local, while cross-service reads flow through APIs or replicated read models.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -101,31 +101,33 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>If the order service needs a customer's name, it calls the customer service API — it does not query the customer database directly.</p>
-          <p>The "database" in this pattern can mean a separate server, a separate schema within a shared server, or (with less isolation) a separate table set behind access controls. Full server isolation is the most complete form; schema-per-service is a common pragmatic compromise that maintains logical isolation without the cost of running a server per service.</p>
+          <p><strong>Database per service</strong> is a microservices data pattern where each service has exclusive ownership of its persistence: no other service may read or write that database directly, and cross-service data needs are satisfied through the owning service’s API or through replicated read models fed by events. Chris Richardson documents the pattern on <a href="https://microservices.io/patterns/data/database-per-service.html" rel="noopener noreferrer" target="_blank">microservices.io</a> as the data counterpart to service encapsulation—schema and storage technology become private implementation details.</p>
+          <p>“Database” can mean a dedicated server, a separate schema on shared infrastructure, or table sets isolated by credentials; stronger isolation reduces noisy-neighbor risk and credential blast radius. If an order workflow needs a customer display name, the order service calls the customer service—it does not issue SQL against the customer schema.</p>
+          <p>The pattern does not eliminate the need for cross-cutting analytics; it routes them through warehouses, CDC streams, or CQRS read models instead of shared mutable tables.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Shared databases are the most common source of coupling in microservices architectures. When multiple services access the same tables, a schema migration in one service can break others; a slow query from one service can degrade response times for all; and deploying one service may require coordinating schema changes with teams owning other services. Database per service enforces the encapsulation boundary at the persistence layer — a service's internal schema is an implementation detail that can change without any coordination with consumers of its API.</p>
+          <p>A single shared database is the fastest path to a distributed monolith: teams couple through foreign keys and ad hoc joins, schema migrations require release trains, and one expensive report query slows every consumer. Giving each service its own store makes the persistence boundary match the deployment boundary, which is what independent teams and <a href="polyglot-persistence.html">polyglot persistence</a> require in practice.</p>
+          <p>The trade-off is intentional: you lose cross-database ACID transactions and single-query reporting, and you gain autonomy, clearer ownership, and the ability to scale or replace one service’s store without destabilizing neighbors.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When microservices must be deployed independently — a shared database makes independent deployment impossible because schema changes must be coordinated across all services.</li>
-            <li>When services are owned by separate teams — teams should not need to coordinate schema changes with other teams' release cycles.</li>
-            <li>When different services have different scalability requirements — the catalog service might need horizontal sharding while the user service remains a single PostgreSQL instance.</li>
-            <li>When polyglot persistence is desired — giving each service its own database is a prerequisite for each service choosing the best database technology for its domain.</li>
-            <li>When you need fault isolation — a crashed database instance should only bring down the service that owns it, not all services sharing it.</li>
+            <li>Apply the pattern when services must ship on independent cadences and cannot wait for coordinated schema migrations across a shared database.</li>
+            <li>Apply it when separate teams own separate services and need schema freedom without cross-team migration approvals for every column change.</li>
+            <li>Apply it when scalability profiles diverge—one service may shard while another stays on a single-instance relational store.</li>
+            <li>Apply it as a foundation for polyglot persistence so each service can choose row, document, or event storage without veto from a central DBA schema.</li>
+            <li>Apply it when fault isolation matters: an outage in one service’s database should not halt unrelated services that do not depend on that data.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Don't apply this pattern to a monolith — the pattern's benefits apply specifically to independently deployable services; in a monolith, multiple schemas add overhead without the deployment independence benefit.</li>
-            <li>Don't apply it if service boundaries are not yet stable — premature service decomposition with database-per-service creates a complex distributed system before the team has validated the domain model.</li>
-            <li>Don't use it if your organization lacks the operational maturity to manage many database instances — each additional database adds backup, monitoring, and on-call complexity.</li>
-            <li>Don't use it as an excuse to avoid fixing a reporting problem properly — if the motivation is "we need cross-service reporting", the solution is a data warehouse and ETL, not a relaxation of the ownership rule.</li>
+            <li>Do not split databases inside a monolith that deploys as one unit, because you incur distributed-data complexity without gaining independent deployment.</li>
+            <li>Do not carve databases before bounded contexts are stable, because mistaken service cuts are expensive to untangle once data is physically split.</li>
+            <li>Do not adopt many database instances without platform capacity for backup, monitoring, and incident response per store.</li>
+            <li>Do not weaken the rule because reporting is hard—the answer is a warehouse or read model, not shared write access to peer schemas.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Services hold private datastores; peers interact only via APIs or async messages. Reporting and joins happen in derived stores populated from domain events or CDC, not by crossing service boundaries with SQL.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     o["Order service&lt;br/&gt;Postgres"]
@@ -163,68 +165,70 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Independent deployment: schema changes in one service don't require coordinating with other teams or causing downtime for unrelated services.</li>
-                <li>Technology choice: each service selects the database that best fits its access patterns (polyglot persistence).</li>
-                <li>Fault isolation: a database outage is scoped to a single service; other services degrade gracefully rather than failing entirely.</li>
-                <li>Independent scaling: the catalog service database can be scaled to handle 100k reads/sec without affecting the order service database.</li>
-                <li>Encapsulation: the internal schema is a private implementation detail; services communicate through stable versioned APIs.</li>
+                <li>Schema migrations stay local to the owning team, which supports continuous delivery without organization-wide migration windows.</li>
+                <li>Each service can adopt storage technology suited to its domain without forcing a single global standard.</li>
+                <li>Database failures and maintenance windows affect only consumers of that service’s API, not every tenant of a shared schema.</li>
+                <li>Capacity planning can target hot services independently instead of oversizing one shared instance for the noisiest neighbor.</li>
+                <li>Public APIs and versioned events become the stable contract instead of shared table layouts.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Cross-service queries require either API composition (N+1 calls problem) or maintaining a separate reporting store fed by events.</li>
-                <li>No distributed transactions: business operations spanning multiple services must use sagas with compensating transactions — eventual consistency, not ACID.</li>
-                <li>Data duplication: the same entity (e.g., a product) may need to be partially replicated into multiple service databases, requiring synchronization.</li>
-                <li>Operational overhead: multiple database servers, each requiring its own backup strategy, monitoring, patching, and capacity planning.</li>
-                <li>Referential integrity lost: foreign key constraints across service boundaries are no longer enforceable by the database; integrity must be maintained at the application level.</li>
+                <li>Cross-service screens and reports need API composition, batch fetches, or materialized views—not one SQL join across schemas.</li>
+                <li>Multi-service business processes require sagas and compensations rather than a single cross-database transaction.</li>
+                <li>Duplicated reference data must be synchronized via events, with clear rules for staleness and conflict.</li>
+                <li>Operating many databases multiplies backup, patching, and credential management work.</li>
+                <li>Foreign keys cannot span service databases; referential integrity becomes an application and process concern.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For cross-service reporting and analytics, publish domain events to a message broker (Kafka) and consume them into a data warehouse (Redshift, BigQuery, Snowflake). Each service publishes events when data changes; the warehouse maintains denormalized views of all domains. This is the correct solution for cross-service analytics and avoids the temptation to query multiple service databases directly. Alternatively, use CQRS with a dedicated read service: the read service subscribes to events from multiple services and materializes a join view as a read model (e.g., an order summary view joining order, customer, and product data).</p>
-          <p>For cross-service transactions (e.g., place an order, deduct inventory, charge payment), implement the Saga pattern. The orchestrator saga sends a command to each service and handles compensation if any step fails: if the payment service rejects the charge after inventory has been deducted, a "release inventory" compensating command is sent. Sagas accept eventual consistency — there's a window where the system is in a partially consistent state. Design business processes to handle this (e.g., show "order pending" rather than "order confirmed" until all saga steps complete).</p>
+          <p>For analytics, emit domain events from each service’s private database—often via the <a href="../communication-patterns/transactional-outbox.html">transactional outbox</a>—and load a <a href="data-warehouse.html">warehouse</a> or lakehouse with denormalized facts. That path preserves ownership while giving BI a queryable cross-domain layer.</p>
+          <p>For interactive reads that join multiple services, prefer a dedicated read model or BFF that subscribes to events and materializes one query-friendly document, or expose batch APIs (for example “customers by ids”) to avoid chatty per-row HTTP calls. <a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">CQRS</a> separates this read-optimized store from each service’s write model.</p>
+          <p>For multi-step business flows—place order, reserve stock, capture payment—use the <a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">saga</a> pattern with explicit compensating commands and user-visible intermediate states (pending versus confirmed). Register event schemas so consumers detect incompatible changes before production deploys.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Shared database re-emerging:</strong> Teams find the API-composition overhead inconvenient and start allowing "read-only" direct database access from other services; over time the shared database coupling problem is fully restored.</li>
-            <li><strong>Missing saga compensation:</strong> An order saga reserves inventory and then the payment step fails; the inventory reservation is never released; stock levels show items as reserved that will never be purchased.</li>
-            <li><strong>N+1 query problem in API composition:</strong> To render a list of 100 orders with customer details, the order service calls the customer service API 100 times (one per order); the API becomes slow and the customer service is overwhelmed.</li>
-            <li><strong>Event schema drift:</strong> The order service changes the format of its order-placed event; the reporting service that consumes the event breaks silently; the reporting database stops updating.</li>
-            <li><strong>Referential integrity violation:</strong> A customer is deleted from the customer service; the order service still has orders with that customer ID; there's no foreign key constraint to prevent this; customer-related order queries return null references.</li>
+            <li><strong>Shared database creep:</strong> Teams grant “read-only” SQL access across service databases for convenience, which restores coupling and hidden dependencies.</li>
+            <li><strong>Missing saga compensation:</strong> A downstream step fails after an upstream reservation, leaving inventory or payments in a stuck partial state.</li>
+            <li><strong>Chatty API composition:</strong> List endpoints trigger one remote call per row instead of batch or denormalized reads, which overloads peer services and inflates latency.</li>
+            <li><strong>Breaking event contracts:</strong> Producers change payload shapes without versioning; consumers stop updating read models silently.</li>
+            <li><strong>Orphan references:</strong> An entity is removed in one service while another still stores its identifier, because cross-service deletes are not orchestrated.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are service boundaries stable and validated — premature database-per-service with shifting service boundaries is extremely expensive to refactor?</li>
-            <li>Is there a strategy for cross-service reporting (data warehouse + event streaming) so teams don't bypass the pattern under reporting pressure?</li>
-            <li>Are saga compensation actions defined for every multi-service business transaction that can partially fail?</li>
-            <li>Is API composition designed to avoid N+1 problems (batch fetch endpoints, GraphQL DataLoader, or denormalized read models)?</li>
-            <li>Is there a schema registry or event contract system to detect breaking changes in domain events between services?</li>
-            <li>Is the team operationally prepared to manage multiple database instances: backup, monitoring alerts, and on-call runbooks for each?</li>
+            <li>Are bounded contexts and service APIs stable enough to justify physical data separation?</li>
+            <li>Is there an approved path for cross-service reporting (warehouse, lake, or CQRS read store)?</li>
+            <li>Does every multi-service workflow document compensating actions for partial failure?</li>
+            <li>Do composite APIs use batching, caching, or read models to avoid per-item peer calls?</li>
+            <li>Are domain events versioned and checked in a registry or contract test pipeline?</li>
+            <li>Can platform teams operate backup restore and paging for each database instance in scope?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce microservices:</strong> Order service (PostgreSQL), inventory service (Redis + PostgreSQL), catalog service (MongoDB), payment service (PostgreSQL with strict ACID), notification service (DynamoDB for notification history). Each team deploys independently without coordination.</li>
-            <li><strong>SaaS multi-tenant platform:</strong> Tenant management service (PostgreSQL), billing service (PostgreSQL with Stripe integration), analytics service (ClickHouse for usage metrics), user management service (PostgreSQL + Redis for sessions). Services share no database; tenant context is propagated via JWT claims in API calls.</li>
-            <li><strong>Booking platform:</strong> Availability service (Redis for real-time counts + PostgreSQL for source-of-truth), reservation service (PostgreSQL), pricing service (PostgreSQL + Redis cache), review service (MongoDB). A booking saga spans availability, reservation, and payment services with compensation on failure.</li>
+            <li><strong>Illustrative scenario —</strong> An e-commerce estate gives orders, catalog, payments, and notifications each a private database; catalog deploys document-store changes while payments stay on a relational ACID store without shared migrations.</li>
+            <li><strong>Illustrative scenario —</strong> A multi-tenant SaaS product keeps tenant billing, identity, and usage analytics in separate services; usage events stream to an analytical column store while tenant metadata stays relational.</li>
+            <li><strong>Case study —</strong> Chris Richardson’s microservices.io material on <a href="https://microservices.io/patterns/data/database-per-service.html" rel="noopener noreferrer" target="_blank">database per service</a> and <a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">sagas</a> is the reference description teams use when splitting monolith databases.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="polyglot-persistence.html">Polyglot Persistence</a> — Database per service enables each service to choose the best database technology for its domain.</li>
-            <li><a href="../distributed-systems/saga-pattern.html">Saga Pattern</a> — The mechanism for managing distributed transactions across services that each own their databases.</li>
-            <li><a href="../architecture-styles/cqrs.html">CQRS</a> — A common companion pattern: write model in the service's private DB; read models materialized from events into a queryable store.</li>
-            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — Ensures reliable event publishing from a service's private database without distributed transaction coordination.</li>
+            <li><a href="polyglot-persistence.html">Polyglot Persistence</a> — Independent databases per service enable different engines per domain.</li>
+            <li><a href="../distributed-systems/saga-pattern.html">Saga Pattern</a> — Coordinates multi-service writes without distributed two-phase commit.</li>
+            <li><a href="../architecture-styles/cqrs.html">CQRS</a> — Materializes cross-service read models from events while writes stay private per service.</li>
+            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — Publishes integration events atomically with local database commits.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">Database Per Service Pattern — microservices.io</a></li>
-            <li><a href="https://microservices.io/patterns/data/saga.html" target="_blank" rel="noopener noreferrer">Saga Pattern — microservices.io</a></li>
-            <li><a href="https://www.oreilly.com/library/view/building-microservices-2nd/9781492034018/" target="_blank" rel="noopener noreferrer">Building Microservices, 2nd Edition — Sam Newman</a></li>
+            <li><a href="https://microservices.io/patterns/data/database-per-service.html" rel="noopener noreferrer" target="_blank">Chris Richardson — Database per service (microservices.io)</a></li>
+            <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Chris Richardson — Saga (microservices.io)</a></li>
+            <li><a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">Martin Fowler — CQRS</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em> (transactions, stream processing, data integration)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

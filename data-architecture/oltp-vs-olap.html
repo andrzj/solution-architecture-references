@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OLTP vs OLAP — SA References</title>
-  <meta name="description" content="Understanding row vs columnar storage, write vs read optimization, and HTAP databases that bridge transactional and analytical workloads.">
+  <meta name="description" content="OLTP and OLAP are database workload classes—transaction-heavy row stores versus analytics-oriented columnar stores—and separating them keeps production writes fast while reporting scans large history.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -101,32 +101,33 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Checkout paths need row stores and ACID point writes (<strong>OLTP</strong>); quarterly revenue rollups need columnar scans across history (<strong>OLAP</strong>) — mixing both on one engine usually serves neither workload well.</p>
-          <p><strong>OLAP (Online Analytical Processing)</strong> databases are designed for complex aggregation queries over large datasets: "total revenue by product category by region for Q3", scanning millions or billions of rows across a few columns. They use columnar storage (all values of a column are stored together, enabling vectorized processing and high compression of similar values), are denormalized into star/snowflake schemas, and typically have weaker write performance. Examples: Amazon Redshift, Google BigQuery, Snowflake, ClickHouse, DuckDB.</p>
-          <p><strong>HTAP (Hybrid Transactional/Analytical Processing)</strong> databases attempt to serve both workloads by maintaining both row-oriented and columnar representations of the same data internally. Examples: TiDB (row store + TiFlash columnar replica), SingleStore (formerly MemSQL), Google AlloyDB, Oracle Database with in-memory column store.</p>
+          <p><strong>OLTP (online transactional processing)</strong> is the class of database workloads dominated by short, concurrent reads and writes—placing an order, updating inventory, or recording a payment—with row-oriented storage and ACID guarantees on individual records. <strong>OLAP (online analytical processing)</strong> is the class dominated by scans and aggregations over large historical datasets—revenue by region, funnel conversion, or inventory aging—typically on columnar storage and denormalized dimensional models. As Martin Kleppmann explains in <em>Designing Data-Intensive Applications</em>, the access patterns differ enough that one physical layout is usually optimized for one side and costly for the other.</p>
+          <p>OLTP engines (PostgreSQL, MySQL, SQL Server, and similar row stores) favor B-tree indexes, normalized schemas, and predictable point operations. OLAP engines (warehouse and columnar systems such as BigQuery, Snowflake, Redshift, ClickHouse, and DuckDB) favor reading only the columns a query needs, compression on homogeneous column values, and batch-friendly ingestion. Running heavy reporting directly on the OLTP primary still competes for the same I/O and buffer cache as live transactions, which is why mature architectures copy or stream operational data into an analytical tier.</p>
+          <p><strong>HTAP (hybrid transactional/analytical processing)</strong> systems maintain both row-oriented and columnar representations of the same dataset—often via an integrated columnar replica—so some analytics can run on fresher operational data without a separate batch pipeline, at the cost of more moving parts and infrastructure. HTAP is a deliberate compromise, not a default; separated OLTP plus <a href="data-warehouse.html">data warehouse</a> or lakehouse tiers remain the common pattern.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>The storage layout difference is fundamental. In row-oriented storage, a query that aggregates one column (e.g., <code>SUM(amount)</code>) across 1 billion rows must read all 1 billion rows from disk, including dozens of irrelevant columns. In columnar storage, the same query reads only the <code>amount</code> column, which is stored contiguously, allowing 10–100x less I/O and CPU work. The columnar format also enables aggressive dictionary encoding and run-length encoding compression: a column with only 100 distinct country values across 1 billion rows compresses to near zero.</p>
-          <p>Conversely, an OLTP single-row UPDATE touches exactly one disk block in row-oriented storage; in columnar storage, updating a row requires rewriting every column file that contains that row.</p>
+          <p>Row stores lay out all columns of each record together, which makes fetching or updating one business entity efficient but forces aggregation queries to read many columns that the query never uses. Column stores lay out each column contiguously, so a query that sums one measure can read only that column and benefit from encodings tuned for repeated values. That layout trade-off is why analytical queries that feel trivial in a warehouse can time out or throttle a busy OLTP database.</p>
+          <p>Writes tell the same story in reverse: updating a single row in a row store touches a compact record, while updating one row in a columnar layout may require rewriting multiple column files. OLTP and OLAP therefore evolved as separate specializations; unifying them without accepting compromise usually means HTAP complexity, read replicas with guardrails, or change-data-capture into a purpose-built analytical engine.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Use OLTP for application databases serving user-facing requests: user accounts, orders, inventory, session state — any workload with high write throughput and sub-millisecond point-lookup requirements.</li>
-            <li>Use OLAP for business intelligence, reporting, and analytics requiring aggregations over large historical datasets.</li>
-            <li>Use OLAP (ClickHouse specifically) for real-time analytics on time-series event data where queries must scan billions of rows and return sub-second results.</li>
-            <li>Consider HTAP (TiDB, SingleStore) when you need fresh analytics on operational data without ETL lag and can accept the increased cost and operational complexity.</li>
-            <li>Use DuckDB (embedded OLAP) for local data exploration, ad-hoc analytics on files (Parquet, CSV), and lightweight analytical workloads that don't justify a full warehouse deployment.</li>
+            <li>Use an OLTP database when the workload is user-facing transactions with high concurrency, many small writes, and primary-key lookups that must stay fast and consistent.</li>
+            <li>Use an OLAP store or warehouse when the workload is reporting, BI, or data science queries that scan wide history and aggregate across dimensions.</li>
+            <li>Use a columnar OLAP engine tuned for events or metrics when you need near-real-time dashboards over high-volume append-only streams, not when you need frequent row-level updates.</li>
+            <li>Consider HTAP when freshness requirements rule out batch ETL but you can fund the extra storage, replication, and operational surface of a dual-layout system.</li>
+            <li>Use embedded OLAP (for example DuckDB on local files) for analyst exploration and CI-sized benchmarks before committing to a managed warehouse.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Don't run complex analytical queries on your OLTP database — full table scans for aggregations lock pages, consume I/O bandwidth, and degrade transaction performance for application users.</li>
-            <li>Don't use a data warehouse for OLTP workloads — Snowflake and BigQuery have high per-write latency (seconds to minutes for small individual inserts).</li>
-            <li>Don't adopt HTAP to "avoid ETL" without first understanding the cost — HTAP systems are significantly more expensive per unit of storage and compute than separated OLTP + OLAP architectures.</li>
-            <li>Don't assume read replicas solve the OLAP problem — a PostgreSQL replica still uses row-oriented storage and will underperform a columnar system for aggregation-heavy queries.</li>
+            <li>Do not run ad hoc analytical scans on the production OLTP primary without strict resource limits, because they contend with live traffic for locks, memory, and disk.</li>
+            <li>Do not use a cloud warehouse as the system of record for interactive OLTP, because per-insert latency and cost models assume batch loads and analytical reads.</li>
+            <li>Do not adopt HTAP solely to skip pipeline design, because dual layouts still need governance, capacity planning, and clear query routing rules.</li>
+            <li>Do not assume a row-store read replica replaces a columnar warehouse for heavy aggregation, because the on-disk layout and optimizer assumptions remain OLTP-oriented.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Operational data stays in OLTP; pipelines or streams propagate changes into columnar OLAP or warehouse tables. Analysts and BI tools query the analytical tier so production transaction latency stays protected.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     oltp["OLTP&lt;br/&gt;row store, short txs"]
@@ -167,69 +168,71 @@
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Columnar OLAP Pros</h3>
+              <h3>Pros</h3>
               <ul>
-                <li>10–1000x better performance for aggregation queries on large datasets due to reduced I/O and vectorized processing.</li>
-                <li>High compression ratios (5–10x typical) since column values are homogeneous and compressible with dictionary/RLE encoding.</li>
-                <li>Scales to petabytes with cost-effective object storage (Snowflake, BigQuery separate compute from storage).</li>
-                <li>SIMD vectorized processing: modern OLAP engines process 256–512 bits per CPU instruction rather than one row at a time.</li>
-                <li>Partition pruning: date-partitioned tables skip reading entire partitions for time-bounded queries.</li>
+                <li>Separating OLTP and OLAP lets each tier use storage and indexing matched to its workload, which improves both transaction latency and analytical throughput.</li>
+                <li>Columnar OLAP achieves strong aggregation performance and compression because scans touch few columns and encodings exploit repeated values.</li>
+                <li>Isolating analytics off the OLTP primary protects checkout, billing, and other write paths from ad hoc report queries.</li>
+                <li>Cloud warehouses decouple storage from compute so analytical capacity can scale without resizing the operational database.</li>
+                <li>Partitioning and clustering on the OLAP side reduce scanned data for time-bounded queries when filters align with table design.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
-              <h3>OLAP Cons / OLTP Trade-offs</h3>
+              <h3>Cons</h3>
               <ul>
-                <li>Poor write performance: inserting/updating individual rows requires rewriting entire column files — OLAP systems are write-pessimized by design.</li>
-                <li>High single-row lookup latency: fetching one record by primary key requires reading an entire column page to reconstruct the row.</li>
-                <li>Not suitable for transactional workloads: most OLAP systems have limited or no support for row-level locking and ACID transactions on individual records.</li>
-                <li>ETL lag: data must be moved from OLTP to OLAP via pipelines, introducing minutes-to-hours of staleness.</li>
-                <li>HTAP systems (attempting both) cost more and are operationally more complex than specialized OLTP + OLAP separately.</li>
+                <li>Two tiers mean pipelines, schema contracts, and monitoring for replication lag or failed loads.</li>
+                <li>OLAP systems are poor at high-frequency single-row updates and fine-grained locking compared with OLTP engines.</li>
+                <li>Batch or micro-batch ingestion introduces staleness that HTAP or streaming partial views must address explicitly.</li>
+                <li>HTAP and dual-engine estates increase operational surface area compared with a single well-sized PostgreSQL instance.</li>
+                <li>Misrouted queries—OLAP on OLTP or point lookups on warehouses—produce cost and latency surprises without guardrails.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For ClickHouse (the leading open-source OLAP system for real-time analytics), use the <code>MergeTree</code> engine family and choose the primary key (ORDER BY) based on the most common query filters. ClickHouse stores data in parts that are merged in the background; the primary key determines the on-disk sort order and enables range scans to skip irrelevant data. Use <code>ReplacingMergeTree</code> for upsert semantics (deduplication happens during merge) and <code>AggregatingMergeTree</code> with materialized views to pre-aggregate frequently computed metrics. ClickHouse achieves tens of billions of rows per second scan throughput on a single node by combining columnar storage with vectorized SIMD execution.</p>
-          <p>For the OLTP side, avoid running analytical queries against the primary database. If real-time analytics on operational data is needed without ETL lag, consider: (1) a read replica with a reporting schema, (2) Change Data Capture feeding a real-time OLAP system (Debezium → Kafka → ClickHouse or Druid), or (3) an HTAP system like TiDB if the use case justifies the cost. The CTE/window function capabilities of modern OLTP databases (PostgreSQL) can handle moderate analytical queries against reasonably sized datasets — measure first before assuming a dedicated OLAP system is required.</p>
+          <p>On the OLTP side, treat the primary as a transaction system: index foreign keys, cap long-running sessions, and route BI to a replica, warehouse, or dedicated role with <code>statement_timeout</code> on PostgreSQL (see <a href="https://www.postgresql.org/docs/current/runtime-config-client.html" rel="noopener noreferrer" target="_blank">client connection settings</a>). PostgreSQL window functions and CTEs can serve moderate in-database reporting on bounded datasets—measure before provisioning a warehouse.</p>
+          <p>For analytical freshness without HTAP, use change-data capture into Kafka or the warehouse loader (Debezium and similar) so fact tables update on a schedule or stream that matches dashboard SLAs. In columnar OLAP engines, align sort keys and partitions with the filters BI actually runs; omitting partition predicates on partitioned tables is a frequent source of runaway scan cost in BigQuery and analogous systems.</p>
+          <p>When evaluating HTAP, document which queries route to the row store versus the columnar replica, how replication lag is measured, and who owns failure of the analytics path. <a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">CQRS</a> at the application layer often pairs naturally with OLTP/OLAP separation at the storage layer.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Analytical queries killing production OLTP:</strong> A data analyst runs a long-running aggregation query against the production PostgreSQL database; it acquires shared locks on large tables, blocking application writes and causing transaction timeouts.</li>
-            <li><strong>Assuming a warehouse is always better:</strong> A team moves a 100MB dataset to Snowflake for "analytics"; Snowflake's query startup overhead means ad-hoc queries are slower than DuckDB running locally against Parquet files.</li>
-            <li><strong>HTAP cost surprise:</strong> A team adopts TiDB to "unify" OLTP and OLAP; the TiFlash columnar replica doubles storage costs; the engineering team underestimated the operational complexity of the TiDB cluster.</li>
-            <li><strong>Columnar index misuse:</strong> Trying to use a columnar OLAP system as an OLTP replacement: high-frequency point lookups against Redshift result in poor performance and high cost because each query scans a column file rather than using an index.</li>
-            <li><strong>Skipping partition pruning:</strong> A BigQuery table is date-partitioned but queries omit the date filter; every query scans the full table rather than pruning to the relevant partition, resulting in 100x higher costs than expected.</li>
+            <li><strong>Analytical queries on production OLTP:</strong> A long aggregation on the primary acquires broad locks or saturates I/O, which slows application transactions and triggers timeouts.</li>
+            <li><strong>Warehouse for tiny datasets:</strong> Moving a small reference dataset to a managed warehouse can make interactive exploration slower than local columnar tools on Parquet without adding governance value.</li>
+            <li><strong>HTAP without routing rules:</strong> Mixed workloads hit the wrong engine, so columnar replicas lag or row stores absorb scans they were not sized for.</li>
+            <li><strong>OLAP as system of record:</strong> High-frequency point lookups against a warehouse behave like full scans and inflate cost because the engine expects batch analytics, not keyed OLTP access.</li>
+            <li><strong>Unbounded partition scans:</strong> Dashboards omit date filters on partitioned tables, so every query reads the full history and bills accordingly.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the primary workload transactional (high-frequency single-row reads/writes) or analytical (aggregations over large datasets)?</li>
-            <li>What is the acceptable data freshness? ETL lag of minutes-to-hours (OLAP) vs real-time access to operational data (HTAP or read replica)?</li>
-            <li>Are analytical queries already degrading production OLTP performance, justifying separation?</li>
-            <li>Have you evaluated DuckDB for lightweight analytical needs before deploying a full cloud warehouse?</li>
-            <li>If choosing HTAP, have you modeled the additional cost (columnar replica doubles storage) and operational complexity?</li>
-            <li>Are all analytical queries using partition pruning (date filter on partitioned tables) to avoid full-table scans?</li>
+            <li>Is the dominant workload transactional (many small writes) or analytical (large scans and aggregates)?</li>
+            <li>What freshness do dashboards and models require, and does batch ETL, streaming CDC, or HTAP meet that SLA?</li>
+            <li>Have production OLTP metrics shown analytical contention that justifies separation?</li>
+            <li>For modest analytical scope, have you tried bounded queries on PostgreSQL or embedded OLAP before a managed warehouse?</li>
+            <li>If HTAP is in scope, are storage duplication, query routing, and on-call ownership documented?</li>
+            <li>Do analytical query reviews enforce partition and time filters on large tables?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce OLTP + OLAP:</strong> PostgreSQL handles order placement, inventory updates, and user sessions with sub-5ms response times. CDC via Debezium streams changes to Redshift where BI analysts query 3 years of order history for trend analysis.</li>
-            <li><strong>Real-time analytics on events (ClickHouse):</strong> A SaaS platform tracks 500M user events/day. ClickHouse ingests events in real time from Kafka and answers "active users in the last 30 minutes by feature" in under 100ms.</li>
-            <li><strong>HTAP with TiDB:</strong> A fintech company uses TiDB for account balances and transactions (OLTP) and enables TiFlash for same-node analytical queries on transaction history for real-time fraud scoring — avoiding ETL lag while accepting 2x storage cost.</li>
+            <li><strong>Illustrative scenario —</strong> An e-commerce checkout API stays on PostgreSQL for orders and inventory; CDC streams order facts nightly into a warehouse star schema where finance runs regional revenue reports without touching the primary.</li>
+            <li><strong>Illustrative scenario —</strong> A product analytics team ingests append-only events from Kafka into ClickHouse for sub-minute active-user dashboards while user settings remain in a relational OLTP store.</li>
+            <li><strong>Case study —</strong> Amazon’s early retail architecture popularized separating operational order processing from analytics warehousing; Kleppmann discusses similar batch-and-stream trade-offs in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a> (OLTP vs. analytics and derived data).</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="data-warehouse.html">Data Warehouse</a> — The standard OLAP implementation pattern with dimensional modeling.</li>
-            <li><a href="normalization-vs-denormalization.html">Normalization vs Denormalization</a> — OLTP favors normalization; OLAP favors denormalization for query performance.</li>
-            <li><a href="../architecture-styles/cqrs.html">CQRS</a> — OLTP/OLAP separation is a storage-layer expression of the CQRS principle of separating read and write models.</li>
+            <li><a href="data-warehouse.html">Data Warehouse</a> — The usual OLAP destination with dimensional models and governed metrics.</li>
+            <li><a href="normalization-vs-denormalization.html">Normalization vs Denormalization</a> — OLTP schemas tend toward normalization; OLAP facts and dimensions favor controlled denormalization.</li>
+            <li><a href="../architecture-styles/cqrs.html">CQRS</a> — Separating write and read models at the service layer often mirrors OLTP/OLAP separation in storage.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://clickhouse.com/docs/en/intro" target="_blank" rel="noopener noreferrer">ClickHouse Documentation</a></li>
-            <li><a href="https://www.cs.umd.edu/~abadi/papers/abadi-sigmod08.pdf" target="_blank" rel="noopener noreferrer">Column-Stores vs Row-Stores: How Different Are They Really? (Abadi et al., SIGMOD 2008)</a></li>
-            <li><a href="https://docs.pingcap.com/tidb/stable/tidb-architecture" target="_blank" rel="noopener noreferrer">TiDB Architecture Documentation</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em> (storage engines, batch analytics, derived data)</a></li>
+            <li><a href="https://www.cs.umd.edu/~abadi/papers/abadi-sigmod08.pdf" rel="noopener noreferrer" target="_blank">Daniel Abadi et al. — Column-Stores vs. Row-Stores (SIGMOD 2008)</a></li>
+            <li><a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">Martin Fowler — CQRS</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/sql-select.html" rel="noopener noreferrer" target="_blank">PostgreSQL — <code>SELECT</code> (window functions and analytical SQL on OLTP)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
