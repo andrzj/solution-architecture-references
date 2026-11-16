@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Offline-First Design — SA References</title>
-  <meta name="description" content="Designing mobile apps that work without connectivity: local-first storage, sync strategies, conflict resolution (CRDT, LWW), and background sync scheduling.">
+  <meta name="description" content="Offline-first mobile design treats the local database as the primary source of truth, synchronizes with remote APIs in the background, and resolves conflicts while keeping the UI responsive without connectivity.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -97,37 +97,38 @@
             <span class="badge badge--primary">Mobile Architecture</span>
           </div>
           <h1 class="article-header__title">Offline-First Design</h1>
-          <p class="article-header__desc">Designing mobile applications where local storage is the primary data source and network connectivity is an enhancement, not a requirement — covering sync strategies, conflict resolution, and background scheduling.</p>
-          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
+          <p class="article-header__desc">Local-first data, background sync, and conflict handling so mobile apps stay usable when the network is slow, intermittent, or absent.</p>
+          <div class="article-header__meta"><span>⏱ 13 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The UI observes the local database via reactive streams — it does not know or care whether the data came from the network or was already cached locally.</p>
-          <p>This contrasts with network-first design (also called "online-only"), where the app makes a network request for every data read and either shows an error or a loading state when offline. Offline-first eliminates the loading state for most operations, makes the app usable in intermittent or no-connectivity environments (underground, aeroplanes, rural areas), and makes the app resilient to API latency spikes.</p>
+          <p><strong>Offline-first design</strong> is an approach to mobile applications where the on-device store is the authoritative read path for the UI and network calls refresh or upload changes asynchronously. The presentation layer observes local data through reactive streams (Room with Kotlin Flow, Core Data or SwiftData, SQLite in React Native, or Hive or Drift in Flutter) and does not block on connectivity for ordinary reads and writes. A repository mediates between the local database, a sync component, and remote APIs so screens stay ignorant of whether a row arrived from cache or from the last sync.</p>
+          <p>This differs from network-first or online-only designs, where each screen waits on HTTP before showing content and fails closed when offline. Offline-first trades implementation complexity—sync queues, conflict policies, migrations, and encrypted storage—for responsiveness and resilience on unreliable cellular and Wi‑Fi links.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Mobile networks are unreliable. Even users with good connectivity experience intermittent drops, slow handoffs between cell towers, and congested hotspots. Apps that require connectivity for every interaction frustrate users and generate support tickets. Productivity apps (note-taking, task management, document editing) must work offline by definition — users need to take notes in the subway, complete expense reports on aeroplanes, and review schedules in basements.</p>
-          <p>Beyond user experience, offline-first reduces server load by batching sync operations rather than making real-time requests for every user action.</p>
+          <p>Mobile clients move through tunnels, aircraft mode, and congested cells; latency spikes even when a signal icon is present. Product workflows such as capturing notes, completing checklists, or reviewing schedules cannot assume always-on connectivity. Google documents an offline-first data layer as part of recommended Android architecture; Apple’s background task and persistence frameworks exist partly to reconcile local state with servers when the app is not in the foreground.</p>
+          <p>Batching outbound changes also reduces redundant API traffic and gives operators control over when expensive sync runs relative to battery and network type—constraints that WorkManager on Android and BGTaskScheduler on iOS express explicitly.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Productivity apps (notes, tasks, calendars) where users expect to work regardless of connectivity.</li>
-            <li>Field service apps used in environments with poor connectivity (warehouses, rural areas, basements).</li>
-            <li>Any app where load time or latency significantly impacts user experience and most data can be cached.</li>
-            <li>Apps with high read-to-write ratios — the cached data is read frequently, network writes are infrequent.</li>
-            <li>Cross-device sync apps (a user's data should be available on all their devices, synced in the background).</li>
+            <li>Productivity, field operations, or inventory apps where users must continue work without a live connection.</li>
+            <li>Read-heavy experiences with cacheable catalogs, manuals, or maps that change on a schedule rather than every second.</li>
+            <li>Multi-device experiences where each handset should show the last known state immediately and converge later.</li>
+            <li>Features already structured with repositories and view models, so adding a local source of truth is a natural extension.</li>
+            <li>Regulated apps that must encrypt data at rest on device per OWASP MASVS storage requirements while still offering offline access.</li>
           </ul>
 
-          <h2 id="when-not-to-use">When not-to-use">When not to use</h2>
+          <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Real-time collaborative apps:</strong> Live collaboration (Google Docs simultaneous editing) requires real-time conflict resolution that goes beyond standard offline-first patterns.</li>
-            <li><strong>Financial transactions:</strong> Payment processing requires server-side validation and cannot be optimistically committed locally; the offline-first pattern does not apply to irreversible financial operations.</li>
-            <li><strong>Highly dynamic, personalised content:</strong> News feeds, social timelines, and recommendation engines may have data that is too dynamic to cache usefully for more than a few minutes.</li>
-            <li><strong>Security-sensitive data:</strong> Data that must not persist on the device (highly classified, regulated) cannot use local storage.</li>
+            <li><strong>Server-authoritative financial or identity actions</strong> that cannot be optimistically committed without fraud and compliance review.</li>
+            <li><strong>Live collaborative editing</strong> that needs sub-second merge semantics beyond simple last-write-wins or CRDT subsets.</li>
+            <li><strong>Highly personalized feeds</strong> where cached content is misleading unless refreshed continuously.</li>
+            <li><strong>Data that must not reside on device</strong> under policy, in which case local persistence is prohibited regardless of UX benefits.</li>
+            <li><strong>Thin clients</strong> with no local storage budget and no security model for encrypted databases on shared devices.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Reads and writes hit the repository first; a worker or scheduler pushes pending operations to the API when constraints allow.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     ui["UI"]
@@ -197,7 +198,7 @@ BACKGROUND SYNC SCHEDULING
            BGAppRefreshTask (short periodic refresh)
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Offline-first flow: UI reads/write through a repository that prefers local storage and syncs when online.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Offline-first flow: the repository reads and writes local storage first; a sync worker reconciles with the remote API when connectivity allows.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -205,67 +206,81 @@ BACKGROUND SYNC SCHEDULING
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Instant UI response: reads from local DB are microseconds, not milliseconds.</li>
-                <li>Works in no-connectivity and intermittent-connectivity environments.</li>
-                <li>Reduced server load: changes are batched and synced, not sent per-interaction.</li>
-                <li>More resilient to API outages — the app continues to function.</li>
-                <li>Better battery life: background sync can be deferred to charging or low-CPU periods.</li>
+                <li>Perceived performance improves because the UI renders from local queries instead of waiting on round trips.</li>
+                <li>Core workflows continue in airplane mode, dead zones, and during backend outages.</li>
+                <li>Outbound work can be batched, retried with backoff, and constrained to unmetered or charging conditions.</li>
+                <li>Repositories can serve identical APIs to view models whether data is stale or freshly synced.</li>
+                <li>Encrypted local stores support MASVS storage controls while still allowing offline reads.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Significantly more complex than network-first: sync engine, conflict resolution, and schema migration all require careful design.</li>
-                <li>Data can be stale — users may see outdated information until next sync cycle.</li>
-                <li>Local storage on the device can be inspected; sensitive data requires encryption at rest.</li>
-                <li>Schema migrations in local DB must be backwards-compatible across app versions (users may not update immediately).</li>
-                <li>Sync conflicts require user-visible resolution UX in some cases — edge case but hard to get right.</li>
+                <li>Sync engines, migrations, and conflict policies add sustained engineering cost.</li>
+                <li>Users may see stale data unless the UI surfaces sync status and refresh affordances.</li>
+                <li>Conflict resolution can require explicit UX when automatic merge is unsafe.</li>
+                <li>Local databases must be migrated carefully across app versions and platform backups.</li>
+                <li>Testing matrix expands to cover offline, flaky network, and multi-device convergence cases (MASTG scenarios).</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Sync queue pattern:</strong> Every write to the local DB also inserts a record into a sync queue table: <code>(id, operation, entity_type, entity_id, payload, created_at, attempts)</code>. The WorkManager/BGTaskScheduler picks up pending queue items, sends them to the API in order, and marks them as synced or increments the attempt counter on failure. The sync queue is the source of truth for what needs to be sent — if the app crashes mid-sync, the queue items are still there and will be retried. Implement exponential back-off on failed attempts to avoid hammering a degraded API.</p>
-          <p><strong>Delta sync:</strong> Rather than re-fetching all data on every sync, use a server-side cursor or timestamp. The client sends <code>?since=2025-01-15T12:00:00Z</code> and the server returns only changes since that timestamp. The client stores the last sync timestamp and uses it on the next sync. This dramatically reduces bandwidth and server load for large datasets.</p>
-          <p>The server must maintain a reliable <code>updated_at</code> timestamp on all entities and index it for efficient range queries.</p>
+          <p><strong>Single source of truth:</strong> Follow Android’s offline-first data-layer guidance: UI collects from the database; repositories write locally first, then enqueue remote synchronization. On iOS, use Core Data or SwiftData with background contexts and merge policies; schedule BGAppRefreshTask or BGProcessingTask when Apple’s background execution rules allow.</p>
+          <p><strong>Sync queue:</strong> Persist pending mutations with operation type, entity identity, payload, and retry metadata. WorkManager on Android and BGTaskScheduler on iOS should respect network and battery constraints. Use exponential backoff on failures and idempotent server APIs where possible.</p>
+          <p><strong>Delta and cursor sync:</strong> Store a per-collection sync cursor or high-water timestamp; request only changes since the last successful sync. Server entities need monotonic versioning or reliable <code>updated_at</code> fields indexed for range queries.</p>
+          <p><strong>Conflict strategies:</strong> Last-write-wins fits low-criticality fields; three-way merge helps structured documents; CRDTs suit specific collaborative types when you accept their data-model limits. Document the chosen rule per entity and test clock skew and duplicate delivery.</p>
+          <p><strong>Cross-platform:</strong> React Native often pairs SQLite or Realm with background fetch; Flutter uses Drift, Hive, or sqflite with isolates for I/O. Apply the same repository boundary so JavaScript or Dart UI code does not embed raw SQL.</p>
+          <p><strong>Security:</strong> Encrypt databases holding credentials or PII (SQLCipher, EncryptedSharedPreferences for keys, iOS Data Protection classes) and exclude sensitive backups per MASVS.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Conflict ignored:</strong> The sync engine silently overwrites local changes with the server version on every sync — the user loses offline work without warning.</li>
-            <li><strong>Sync queue grows unboundedly:</strong> Offline actions accumulate in the sync queue; when connectivity is restored, a burst of requests overwhelms the API. Implement rate limiting and batching.</li>
-            <li><strong>No schema migration strategy:</strong> A local DB schema change in a new app version breaks existing installs that upgrade without a carefully crafted Room/Core Data migration.</li>
-            <li><strong>Stale data not indicated:</strong> Users see data that is hours old without any indication that it has not been refreshed — implement a "last synced at" indicator.</li>
+            <li><strong>Silent overwrite:</strong> Downloading server snapshots without merging local pending edits discards user work.</li>
+            <li><strong>Unbounded queue:</strong> Long offline periods create a thundering herd when connectivity returns; batch and rate-limit uploads.</li>
+            <li><strong>Migration gaps:</strong> Shipping a schema change without a tested Room, Core Data, or Drift migration bricks upgrades.</li>
+            <li><strong>Hidden staleness:</strong> No “last synced” or error affordance erodes trust when data is old.</li>
+            <li><strong>Main-thread I/O:</strong> Performing large reads or writes on the UI thread causes jank; use background executors or coroutines with clear dispatchers.</li>
+            <li><strong>Non-idempotent APIs:</strong> Retried POSTs double-charge or duplicate records unless the server accepts idempotency keys.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the local database the primary data source, with the UI observing local data via reactive streams?</li>
-            <li>Is a sync queue used to track pending writes that need to reach the server?</li>
-            <li>Is delta sync (timestamp or cursor-based) implemented to minimise bandwidth?</li>
-            <li>Is a conflict resolution strategy defined (LWW, CRDT, or three-way merge) and tested?</li>
-            <li>Are background sync tasks scheduled with appropriate constraints (network available, battery not critical)?</li>
-            <li>Is local storage encrypted for sensitive data?</li>
+            <li>Does the UI observe the local database (or equivalent store) as the primary read path?</li>
+            <li>Are pending writes durable and replayable after process death?</li>
+            <li>Is incremental sync defined for each entity type that can grow large?</li>
+            <li>Are conflict rules documented, implemented, and covered by automated tests?</li>
+            <li>Do background jobs honor platform constraints for network type, charging, and expedited work limits?</li>
+            <li>Is sensitive data encrypted at rest and excluded from insecure backups?</li>
+            <li>Can QA reproduce offline, slow, and partition scenarios per MASTG network guidance?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Field service app:</strong> Technicians complete work orders in basements without connectivity. WorkManager syncs completed orders when the van returns to the depot. LWW conflict resolution handles the rare case where a dispatcher also edits the same order.</li>
-            <li><strong>Note-taking app:</strong> Notes are stored in Room immediately; CRDT-based merge ensures that notes edited on phone and tablet while both offline are merged correctly when either syncs.</li>
-            <li><strong>E-commerce browsing:</strong> Product catalogue is cached in Room on first load; delta sync refreshes changed products every 30 minutes in the background. Browse is instant even offline.</li>
+            <li><strong>Illustrative scenario — field maintenance:</strong> Technicians complete work orders in a local database underground; WorkManager uploads completed jobs when the device regains connectivity, applying last-write-wins only to low-risk status fields.</li>
+            <li><strong>Illustrative scenario — personal notes:</strong> Notes save instantly to Room or SwiftData on device; sync merges paragraph-level changes with a documented CRDT or three-way merge when phone and tablet both edited offline.</li>
+            <li><strong>Illustrative scenario — retail catalog:</strong> A repository seeds product rows from cache on launch and runs periodic delta sync over Wi‑Fi so browsing works in-store when the LAN is down.</li>
+            <li><strong>Case study —</strong> Google’s offline-first architecture guide walks through repository patterns with local and remote data sources, which is the reference model for Android Jetpack apps.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="mobile-architecture-patterns.html">Mobile Architecture Patterns</a> — The repository pattern in MVVM is the integration point for the offline-first local/remote abstraction.</li>
-            <li><a href="mobile-performance.html">Mobile Performance</a> — Offline-first eliminates network wait time, directly improving perceived performance.</li>
-            <li><a href="../data-architecture/event-store.html">Event Store</a> — The sync queue pattern is a simplified event store applied to client-side operations.</li>
+            <li><a href="sync-engine.html">Sync Engine</a> — Deeper treatment of client sync components.</li>
+            <li><a href="mobile-architecture-patterns.html">Mobile Architecture Patterns</a> — Repositories connect offline-first storage to view models.</li>
+            <li><a href="mobile-performance.html">Mobile Performance</a> — Local reads reduce perceived latency and radio use.</li>
+            <li><a href="mobile-security.html">Mobile Security</a> — Storage encryption and backup rules for local data.</li>
+            <li><a href="../data-architecture/event-store.html">Event Store</a> — Client outboxes resemble simplified event logs.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://developer.android.com/topic/architecture/data-layer/offline-first" target="_blank" rel="noopener noreferrer">Build an offline-first app — Android Developers</a></li>
             <li><a href="https://developer.android.com/topic/libraries/architecture/workmanager" target="_blank" rel="noopener noreferrer">WorkManager — Android Developers</a></li>
-            <li><a href="https://crdt.tech/" target="_blank" rel="noopener noreferrer">CRDT.tech — Conflict-free Replicated Data Types explained</a></li>
+            <li><a href="https://developer.apple.com/documentation/backgroundtasks" target="_blank" rel="noopener noreferrer">Background Tasks — Apple Developer Documentation</a></li>
+            <li><a href="https://developer.apple.com/documentation/coredata" target="_blank" rel="noopener noreferrer">Core Data — Apple Developer Documentation</a></li>
+            <li><a href="https://mas.owasp.org/MASVS/0x11-Storage/" target="_blank" rel="noopener noreferrer">MASVS: Storage — OWASP</a></li>
+            <li><a href="https://mas.owasp.org/MASTG/0x05f-Testing-Network-Communication/" target="_blank" rel="noopener noreferrer">MASTG: Testing network communication — OWASP</a></li>
+            <li><a href="https://reactnative.dev/docs/network" target="_blank" rel="noopener noreferrer">Networking — React Native</a></li>
+            <li><a href="https://docs.flutter.dev/cookbook/persistence" target="_blank" rel="noopener noreferrer">Persist data with an SQL database — Flutter documentation</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

@@ -52,6 +52,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "governance",
         "integration",
         "iot-edge",
+        "mobile",
     }
 )
 
