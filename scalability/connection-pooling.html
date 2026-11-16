@@ -101,12 +101,12 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A connection pool is a cache of pre-established database (or service) connections that are reused by multiple request threads, rather than opening and closing a new connection for each request. Establishing a TCP connection, TLS handshake, and database authentication takes 10–100ms per connection on a local network, and much more across regions. Multiplying this overhead by thousands of requests per second makes per-request connection establishment untenable. A pool maintains a set of warm connections ready to be borrowed, used, and returned — reducing per-request database setup to microseconds.</p>
-          <p>Connection pools operate on a borrow-use-return lifecycle: a request borrows a connection from the pool, executes its queries, and returns the connection to the pool. If all pool connections are in use when a new request needs one, it either waits (blocks) for a connection to be returned, or times out and fails. The pool also manages connection health: idle connections are periodically validated (using <code>SELECT 1</code> or equivalent) and replaced if the database dropped them due to server-side idle timeouts.</p>
+          <p><strong>A connection pool</strong> is a managed set of warm, reusable connections to a database, cache, or upstream HTTP/gRPC endpoint. Instead of opening a new TCP session, completing TLS, and authenticating on every request, workers borrow an existing connection, run work, and return it. That lifecycle turns setup that often costs tens of milliseconds into microseconds on the hot path.</p>
+          <p>Pools enforce a borrow–use–return contract with explicit limits: when all connections are checked out, callers wait up to <code>connectionTimeout</code> or fail fast. Healthy pools also validate idle connections (<code>SELECT 1</code>, ping, or driver keepalive) and retire connections past <code>maxLifetime</code> so firewall drops and rolling restarts do not surface as random I/O errors mid-request.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>PostgreSQL spawns a new OS process per connection. A PostgreSQL instance with 1,000 active connections is running 1,000 OS processes, each consuming ~5MB of RAM for the connection state — 5GB just for connections, before any data is processed. The OS scheduler adding context-switch overhead across 1,000 processes causes significant CPU overhead even when most connections are idle. PostgreSQL's recommended max_connections is typically 100–300; exceeding this causes serious performance degradation.</p>
-          <p>Connection poolers like PgBouncer act as a multiplexer: 1,000 application threads can connect to PgBouncer, which maintains only 100 real connections to PostgreSQL. PgBouncer queues requests and routes them through its 100 connections, allowing the application to scale horizontally without creating a proportional number of database connections. This is especially important in containerized environments where the number of application pods may vary dynamically from 10 to 500 during auto-scaling events.</p>
+          <p>External poolers such as PgBouncer, RDS Proxy, and Hyperscale pool options multiplex many client sessions onto a smaller set of server backends. PgBouncer queues short transactions and reassigns server connections between them—ideal when hundreds of pods each hold a modest in-process pool. That separation matters most in Kubernetes and serverless fleets where instance count swings faster than database <code>max_connections</code> can safely grow.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -125,12 +125,18 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>In-process pools cap app connections; PgBouncer multiplexes many clients onto fewer server sessions.</p>
+          <p>Each pod keeps a small in-process pool; an external pooler multiplexes many client sessions onto a capped set of server connections.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    apps["App pods with HikariCP pools"] --> pgb["PgBouncer transaction mode"]
-    pgb --> pg["PostgreSQL limited max_connections"]
-    apps --> cfg["leakDetectionThreshold idleTimeout maxLifetime"]</div>
+    pod["App pod thread"] --> pool{"Idle connection available?"}
+    pool -->|yes| borrow["Borrow connection"]
+    borrow --> work["Execute queries"]
+    work --> release["Return to pool"]
+    pool -->|no| wait{"Within connectionTimeout?"}
+    wait -->|yes| pool
+    wait -->|no| fail["Timeout error to caller"]
+    pod --> proxy["PgBouncer or RDS Proxy"]
+    proxy --> pg["Database max_connections"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -172,7 +178,7 @@
   - Database shows N connections all ACTIVE (none idle)
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">HikariCP per pod, PgBouncer transaction pooling, sizing formula, and leak detection settings.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Threads borrow from a bounded pool or time out; external poolers fan in many clients before hitting database connection limits.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -225,9 +231,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Multi-tenant SaaS API:</strong> 50 API pods each have a HikariCP pool of max=10, targeting a PostgreSQL primary instance. Total connections = 500, exceeding PostgreSQL's safe max_connections=200. PgBouncer is added in transaction mode, allowing the 500 app-side connections to multiplex through 150 server-side connections, keeping PostgreSQL healthy.</li>
-            <li><strong>Serverless data pipeline:</strong> AWS Lambda functions process S3 events and write to Aurora PostgreSQL. Without pooling, 1,000 concurrent invocations create 1,000 connections. RDS Proxy is deployed: Lambda connects to RDS Proxy's JDBC endpoint, which maintains a pool of 100 connections to Aurora, multiplexing all Lambda invocations transparently.</li>
-            <li><strong>Microservice with HTTP client pool:</strong> A Node.js microservice makes frequent HTTP calls to a downstream REST API. HTTP keep-alive connection pooling (via axios with <code>http.Agent({keepAlive: true, maxSockets: 50})</code>) reuses TCP connections, reducing per-request TCP handshake overhead from ~10ms to near-zero for subsequent requests to the same host.</li>
+            <li><strong>Illustrative scenario — Meridian Commerce:</strong> Fifty API pods each run HikariCP with <code>maximumPoolSize=10</code>, yielding 500 client connections against a PostgreSQL primary capped at 200. PgBouncer in transaction mode multiplexes those clients through 150 server backends while engineers monitor pending acquire time and leak warnings.</li>
+            <li><strong>Case study — AWS RDS Proxy:</strong> Serverless and burst workloads connect to Proxy's endpoint instead of the database directly; Proxy maintains a warm pool to Aurora or RDS, absorbing connection storms from concurrent Lambda invocations without exhausting <code>max_connections</code>.</li>
+            <li><strong>Illustrative scenario — downstream HTTP:</strong> A microservice calling a REST partner configures keep-alive agents (<code>maxSockets: 50</code>) so repeated calls reuse TCP sessions and TLS state, trimming per-request handshake overhead on high fan-out paths.</li>
+            <li><strong>Illustrative scenario — session features:</strong> An app that relies on PostgreSQL advisory locks uses PgBouncer session mode (or routes lock-heavy paths outside transaction pooling) because transaction mode cannot hold session state across statements.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

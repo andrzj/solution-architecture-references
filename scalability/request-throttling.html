@@ -101,8 +101,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Request throttling is the server-side practice of controlling the rate at which incoming requests are admitted for processing, typically by queuing excess requests or signaling backpressure to clients rather than immediately rejecting them. While rate limiting counts requests over a window and rejects excess ones, throttling focuses on the processing rate — ensuring the server never accepts more work than it can handle at a given moment. Throttling is admission control at the ingress: it regulates the flow of work into a system to prevent overload.</p>
-          <p>Key mechanisms include: <strong>concurrency limiting</strong> (limiting the number of requests being processed simultaneously, not just the rate), <strong>queue-based throttling</strong> (excess requests wait in a queue bounded by a maximum depth), <strong>priority queuing</strong> (high-priority requests like health checks or premium users get served ahead of low-priority bulk operations), and <strong>adaptive throttling</strong> (automatically adjusting the admission rate based on server health metrics like CPU usage, queue depth, or downstream response times).</p>
+          <p><strong>Request throttling</strong> is server-side admission control that limits how much work enters the process at once—usually with semaphores, bounded queues, or backpressure—not how many requests a client may attempt over time. Where rate limiting returns 429 when a counter overflows, throttling may queue a request briefly, delay acceptance, or shed low-priority traffic so concurrency stays within what threads, memory, and downstream dependencies can sustain.</p>
+          <p>Common building blocks include <strong>concurrency caps</strong> (maximum in-flight requests), <strong>priority queues</strong> (serve health checks and interactive reads before bulk exports), <strong>edge shaping</strong> (NGINX <code>limit_req</code>, API gateway quotas with burst), and <strong>adaptive client throttling</strong> (Google SRE-style probabilities that tell callers to slow down when the server is already rejecting). The goal is to keep Little’s Law bounded: if arrivals exceed service capacity, queue depth and latency grow until something breaks—throttling caps that growth before OOM or thread starvation.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>A server has a finite concurrency capacity — a certain number of threads, goroutines, or event loop slots. Accepting more concurrent requests than this capacity causes thread pool exhaustion, out-of-memory errors, or extreme latency increases as the OS scheduler thrashes between too many threads. Throttling prevents this by ensuring the concurrency stays within bounds even under overload. The key insight is that it is better to make some requests wait (finite queue) than to allow all requests to proceed slowly and fail due to resource exhaustion.</p>
@@ -126,15 +126,17 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Concurrency caps, priority queues, adaptive client-side throttle, NGINX limit_req, and gRPC flow control shed load.</p>
+          <p>Classify priority, try to acquire a concurrency slot or wait in a bounded queue, then process or return 503 when saturated.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    sem["Concurrency semaphore timeout"]
-    prio["Priority queues HIGH NORMAL LOW"]
-    adapt["Adaptive client throttle probability"]
-    nginx["NGINX limit_req burst"]
-    grpc["gRPC flow control backpressure"]
-    sem --> prio --> adapt --> nginx --> grpc</div>
+    req["Incoming request"] --> classify["Classify priority P0–P3"]
+    classify --> slot{"Concurrency slot free?"}
+    slot -->|yes| handle["Process request"]
+    slot -->|no P0| handle
+    slot -->|no queue space| shed["HTTP 503 Retry-After"]
+    slot -->|no wait ok| queue["Bounded wait queue"]
+    queue -->|timeout| shed
+    queue --> handle</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -186,7 +188,7 @@
   → backpressure flows back to the calling client automatically.
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Semaphore admission, priority worker drain order, Google SRE adaptive throttle, NGINX burst, gRPC WINDOW_UPDATE.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Priority bypasses the queue for critical work; everyone else waits on a semaphore or is shed when the queue times out.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -240,9 +242,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Batch file processing API:</strong> An API that converts uploaded documents throttles concurrent processing to 50 files, regardless of how many are submitted. A submission backlog of up to 200 files is queued; beyond that, new uploads receive 503 with <code>Retry-After: 60</code>. Interactive document preview requests bypass the batch queue via priority queuing.</li>
-            <li><strong>Database-backed microservice:</strong> A product search service has a database connection pool of 100 connections. The service uses a semaphore of 100 to limit concurrency, ensuring it never sends more than 100 concurrent queries to the database. Under heavy load, the semaphore queue holds up to 50 additional requests briefly while concurrent queries complete.</li>
-            <li><strong>gRPC streaming service:</strong> A data export service uses gRPC server-side streaming with flow control. When the client's receive buffer is full (slow client), the server pauses sending automatically via HTTP/2 flow control windows, preventing unbounded memory accumulation in the server's send buffer.</li>
+            <li><strong>Illustrative scenario — FieldOps document pipeline:</strong> Batch conversions cap at 50 concurrent jobs with a backlog of 200; preview APIs use a high-priority lane so operators never wait behind bulk uploads.</li>
+            <li><strong>Illustrative scenario — search service:</strong> A catalogue search microservice mirrors its database pool with a semaphore of 100 in-flight queries and a shallow wait queue so saturation surfaces as 503 instead of unbounded thread growth.</li>
+            <li><strong>Case study — Google SRE overload handling:</strong> Client-side adaptive throttling reduces call volume when servers return elevated error rates—complementary to server-side concurrency limits at the edge.</li>
+            <li><strong>Illustrative scenario — gRPC export:</strong> Server streaming pauses when HTTP/2 flow-control windows fill on a slow consumer, preventing send-buffer growth without custom application queues.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

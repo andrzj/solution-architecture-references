@@ -102,8 +102,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Rate limiting controls the number of requests a client can make to an API or service within a given time window. When a client exceeds its allowed rate, subsequent requests are rejected with HTTP 429 Too Many Requests until the window resets or the client slows down. Rate limiting serves two distinct purposes: it protects the service from being overwhelmed by any single client (even a legitimate one experiencing a bug), and it provides fair resource sharing across all clients in a multi-tenant system.</p>
-          <p>Five primary algorithms implement rate limiting, each with different characteristics. <strong>Fixed window counter</strong> counts requests in discrete time windows (e.g., 0–60 seconds). <strong>Sliding window log</strong> tracks exact timestamps of every request for precise counting but uses significant memory. <strong>Sliding window counter</strong> approximates a sliding window using two fixed window counters and is the most practical distributed approach. <strong>Token bucket</strong> allows bursts up to a bucket capacity while enforcing a long-term average rate. <strong>Leaky bucket</strong> enforces a strictly uniform output rate by queuing and processing requests at a fixed rate.</p>
+          <p><strong>Rate limiting</strong> caps how many requests a client—or tenant, API key, or IP—may make to an API within a time window. When the limit is exceeded, the edge returns HTTP 429 Too Many Requests (often with <code>Retry-After</code> and rate-limit headers) instead of admitting more work. The control is deliberately harsh: excess demand is rejected, not queued, so one caller cannot consume shared capacity indefinitely.</p>
+          <p>Production systems choose among several counter shapes. <strong>Fixed-window</strong> counters are simple but allow boundary bursts. <strong>Sliding-window counter</strong> blends two windows for a practical distributed default. <strong>Token bucket</strong> permits bounded bursts while enforcing a long-term average. <strong>Leaky bucket</strong> smooths output to protect strict downstream rates. <strong>Sliding-window log</strong> is exact but memory-heavy—usually reserved for low-cardinality keys.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Without rate limiting, a single misbehaving client can consume all available server resources, causing degraded performance or outright failures for all other clients. A buggy application that enters an infinite retry loop, a web scraper running at maximum speed, or a DDoS attack all present as sudden traffic spikes from specific sources. Rate limiting provides the first line of defense that caps per-client impact before it cascades to system-wide failures.</p>
@@ -126,15 +126,15 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Pick fixed window, sliding counter, token bucket, or leaky bucket; enforce consistently in Redis with 429 headers.</p>
+          <p>Middleware evaluates a counter keyed by client identity; allowed requests continue, rejected ones return 429 with standard headers.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    fw["Fixed window — boundary burst"]
-    sw["Sliding window counter"]
-    tb["Token bucket — allows burst"]
-    lb["Leaky bucket — smooth output"]
-    redis["Redis Lua atomic enforcement"]
-    fw --> sw --> tb --> lb --> redis</div>
+    client["Client request"] --> edge["API gateway or middleware"]
+    edge --> key["Resolve limit key API key user ID IP"]
+    key --> store["Redis counter Lua atomic incr"]
+    store --> under{"Under limit?"}
+    under -->|yes| upstream["Origin handler"]
+    under -->|no| reject["HTTP 429 Retry-After plus X-RateLimit headers"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -179,7 +179,7 @@
   X-RateLimit-Reset: 1699123456
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Algorithm tradeoffs and distributed Redis sliding-window counter returning standard rate limit headers.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Distributed counters decide admit vs 429; token bucket and sliding-window variants differ only in how the store updates.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -231,9 +231,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>SaaS API tiers:</strong> A REST API enforces 100 requests/min for free tier API keys, 1,000/min for basic, and 10,000/min for enterprise. Each tier's limit is checked in Redis using the API key as the rate limit key. Exceeding the limit returns 429 with <code>Retry-After: 60</code>.</li>
-            <li><strong>Login endpoint protection:</strong> A login endpoint applies IP-based rate limiting of 10 attempts per 15 minutes. After 5 failed attempts, the account is also temporarily locked for that IP. This prevents credential stuffing attacks that cycle through password lists at high speed.</li>
-            <li><strong>AI inference API protection:</strong> An API that calls an expensive AI model backend applies per-user token bucket limiting: 50 requests burst capacity, 5 requests/minute sustained. Power users can make 50 rapid requests when needed (e.g., batch processing) without permanently consuming the 5/min average allocation.</li>
+            <li><strong>Illustrative scenario — Northwind Logistics API:</strong> Tiered API keys map to sliding-window limits in Redis (100/min free, 1_000/min standard, 10_000/min enterprise). Over-limit calls receive 429 with <code>Retry-After</code> and remaining quota headers for SDK backoff.</li>
+            <li><strong>Illustrative scenario — login hardening:</strong> Unauthenticated login routes rate-limit by IP (10 attempts per 15 minutes) and pair with account lockout after repeated failures to slow credential-stuffing bots without throttling the whole site.</li>
+            <li><strong>Case study — Stripe:</strong> Public REST APIs document rate limits per key and rely on counter infrastructure that scales with horizontal API tiers—an established reference for algorithm choice and client backoff expectations.</li>
+            <li><strong>Illustrative scenario — inference burst:</strong> A model-serving façade applies per-user token buckets (50 burst, 5/min sustained) so batch jobs can spike briefly while protecting GPU-backed upstream quotas.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

@@ -101,8 +101,8 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Lazy loading is the design pattern of deferring the initialization or loading of a resource until the moment it is actually needed, rather than loading everything up front. The fundamental insight is that systems often load significantly more data than users ever access in a given session; loading it eagerly wastes resources and increases startup latency. By deferring load to the point of actual access, the system pays the initialization cost only when necessary, and sometimes avoids it entirely (if the resource is never accessed).</p>
-          <p>The pattern appears at multiple architectural levels: <strong>lazy initialization</strong> in application code (initialize an object the first time it's accessed, not at application startup), <strong>lazy loading of database relations</strong> in ORMs (load associated records only when the association is accessed, not on the initial query), <strong>lazy loading of assets in UIs</strong> (load images and components only when they scroll into the viewport), and <strong>virtual scrolling</strong> (render only the visible rows of a large list, fetching data for off-screen rows on demand).</p>
+          <p><strong>Lazy loading</strong> defers fetching or initializing a resource until code or the user actually needs it, instead of loading everything at startup or on the parent query. The pattern trades a possible latency spike on first access for smaller memory footprints, faster cold start, and less wasted I/O on paths that never touch the deferred data.</p>
+          <p>It appears at every tier: <strong>lazy initialization</strong> of expensive singletons, <strong>ORM lazy associations</strong> (load children only when traversed), <strong>viewport-driven assets</strong> (<code>loading="lazy"</code>, Intersection Observer), <strong>route-based code splitting</strong> in SPAs, and <strong>virtualised lists</strong> that render only visible rows while paging data in the background.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Startup time and initial page load time are critical metrics. An application that eagerly initializes 50 services, loads 10,000 product images, and fetches megabytes of JSON at startup will be unresponsive for seconds before the user can interact with it. Lazy loading decouples initialization from startup, allowing the critical path to complete quickly while non-essential resources load in the background or on demand.</p>
@@ -127,15 +127,16 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Defer work until needed: singleton init, eager ORM joins, viewport images, virtual lists, skeleton UI.</p>
+          <p>On access, choose eager fetch for the critical path or defer until first touch—with eager JOINs when loops would otherwise cause N+1 queries.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    singleton["Lazy singleton init"]
-    orm["Eager join vs N+1 lazy load"]
-    img["loading=lazy and IntersectionObserver"]
-    virt["Virtual scroll small DOM"]
-    skel["Skeleton then hydrate"]
-    singleton --> orm --> img --> virt --> skel</div>
+    access["Access resource"] --> path{"On critical path?"}
+    path -->|yes| eager["Eager load or prefetch"]
+    path -->|no| defer["Defer until first touch"]
+    defer --> touch{"Accessed?"}
+    touch -->|yes| fetch["Fetch on demand"]
+    touch -->|no| skip["Never loaded"]
+    defer --> ormfix["ORM loop: prefer JOIN FETCH not lazy loop"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -195,7 +196,7 @@
   → User sees activity immediately, no blank white screen
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Patterns from double-checked locking and N+1 fixes through lazy images, virtual scroll, and skeleton screens.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Critical-path resources load eagerly; optional assets defer until touched, with JOINs replacing lazy loops in hot paths.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -247,9 +248,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce product catalog:</strong> A product listing page renders the first 24 products server-side. Below-the-fold product images use <code>loading="lazy"</code>. Scrolling down triggers infinite scroll: new product pages are fetched and appended to the DOM only as the user approaches the bottom, keeping the initial page small and fast.</li>
-            <li><strong>SPA route-based code splitting:</strong> A React application uses React.lazy() with dynamic import() to split the bundle by route. The checkout page bundle (200KB) is only downloaded when the user navigates to /checkout, not on initial app load. The initial bundle drops from 800KB to 200KB, improving Time-to-Interactive by 2 seconds on mobile networks.</li>
-            <li><strong>Data grid with 500,000 rows:</strong> A reporting dashboard displays a 500,000-row result set using TanStack Virtual. Only 50 rows are rendered in the DOM at any time; scrolling through 500,000 rows remains smooth at 60fps because DOM node count stays constant and new data is fetched in batches via a virtualized data source.</li>
+            <li><strong>Illustrative scenario — RideRelay catalog:</strong> Product grids server-render the first page; below-the-fold images use native lazy loading and infinite scroll fetches the next page only when the sentinel nears the viewport.</li>
+            <li><strong>Illustrative scenario — checkout bundle:</strong> A React storefront splits routes with <code>React.lazy</code> so the heavy checkout chunk downloads only after navigation, shrinking the initial JavaScript payload on mobile networks.</li>
+            <li><strong>Illustrative scenario — operations grid:</strong> A 500k-row report uses virtual scrolling (TanStack Virtual or similar) so the DOM holds ~50 rows while the data source pages in the background.</li>
+            <li><strong>Illustrative scenario — ORM discipline:</strong> Engineers enable SQL logging in staging and replace lazy association loops with <code>include</code> / <code>JOIN FETCH</code> before promotion when list endpoints fan out to dozens of queries per request.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
