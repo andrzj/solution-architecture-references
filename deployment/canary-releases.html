@@ -100,8 +100,9 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>If they degrade, the rollout is automatically halted and traffic is shifted back to the stable version. The name references the historical use of canaries in coal mines to detect toxic gases — a small population exposed first detects problems before the entire user base is affected.</p>
+          <p>A <strong>canary release</strong> routes a small fraction of production traffic to a new version while the stable version continues to serve the majority. Progression to wider traffic shares is gated on observed health—error rate, latency, business KPIs—so a bad build affects only the canary slice before promotion halts or rolls back. Martin Fowler’s <a href="https://martinfowler.com/bliki/CanaryRelease.html" rel="noopener noreferrer" target="_blank">Canary Release</a> bliki describes the pattern as controlled production experimentation: deployment risk becomes a sequence of measurable steps instead of an all-at-once flip.</p>
+          <p>In Kubernetes, a native <code>Deployment</code> rolling update can approximate a canary only crudely (by sizing replica counts). Real percentage-based routing usually needs a progressive-delivery controller—<strong>Argo Rollouts</strong> (<code>Rollout</code> CRD with canary steps and <code>AnalysisTemplate</code> metrics) or <strong>Flagger</strong> (traffic weights via service mesh or ingress plus Prometheus checks). Both advance weight on success and revert on sustained metric failure.</p>
+          <p>If metrics degrade during an analysis window, the rollout halts and traffic shifts back to the stable version. The name references the historical use of canaries in coal mines to detect toxic gases—a small population exposed first surfaces problems before the entire user base is affected.</p>
           <p><strong>Flagger</strong> and <strong>Argo Rollouts</strong> are the two primary progressive delivery tools for Kubernetes. <strong>Flagger</strong> integrates with service mesh (Istio, Linkerd) or ingress controllers (nginx, Traefik) to control traffic shifting, and queries Prometheus/Datadog for metric analysis. It implements the canary lifecycle: initialise, progress (increment weight on metric success), halt (freeze on metric failure), or rollback (revert to stable on repeated failures). <strong>Argo Rollouts</strong> extends the Kubernetes Deployment resource with a <code>Rollout</code> CRD that supports both canary and blue-green strategies with built-in metric analysis and traffic management.</p>
           <p>Both tools can be configured with custom metric templates that define the success/failure criteria for each analysis period.</p>
           <p>The analysis metrics typically include: <strong>error rate</strong> (HTTP 5xx / total requests), <strong>P99 latency</strong>, <strong>business metrics</strong> (checkout conversion, payment success rate), and custom <strong>application metrics</strong> (queue depth, processing time). The canary is considered healthy if metrics stay within a configured threshold relative to the baseline (stable) version — for example, canary error rate must not exceed baseline by more than 0.1% or 10% relative increase. This comparison against a baseline is critical; absolute thresholds are insufficient because traffic patterns change throughout the day.</p>
@@ -123,6 +124,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Stable and canary replicas share a routing tier; the mesh or ingress assigns weights while observability backends feed analysis jobs that promote, pause, or abort the rollout.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     stable["Stable replicas"]
@@ -272,9 +274,9 @@ spec:
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Search relevance change</strong>: New ML model for search ranking deployed as canary to 5% of users; Flagger monitors search click-through rate (business metric) and P99 latency; model performs well on error rate but click-through drops 8%; automated rollback triggers; team investigates and improves model before re-attempting rollout.</li>
-            <li><strong>Database query optimisation</strong>: New query optimisation expected to reduce P99 latency; canary at 10% confirms P99 drops from 200ms to 80ms without error increase; Argo Rollouts advances through steps to 100% automatically over 45 minutes.</li>
-            <li><strong>API breaking change detection</strong>: New version introduces an unintentional API response schema change; canary analysis detects elevated error rates in dependent services (monitored via service mesh) within 2 minutes at 5% traffic; rollback triggered before the change affects more than 50 users.</li>
+            <li><strong>Illustrative scenario —</strong> A new search-ranking model ships to 5% of traffic; Flagger watches click-through and P99 latency; error rate stays flat but business KPI drops eight percent; automated rollback fires before promotion past the first step.</li>
+            <li><strong>Illustrative scenario —</strong> A query optimization expected to cut P99 latency rolls at 10%; Argo Rollouts analysis confirms latency improvement without 5xx regression and advances through configured steps to 100% over forty-five minutes.</li>
+            <li><strong>Case study —</strong> Google’s SRE material on canarying releases describes metric-gated promotion at scale; Kubernetes teams commonly implement the same ideas with Argo Rollouts or Flagger rather than hand-tuned replica math (<a href="https://sre.google/workbook/canarying-releases/" rel="noopener noreferrer" target="_blank">canarying releases</a>).</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
