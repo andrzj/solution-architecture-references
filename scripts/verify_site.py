@@ -51,6 +51,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "distributed-systems",
         "governance",
         "integration",
+        "iot-edge",
     }
 )
 
