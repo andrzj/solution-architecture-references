@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>File-Based Integration — SA References</title>
-  <meta name="description" content="File drop-and-pickup patterns for moving data between systems using files, including S3 events, SFTP, and idempotent processing.">
+  <meta name="description" content="File-based integration exchanges batch files via drop zones, object storage events, or SFTP/EDI, with idempotent ingest and clear completeness rules.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,38 +96,38 @@
             <span class="badge badge--muted">B2B</span>
           </div>
           <h1 class="article-header__title">File-Based Integration</h1>
-          <p class="article-header__desc">File drop-and-pickup patterns for moving data between systems using files, covering S3 event triggers, SFTP polling, format standards, and idempotent processing.</p>
+          <p class="article-header__desc">File-based integration moves data as batch files between partners or systems—drop zones, polling, and events—when APIs are impractical and an archivable artifact matters.</p>
           <div class="article-header__meta"><span>⏱ 9 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Common formats include CSV (simplest, widely supported), fixed-width flat files (legacy mainframe output), XML (SOAP, XBRL, HL7 v2 wrapped), JSON, EDI (X12 for US, EDIFACT for Europe), and Parquet or Avro for analytics-oriented file transfers. Transport mechanisms include SFTP (SSH File Transfer Protocol — the workhorse of B2B integration), AS2 (HTTPS-based with MDN acknowledgements, mandated by many retailers and healthcare payers), S3/Azure Blob/GCS with event notifications, and legacy FTP (avoid due to security concerns).</p>
+          <p><strong>File-based integration</strong> exchanges data as <em>files</em> between systems or trading partners: a producer writes a batch to a agreed location (SFTP directory, object-storage prefix, AS2 endpoint), and a consumer picks it up, validates, parses, and loads downstream stores. Timing is asynchronous—neither side must be online at the same instant—and each transfer is a discrete artifact you can archive, replay, or quarantine.</p>
+          <p>Formats range from CSV and fixed-width legacy layouts through JSON and XML to EDI (X12, EDIFACT) and columnar Parquet or Avro for analytics handoffs. Transport is commonly SFTP, AS2, or cloud object storage with event notifications; plain FTP should be avoided where security standards matter.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>File-based integration persists because of its inherent decoupling: the producer and consumer don't need to be available simultaneously. The producer writes a file; the consumer processes it when convenient. This asynchronous, store-and-forward model is resilient to temporary outages on either side. It also creates a natural audit trail — every file transfer is an artifact that can be archived, reprocessed, and inspected.</p>
-          <p>For regulated industries, an immutable audit log of "the exact file we received from the bank at 23:00 on 2026-01-15" is a compliance requirement that real-time API calls cannot easily provide.</p>
-          <p>Trading partner integration is another major driver: a retailer mandating AS2 or SFTP for EDI 850 purchase orders from thousands of suppliers cannot require every supplier to implement a real-time API integration. The file-based standard is the lowest common denominator that any business, regardless of technical sophistication, can support.</p>
+          <p>Store-and-forward decoupling survives outages: files accumulate in a landing zone until the consumer is healthy. That model fits partners who cannot host APIs, regulated workflows that need a point-in-time evidence bundle, and bulk transfers too large for comfortable synchronous HTTP.</p>
+          <p>B2B ecosystems standardized on files long before REST became ubiquitous; mandating SFTP or EDI for purchase orders, claims, or statements is still the pragmatic lowest common denominator across thousands of counterparties with uneven engineering maturity.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>B2B data exchange with external trading partners who use SFTP/AS2/EDI as their standard integration interface.</li>
-            <li>Bulk data exports or imports that are logically batch operations — end-of-day reconciliation files, monthly billing extracts, regulatory reporting submissions.</li>
-            <li>When an immutable, archivable record of the exact data transferred is required for compliance (financial clearing, healthcare claim submission).</li>
-            <li>Legacy system integration where the legacy system's only output is a file drop and cannot be modified to support an API.</li>
-            <li>Large file transfers (multi-gigabyte) where streaming via API is impractical and object storage (S3) is a better transport.</li>
-            <li>Cross-network file transfers where real-time connectivity is not guaranteed and asynchronous delivery is acceptable.</li>
+            <li>Trading partners standardize on SFTP, AS2, or EDI rather than bespoke APIs.</li>
+            <li>Exports and imports are inherently batch (statements, regulatory bundles, catalog snapshots).</li>
+            <li>Compliance needs an immutable received file with timestamp and checksum evidence.</li>
+            <li>Legacy sources can only drop files; changing them is out of scope.</li>
+            <li>Multi-gigabyte payloads fit object storage better than chatty APIs.</li>
+            <li>Intermittent connectivity makes polling or event-driven pickup acceptable.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>When sub-minute latency is required — file polling intervals or S3 event notification delays make file-based integration unsuitable for near-real-time needs.</li>
-            <li>Transactional operations requiring acknowledgement and immediate response (order placement, payment processing) — use APIs or messaging instead.</li>
-            <li>High-frequency, small-record operations where writing and reading individual files per transaction creates huge overhead compared to message queues or event streams.</li>
-            <li>When the data contains sensitive PII that would be better protected by in-transit encryption via API calls with TLS rather than files that may sit in landing zones.</li>
+            <li>Sub-minute or interactive latency—use APIs, queues, or streams.</li>
+            <li>Synchronous request–response with immediate business acknowledgement.</li>
+            <li>One-file-per-transaction at high frequency—overhead dominates versus messaging.</li>
+            <li>Sensitive data at rest in shared landing zones without encryption, retention policy, and access controls commensurate with risk.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Partners land files in an inbound zone; a poller or object-created event invokes an ingestion service that validates schema, checksum, and completeness signals before transform and load. Successful files move to processed or archive prefixes; failures go to a quarantine path with alerts on age and backlog depth.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     partner["Trading partner"]
@@ -167,68 +167,68 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Completely decoupled: producer and consumer operate independently with no real-time availability requirement on either side.</li>
-                <li>Natural audit trail: every file is an archivable artifact representing the exact data transferred at a point in time.</li>
-                <li>Universal compatibility: every system can write and read files; no special protocol support or API client required.</li>
-                <li>Efficient for bulk transfers: loading a 10GB CSV file via bulk SQL COPY is faster than equivalent row-by-row API calls.</li>
-                <li>Resilient: if the consumer is down, files accumulate in the drop zone and are processed when the consumer recovers.</li>
+                <li>Loose coupling across time zones and maintenance windows.</li>
+                <li>Archivable, replayable artifacts for audit and dispute resolution.</li>
+                <li>Ubiquitous support—minimal client software beyond SFTP or upload tooling.</li>
+                <li>Efficient bulk load paths (COPY, bulk APIs) once files land.</li>
+                <li>Buffers bursts when the consumer is temporarily unavailable.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>High latency: data is only as fresh as the polling interval or transfer schedule; unsuitable for real-time needs.</li>
-                <li>File locking and partial file reads: if the consumer polls before the producer finishes writing, it processes an incomplete file.</li>
-                <li>Error handling is coarser: if row 50,000 in a 100,000-row file fails, you must decide whether to reject the whole file or partially process it.</li>
-                <li>Security complexity: SFTP key management, IP allowlisting, and permission management become significant operational overhead with many trading partners.</li>
-                <li>Schema evolution is slow: changing a CSV column requires coordinating with every producer and consumer simultaneously.</li>
+                <li>Freshness tied to schedule, poll interval, or event propagation delay.</li>
+                <li>Risk of reading incomplete files without atomic write or sentinel conventions.</li>
+                <li>Coarse error granularity—whole-file reject versus partial accept is a product decision.</li>
+                <li>Operational tax: keys, allowlists, partner onboarding, and EDI mapping.</li>
+                <li>Slow coordinated schema change across many producers.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For S3-based file integration, configure S3 Event Notifications to trigger an SNS topic or SQS queue on <code>s3:ObjectCreated:*</code> events. The processing Lambda or ECS task is invoked with the S3 object key. Implement idempotent processing by maintaining a processed-files registry (a DynamoDB table or Redis set keyed on the file's S3 ETag or SHA-256 checksum). If the same file is re-delivered, the processor detects it has already been processed and skips it.</p>
-          <p>Move completed files to an archive prefix immediately after successful processing to prevent double-processing on polling-based systems.</p>
-          <p>To prevent partial-file processing with SFTP, use an atomic rename pattern: the producer writes to a temp file (<code>orders.csv.tmp</code>) and renames to the final name (<code>orders.csv</code>) only when the write is complete. The consumer only picks up files matching the final name pattern. Alternatively, use a sentinel file convention: the producer writes the data file and then writes a zero-byte control file (<code>orders.csv.done</code>); the consumer processes the data file only when the control file exists. For EDI integrations, use a managed EDI platform (SPS Commerce, TrueCommerce, or AWS B2B Data Interchange) rather than building raw X12/EDIFACT parsers.</p>
+          <p>On object storage, subscribe to <code>ObjectCreated</code> events via SNS or SQS and pass object key plus ETag into workers. Track processed fingerprints (ETag, SHA-256) in a small registry to make redelivery safe. Move successful objects to <code>processed/</code> or <code>archive/</code> immediately.</p>
+          <p>Use write-then-rename or companion <code>.done</code> files so consumers never parse in-flight payloads. Version file layouts in names or headers and reject unknown versions at the edge. For EDI, prefer managed translation (SPS Commerce, TrueCommerce, AWS B2B Data Interchange) over hand-rolled segment parsers.</p>
+          <p>Alert on oldest-unprocessed-file age, error rate per partner, and disk or prefix growth; partner-specific dashboards catch silent stalls before finance or ops does.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Partial file processing:</strong> The consumer starts reading before the producer finishes writing; it processes a truncated file and loads corrupted records into the database.</li>
-            <li><strong>Duplicate processing:</strong> A redelivered file (from a retry or manual reprocess) is processed a second time, creating duplicate records with no deduplication logic in place.</li>
-            <li><strong>Silently stuck queue:</strong> Files accumulate in the drop zone because the consumer crashed; no alerting is configured for drop zone file age; data is hours or days stale before someone investigates.</li>
-            <li><strong>SFTP key expiry:</strong> A trading partner's SSH key expires or is rotated; the consumer's connection fails; no automated key rotation or monitoring detects the failure until a business user reports missing data.</li>
-            <li><strong>File size growth:</strong> A batch that normally produces 10MB files suddenly produces 10GB due to a business event; the file processor's memory allocation is insufficient and the job crashes without a meaningful error message.</li>
+            <li><strong>Truncated ingest:</strong> consumer reads before the producer finishes writing.</li>
+            <li><strong>Double load:</strong> manual re-drop or at-least-once pickup without idempotency keys.</li>
+            <li><strong>Backlog blindness:</strong> consumer down while files pile up with no age alert.</li>
+            <li><strong>Credential rot:</strong> expired SSH keys or certificates block pickup until reported manually.</li>
+            <li><strong>Capacity surprise:</strong> file size jumps and blows memory or timeout limits.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is your latency requirement compatible with file-based polling intervals (minutes to hours acceptable)?</li>
-            <li>Does the trading partner require SFTP/AS2/EDI as their standard interface?</li>
-            <li>Have you implemented idempotent file processing to handle redeliveries safely?</li>
-            <li>Do you have monitoring for drop zone file age and consumer lag alerting?</li>
-            <li>Have you defined a naming and archiving convention to distinguish pending from processed files?</li>
-            <li>Is the file format versioned and validated at ingestion to catch schema changes before loading?</li>
+            <li>Is minutes-to-hours latency acceptable for this data product?</li>
+            <li>Does the partner mandate file protocols you must support?</li>
+            <li>Are completeness rules (rename, sentinel, checksum) agreed and tested?</li>
+            <li>Is reprocessing idempotent end-to-end through the database?</li>
+            <li>Are backlog age, quarantine depth, and per-partner failure rates monitored?</li>
+            <li>Is the format versioned with validation before load?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Retail EDI order intake:</strong> A retailer receives EDI 850 purchase orders from 500 suppliers via AS2. Each order file is processed by an EDI translation service that converts X12 to internal JSON and publishes an OrderCreated event to the order management system.</li>
-            <li><strong>Bank statement reconciliation:</strong> A finance team receives daily BAI2 bank statement files via SFTP. An AWS Lambda triggered by S3 events parses the fixed-format file, reconciles transactions against the GL, and posts unmatched transactions to a review queue.</li>
-            <li><strong>Healthcare claim submission:</strong> A medical billing service generates EDI 837P claim files nightly and uploads them to the payer's SFTP server. The payer processes the file and responds with an EDI 277 acknowledgement and EDI 835 remittance in the return directory.</li>
+            <li><strong>Illustrative scenario —</strong> A retailer ingests EDI purchase-order files from many suppliers via AS2, translates to canonical orders, and hands events to internal fulfillment.</li>
+            <li><strong>Illustrative scenario —</strong> Finance ingests daily bank statement files from SFTP, matches ledger lines, and routes exceptions to an analyst queue.</li>
+            <li><strong>Illustrative scenario —</strong> A clearinghouse exchanges nightly claim and remittance file pairs with payers over secured drop folders.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="batch-integration.html">Batch Integration</a> — File-based integration is a subset of batch integration; batch jobs often process files as their input source.</li>
-            <li><a href="../foundations/idempotency.html">Idempotency</a> — Essential for safe file reprocessing; all file processors must handle duplicate file delivery.</li>
-            <li><a href="../communication-patterns/claim-check.html">Claim Check Pattern</a> — Storing large payloads as files in object storage and passing references rather than the data in-band.</li>
+            <li><a href="batch-integration.html">Batch Integration</a> — jobs that typically consume landed files.</li>
+            <li><a href="../foundations/idempotency.html">Idempotency</a> — required for safe replays and partner redelivery.</li>
+            <li><a href="../communication-patterns/claim-check.html">Claim Check Pattern</a> — pass references to large payloads stored as files.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/NotificationHowTo.html" target="_blank" rel="noopener noreferrer">Amazon S3 Event Notifications documentation</a></li>
-            <li><a href="https://www.edibasics.com/edi-resources/document-standards/" target="_blank" rel="noopener noreferrer">EDI Document Standards Reference — EDIBasics</a></li>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/FileTransferIntegration.html" target="_blank" rel="noopener noreferrer">File Transfer Integration — Enterprise Integration Patterns</a></li>
+            <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/NotificationHowTo.html" target="_blank" rel="noopener noreferrer">Amazon S3 — Event notifications</a></li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/FileTransferIntegration.html" target="_blank" rel="noopener noreferrer">Enterprise Integration Patterns — File transfer</a></li>
+            <li><a href="https://docs.aws.amazon.com/b2b-data-interchange/latest/userguide/what-is-b2bi.html" target="_blank" rel="noopener noreferrer">AWS B2B Data Interchange — Overview</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

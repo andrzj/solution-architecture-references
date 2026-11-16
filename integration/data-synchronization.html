@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Data Synchronization — SA References</title>
-  <meta name="description" content="Strategies for keeping data consistent across multiple systems, including conflict resolution and sync patterns.">
+  <meta name="description" content="Data synchronization keeps copies consistent across systems with clear authority, conflict rules, and measurable sync lag.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,37 +96,38 @@
             <span class="badge badge--muted">Consistency</span>
           </div>
           <h1 class="article-header__title">Data Synchronization</h1>
-          <p class="article-header__desc">Strategies and patterns for keeping data consistent across multiple systems, handling conflicts, and choosing the right sync model for your architecture.</p>
+          <p class="article-header__desc">Data synchronization propagates changes so multiple systems hold aligned copies—via replication, events, or bidirectional merge—under an explicit consistency and conflict policy.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Conflict resolution is the core hard problem of bidirectional sync. Common strategies include: <strong>Last-Write-Wins (LWW)</strong> — the update with the latest timestamp prevails (simple but lossy, susceptible to clock skew); <strong>First-Write-Wins</strong> — the first version committed wins and subsequent conflicting updates are rejected; <strong>Merge semantics</strong> — the system merges non-conflicting fields (updating address fields independently of contact fields); and <strong>CRDTs (Conflict-free Replicated Data Types)</strong> — specially designed data structures that can always be merged without conflicts (e.g., grow-only counters, OR-Sets).</p>
+          <p><strong>Data synchronization</strong> is the practice of keeping representations of the same logical data aligned across databases, SaaS products, caches, search indexes, or mobile clients. One system (or field) is usually <em>authoritative</em>; changes propagate through replication, change logs, messaging, or scheduled compare-and-repair jobs until replicas converge within an agreed staleness bound.</p>
+          <p><strong>Unidirectional</strong> sync copies from a master outward. <strong>Bidirectional</strong> sync allows writes on multiple sides and requires explicit conflict rules: last-write-wins, field-level ownership, operational transforms, human review queues, or <strong>CRDTs</strong> where the data model permits automatic merge.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Modern enterprise architectures routinely duplicate the same logical data across multiple stores: a customer record might live in the CRM (Salesforce), the ERP (SAP), the customer support platform (Zendesk), and the data warehouse. Each system needs the data for different purposes — the CRM for sales workflows, the ERP for billing, the support tool for case context. Rather than creating a single "golden source" that every system queries in real-time (which introduces coupling and latency), synchronization keeps local copies up to date, preserving the autonomy and performance of each system.</p>
-          <p>Mobile and offline applications add another synchronization dimension: a mobile app works with a local database while offline, then must sync changes back to the server when reconnected, potentially conflicting with changes other users made during the offline period. CouchDB/PouchDB, Realm, and the emerging local-first software movement address this with built-in bidirectional replication protocols.</p>
+          <p>Polyglot architectures duplicate customer, product, and order data because each application optimizes for its workflow—sales, billing, support, analytics. Querying one golden API for every read couples availability and latency. Local replicas plus sync preserve autonomy while limiting divergence.</p>
+          <p>Offline-first clients and multi-region deployments add the same problem at the edge: devices or regions must write locally and reconcile later without silently dropping legitimate concurrent edits.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Multiple systems need to work with the same business entity (customer, product, order) and each system performs writes independently.</li>
-            <li>Cross-region replication for disaster recovery or latency reduction, where each region serves local writes that must be propagated globally.</li>
-            <li>Mobile or offline-first applications that maintain a local database and sync with a server when connectivity is available.</li>
-            <li>Microservices that maintain local data replicas for performance (e.g., an order service caches product prices locally and syncs daily).</li>
-            <li>Migrating from a legacy system to a new system in parallel, with both running simultaneously while validating data consistency.</li>
-            <li>Third-party integrations (Salesforce ↔ HubSpot, Jira ↔ Asana) where both systems are authoritative for different user populations.</li>
+            <li>Several systems own overlapping entities and need reasonably fresh local copies.</li>
+            <li>Active-active or multi-region replicas must absorb local writes and converge globally.</li>
+            <li>Mobile or edge clients work offline and upload changes on reconnect.</li>
+            <li>Services keep denormalized read models warmed from a system of record.</li>
+            <li>Parallel-run migrations validate a new store while the legacy system still takes writes.</li>
+            <li>SaaS-to-SaaS bridges where each product is master for a subset of fields.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>If one system can be designated the clear master and all others are strictly read-only replicas, use unidirectional replication (e.g., MySQL replication, DynamoDB global tables in active-passive mode) — it is dramatically simpler.</li>
-            <li>If the entities in question require transactional consistency across systems (e.g., inventory deduction must happen atomically with order creation), synchronization via CDC or events is insufficient; use distributed transactions or Saga pattern instead.</li>
-            <li>Very high write throughput scenarios where the sync overhead (conflict detection, version comparison) consumes a significant fraction of available compute.</li>
-            <li>Entities with complex business rules governing valid state transitions — automated conflict resolution may produce business-invalid states that are hard to detect.</li>
+            <li>A single clear master and read-only followers—prefer simple replication or CDC fan-out.</li>
+            <li>Cross-system invariants that require atomic commit (inventory + payment)—use sagas or workflow orchestration, not lazy sync.</li>
+            <li>Write rates where version comparison and conflict handling dominate CPU.</li>
+            <li>State machines where blind merge would create illegal business states.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Each side emits changes (API webhook, CDC, or outbox). A sync engine or bus compares versions, applies routing rules, and resolves conflicts before writing the peer. Metadata—vector clocks, hybrid logical clocks, or monotonic version fields—distinguishes stale updates from true conflicts.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     a["System A&lt;br/&gt;version + timestamp"]
@@ -174,67 +175,69 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Each system maintains a local copy, providing high availability and low-latency reads without cross-system calls.</li>
-                <li>Offline capability: mobile and edge systems can operate independently and sync when connectivity is restored.</li>
-                <li>Loose coupling: systems aren't directly dependent on each other's availability for normal operations.</li>
-                <li>Enables gradual migration: run old and new systems in parallel with sync while validating the new system.</li>
-                <li>CRDT-based sync can provide mathematically guaranteed convergence without centralized coordination.</li>
+                <li>Local reads and writes without synchronous cross-system RPC on every request.</li>
+                <li>Resilience when a peer is down—work continues against local state.</li>
+                <li>Supports offline and edge scenarios with later reconciliation.</li>
+                <li>Enables strangler migrations with both stacks live.</li>
+                <li>CRDTs or field-merge rules can guarantee convergence for suitable data types.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Bidirectional sync is complex to implement correctly; bugs in conflict resolution lead to data loss or corruption.</li>
-                <li>Eventual consistency means systems are transiently inconsistent; some use cases cannot tolerate any staleness.</li>
-                <li>Last-Write-Wins loses data if two systems make different valid updates to the same field concurrently.</li>
-                <li>Schema evolution in either system can break sync mappings; requires coordinated releases.</li>
-                <li>Sync lag monitoring and alerting adds operational overhead; undetected sync failures silently diverge systems.</li>
+                <li>Bidirectional paths are easy to get wrong; subtle bugs erase edits.</li>
+                <li>Eventual consistency—temporary disagreement is normal, not exceptional.</li>
+                <li>Naive last-write-wins drops concurrent legitimate field updates.</li>
+                <li>Schema drift on either side breaks mappings until coordinated fix.</li>
+                <li>Lag and divergence need metrics; silent stall is a common production failure.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use vector clocks or hybrid logical clocks (HLC) rather than wall-clock timestamps for conflict detection when possible — wall clocks on distributed systems can skew significantly, causing LWW to make incorrect decisions. Libraries like hlc.js or jHLC implement HLC in application code. For entity-level sync, track a <code>last_modified_by</code> and <code>last_modified_at</code> on every record, and propagate changes with the source system identifier so the receiving system can detect whether an incoming update supersedes or conflicts with its local version.</p>
-          <p>For CRM/ERP bidirectional sync, consider designating field-level authority: the CRM is authoritative for marketing fields (email, lead status, campaign attribution); the ERP is authoritative for financial fields (billing address, payment terms, credit limit). Sync logic only allows the authoritative system to overwrite those fields, eliminating most conflicts. Use a sync platform like Boomi, MuleSoft, or Zapier for common SaaS-to-SaaS integrations rather than building bespoke sync engines — these tools have conflict resolution UI, audit trails, and pre-built connectors.</p>
+          <p>Prefer hybrid logical clocks or version vectors over raw wall-clock LWW when conflicts matter. Stamp records with <code>source_system</code>, <code>version</code>, and optional per-field timestamps. Suppress echo: do not re-publish inbound changes that originated from the peer (use lineage flags or conditional writes).</p>
+          <p>Assign <em>field-level authority</em> where possible—marketing vs billing attributes—so most updates never conflict. For SaaS bridges, integration platforms (Boomi, MuleSoft) or iPaaS workflows often beat bespoke two-way glue for audit and operator tooling.</p>
+          <p>Measure end-to-end lag (time from write on A to visible read on B), conflict queue depth, and periodic checksum compares on sample entities. Throttle mobile reconnect storms with jittered backoff and server-side rate limits.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Sync loop:</strong> System A pushes a change to System B; System B's change triggers a sync back to A; A pushes it back to B — infinite loop consuming resources until the pipeline is shut down.</li>
-            <li><strong>Silent data loss via LWW:</strong> A user in Europe updates a customer's phone number; simultaneously, a US user updates their email; LWW based on timestamp retains only one update, silently discarding the other.</li>
-            <li><strong>Clock skew conflicts:</strong> Server A's clock is 5 minutes ahead; LWW consistently favors its changes regardless of actual edit order, systematically overwriting legitimate updates from System B.</li>
-            <li><strong>Thundering herd on reconnect:</strong> 10,000 mobile clients reconnect after an outage simultaneously; the sync service is overwhelmed by concurrent sync requests and collapses.</li>
-            <li><strong>Schema divergence:</strong> System A adds a required field that System B's sync adapter doesn't know about; sync silently drops the field, leaving System B with invalid records.</li>
+            <li><strong>Echo loops:</strong> received changes trigger outbound sync that ping-pongs indefinitely.</li>
+            <li><strong>LWW data loss:</strong> concurrent edits to different fields collapse to one timestamp winner.</li>
+            <li><strong>Clock skew bias:</strong> one node’s fast clock wins every conflict.</li>
+            <li><strong>Reconnect overload:</strong> mass offline clients crush the sync API at once.</li>
+            <li><strong>Schema mismatch:</strong> required new fields dropped on the weaker adapter.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is this unidirectional (simpler) or bidirectional sync? Can you designate a clear master system?</li>
-            <li>What is the acceptable staleness window (seconds, minutes, hours)?</li>
-            <li>How will you detect and resolve conflicts when both systems modify the same entity concurrently?</li>
-            <li>Are there field-level authority rules (one system owns specific fields)?</li>
-            <li>How will you prevent sync loops when System B re-publishes changes received from System A?</li>
-            <li>Do you have monitoring for sync lag and alerting for sync failures or divergence?</li>
+            <li>Can this stay unidirectional with a named system of record?</li>
+            <li>What maximum staleness is acceptable per consumer?</li>
+            <li>How are conflicts detected, surfaced, and resolved (auto vs human)?</li>
+            <li>Which fields does each system own exclusively?</li>
+            <li>Are echo and loop prevention rules implemented and tested?</li>
+            <li>Are lag, error rate, and divergence sampling on dashboards with alerts?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>CRM–ERP customer sync:</strong> Salesforce owns lead qualification and marketing data; SAP ERP owns billing and contract data. A sync engine bidirectionally mirrors customer records using field-level authority to prevent conflicts, with a human-review queue for any genuine conflicts.</li>
-            <li><strong>Offline mobile field service:</strong> Field technicians update work order statuses offline on tablets; when they return to connectivity, the mobile app syncs changes to the server, merging with dispatcher updates using operation-based CRDTs to guarantee convergence.</li>
-            <li><strong>Multi-region active-active database:</strong> A global SaaS product runs active-active CockroachDB clusters across three regions; the database handles geo-partitioned replication and serializable cross-region transactions, providing data synchronization as a built-in feature.</li>
+            <li><strong>Illustrative scenario —</strong> CRM and ERP exchange customer rows with field-level authority; marketing attributes flow one way, billing attributes the other, with a review queue for true conflicts.</li>
+            <li><strong>Illustrative scenario —</strong> Field technicians update work orders offline; on reconnect, operation-based merge reconciles dispatcher and device edits.</li>
+            <li><strong>Case study —</strong> CockroachDB and similar globally distributed databases document built-in replication and transactional semantics for multi-region active-active deployments.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="change-data-capture.html">Change Data Capture</a> — CDC is a common mechanism for detecting and propagating changes in event-driven sync pipelines.</li>
-            <li><a href="../foundations/eventual-consistency.html">Eventual Consistency</a> — The consistency model that bidirectional sync systems typically provide.</li>
-            <li><a href="../distributed-systems/vector-clocks.html">Vector Clocks</a> — The data structure used to track causality and detect conflicts in distributed sync systems.</li>
+            <li><a href="change-data-capture.html">Change Data Capture</a> — detects changes for outbound sync.</li>
+            <li><a href="../foundations/eventual-consistency.html">Eventual Consistency</a> — typical guarantee for replicated copies.</li>
+            <li><a href="../distributed-systems/vector-clocks.html">Vector Clocks</a> — causality metadata for conflict detection.</li>
+            <li><a href="batch-integration.html">Batch Integration</a> — periodic full or incremental reconcile jobs.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://crdt.tech/" target="_blank" rel="noopener noreferrer">CRDT.tech — Conflict-free Replicated Data Types explained</a></li>
-            <li><a href="https://pouchdb.com/guides/replication.html" target="_blank" rel="noopener noreferrer">PouchDB Replication Guide — offline-first sync in practice</a></li>
-            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/two-phase-commit.html" target="_blank" rel="noopener noreferrer">Patterns of Distributed Systems — Martin Fowler</a></li>
+            <li><a href="https://crdt.tech/" target="_blank" rel="noopener noreferrer">CRDT.tech — Conflict-free replicated data types</a></li>
+            <li><a href="https://pouchdb.com/guides/replication.html" target="_blank" rel="noopener noreferrer">PouchDB — Replication guide</a></li>
+            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/" target="_blank" rel="noopener noreferrer">Martin Fowler — Patterns of distributed systems</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

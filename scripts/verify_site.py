@@ -50,6 +50,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "deployment",
         "distributed-systems",
         "governance",
+        "integration",
     }
 )
 

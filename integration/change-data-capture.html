@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Change Data Capture — SA References</title>
-  <meta name="description" content="Reading database transaction logs to produce reliable event streams from existing databases without application changes.">
+  <meta name="description" content="Change data capture reads database transaction logs and streams committed row changes without modifying application code.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,37 +96,39 @@
             <span class="badge badge--success">Essential</span>
           </div>
           <h1 class="article-header__title">Change Data Capture</h1>
-          <p class="article-header__desc">Reading database transaction logs to produce reliable, low-latency event streams from existing databases without modifying application code.</p>
+          <p class="article-header__desc">Change data capture turns database transaction logs into change event streams for search, caches, and analytics without modifying application code.</p>
           <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
           
-          <p>The dominant open-source tool for CDC is Debezium, a distributed platform built on Kafka Connect that provides connectors for PostgreSQL (using logical replication / WAL), MySQL (binlog), SQL Server (change tracking tables), MongoDB (oplog), Oracle (LogMiner), and others. Each change event emitted by Debezium contains the full before- and after-image of the row, metadata about the source transaction (LSN position, timestamp, transaction ID), and the DDL operation type. These events are published to Kafka topics, typically one topic per source table.</p>
+          <p><strong>Change data capture (CDC)</strong> reads a database’s transaction log—PostgreSQL WAL, MySQL binlog, SQL Server change tables, Oracle redo—and turns committed row changes into a stream of insert, update, and delete events. Applications keep writing SQL as usual; integration consumes the log, which avoids dual-write races and many invasive code changes in legacy systems.</p>
+          <p>CDC is infrastructure-level integration: events describe storage-level diffs, not domain intents. Platforms such as <a href="https://debezium.io/" target="_blank" rel="noopener noreferrer">Debezium</a> (Kafka Connect), AWS Database Migration Service and MSK Connect, Azure Event Hubs with capture, and Oracle GoldenGate sit at this layer. Downstream teams often wrap or map CDC into <a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents</a> or canonical schemas before business services consume them.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>The fundamental problem CDC solves is bridging the gap between a stateful database and an event-driven or streaming architecture. When a service owns a relational database, writing to the DB and publishing an event to a message broker atomically is difficult — the dual-write problem. If the DB write succeeds but the event publish fails (or vice versa), downstream consumers diverge from the source of truth. The Transactional Outbox pattern solves this at the application level, but CDC solves it at the infrastructure level by treating the database log as the authoritative event source.</p>
-          <p>CDC also enables non-invasive integration with legacy systems. If you cannot modify an existing application to emit events but need to stream its data changes to a data warehouse, search index, or microservice, CDC lets you tap the database without touching the application code. This is invaluable for data migration, real-time analytics, cache invalidation, and maintaining read replicas across polyglot persistence stores.</p>
+          <p>Publishing “what changed” alongside an application transaction is hard: message brokers and databases do not share one atomic commit unless you use patterns like the transactional outbox. CDC treats the database log as the authoritative chronology of committed state—integration replays truth the database already recorded.</p>
+          <p>That enables near-real-time search indexes, caches, warehouses, and read models without polling wide tables or retrofitting event emission into every legacy code path. It is a common extract mechanism for ELT and streaming pipelines when operational stores remain system of record during modernization.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>You need to stream database changes to Kafka for event-driven consumers but cannot modify the source application to emit events.</li>
-            <li>Building a real-time data pipeline to a data warehouse (Snowflake, BigQuery) or data lake without periodic batch ETL jobs.</li>
-            <li>Implementing cache invalidation: when a record changes in the DB, CDC events trigger cache eviction in Redis or similar.</li>
-            <li>Maintaining a search index (Elasticsearch, OpenSearch) in sync with a primary relational database.</li>
-            <li>Cross-region or cross-datacenter data replication where you need sub-second propagation with full-fidelity change events including deletes.</li>
-            <li>As the event source in a Transactional Outbox pattern, reading the outbox table via CDC rather than application-level polling.</li>
+            <li>You need change streams from systems you cannot modify to emit domain events directly.</li>
+            <li>Search, cache, or replica stores must track inserts, updates, and hard deletes with low latency.</li>
+            <li>Incremental warehouse or lake loads should replace large batch extracts.</li>
+            <li>Cross-region or cross-store replication needs ordered, durable change feeds.</li>
+            <li>An outbox table in the same database can be tapped via CDC instead of application polling.</li>
+            <li>Strangler migrations must keep a new service’s datastore aligned with a monolith table during cutover.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>The database does not expose a transaction log to external consumers (some managed DBaaS offerings restrict this) — check that logical replication is supported and enabled.</li>
-            <li>You need business-level events with domain semantics (OrderPlaced, CustomerUpgraded) rather than low-level row change events — CDC produces structural changes; event meaning must be interpreted by consumers.</li>
-            <li>Tables undergo very high DDL churn (frequent schema changes) — CDC connectors can fail or require reconfiguration when table structures change significantly.</li>
-            <li>The source table contains sensitive PII and downstream Kafka topics cannot be adequately secured — CDC exposes all column data including deleted records.</li>
+            <li>The managed database forbids logical replication or external log access required by your connector.</li>
+            <li>Consumers need rich domain events (<code>OrderShipped</code>) rather than row diffs—you still need a translation or outbox layer.</li>
+            <li>Tables undergo constant disruptive DDL without a schema governance process connectors can follow.</li>
+            <li>Sensitive columns cannot be masked before events reach shared topics, and policy cannot enforce field-level controls.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>A log-reading connector publishes per-table or unified topics; stream processors or sink connectors fan out to indexes, warehouses, and cache invalidation workers.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     db[("Source DB&lt;br/&gt;WAL / binlog")]
@@ -168,62 +170,72 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Zero-application-change integration: captures changes at the DB layer without modifying source application code.</li>
-                <li>Captures all change types including hard deletes, which polling and application-level events often miss.</li>
-                <li>Low latency (sub-second) compared to batch polling, enabling near-real-time downstream synchronization.</li>
-                <li>Guaranteed ordering within a partition: changes to a single row are always delivered in log-sequence order.</li>
-                <li>Supports initial snapshot: Debezium can produce a full initial snapshot of existing data before streaming ongoing changes.</li>
+                <li>No application code changes to start streaming committed changes.</li>
+                <li>Captures deletes and updates polling often misses or delays.</li>
+                <li>Low latency compared with batch extracts for large tables.</li>
+                <li>Per-partition ordering preserves mutation sequence for a key when keyed correctly.</li>
+                <li>Initial snapshot plus streaming supports backfill and steady-state in one connector.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Produces low-level structural events (row diffs) not domain events; consumers must interpret business meaning from field-level changes.</li>
-                <li>Schema evolution is complex: DDL changes (column renames, type changes) can break CDC pipelines and require connector reconfiguration.</li>
-                <li>WAL/binlog retention must be configured carefully — insufficient retention causes connector lag to accumulate unrecoverably, requiring a full re-snapshot.</li>
-                <li>Adds operational complexity: Debezium connectors, Kafka Connect workers, and offset management require expertise to operate reliably.</li>
-                <li>Data security concern: CDC events contain full row data including sensitive fields; topic-level ACLs and field masking are required for PII compliance.</li>
+                <li>Events are storage-shaped; domain meaning requires interpretation or an ACL.</li>
+                <li>DDL and type changes can break deserialization without registry discipline.</li>
+                <li>Replication slots and binlog retention consume disk; lag can become unrecoverable.</li>
+                <li>Connectors, offsets, and Kafka Connect clusters add operational surface area.</li>
+                <li>Full row payloads may expose PII unless masked before publication.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For PostgreSQL, enable logical replication by setting <code>wal_level = logical</code> in <code>postgresql.conf</code> and creating a replication slot for Debezium. A replication slot causes the WAL to be retained until the consumer acknowledges receipt, so monitor slot lag carefully — an idle or lagging connector will cause unbounded WAL growth and can fill your disk. Set <code>max_slot_wal_keep_size</code> as a safety valve. Create a dedicated replication user with <code>REPLICATION</code> privilege and grant <code>SELECT</code> on all tables to be captured.</p>
-          <p>For MySQL, enable the binlog with <code>binlog_format = ROW</code> and <code>binlog_row_image = FULL</code>.</p>
-          <p>Use the Debezium Schema Registry integration to publish Avro-encoded events; this ensures schema compatibility is enforced as source schemas evolve. Configure <code>tombstone.on.delete = true</code> to emit null-value tombstone events on deletes, enabling Kafka log compaction to work correctly. For tables with sensitive PII, use Debezium's Single Message Transformations (SMTs) to mask or drop fields before they reach the Kafka topic. Monitor connector lag with the <code>kafka.connect:type=connector-metrics</code> JMX metrics and set alerts on <code>offset-lag</code> exceeding acceptable thresholds.</p>
+          <p>On PostgreSQL, set <code>wal_level = logical</code>, create a replication user and slot, and monitor lag against <code>max_slot_wal_keep_size</code>. On MySQL, use row-format binlog with full row images. Run Debezium on Kafka Connect or use AWS DMS / MSK Connect / Azure-hosted equivalents where managed ops matter.</p>
+          <p>Register Avro or Protobuf schemas for change events; apply Debezium single message transforms to mask fields or route topics. Enable delete tombstones when topics use log compaction. Document topics in AsyncAPI for consumers that are not JVM-based.</p>
+          <p>Downstream, idempotent sinks apply upserts and handle out-of-order arrivals where needed. Combine with an anti-corruption layer or stream processor to emit CloudEvents domain notifications instead of leaking table column names into every microservice.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Replication slot starvation:</strong> The Debezium connector falls behind and the PostgreSQL WAL grows unboundedly until disk fills, causing DB crash; always monitor slot lag and set <code>max_slot_wal_keep_size</code>.</li>
-            <li><strong>DDL breaks connector:</strong> A developer adds a NOT NULL column to a source table without telling the CDC team; the connector fails to deserialize new events because the schema changed without a new Avro schema version.</li>
-            <li><strong>Initial snapshot race:</strong> During the initial table snapshot, new writes arrive that CDC captures as change events; consumers must handle the overlap between snapshot and streaming correctly to avoid duplicates.</li>
-            <li><strong>PII in Kafka topics:</strong> Developers forget that CDC events contain all columns and publish a topic with Social Security Numbers to a Kafka cluster that security scanners flag months later.</li>
-            <li><strong>Consumer lag misinterpretation:</strong> Consumers treat CDC events as reliable domain events and build business logic on field-level deltas, creating tight coupling to DB schema rather than domain semantics.</li>
+            <li><strong>Slot or binlog pressure:</strong> Connector lag fills disk; recovery requires painful resnapshot.</li>
+            <li><strong>Schema surprise:</strong> DDL without registry update breaks consumers mid-deploy.</li>
+            <li><strong>Snapshot overlap:</strong> Duplicate or out-of-order events during initial load if consumers lack idempotency keys.</li>
+            <li><strong>PII on the bus:</strong> Unmasked columns replicated to broadly readable Kafka topics.</li>
+            <li><strong>Schema coupling:</strong> Services embed table-layout assumptions instead of stable contracts.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does your database support and expose its transaction log for external consumption (logical replication for PostgreSQL, binlog for MySQL)?</li>
-            <li>Can you afford the WAL/binlog retention overhead and connector infrastructure (Kafka Connect workers)?</li>
-            <li>Have you planned for schema evolution governance so DDL changes don't silently break CDC pipelines?</li>
-            <li>Have you assessed PII exposure and planned field-level masking for sensitive columns?</li>
-            <li>Do consumers need domain events with business semantics, or are row-level changes sufficient?</li>
-            <li>Have you considered the Transactional Outbox pattern as an application-level alternative that produces cleaner domain events?</li>
+            <li>Does the database expose a supported logical log or capture API?</li>
+            <li>Can operations monitor connector lag, disk retention, and offset health?</li>
+            <li>Is there a schema evolution process aligned with CDC serializers?</li>
+            <li>Are sensitive fields masked or tokenized before publication?</li>
+            <li>Do consumers need domain events—and if so, where will translation happen?</li>
+            <li>Is transactional outbox a better fit when you own the writing application?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Real-time search sync:</strong> An e-commerce platform uses Debezium on its PostgreSQL products table to stream every product insert/update/delete to Kafka, from which an Elasticsearch sink connector indexes changes within 200ms, keeping search results current without batch reindexing.</li>
-            <li><strong>Data warehouse loading:</strong> A SaaS company streams CDC events from its operational MySQL database to Kafka and uses a Kafka Connect JDBC sink to load incremental changes into Snowflake, replacing nightly batch ETL jobs and reducing data freshness from 24 hours to under 5 minutes.</li>
-            <li><strong>Microservice synchronization:</strong> During a database-per-service migration, CDC events from the monolith's order table feed a new Order microservice's replica database, keeping them in sync until the migration cutover is complete.</li>
+            <li><strong>Illustrative scenario —</strong> Product row changes stream to Kafka; a search sink connector updates an index within seconds of merchandising edits.</li>
+            <li><strong>Illustrative scenario —</strong> Warehouse staging tables merge CDC events keyed by primary key instead of nightly full-table exports.</li>
+            <li><strong>Case study —</strong> Debezium, widely used with Kafka Connect, documents connectors and event formats for major relational and NoSQL databases as an open CDC reference implementation.</li>
           </ul>
 
-          <h2 id="related-patterns">Related patterns</h2>
+          <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — Application-level alternative to CDC for publishing events atomically with DB writes.</li>
-            <li><a href="streaming-integration.html">Streaming Integration</a> — CDC events are often the source for Kafka Streams or Flink streaming pipelines.</li>
-            <li><a href="etl-vs-elt.html">ETL vs ELT</a> — CDC provides the Extract step for real-time ELT pipelines into data warehouses.</li>
-            <li><a href="anti-corruption-layer.html">Anti-Corruption Layer</a> — Wrapping CDC events in an ACL to translate structural row events to domain events.</li>
+            <li><a href="https://debezium.io/documentation/reference/stable/" target="_blank" rel="noopener noreferrer">Debezium documentation</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/logical-replication.html" target="_blank" rel="noopener noreferrer">PostgreSQL — Logical replication</a></li>
+            <li><a href="https://docs.aws.amazon.com/prescriptive-guidance/latest/patterns/perform-cdc-using-amazon-msk-connect.html" target="_blank" rel="noopener noreferrer">AWS Prescriptive Guidance — CDC with MSK Connect</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/event-hubs/event-hubs-capture-overview" target="_blank" rel="noopener noreferrer">Azure Event Hubs — Capture overview</a></li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageTranslator.html" target="_blank" rel="noopener noreferrer">Enterprise Integration Patterns — Message Translator</a></li>
+            <li><a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents specification</a></li>
+          </ul>
+
+<h2 id="related-patterns">Related patterns</h2>
+          <ul>
+            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — The outbox pattern publishes integration events in the same database transaction when log-based CDC is not available or not desired.</li>
+            <li><a href="streaming-integration.html">Streaming Integration</a> — Debezium and similar connectors feed stream processors that enrich, join, and fan out CDC records in near real time.</li>
+            <li><a href="etl-vs-elt.html">ETL vs ELT</a> — CDC replaces nightly bulk extract jobs with continuous incremental loads into lake or warehouse landing zones.</li>
+            <li><a href="anti-corruption-layer.html">Anti-Corruption Layer</a> — An ACL can reshape `INSERT`/`UPDATE` envelopes into CloudEvents that match your internal AsyncAPI catalog.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
