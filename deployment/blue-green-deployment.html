@@ -108,19 +108,22 @@
           <p>Blue-green is distinct from rolling deployments (incrementally replacing pods one at a time) and canary releases (routing a small percentage to the new version). Blue-green performs a complete, simultaneous switch of all traffic — it is binary, not gradual. This means if the new version has a problem, all users are affected rather than a subset. The compensation is that rollback is trivially fast — reverting to blue takes the same time as the original switch, typically under a second.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Before zero-downtime deployment techniques, releasing new software required taking the service offline for maintenance windows — often scheduled at 3am Sunday. Blue-green deployment was one of the first systematic approaches to achieving zero-downtime deployments. It provides a clean separation between deployment (getting the new code running) and release (switching users to it), reducing deployment risk by allowing full validation of the new version in a production-identical environment before any user sees it. The instant rollback capability means the window of user impact from a bad deployment is seconds, not the minutes or hours required to redeploy the old version.</p>
+          <p>Traditional release flows often coupled “build finished” with “users see it now,” so rollback meant rebuilding artifacts under pressure while outages clocked up. Blue-green makes <strong>deployment</strong> (warm the idle stack) and <strong>release</strong> (move the router) two explicit steps—an idea Fowler formalized in <a href="https://martinfowler.com/bliki/BlueGreenDeployment.html" rel="noopener noreferrer" target="_blank">Blue-Green Deployment</a>. High-performing teams in the DORA research associate faster recovery with practices that keep the prior version reachable; a rehearsed router flip is one of the shortest paths back when a promotion goes wrong.</p>
+          <p>Production-identical idle capacity also supports soak and smoke validation against real dependencies before any customer request hits the new build—closer to the “verify in prod-like conditions” discipline described in <a href="https://sre.google/workbook/canarying-releases/" rel="noopener noreferrer" target="_blank">canarying releases</a> material, but with a binary cutover instead of percentage ramps.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Services with strict uptime requirements where rolling deployments with mixed-version periods are unacceptable.</li>
-            <li>Database-heavy deployments where the new version requires schema migrations that must be applied before switching traffic.</li>
-            <li>When fast, tested rollback is more important than gradual traffic exposure — e.g., critical payment processing services.</li>
+            <li>When SLAs forbid sustained mixed-version fleets—authorization, checkout, or ledger paths where old and new binaries must not share live traffic concurrently.</li>
+            <li>When schema work follows expand-contract (or parallel-change) and you need the new code on idle capacity before cutover, as in Fowler’s <a href="https://martinfowler.com/bliki/ParallelChange.html" rel="noopener noreferrer" target="_blank">Parallel Change</a> write-up.</li>
+            <li>When rollback must be operator-simple: revert service selector, ALB target group, or DNS weight—not re-run a long rolling undo under incident stress.</li>
+            <li>When Kubernetes promotion is automated—e.g. Argo Rollouts <code>activeService</code> / <code>previewService</code> with pre-promotion analysis per the <a href="https://argoproj.github.io/argo-rollouts/features/bluegreen/" rel="noopener noreferrer" target="_blank">blue-green feature docs</a>.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Cost-constrained environments where running two full production-scale environments doubles infrastructure costs for services with large compute requirements.</li>
-            <li>When gradual exposure and metric-gated rollout is preferred over all-or-nothing switching — use canary releases instead.</li>
+            <li>When doubling compute for the cutover window is unbudgeted—stateless, low-risk services often fit native <a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#rolling-update-deployment" rel="noopener noreferrer" target="_blank">rolling updates</a> instead.</li>
+            <li>When you need production metric gates across small traffic slices before full exposure—progressive delivery or <a href="canary-releases.html">canary releases</a> reduce all-at-once blast radius.</li>
+            <li>When the change is not safe on two full stacks at once (destructive migrations, incompatible RPC contracts)—fix compatibility or sequencing before any duplicate environment strategy helps.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -206,41 +209,46 @@ DATABASE MIGRATION STRATEGY:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Zero-downtime deployments: traffic switch is instantaneous with no request drops (for load balancer switching), eliminating maintenance windows entirely.</li>
-                <li>Instant rollback: reverting to the previous version takes the same time as the original switch — seconds — rather than the minutes required to redeploy the old version.</li>
-                <li>Full pre-production validation: the green environment can be thoroughly smoke-tested against production data and infrastructure before any user traffic is routed to it.</li>
+                <li>Cutover at the router is near-instant for load balancers and many ingress patterns—users avoid maintenance-window downtime when validation succeeds on idle capacity first.</li>
+                <li>Rollback symmetry: the same control-plane change that promoted green can demote it; the prior stack stays warm during the stability window.</li>
+                <li>Idle stack testing uses production networking, secrets, and data-plane dependencies—closer to reality than staging-only sign-off.</li>
+                <li>Clear runbooks: operators document one promotion path (deploy green → verify → flip) instead of interpreting partial rollout health across heterogeneous pod ages.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Double infrastructure cost: running two full-scale production environments doubles compute costs during the deployment window; for large, expensive services this is significant.</li>
-                <li>Database migrations are complex: additive-only migrations (expand-contract pattern) must be applied before the switch, requiring coordination between schema changes and application code across multiple release cycles.</li>
-                <li>All-or-nothing exposure: unlike canary releases, all users are switched simultaneously — if a bug exists that wasn't caught in validation, all users are affected immediately.</li>
+                <li>Capacity and cost spike while both stacks run at production scale—unacceptable for GPU-heavy or large replica counts without autoscaling headroom.</li>
+                <li>Data plane discipline: expand-contract migrations and dual-read/write phases span multiple releases; rushing contract steps removes rollback safety.</li>
+                <li>Binary exposure: unlike metric-stepped canaries, a missed defect in pre-switch checks affects the full traffic share at once.</li>
+                <li>State and sticky routing: in-memory sessions, pod-local caches, or affinity rules can make “identical environments” behave differently after the flip.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Database migration is the hardest part of blue-green deployment. The naive approach — running destructive migrations before the switch — means that if rollback is needed, the old application code may be incompatible with the new schema. The solution is the <strong>expand-contract</strong> (or parallel-change) pattern: migrations are split into three phases. Expand: add new columns/tables while keeping old ones; both old and new application versions work.</p>
-          <p>Contract: after the new version is stable in production, remove the old columns/tables in a subsequent release. This requires careful coordination and discipline but makes rollback always safe.</p>
-          <p>In Kubernetes, use <strong>Argo Rollouts</strong> or <strong>Flagger</strong> rather than managing blue-green manually. These tools automate the deployment lifecycle: create the green deployment, run analysis (metric checks, smoke tests), switch the service selector, optionally scale down the blue deployment, and roll back automatically if analysis fails. This removes the operational complexity of coordinating the multi-step process manually.</p>
+          <p>Treat database evolution as a release prerequisite, not a same-day toggle. Apply expand steps while blue still serves traffic; ship green code that tolerates both old and new schema; run contract steps only after green is stable—matching Fowler’s parallel-change sequencing. Destructive DDL before cutover effectively forfeits instant rollback.</p>
+          <p>On Kubernetes, label two Deployments (or ReplicaSets) and point the Service selector at the live slot; promotion is a selector patch, as sketched in the <a href="https://kubernetes.io/docs/concepts/services-networking/service/" rel="noopener noreferrer" target="_blank">Service</a> model. Prefer controllers that encode the lifecycle: Argo Rollouts blue-green sets auto-promotion timers, optional <code>AnalysisTemplate</code> hooks, and scale-down policy; AWS CodeDeploy and ALB target groups follow the same mental model off-cluster.</p>
+          <p>Before flipping, run synthetic traffic against green (auth, health, critical RPC paths), warm connection pools, and confirm observability dashboards distinguish blue versus green series so post-cutover regressions are obvious within minutes—not after a full incident bridge.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Schema migration not applied before switch</strong>: Application code references new columns that don't exist yet; requests fail immediately after switch; rollback restores traffic but database state may be inconsistent.</li>
-            <li><strong>Insufficient green environment warmup</strong>: Green environment switches cold — connection pools not warmed, JVM not JIT-compiled, caches empty — causing latency spike or errors in the minutes after switch due to cold start behavior.</li>
-            <li><strong>Session state loss</strong>: If user sessions are stored in the application instance (not an external session store), switching environments invalidates all active sessions; users are logged out mid-session.</li>
+            <li><strong>Promoting ahead of migration expand</strong>: Green binaries expect columns or topics that production schema lacks; 5xx spike until rollback—sometimes with partial writes that complicate data repair.</li>
+            <li><strong>Cold green after flip</strong>: Autoscaler lag, empty caches, and JIT warm-up produce latency cliffs even when functional tests passed on a lightly loaded idle stack.</li>
+            <li><strong>Config drift between slots</strong>: Green receives different feature flags, secrets, or ConfigMap revisions than blue; the cutover surfaces environment skew mistaken for code defects.</li>
+            <li><strong>DNS-led cutover with long TTL</strong>: Clients cache old targets; operations believes rollback succeeded while a tail of users remains on green—or the reverse during revert.</li>
+            <li><strong>Premature blue teardown</strong>: Reclaiming idle capacity before the stability window ends removes the fast revert target when slow-burn bugs appear.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Can the environment cost (2x compute) be justified for the deployment window?</li>
-            <li>Are database migrations using the expand-contract pattern for rollback safety?</li>
-            <li>Is session state stored externally (Redis/database) so sessions survive environment switching?</li>
-            <li>Is the green environment warmed up (connection pools, caches) before the traffic switch?</li>
-            <li>Is there an automated smoke test suite that runs against the green environment before switching?</li>
-            <li>Is the old environment kept running for a defined stability window before teardown?</li>
+            <li>Is full duplicate production capacity affordable for the soak window, including burst headroom?</li>
+            <li>Are migrations sequenced expand → dual-compatible apps → contract, with rollback tested on paper?</li>
+            <li>Are sessions, carts, and idempotency keys externalized so slot changes do not log users out or duplicate work?</li>
+            <li>Do pre-switch tests exercise green under realistic auth, quotas, and downstream rate limits?</li>
+            <li>Is promotion automated (GitOps, rollout controller, or IaC) with audit history for who flipped what and when?</li>
+            <li>Does observability tag telemetry by slot/version so dashboards compare error rate and latency across blue and green?</li>
+            <li>Is there a timed hold on blue after cutover before scale-down, aligned with error-budget policy?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -252,16 +260,22 @@ DATABASE MIGRATION STRATEGY:
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="canary-releases.html">Canary Releases</a> — Gradual traffic shifting instead of all-or-nothing switching.</li>
-            <li><a href="release-strategies.html">Release Strategies</a> — Comparison of rolling, recreate, blue-green, and canary strategies.</li>
-            <li><a href="feature-flags.html">Feature Flags</a> — Alternative to environment-based switching for feature gating.</li>
+            <li><a href="canary-releases.html">Canary Releases</a> — Step traffic by percentage when observability can gate each increment instead of a single full cutover.</li>
+            <li><a href="rolling-deployments.html">Rolling Deployments</a> — In-place pod replacement when dual stacks are costly and versions stay compatible during overlap.</li>
+            <li><a href="release-strategies.html">Release Strategies</a> — Pick blue-green versus rolling versus canary from change risk, traffic volume, and rollback time budget.</li>
+            <li><a href="rollback-strategies.html">Rollback Strategies</a> — Pair router revert with data and config rollback plans when schema or flags moved with the release.</li>
+            <li><a href="database-migrations.html">Database Migrations</a> — Expand-contract sequencing that makes blue-green rollback technically feasible.</li>
+            <li><a href="progressive-delivery.html">Progressive Delivery</a> — Controllers (Argo Rollouts, Flagger) that implement blue-green and canary behind one operational model.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://martinfowler.com/bliki/BlueGreenDeployment.html" target="_blank" rel="noopener noreferrer">Blue-Green Deployment — Martin Fowler</a></li>
-            <li><a href="https://argoproj.github.io/argo-rollouts/features/bluegreen/" target="_blank" rel="noopener noreferrer">Argo Rollouts: Blue-Green</a></li>
-            <li><a href="https://martinfowler.com/bliki/ParallelChange.html" target="_blank" rel="noopener noreferrer">Parallel Change (Expand-Contract) — Martin Fowler</a></li>
+            <li><a href="https://martinfowler.com/bliki/ParallelChange.html" target="_blank" rel="noopener noreferrer">Parallel Change — Martin Fowler</a></li>
+            <li><a href="https://argoproj.github.io/argo-rollouts/features/bluegreen/" target="_blank" rel="noopener noreferrer">Argo Rollouts: Blue-Green updates</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/" target="_blank" rel="noopener noreferrer">Kubernetes Deployments and rollouts</a></li>
+            <li><a href="https://dora.dev/capabilities/continuous-delivery/" target="_blank" rel="noopener noreferrer">DORA — Continuous delivery capabilities</a></li>
+            <li><a href="https://sre.google/sre-book/rapid-and-sustainable-release/" target="_blank" rel="noopener noreferrer">Google SRE — Rapid and sustainable release</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

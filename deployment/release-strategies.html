@@ -110,17 +110,18 @@
           <p><strong>Ring-based deployment</strong>: Deploy to progressively wider rings — internal users → beta users → 1% → 10% → 100%. Used by large-scale consumer platforms (Microsoft Windows Update, cloud SaaS platforms).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Different deployment scenarios have different risk profiles. A cosmetic UI change in a low-traffic internal tool has minimal deployment risk. A new payment processing integration in a high-traffic e-commerce system has severe risk — a 1% error rate increase affects thousands of transactions per hour. Applying the same deployment strategy to both scenarios is either over-engineered (canary rollout for internal tools) or dangerously under-designed (rolling update for payment systems).</p>
-          <p>Understanding the spectrum of release strategies enables teams to match deployment risk management to the actual risk of each change.</p>
+          <p>One-size release mechanics waste money or risk revenue. Fowler separates deployment patterns—recreate, rolling, blue-green, canary—in distinct bliki entries because each optimizes for different downtime, cost, and observability assumptions. Kubernetes ships rolling as the default <a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy" rel="noopener noreferrer" target="_blank">Deployment strategy</a>, but that default is not a risk assessment.</p>
+          <p>Cataloging strategies lets platform teams encode choices in pipelines and service metadata instead of re-debating every Friday deploy. DORA high performers pair frequent delivery with recovery mechanisms matched to change class—mirroring the idea that release engineering is selecting the right gate, not the fanciest gate.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Recreate</strong>: Non-production environments; services where brief downtime is acceptable and simplicity is valued.</li>
-            <li><strong>Rolling update</strong>: Stateless services with stateless backward-compatible changes; routine deployments; Kubernetes default.</li>
-            <li><strong>Blue-green</strong>: Changes requiring database migration; services with strict uptime SLAs needing instant rollback capability.</li>
-            <li><strong>Canary</strong>: High-traffic, high-risk changes where production signal at small percentage is available; automated rollback on metrics is required.</li>
-            <li><strong>Shadow</strong>: Validating new service implementations, ML models, or integrations before exposing to users.</li>
-            <li><strong>Ring-based</strong>: Consumer-facing platforms with millions of users where progressive ring exposure reduces blast radius.</li>
+            <li><strong>Recreate</strong>: Dev/test clusters, batch workers, or tools where a short stop-start is cheaper than coordination; avoid for customer-facing HA paths.</li>
+            <li><strong>Rolling update</strong>: Routine, backward-compatible app deploys on stateless tiers—Kubernetes <code>maxSurge</code> / <code>maxUnavailable</code> tuned for zero unavailability when probes are honest.</li>
+            <li><strong>Blue-green</strong>: Expand-contract migrations, strict uptime SLAs, and cutovers that need instant router revert per <a href="https://martinfowler.com/bliki/BlueGreenDeployment.html" rel="noopener noreferrer" target="_blank">blue-green</a> practice.</li>
+            <li><strong>Canary</strong>: High-traffic services with SLO dashboards and Argo Rollouts/Flagger analysis—production slice validates before full weight.</li>
+            <li><strong>Shadow / mirror</strong>: Compare new inference, pricing, or integration outputs without returning candidate responses (Istio mirror routes, offline diff).</li>
+            <li><strong>Ring-based</strong>: Large consumer surfaces where cohort progression (internal → beta → percentage rings) manages support load—conceptually similar to progressive exposure described in SRE release material.</li>
+            <li><strong>Feature flags + deploy</strong>: Decouple binary rollout from user-visible change when <a href="feature-flags.html">feature flags</a> provide faster kill switches than infra rollback alone.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -209,17 +210,19 @@ A/B TESTING DEPLOYMENT (header/cookie routing):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros (of having a strategy portfolio)</h3>
               <ul>
-                <li>Risk-matched deployment: using the appropriate strategy for the risk level of each change prevents both over-engineering (canary for trivial changes) and under-managing (rolling update for critical integrations).</li>
-                <li>Shadow deployments eliminate user impact from testing new implementations — invaluable for ML model validation where correctness of outputs can be compared offline without any user seeing potentially incorrect results.</li>
-                <li>Ring-based deployments for consumer platforms enable early detection of platform-specific issues (browser compatibility, device-specific bugs) before the change reaches the full user population.</li>
+                <li>Risk-proportional gates: cosmetic or config edits roll quickly; schema or payment-logic edits earn blue-green or canary without platform heroics each time.</li>
+                <li>Teachable defaults: service catalog fields (“defaultStrategy: canary”) turn architecture decisions into scaffolding new teams inherit.</li>
+                <li>Shadow and ring paths surface client-platform and model-quality issues before universal exposure—useful when user-visible failure is expensive but offline comparison is cheap.</li>
+                <li>Aligns rollback story with strategy: flip router for blue-green, abort Rollout for canary, <code>kubectl rollout undo</code> for rolling—less improvisation during incidents.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Strategy sprawl: teams that apply too many strategies without clear criteria for when to use each create operational confusion — engineers must know which strategy to use and why for each deployment context.</li>
-                <li>Shadow and A/B testing add infrastructure complexity and cost: running shadow versions requires double the compute for the mirrored traffic; A/B test experiments require analytics infrastructure to measure outcomes.</li>
-                <li>Ring-based deployments introduce long lead times from commit to full rollout: a 5-week progression is appropriate for OS updates but unsuitable for services where rapid delivery is essential.</li>
+                <li>Decision fatigue without a decision guide: engineers default to “rolling everything” or “canary everything” when criteria are undocumented.</li>
+                <li>Toolchain multiplication: mesh mirroring, Rollouts CRDs, and ring orchestration each need owners, upgrades, and on-call familiarity.</li>
+                <li>Shadow and ring approaches inflate calendar lead time—poor fit when DORA-style lead time for changes is a core metric.</li>
+                <li>Misapplied strategies hide risk: rolling through incompatible versions or shadowing write paths causes subtle production damage.</li>
               </ul>
             </div>
           </div>
@@ -240,11 +243,13 @@ A/B TESTING DEPLOYMENT (header/cookie routing):
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the deployment strategy matched to the risk level of the change?</li>
-            <li>For rolling updates: is the new version backward compatible with the old during the rollout window?</li>
-            <li>For shadow deployments: does the shadow service have write operations that could cause real side effects?</li>
-            <li>Is rollback procedure defined, tested, and documented for each strategy?</li>
-            <li>Are monitoring and alerting in place to detect strategy-specific failure modes?</li>
+            <li>Is the chosen strategy recorded per service or change type (catalog, pipeline parameter, ADR)—not chosen ad hoc at deploy time?</li>
+            <li>Does the change need simultaneous old/new binaries? If not compatible, avoid rolling; use blue-green or sequenced migration.</li>
+            <li>For canary: are baseline-relative metrics and abort paths wired in the controller, not only in a wiki?</li>
+            <li>For blue-green: is expand-contract complete and is idle capacity pre-validated before flip?</li>
+            <li>For shadow: are writes disabled or tagged so mirrored traffic cannot bill, email, or mutate production data?</li>
+            <li>Does each strategy have a rehearsed rollback (undo rollout, revert GitOps, flip router, disable flag) within error-budget tolerance?</li>
+            <li>Is there a faster lane strategy for emergency patches when rings or multi-step canaries are too slow?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -256,9 +261,12 @@ A/B TESTING DEPLOYMENT (header/cookie routing):
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="blue-green-deployment.html">Blue-Green Deployment</a> — Detailed blue-green strategy coverage.</li>
-            <li><a href="canary-releases.html">Canary Releases</a> — Detailed canary strategy with metric-gated progression.</li>
-            <li><a href="feature-flags.html">Feature Flags</a> — Application-layer mechanism for ring-based and A/B deployment.</li>
+            <li><a href="rolling-deployments.html">Rolling Deployments</a> — Default in-place replacement when versions coexist safely.</li>
+            <li><a href="blue-green-deployment.html">Blue-Green Deployment</a> — Dual-stack promotion and instant router revert.</li>
+            <li><a href="canary-releases.html">Canary Releases</a> — Weight steps with automated analysis between increments.</li>
+            <li><a href="progressive-delivery.html">Progressive Delivery</a> — Operational model tying strategies to controllers and SLO gates.</li>
+            <li><a href="ci-cd-pipelines.html">CI/CD Pipelines</a> — Where strategy selection and artifact promotion are enforced.</li>
+            <li><a href="rollback-strategies.html">Rollback Strategies</a> — Per-strategy recovery when promotion fails or budgets exhaust.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
