@@ -107,10 +107,12 @@
           <p>A <strong>multi-cloud strategy</strong> is a deliberate choice to run production workloads on two or more public cloud providers, with documented reasons for placement, shared governance, and integration paths between them. It is not accidental sprawl from acquisitions or shadow IT, and it is not hybrid cloud (on-premises plus cloud) unless hybrid is an explicit subset of a broader plan.</p>
           <p>Decisions span where each workload lives, how identity and secrets federate, how private networking connects virtual networks across providers, where authoritative data resides, and whether operations use a single observability and cost plane. Posture ranges from <em>coexistence</em>—independent systems on different clouds with light integration—to <em>symmetric active-active</em> deployments with replicated data and traffic failover, which is costly and rare.</p>
           <p>NIST’s cloud definition (SP 800-145) applies per provider; multi-cloud adds the portfolio layer: how many providers, which regulatory or commercial constraints apply, and what portability is actually funded—not merely aspirational.</p>
+          <p>Concrete placement still names CSPs: AWS for breadth of managed data and ML services (SageMaker, Aurora, Bedrock), Azure where Entra ID, hybrid connectivity, and sovereign regions matter, Google Cloud where BigQuery, Dataflow, or Vertex AI justify a second operations surface. Portability is rarely “run anywhere with zero changes”; it is a tiered catalog—stateless APIs on Kubernetes, bounded data products with documented export paths, and explicitly <em>native-only</em> tiers where exit means rewrite or managed-service substitution rather than lift-and-shift.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Organizations adopt multi-cloud for negotiated leverage, regulatory diversity, geographic coverage, or best-of-breed services unavailable on a primary platform. Mergers often land teams on different clouds; integrating without immediate migration forces cross-cloud connectivity and unified identity. Sovereign or sector-specific regions may exist on only one vendor, while the rest of the estate stays elsewhere.</p>
           <p>Without strategy, multi-cloud becomes the most expensive form of technical debt: duplicated skills, asymmetric security controls, and data egress between providers. A explicit strategy states which workloads must be portable, which are allowed to be provider-native, and what “exit” means in practice for each tier.</p>
+          <p><strong>Vendor exit</strong> belongs in the strategy document, not in a crisis runbook written during a contract dispute. For each tier, record recovery time objectives, authoritative export formats (database snapshots, object replication, queue drain), and which managed APIs have no portable equivalent. Enterprise agreements should allow egress windows and discounted data-out clauses where regulators require proof of mobility. Negotiating leverage only works when engineering has rehearsed at least one partial migration—moving a non-production environment or rebuilding a satellite service—within the last twelve months.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -119,6 +121,8 @@
             <li>A capability (analytics, AI APIs, identity integration) is materially better on a second provider and worth operational overhead.</li>
             <li>Data residency rules map different regions to different certified providers.</li>
             <li>Enterprise customers require deployment into their preferred cloud (bring-your-own-cloud offerings).</li>
+            <li>You need a capability with no credible substitute on the primary CSP—examples include BigQuery ML, Azure OpenAI Service, or AWS Bedrock with a chosen foundation model.</li>
+            <li>Sovereign or sector-specific regions (AWS GovCloud, Azure Government, Google Cloud restricted offerings) force one provider for classified or residency-bound data while the rest of the estate stays elsewhere.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -188,7 +192,7 @@
               <ul>
                 <li>Duplicates IAM, billing, networking, and incident response models across providers.</li>
                 <li>Portable abstractions often lag provider-native features and slow developers.</li>
-                <li>Cross-cloud data movement incurs egress fees and latency that dominate TCO at scale.</li>
+                <li>Cross-cloud data movement incurs egress fees and latency that dominate TCO at scale (hyperscaler internet egress is often on the order of $0.08–$0.12 per GB before discounts).</li>
                 <li>Security baselines drift when guardrails are mature on one cloud but immature on another.</li>
                 <li>Hiring and retaining multi-cloud expertise is slower and more expensive than depth on one platform.</li>
               </ul>
@@ -197,8 +201,11 @@
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Standardize a thin portability layer: multi-provider infrastructure modules, container runtime where justified, and enterprise IdP federation into short-lived roles on each cloud—avoid parallel long-lived users. Document which services are <em>native-only</em> by design so teams are not forced into lowest-common-denominator APIs where differentiation matters.</p>
-          <p>Plan IP address space, private connectivity (VPN, dedicated circuits, provider interconnect offerings), and secrets management that work across boundaries. Observability should normalize metrics, logs, and traces into one analysis plane with consistent service naming.</p>
-          <p>Run landing zones (or equivalent) on <em>each</em> provider so guardrails, logging, and cost allocation match; asymmetry between clouds is a common audit finding.</p>
+          <p>Terraform with provider-specific modules remains the common denominator: a <code>module/kubernetes</code> interface can target EKS on AWS, AKS on Azure, or GKE on Google Cloud while encoding non-portable storage classes, load-balancer annotations, and workload identity bindings in per-cloud submodules. Kubernetes buys container portability; it does not erase DynamoDB, Pub/Sub, or Cosmos DB dependencies embedded in application code. Service meshes (Istio, Linkerd) and cross-cluster tooling (Submariner, Skupper) help east-west traffic without exporting internal DNS names across provider boundaries.</p>
+          <p>For identity, federate Okta or Microsoft Entra ID into AWS IAM Identity Center, Azure workload identity federation, and Google Cloud Workforce Identity so humans and CI pipelines assume cloud roles through OIDC—not duplicate IAM users. Secrets belong in HashiCorp Vault or a replicated vault pattern; avoid siloed parameter stores per cloud unless replication and rotation are automated.</p>
+          <p>Plan IP address space, private connectivity (AWS Transit Gateway to Azure VNet via VPN, ExpressRoute with Direct Connect, or Google Cloud Interconnect), and secrets management that work across boundaries. Reserve non-overlapping CIDR blocks before the second subscription is provisioned. Observability should normalize metrics, logs, and traces into one analysis plane with consistent service naming—Datadog, Grafana Cloud, or OpenTelemetry collectors with vendor-neutral export.</p>
+          <p><strong>Compliance boundaries</strong> differ per CSP and region: map PCI, HIPAA, or FedRAMP scope to which accounts hold cardholder or regulated data, which provider attestations you inherit, and which customer controls you must evidence in each cloud. A workload in Azure Germany West Central and another in AWS us-east-1 may fall under different DPAs and logging retention rules even when the same team operates both.</p>
+          <p>Run landing zones (or equivalent) on <em>each</em> provider so guardrails, logging, and cost allocation match; asymmetry between clouds is a common audit finding. Include a vendor-exit appendix per tier: export procedure, maximum tolerable downtime, and the named owner who can sign off on abandoning a managed API.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -207,6 +214,7 @@
             <li><strong>Pretend portability:</strong> Kubernetes-only stacks still embed provider-specific storage, DNS, and IAM annotations.</li>
             <li><strong>Asymmetric security:</strong> The secondary cloud becomes the weak entry point for attackers.</li>
             <li><strong>On-call overload:</strong> Engineers juggle multiple consoles and runbooks, lengthening incident recovery.</li>
+            <li><strong>Untested exit:</strong> Leadership cites portability in negotiations, but no team has ever restored a database or replayed a queue into the secondary CSP within the stated RTO.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -217,12 +225,16 @@
             <li>Which workloads must be portable versus provider-native, and who approves exceptions?</li>
             <li>Does identity federation cover all human and workload access without duplicate local users?</li>
             <li>Will telemetry and cost data land in a single operational view?</li>
+            <li>Is there a documented vendor-exit procedure (export, cutover, rollback) for each portability tier, rehearsed at least annually?</li>
+            <li>Do compliance boundaries and DPAs cover every CSP–region pair where regulated data resides?</li>
+            <li>Have you accepted explicit trade-offs where cloud-agnostic abstractions block SQS, Aurora Serverless, or BigQuery features you would otherwise use?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> A bank keeps core transaction processing on the cloud aligned with its enterprise directory while fraud analytics runs on a second provider; training features arrive through a multi-cloud data sharing product to limit raw egress.</li>
-            <li><strong>Illustrative scenario —</strong> A B2B SaaS vendor packages the same Helm-based workload for customer-chosen clouds using per-tenant infrastructure workspaces and a control-plane database of tenant metadata.</li>
+            <li><strong>Illustrative scenario —</strong> A bank keeps core transaction processing on Azure (Entra ID–centric enterprise stack) while fraud detection runs on AWS SageMaker; training features move through Snowflake’s cross-cloud sharing so petabyte-scale raw egress does not dominate the economics.</li>
+            <li><strong>Illustrative scenario —</strong> A B2B SaaS vendor packages the same Helm-based workload for customer-chosen clouds (AWS, GCP, or Azure) using Terraform workspaces and per-tenant metadata in the vendor control plane, with a written exit path for tenants who revoke BYOC hosting.</li>
+            <li><strong>Illustrative scenario —</strong> A government agency places US-classified workloads in AWS GovCloud (FedRAMP High) and EU citizen data in Azure sovereign or EU sovereign regions for GDPR residency, linked by dedicated private circuits rather than the public internet.</li>
             <li><strong>Case study —</strong> <strong>Spotify</strong> has publicly discussed running across Google Cloud and AWS historically for different platform needs; <strong>Goldman Sachs</strong> has described multi-cloud partnerships—both illustrate deliberate placement rather than accidental sprawl.</li>
           </ul>
 

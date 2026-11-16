@@ -107,10 +107,12 @@
           <p>The <strong>shared responsibility model</strong> is the contract-shaped mental map that splits security and compliance duties between a cloud provider and its customer. Providers answer for security <em>of</em> the cloud—the physical sites, hypervisor, and managed platform layers they operate at scale. Customers answer for security <em>in</em> the cloud—what they deploy, configure, store, and expose on top of that platform.</p>
           <p>The dividing line moves with service type. With infrastructure as a service, the customer typically owns the guest operating system, middleware, application, data, identity configuration, and network rules above the hypervisor. With platform as a service, the provider patches more of the stack while the customer still owns application logic, secrets, access policies, and data handling. With software as a service, the vendor runs almost everything; the customer still owns identity federation, authorization to business data, and acceptable use.</p>
           <p>NIST SP 800-145 frames cloud by service model (IaaS, PaaS, SaaS); the shared responsibility model is how major providers operationalize who implements each control at each layer. It is not marketing—it drives audit scope, incident ownership, and where architects should invest hardening effort.</p>
+          <p>On AWS, EC2 and EBS illustrate the split: AWS secures the facility and hypervisor; you patch the guest OS, configure security groups, and choose whether volumes use default encryption or a customer-managed KMS key. On Azure, comparable VM and disk encryption choices sit with the tenant; Microsoft Defender for Cloud surfaces misconfigurations Microsoft does not own. On Google Cloud, Compute Engine and Cloud Storage follow the same pattern—Google operates the stack below the guest boundary; project IAM, VPC firewall rules, and CMEK settings remain customer configuration surfaces.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Multi-tenant clouds cannot let every customer inspect hardware or patch shared hosts, and providers cannot guarantee safety of arbitrary customer configurations. A published split of duties lets each party produce evidence for its layer: provider attestations (SOC, ISO, FedRAMP) cover facilities and shared services; customers document IAM, data protection, and application controls they configure.</p>
           <p>For architecture decisions, the model clarifies trade-offs when climbing the abstraction ladder. Choosing a managed database over self-hosted VMs shifts patching and platform upkeep to the vendor but leaves query access, encryption key choice, and backup restore testing with the customer. Teams that ignore the boundary either assume “the cloud is secure” after a lift-and-shift, or rebuild data-center operations the provider already runs.</p>
+          <p><strong>Compliance boundaries</strong> follow the same line. Provider SOC 2, ISO 27001, PCI-DSS, or HIPAA business associate coverage attests to layers they operate; auditors still expect customer evidence for IAM, application access, data classification, and logging you configure. When an auditor asks whether data is encrypted at rest, the answer depends on who enabled encryption, which key custodian holds the material, and whether access policies—not just ciphertext—prevent exposure.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -119,11 +121,13 @@
             <li>Evaluating SaaS vendors for residual duties such as SSO, token lifecycle, and data residency configuration.</li>
             <li>Mapping compliance frameworks (PCI, HIPAA, SOC 2) to provider attestation versus customer evidence.</li>
             <li>Onboarding engineers so incident response knows whether a finding is platform or tenant misconfiguration.</li>
+            <li>Scoping penetration tests—the model defines customer-testable APIs and networks versus provider-only infrastructure (you cannot pen-test the AWS or Azure hypervisor).</li>
+            <li>Writing architecture documents that map PCI, HIPAA, or SOC 2 controls to provider-owned versus customer-owned implementation.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>As an excuse for customer misconfiguration:</strong> Public object storage, open security groups, and excessive IAM permissions remain customer failures even when lower layers are provider-certified.</li>
+            <li><strong>As an excuse for customer misconfiguration:</strong> Public object storage, open security groups, and excessive IAM permissions remain customer failures even when lower layers are provider-certified—auditors attribute findings to the tenant when the bucket policy or role trust is wrong, not to the CSP.</li>
             <li><strong>Instead of contracts:</strong> Terms of service, business associate agreements, and data processing addenda define legal obligations; the model is explanatory, not authoritative in court.</li>
             <li><strong>Assuming SaaS zeroes customer risk:</strong> Identity, sharing policies, and third-party integrations in SaaS products are still customer configuration surfaces.</li>
           </ul>
@@ -198,15 +202,18 @@ Common Customer-Owned Controls (all service models):
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Maintain a service catalog matrix: for each managed offering in production, link the provider’s responsibility page and list customer tasks (patching nodes, rotating keys, backup restore drills). Managed Kubernetes illustrates the nuance—the control plane may be vendor-operated while worker nodes remain customer patch surfaces unless explicitly managed.</p>
-          <p>Automate detective controls for known customer duties: public exposure prevention, encryption defaults, MFA on privileged access, and centralized audit log shipping. Map automated checks to frameworks (CIS, PCI, NIST) so audit packets pair provider attestations with continuous compliance findings from your accounts.</p>
-          <p>Train builders that encryption at rest from the platform does not imply encryption in use or correct sharing policies; classify data and tie key management to customer-managed keys when regulations require clear custody.</p>
+          <p>On AWS, EKS patches the Kubernetes control plane; managed node groups can track EKS-optimized AMIs when you opt in, but self-managed node groups require your patch cycle. ECS Fargate shifts container host OS duty to AWS; ECS on EC2 leaves ECS-optimized AMI updates with you. Document these per service in a RACI table linked from your internal catalog.</p>
+          <p>For compliance programs, pull provider artifacts into the audit packet: AWS Artifact PCI-DSS responsibility summaries, Azure compliance offerings and customer responsibility guides, Google Cloud’s compliance resource center. Pair them with continuous evidence for customer layers—on AWS, Config rules such as <code>s3-bucket-public-read-prohibited</code>, <code>encrypted-volumes</code>, and <code>mfa-enabled-for-iam-console-access</code>, consolidated in Security Hub against CIS and PCI mappings; on Azure, Microsoft Defender for Cloud regulatory compliance dashboards and Policy initiatives; on Google Cloud, Security Command Center findings and Organization Policy constraints on public IPs and CMEK.</p>
+          <p>Automate detective controls for known customer duties: S3 Block Public Access or equivalent at the account or organization level, encryption defaults with customer-managed keys for regulated tiers, MFA on privileged access, and centralized audit log shipping (CloudTrail, Azure Activity Log, Google Cloud Audit Logs). Map automated checks to frameworks (CIS, PCI, NIST) so audit packets pair provider attestations with continuous compliance exports from your accounts.</p>
+          <p>Train builders that encryption at rest from the platform does not imply encryption in use or correct sharing policies; classify data and tie key management to customer-managed keys when regulations require clear custody. Multi-cloud estates must reconcile three different responsibility diagrams—do not assume Azure’s “customer always” row matches AWS wording for the same managed service shape.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Storage exposure with encryption on:</strong> Default encryption does not block a public access policy on object storage; access control is customer-owned.</li>
+            <li><strong>Storage exposure with encryption on:</strong> Default encryption does not block a public access policy on S3, Azure Blob, or Cloud Storage; access control and public-access prevention are customer-owned.</li>
             <li><strong>Late discovery of non-reversible encryption settings:</strong> Some databases require encryption at creation; retrofit means rebuild or snapshot migration.</li>
             <li><strong>Assuming “managed” covers worker nodes:</strong> Teams stop patching Kubernetes nodes or VM guests when only the control plane is vendor-managed.</li>
-            <li><strong>Over-privileged identities:</strong> The identity service is secure; overly broad roles and long-lived keys are customer configuration defects.</li>
+            <li><strong>Over-privileged identities:</strong> IAM, Entra ID app roles, and Google Cloud IAM are operated securely by the provider; overly broad roles, wild-card trust policies, and long-lived access keys are customer configuration defects.</li>
+            <li><strong>EKS or AKS node drift:</strong> Teams assume “managed Kubernetes” means no node patching; control plane management does not remove worker OS obligations unless you use fully managed node pools with automatic upgrades enabled and verified.</li>
             <li><strong>SaaS sharing defaults:</strong> Collaborative suites leak data when external sharing remains enabled; the vendor does not choose your sharing policy.</li>
           </ul>
 
@@ -218,12 +225,14 @@ Common Customer-Owned Controls (all service models):
             <li>Is multi-factor authentication enforced on all human and break-glass access paths the customer owns?</li>
             <li>Does the audit package combine provider artifacts with continuous compliance exports for customer layers?</li>
             <li>Are account-level guardrails in place to block accidental public data exposure?</li>
+            <li>Is S3 Block Public Access or the Azure/GCP equivalent enforced at organization scope?</li>
+            <li>Does the compliance evidence package include provider attestations <em>and</em> your automated Config, Defender, or SCC exports for customer-layer controls?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
             <li><strong>Illustrative scenario —</strong> A healthcare API on a public cloud signs a business associate agreement for covered services, then implements field-level encryption, centralized audit logging, and private networking for protected health information—all customer-layer controls outside the agreement’s provider scope.</li>
-            <li><strong>Illustrative scenario —</strong> Before a PCI assessment, architects download the cloud provider’s responsibility summary and mark requirements satisfied by provider attestation versus those needing application and cardholder-environment evidence from the merchant.</li>
+            <li><strong>Illustrative scenario —</strong> Before a PCI assessment, architects download the AWS Artifact PCI-DSS responsibility summary (or Azure/Google equivalents) and map hundreds of requirements to provider-attested infrastructure versus merchant-owned application and cardholder-environment controls, collecting evidence only for the customer-owned set.</li>
             <li><strong>Case study —</strong> Widely reported cloud data exposures from misconfigured object storage illustrate customer-owned access policies: platform encryption was present while bucket or container ACLs allowed public read.</li>
           </ul>
 
@@ -237,6 +246,7 @@ Common Customer-Owned Controls (all service models):
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
+            <li><a href="https://aws.amazon.com/compliance/shared-responsibility-model/" target="_blank" rel="noopener noreferrer">AWS Shared Responsibility Model</a></li>
             <li><a href="https://docs.aws.amazon.com/whitepapers/latest/aws-risk-and-compliance/shared-responsibility-model.html" target="_blank" rel="noopener noreferrer">AWS Risk and Compliance — Shared Responsibility Model (Whitepaper)</a></li>
             <li><a href="https://learn.microsoft.com/en-us/azure/security/fundamentals/shared-responsibility" target="_blank" rel="noopener noreferrer">Shared Responsibility in the Cloud — Azure Security Fundamentals</a></li>
             <li><a href="https://cloud.google.com/architecture/framework/security/shared-responsibility" target="_blank" rel="noopener noreferrer">Shared Responsibility — Google Cloud Architecture Framework</a></li>
