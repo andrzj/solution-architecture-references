@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Edge Processing Patterns — SA References</title>
-  <meta name="description" content="Stream processing at the edge: filtering, aggregation, and event detection.">
+  <meta name="description" content="Edge processing patterns: filtering, aggregation, rules engines, closed-loop control, configuration sync, and observability for gateway and device-tier analytics.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -88,7 +88,7 @@
     <nav class="breadcrumb" aria-label="Breadcrumb">
       <a href="../index.html">Home</a>
       <span class="breadcrumb__sep" aria-hidden="true">›</span>
-      <a href="index.html">IoT & Edge</a>
+      <a href="index.html">IoT &amp; Edge</a>
       <span class="breadcrumb__sep" aria-hidden="true">›</span>
       <span class="breadcrumb__current">Edge Processing Patterns</span>
     </nav>
@@ -96,97 +96,145 @@
       <div class="article-body">
         <div class="article-header">
           <div class="article-header__tags">
-            <span class="badge badge--primary">IoT & Edge</span>
+            <span class="badge badge--primary">IoT &amp; Edge</span>
           </div>
           <h1 class="article-header__title">Edge Processing Patterns</h1>
-          <p class="article-header__desc">Stream processing at the edge: filtering, aggregation, and event detection.</p>
+          <p class="article-header__desc">Stream processing at the edge: filtering, aggregation, rules engines, closed-loop actuation, configuration delivery, and correlation with cloud pipelines.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Edge processing complements <a href="edge-computing.html">edge computing</a> infrastructure choices.</p>
+          <p><strong>Edge processing patterns</strong> are the algorithms and control flows that run on gateways or device-tier compute to filter, aggregate, enrich, classify, and act on telemetry <em>before</em> selective upload to cloud pipelines. They sit on top of <a href="edge-computing.html">edge computing</a> placement decisions: the same hardware might downsample vibration, evaluate CEP rules, invoke TFLite models, and drive actuators within milliseconds.</p>
+          <p>Common building blocks include <strong>downsampling</strong> and rolling windows, <strong>threshold and composite rules</strong> (Azure Stream Analytics on IoT Edge, AWS IoT Events-style logic, custom CEP), <strong>edge ML inference</strong> that emits labels instead of raw tensors, and <strong>store-and-forward</strong> queues that prioritize alerts over bulk history. Configuration usually flows from cloud device twins or Greengrass deployments; outputs must correlate with <a href="iot-data-pipeline.html">cloud stream processing</a> via shared device IDs and event schemas.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Shipping every sensor reading to cloud is expensive and slow for closed-loop control.</p>
-          <p>Privacy or compliance may require local redaction before egress.</p>
+          <p>High-frequency sensors multiply small messages into unsustainable ingress bills and WAN saturation. Closed-loop safety—stopping a line, opening a valve, braking a cart—cannot wait for cloud round trips. Processing locally reduces bits moved and latency while preserving cloud authority for fleet-wide analytics and model training.</p>
+          <p>Regulators and customers also expect on-device redaction: strip PII from camera metadata, aggregate occupant counts without raw video, or discard readings outside contractual boundaries before they cross a national border. Edge processing encodes those policies in software that runs even when upstream links are down.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>High-frequency telemetry (vibration, video metadata).</li>
-            <li>Closed-loop control needing sub-100ms decisions.</li>
-            <li>Bandwidth-constrained sites (satellite, cellular).</li>
+            <li>Telemetry faster than ~1&nbsp;Hz per device where cloud ingest cost or quota is a concern.</li>
+            <li>Actuation or alarming with sub-100&nbsp;ms deadlines tied to local sensors.</li>
+            <li>Satellite, cellular, or shop-floor Wi‑Fi with limited sustained uplink.</li>
+            <li>On-device or gateway inference that replaces shipping raw video or audio.</li>
+            <li>Compliance requires filter, mask, or aggregate before data leaves the facility.</li>
+            <li>Store-and-forward during predictable connectivity gaps (nightly sync windows, ferry routes).</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>When cloud analytics is cheap and latency requirements are loose.</li>
+            <li>Cloud analytics latency is acceptable and per-message cost is negligible—central rules are easier to audit and change.</li>
+            <li>Global joins across many sites must see identical inputs—heavy edge filtering can starve cross-fleet models.</li>
+            <li>Teams lack OTA and config signing for distributed rules—manual gateway edits do not scale.</li>
+            <li>Every raw sample is legally required for retention—edge downsampling destroys evidence unless a parallel raw path is archived.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Sensors publish to a local broker or in-process bus on the gateway. A pipeline stage normalizes units and timestamps, applies windows and rules, optionally runs inference, then forks outputs to local actuators, persistent spool, and cloud topics. Rules versions are pulled from twin desired properties; acknowledgements report applied config generation.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    sensors["Sensors"]
-    gw["Edge gateway&lt;br/&gt;filter, aggregate"]
-    rules["Local rules engine"]
-    cloud["Cloud analytics"]
-    sensors --> gw --> rules
-    rules --> cloud</div>
+    sensors["Sensors / PLC"]
+    norm["Normalize &amp; timestamp"]
+    proc["Windows / rules / ML"]
+    act["Local actuate / alarm"]
+    spool["Persistent spool"]
+  cloud["Cloud ingest"]
+    sensors --> norm --> proc
+    proc --> act
+    proc --> spool --> cloud</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>EDGE PROCESSING PIPELINE
 ────────────────────────────────────────────
-  Sensors → gateway
+  Sensors / field bus (MQTT, OPC UA)
         ▼
-  Filter / downsample / aggregate
+  Normalize units + attach event_time
         ▼
-  Local alert OR actuate
-        ▼
-  Upload summaries + exceptions</code></pre>
+  ┌─────────────────────────────────────┐
+  │ Windows: tumbling 1s / sliding 5m    │
+  │ Rules: threshold, composite CEP      │
+  │ ML: TFLite / ONNX classification     │
+  └─────────────────────────────────────┘
+        │
+        ├──► Local MQTT / GPIO actuation (ms latency)
+        ├──► Persistent spool (alerts first, then bulk)
+        └──► Cloud topic (summaries + exception payloads)
+
+CONFIG: twin desired properties / signed deployment manifest
+OBSERVABILITY: edge drop rate, rule version, spool depth per device</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Edge processing pipeline: gateways preprocess telemetry locally before selective cloud upload.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Edge processing: normalize and enrich locally, act immediately, spool for resilience, upload summaries and exceptions.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Lower cloud ingress bills.</li>
-            <li>Faster local reactions.</li>
+                <li>Cut ingress volume and bandwidth charges by orders of magnitude when downsampling or event-only upload is appropriate.</li>
+                <li>Meet hard real-time control and safety SLAs without cloud dependency on the critical path.</li>
+                <li>Apply privacy and residency filters before data crosses network boundaries.</li>
+                <li>Continue operating during outages with local rules and deferred sync.</li>
+                <li>Reduce cloud stream-processor load by pre-aggregating at the highest-rate tier.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Distributed logic harder to debug.</li>
-            <li>Firmware update burden on gateways.</li>
+                <li>Distributed rule logic is harder to debug than a single cloud job—need correlated logging and replay tools.</li>
+                <li>Edge and cloud can disagree on thresholds without strict config versioning.</li>
+                <li>OTA and signed config pipelines become mandatory operational cost.</li>
+                <li>Downsampled streams may be insufficient for future root-cause analysis unless raw is archived elsewhere.</li>
+                <li>Testing matrix spans hardware variants, load profiles, and offline scenarios.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Define what must be local vs cloud with latency and cost budgets. Version edge rules like server code with canary OTA.</p>
-          <p>Log edge decisions with correlation ID for cloud traceability.</p>
+          <p><strong>Partitioning work:</strong> Document a latency-and-cost budget per metric class—what must stay local, what can wait for cloud Flink, and what never leaves the site. Revisit when ingest pricing or model freshness requirements change.</p>
+          <p><strong>Rules as code:</strong> Store thresholds and CEP definitions in version control; deploy via signed manifests with canary device groups. Reject unsigned config; report applied version in device shadow reported fields.</p>
+          <p><strong>Timestamps:</strong> Propagate device <code>event_time</code> through edge windows so cloud jobs do not double-shift aggregates when backfill arrives late.</p>
+          <p><strong>Observability:</strong> Export counters for spool depth, rule evaluation errors, dropped messages, and inference latency histograms to cloud metrics or a local scrape endpoint—alerts on sustained drop rate precede silent data loss.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Split-brain rules:</strong> Edge and cloud disagree on thresholds — single source of truth for config.</li>
-            <li><strong>Buffer overflow:</strong> Offline gateway drops data — persistent spool with backpressure.</li>
+            <li><strong>Split-brain thresholds:</strong> Operators tweak cloud rules while gateways run stale twin desired properties—use monotonic config generations and health checks on mismatch.</li>
+            <li><strong>RAM-only buffering:</strong> Extended offline periods exhaust memory and discard history—persistent queues with backpressure and upload prioritization.</li>
+            <li><strong>Double actuation:</strong> Cloud replay retriggers commands edge already executed—idempotent command IDs and local dedupe tables.</li>
+            <li><strong>Clock skew:</strong> Gateways without NTP apply wrong windows—monitor skew and refuse rule evaluation beyond a tolerance.</li>
+            <li><strong>Unbounded rule complexity:</strong> Ad-hoc scripts per site become undeployable—cap supported operators and test in CI against recorded PCAPs or synthetic streams.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are edge rules remotely configurable and signed?</li>
-            <li>Is there observability for edge drop rates?</li>
+            <li>Is each metric class assigned to local, cloud, or hybrid processing with documented SLAs?</li>
+            <li>Are edge rules versioned, signed, and rolled out through canary groups?</li>
+            <li>Does spool capacity cover worst-case outage with alert-first drain policy?</li>
+            <li>Do uploads include config generation and correlation IDs for cloud traceability?</li>
+            <li>Is raw archival defined wherever downsampling destroys diagnostically useful detail?</li>
+            <li>Are drop rate, spool depth, and inference latency monitored per gateway?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Factory line:</strong> Edge detects vibration anomaly; stops line locally; uploads 1 Hz aggregates otherwise.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>FieldOps</strong> gateways downsample high-rate vibration to periodic summaries, run a local CEP rule to trip a line stop on sustained breach with actuation on the plant floor, and upload exception bundles plus rollups when LTE returns.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> edge modules redact license-plate tokens from yard camera metadata, emit occupancy counts only, and stream anomaly clips when perimeter rules fire—reducing egress to fit cellular caps.</li>
+            <li><strong>Case study —</strong> Microsoft’s IoT Edge Stream Analytics module and AWS Greengrass Stream Manager document patterns for edge SQL, buffering, and prioritized S3 export—common reference points for hybrid rule placement.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="edge-computing.html">Edge Computing</a> — Edge placement patterns.</li>
-            <li><a href="iot-data-pipeline.html">IoT Data Pipeline</a> — Cloud-side continuation.</li>
-            <li><a href="telemetry-ingestion.html">Telemetry Ingestion</a> — Ingest at scale.</li>
+            <li><a href="edge-computing.html">Edge Computing</a> — Hardware tiers, runtimes, and fleet deployment.</li>
+            <li><a href="iot-data-pipeline.html">IoT Data Pipeline</a> — Hot and cold cloud paths after selective upload.</li>
+            <li><a href="telemetry-ingestion.html">Telemetry Ingestion</a> — Scale and backpressure at the cloud boundary.</li>
+            <li><a href="../integration/streaming-integration.html">Streaming Integration</a> — Event-time processing continued in the cloud.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/greengrass/" target="_blank" rel="noopener noreferrer">AWS IoT Greengrass</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/iot-edge/" target="_blank" rel="noopener noreferrer">Azure IoT Edge</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/iot/" target="_blank" rel="noopener noreferrer">Azure IoT architecture guide</a></li>
+            <li><a href="https://docs.aws.amazon.com/greengrass/v2/developerguide/stream-manager-component.html" target="_blank" rel="noopener noreferrer">AWS IoT Greengrass — Stream Manager</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/stream-analytics-anomaly-detection" target="_blank" rel="noopener noreferrer">Azure Stream Analytics on IoT Edge</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/iot/" target="_blank" rel="noopener noreferrer">Azure Architecture Center — IoT guidance</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
