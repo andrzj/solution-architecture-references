@@ -90,31 +90,33 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>A webhook is an HTTP POST request sent by a <em>provider</em> to a <em>consumer-specified URL</em> when a triggering event occurs — a payment captured, a repository pushed to, a form submitted. Unlike polling (the consumer repeatedly asks "did anything change?"), webhooks invert the flow: the provider pushes a notification the moment the event happens. The consumer registers a callback URL during setup; the provider stores it and makes the HTTP call when needed.</p>
-          <p>The payload is typically a JSON document describing the event. The consumer must respond with <code>2xx</code> within a timeout (commonly 5–30 seconds) to acknowledge receipt. If the provider receives a non-2xx response or times out, it retries using an exponential backoff schedule.</p>
-          <p>Webhooks are the dominant integration mechanism for SaaS platforms: Stripe, GitHub, Shopify, Twilio, Slack, and hundreds of others expose webhooks as their primary real-time event delivery mechanism to third-party systems. They require no message broker infrastructure, just an HTTPS endpoint on the consumer side.</p>
+          <p><strong>Webhooks</strong> are provider-initiated HTTP callbacks: when an event occurs in a SaaS or platform system, the provider sends an HTTP request (usually <code>POST</code> with a JSON body) to a subscriber URL that the consumer registered in advance. The pattern is push-based <a href="event-notification.html">event notification</a> over the public internet—no shared message broker, only HTTPS reachability and a contract for payload shape and delivery semantics.</p>
+          <p>Subscribers acknowledge delivery by returning an HTTP success status within the provider’s documented timeout; otherwise the provider typically retries with backoff until a maximum attempt window, yielding <em>at-least-once</em> delivery. Producers document event types, signing rules, and replay APIs; consumers verify authenticity, deduplicate by event identifier, and defer heavy work off the request thread.</p>
+          <p>Major platforms (payments, source control, commerce, communications) treat webhooks as the default integration surface for partners who cannot join an internal Kafka or AMQP fabric. Managed ingress products (for example Svix, Hookdeck) sit in front of consumer endpoints to absorb retries, fan-out, and observability when you operate a multi-tenant webhook API yourself.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Before webhooks, integrators polled provider APIs on a schedule — every minute, every hour — wasting bandwidth, adding latency, and hammering APIs even when nothing changed. Webhooks replaced polling with push, reducing integration latency from O(poll interval) to near-real-time and eliminating wasted API calls. For SaaS providers, webhooks enable a platform ecosystem: any developer can subscribe to events and build integrations without the provider needing to know about them in advance, removing the need for bespoke integrations per customer.</p>
+          <p>Polling an upstream API on a fixed schedule wastes quota when nothing changed and adds latency bounded by the poll interval. Webhooks invert control flow so integrators react soon after the provider commits the business event, while the provider scales fan-out by enqueueing HTTP delivery work rather than serving repeated “any updates?” queries.</p>
+          <p>For platform vendors, webhooks lower the cost of bespoke per-customer integrations: subscribers bring their own HTTPS endpoint and shared secret (or OAuth), and the vendor ships one delivery pipeline. That aligns with how external developers expect to wire CRM, fulfilment, analytics, and custom automation without VPNs into the vendor’s private cloud.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>SaaS-to-SaaS integration</strong> — notifying a CRM when a payment completes, or triggering a CI build when code is pushed to a repository.</li>
-            <li><strong>Low-volume, event-driven notifications</strong> — events are infrequent and the consumer just needs to react, not process high-throughput streams.</li>
-            <li><strong>External system integration without shared infrastructure</strong> — the consumer cannot connect to your internal message broker; an HTTPS endpoint is the only viable interface.</li>
-            <li><strong>Customer-defined integrations</strong> — allowing customers or partners to subscribe to events from your platform and route them to their own systems.</li>
+            <li>You integrate two organizations over the public internet and the downstream party can host a TLS-terminated HTTPS endpoint.</li>
+            <li>Event volume is moderate, payloads are kilobyte-scale JSON documents, and near-real-time reaction matters more than streaming throughput.</li>
+            <li>You expose a product API where customers or partners register their own callback URLs for lifecycle events (signup, billing, shipment).</li>
+            <li>Your provider documents signed payloads and retry behavior, and you can make consumer processing idempotent.</li>
+            <li>Internal staff or partners already consume the vendor’s reference webhook documentation (Stripe, GitHub, and similar guides are the de facto patterns).</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>High-throughput event streams</strong> — hundreds or thousands of events per second over webhooks become a thundering herd of HTTP calls; use a message broker or streaming platform instead.</li>
-            <li><strong>Internal service-to-service communication</strong> — internal services should communicate over a message broker or direct RPC; webhooks add HTTP overhead and endpoint management burden.</li>
-            <li><strong>When the consumer endpoint is unreliable or behind a firewall</strong> — if the consumer cannot expose a stable public HTTPS endpoint, webhooks won't work without a relay service (ngrok for development, Hookdeck or Svix for production).</li>
+            <li>Sustained high event rates would open an HTTP connection storm; prefer a durable log, queue, or stream the consumer reads with controlled parallelism.</li>
+            <li>Both endpoints live inside the same VPC or service mesh and can use a broker or RPC with mTLS without traversing the public internet.</li>
+            <li>The subscriber cannot expose a stable public URL or must stay on-premises without a relay; consider polling, SFTP drops, or a managed webhook gateway they operate.</li>
+            <li>You require strict global ordering across all events; webhooks across independent HTTP deliveries do not give you broker-style ordering guarantees.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The consumer registers a URL and receives a shared secret. The provider stores both. On event, the provider constructs the JSON payload, computes <code>HMAC-SHA256(secret, payload)</code>, includes the signature in a header (<code>X-Signature-256: sha256=abc...</code>), and POSTs to the URL. The consumer verifies the signature before processing.</p>
-          <p>On non-2xx or timeout, the provider retries with exponential backoff (e.g., 5 s, 30 s, 2 min, 10 min). A webhook management service like Svix or Hookdeck sits between the provider and consumer to handle retries, fan-out, and observability.</p>
+          <p>During onboarding the subscriber registers an endpoint URL and receives a signing secret (or asymmetric key material). The provider persists subscriptions, enqueues delivery jobs when events fire, signs the raw body (commonly HMAC-SHA256 per vendor docs), and POSTs to the URL. The edge handler verifies signatures with constant-time comparison, returns success quickly, and hands the payload to an internal queue for business logic. Failed deliveries land in a retry scheduler with exponential backoff until success or explicit abandonment, at which point operations dashboards should alarm.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     prov["Provider&lt;br/&gt;event occurs"]
@@ -154,67 +156,70 @@ Retry schedule (on non-2xx or timeout):
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Simple integration — consumer just needs an HTTPS endpoint, no broker client libraries needed.</li>
-              <li>Real-time delivery — events arrive within seconds of occurring, no polling lag.</li>
-              <li>Push model — no wasted polling requests; provider calls only when something happens.</li>
-              <li>Wide adoption — virtually every SaaS platform supports webhooks as a first-class feature.</li>
-              <li>Easy customer extensibility — customers register their own URLs and own the integration logic.</li>
+              <li>Integrators need only HTTPS and JSON parsing—no VPN, broker credentials, or cloud-specific SDKs on the subscriber side.</li>
+              <li>Delivery is push-based, so reaction time tracks provider event latency instead of a poll cadence.</li>
+              <li>Platform vendors can standardize one outbound pipeline for many customer endpoints.</li>
+              <li>Reference implementations from major SaaS vendors document signing, idempotency, and retry expectations the industry copies.</li>
+              <li>Managed receivers can buffer spikes and shield fragile customer endpoints from retry storms.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>At-least-once delivery — providers retry on failure; consumers must be idempotent.</li>
-              <li>Consumer must be publicly reachable — complicates development (use ngrok) and private deployments.</li>
-              <li>No ordering guarantee between retried and new events — a retried event may arrive after a newer event.</li>
-              <li>Operational management — tracking endpoint health, secret rotation, and delivery history across many subscribers requires dedicated tooling.</li>
-              <li>Synchronous response required — consumer must respond within a timeout; long processing must be deferred to a background queue.</li>
+              <li>At-least-once delivery and HTTP retries require idempotent consumers and durable deduplication stores.</li>
+              <li>Subscribers must be reachable on the public internet or via a relay, which complicates local development and locked-down enterprises.</li>
+              <li>Ordering between unrelated events is not guaranteed, and a retried older event may arrive after a newer one.</li>
+              <li>Operating webhook infrastructure at scale means subscription CRUD, secret rotation, per-tenant rate limits, and delivery analytics.</li>
+              <li>The HTTP handler must stay within provider timeouts; slow work belongs on an internal queue.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Payload signing (HMAC-SHA256):</strong> Always sign webhook payloads and verify on receipt. The provider computes <code>sig = HMAC-SHA256(shared_secret, raw_body_bytes)</code> and sends it in a header. The consumer recomputes the signature and uses a <strong>constant-time comparison</strong> (e.g., <code>hmac.compare_digest</code> in Python) to prevent timing attacks. Never use string equality comparison for signatures.</p>
-          <p>Include a timestamp in the signed payload and reject events with timestamps older than 5 minutes to prevent replay attacks.</p>
-          <p><strong>Respond immediately, process asynchronously:</strong> The consumer endpoint should acknowledge receipt with <code>200 OK</code> within 5 seconds, then push the payload to an internal queue for actual processing. Long-running processing risks timeout and spurious retries from the provider.</p>
-          <p><strong>Idempotency:</strong> Store the event ID in a deduplification table with a TTL. Before processing, check if the event ID was already processed within the deduplication window. At-least-once delivery means the same event may arrive multiple times, especially after retries and during provider deployments.</p>
-          <p><strong>Secret rotation:</strong> Support a rotation window where both the old and new secret are accepted simultaneously. This allows rotation without a blackout period. Invalidate the old secret after confirming deliveries are working with the new secret.</p>
-          <p><strong>Webhook management platforms:</strong> <strong>Svix</strong> and <strong>Hookdeck</strong> provide webhook infrastructure as a service — reliable delivery, fan-out, per-endpoint rate limiting, retry management, event history, and test event replay. Use them if your platform needs to send webhooks to many customers reliably without building this infrastructure yourself.</p>
+          <p><strong>Verification:</strong> Recompute the signature over the raw request body bytes using the vendor’s documented algorithm and headers (Stripe and GitHub publish canonical examples). Compare digests in constant time and reject replays when the vendor supplies signed timestamps or nonces.</p>
+          <p><strong>Ack-then-process:</strong> Return an HTTP success response after validation and persistence to your ingress queue, not after downstream side effects complete. Match your internal SLA to the provider’s documented acknowledgement window.</p>
+          <p><strong>Idempotency:</strong> Key on the provider’s stable event identifier (or a composite of type plus id). Use the <a href="inbox-pattern.html">inbox pattern</a> or <a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html" rel="noopener noreferrer" target="_blank">idempotent consumer</a> guidance from microservices.io so retries do not duplicate financial or fulfilment effects.</p>
+          <p><strong>As a provider:</strong> Document event catalogs (AsyncAPI or OpenAPI webhooks where appropriate), sign outbound bodies, expose delivery logs, and offer CLI or dashboard tools to replay test events. Rate-limit per endpoint to protect both your workers and customer infrastructure.</p>
+          <p><strong>Secrets:</strong> Rotate signing secrets with overlapping validity, audit who can read them, and never log raw payloads containing PCI or PII in clear text.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Missing signature verification:</strong> Consumer accepts any POST without verifying the HMAC signature, allowing an attacker to forge events.</li>
-            <li><strong>Synchronous processing causing timeouts:</strong> Consumer processes the event in the request handler, exceeds the timeout, provider marks it a failure and retries — causing duplicate processing.</li>
-            <li><strong>No idempotency handling:</strong> Provider retries a successfully-delivered event (consumer returned 500 due to a downstream failure post-processing); duplicate side effects result.</li>
-            <li><strong>Endpoint URL hardcoded per environment:</strong> Webhook URL registered for staging receives production events during misconfiguration.</li>
-            <li><strong>Abandonment after max retries:</strong> Provider stops retrying; the consumer never receives the event and the integration silently stalls without an alert.</li>
+            <li><strong>Unsigned or weakly verified endpoints:</strong> Any client that can reach the URL can forge events unless signature checks are mandatory.</li>
+            <li><strong>Heavy work on the request thread:</strong> Timeouts trigger retries that duplicate side effects when the first attempt actually succeeded downstream.</li>
+            <li><strong>Environment cross-wiring:</strong> Production providers deliver to staging URLs (or vice versa) because subscription metadata lacks environment guards.</li>
+            <li><strong>Retry exhaustion without visibility:</strong> The provider gives up after max attempts while the consumer never knew a gap existed—monitor provider dashboards and dead-letter queues.</li>
+            <li><strong>Assumed ordering:</strong> Business logic expects event B always follows event A, but network retries violate that; design for out-of-order tolerance or sequence numbers.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the webhook payload signed (HMAC-SHA256) and the signature verified with constant-time comparison?</li>
-            <li>Does the endpoint respond with 2xx within 5 seconds, deferring processing to an internal queue?</li>
-            <li>Are incoming webhook events deduplicated by event ID with a deduplication window?</li>
-            <li>Is the shared secret rotatable with a dual-secret grace window?</li>
-            <li>Is there an alert when the provider reports delivery failures for this endpoint?</li>
-            <li>For high-volume providers or many subscribers: is a managed webhook platform (Svix, Hookdeck) justified?</li>
+            <li>Does every handler verify signatures (or mTLS) before parsing JSON?</li>
+            <li>Does the HTTP layer acknowledge quickly and hand off to durable internal processing?</li>
+            <li>Are event IDs deduplicated for at least as long as the provider may retry?</li>
+            <li>Can signing secrets rotate without a hard cutover outage?</li>
+            <li>Are failed deliveries visible in metrics, logs, and paging when abandonment occurs?</li>
+            <li>If you are the provider: is there per-subscriber rate limiting, retry policy documentation, and a support path for replay?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Payment confirmation:</strong> Stripe fires <code>payment_intent.succeeded</code> to the e-commerce platform's webhook endpoint; the platform upgrades the order to "paid" and queues fulfilment.</li>
-            <li><strong>CI/CD trigger:</strong> GitHub fires a <code>push</code> webhook to a CI platform on every commit; the CI platform queues a build job.</li>
-            <li><strong>Customer integration hub:</strong> A SaaS platform allows enterprise customers to register webhook URLs for events like <code>user.created</code> and <code>subscription.cancelled</code>, routing them to the customer's internal CRM.</li>
+            <li><strong>Illustrative scenario —</strong> An e-commerce integrator receives a payment-succeeded webhook, validates the signature, enqueues the payload, and marks the order paid idempotently before triggering fulfilment workers.</li>
+            <li><strong>Illustrative scenario —</strong> A CI service registers repository push webhooks; the ingress layer ACKs immediately while a build queue schedules compile jobs keyed by commit SHA.</li>
+            <li><strong>Illustrative scenario —</strong> A B2B SaaS vendor exposes customer-configurable URLs for subscription lifecycle events and routes each tenant’s traffic through a managed receiver for retry and trace headers.</li>
+            <li><strong>Case study —</strong> <a href="https://docs.stripe.com/webhooks" rel="noopener noreferrer" target="_blank">Stripe’s webhook guide</a> is widely cited for signed payloads, idempotent handlers, and treating delivery as at-least-once.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="event-notification.html">Event Notification</a> — lightweight event broadcast, similar intent to webhooks but typically internal.</li>
-            <li><a href="inbox-pattern.html">Inbox Pattern</a> — deduplicate at-least-once webhook deliveries safely.</li>
-            <li><a href="correlation-ids.html">Correlation IDs</a> — propagate event IDs across services to trace webhook-triggered processing.</li>
+            <li><a href="event-notification.html">Event Notification</a> — semantic intent; webhooks are the HTTP push binding for external subscribers.</li>
+            <li><a href="inbox-pattern.html">Inbox Pattern</a> — database-backed deduplication for webhook retries.</li>
+            <li><a href="pub-sub.html">Publish/Subscribe</a> — internal broker fan-out when both sides share infrastructure.</li>
+            <li><a href="correlation-ids.html">Correlation IDs</a> — trace webhook-triggered work across services.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.svix.com/receiving/verifying-payloads/why" rel="noopener noreferrer" target="_blank">Why Verify Webhook Signatures</a> — Svix guide on signature verification.</li>
-            <li><a href="https://docs.stripe.com/webhooks" rel="noopener noreferrer" target="_blank">Stripe Webhooks Guide</a> — canonical example of production-grade webhook design.</li>
-            <li><a href="https://hookdeck.com/docs" rel="noopener noreferrer" target="_blank">Hookdeck Documentation — webhook ingestion and reliability</a> — Hookdeck comprehensive security guide.</li>
+            <li><a href="https://docs.stripe.com/webhooks" rel="noopener noreferrer" target="_blank">Receive Stripe events — Stripe Documentation</a></li>
+            <li><a href="https://docs.github.com/en/webhooks" rel="noopener noreferrer" target="_blank">About webhooks — GitHub Docs</a></li>
+            <li><a href="https://docs.svix.com/receiving/verifying-payloads/why" rel="noopener noreferrer" target="_blank">Why verify webhook signatures — Svix Docs</a></li>
+            <li><a href="https://hookdeck.com/docs" rel="noopener noreferrer" target="_blank">Hookdeck Documentation — webhook reliability gateway</a></li>
+            <li><a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html" rel="noopener noreferrer" target="_blank">Idempotent Consumer — microservices.io (Chris Richardson)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

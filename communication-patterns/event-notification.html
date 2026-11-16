@@ -90,31 +90,33 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>This "skinny event" approach deliberately keeps payloads small and keeps data ownership with the originating service: consumers pull the current state rather than receiving a copy baked into the event at publish time.</p>
-          <p>Its counterpart, <strong>event-carried state transfer</strong> (ECST), embeds the full entity state in the event: the order event carries all line items, addresses, and totals. ECST makes consumers fully autonomous — they never need to call back to the source — but at the cost of larger payloads, potential data staleness if the event is processed late, and tighter coupling to the source service's data model. The choice between notification and ECST is one of the most important design decisions in an event-driven architecture.</p>
-          <p>The <a href="https://cloudevents.io/" rel="noopener noreferrer" target="_blank">CloudEvents specification</a> (CNCF) defines a standard envelope for event notifications: <code>specversion</code>, <code>id</code>, <code>source</code>, <code>type</code>, <code>subject</code>, <code>time</code>, and optional <code>data</code>. Adopting CloudEvents simplifies interoperability between services and platforms.</p>
+          <p><strong>Event notification</strong> is an event-driven integration style in which a producer publishes a compact message meaning “something happened,” and interested consumers react without receiving a full copy of the producer’s entity state in the event itself. Martin Fowler’s essay <a href="https://martinfowler.com/articles/201701-event-driven.html" rel="noopener noreferrer" target="_blank">What Do You Mean by Event-Driven?</a> contrasts this <em>notification</em> style with <strong>event-carried state transfer</strong> (ECST), where the event payload carries enough fields for consumers to update their own views without calling back.</p>
+          <p>Notification events typically carry identifiers, types, and timestamps—enough to route and correlate—while the owning service remains the system of record. Consumers that need detail call the producer’s query API (or another sanctioned read path) after they receive the notification. That preserves encapsulation: the producer can refactor internal models while keeping the public notification contract stable.</p>
+          <p>The CNCF <a href="https://cloudevents.io/" rel="noopener noreferrer" target="_blank">CloudEvents</a> specification standardizes the cross-platform envelope (<code>id</code>, <code>source</code>, <code>type</code>, <code>subject</code>, <code>time</code>, optional <code>data</code>). <a href="https://www.asyncapi.com/docs" rel="noopener noreferrer" target="_blank">AsyncAPI</a> documents channel contracts for discovery; schema registries (for example Confluent Schema Registry on Kafka, or cloud event schema catalogs) enforce evolution rules on serialized payloads.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Pure event notification exists to keep the source service as the authoritative owner of its data. If every event carries full state, the source must commit to a stable, public representation of all its internal data structures — which becomes a barrier to internal refactoring. With notification events, the source only commits to the existence and identity of the change; consumers that need data make a point-in-time API call and receive current, validated data. This pattern also reduces message sizes and broker storage, and prevents consumers from caching stale snapshots embedded in old events.</p>
+          <p>Broadcasting “fat” events forces every publisher to freeze a public projection of its entire domain model. Notification events shrink that commitment to “this entity changed” plus stable identifiers, which makes refactors inside the producer safer and keeps broker storage and fan-out bandwidth lower than shipping full aggregates on every change.</p>
+          <p>When consumers must reflect authoritative state, a follow-up read from the producer (or a cached replica fed by the same source) avoids embedding stale snapshots in messages that may be processed minutes or hours later. The trade-off is extra read traffic and a runtime dependency on the producer’s query availability—acceptable when change volume is moderate and the producer’s API is engineered for consumer fetch patterns.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Triggering workflows</strong> — a payment service fires <code>payment.completed</code> with just the payment ID; the fulfilment service reacts by fetching the full order and initiating shipping.</li>
-            <li><strong>Cache invalidation</strong> — a product catalogue service fires <code>product.updated { productId }</code>; all downstream caches evict the named product and re-fetch on next access.</li>
-            <li><strong>When source data ownership must be preserved</strong> — the notification consumer must always see the current, authoritative state from the source, not a stale snapshot from the event.</li>
-            <li><strong>High-fan-out low-data scenarios</strong> — millions of devices registering "activity detected" with just a device ID and timestamp, where attaching full device context to every event would be wasteful.</li>
+            <li>You need many subscribers to learn that a domain fact occurred, but each subscriber only needs a subset of fields and can obtain them via API or a local cache after the signal arrives.</li>
+            <li>The producer must remain the single writer and authoritative reader for its aggregate, and you want events to announce changes without duplicating the full aggregate graph on the bus.</li>
+            <li>Cache or CDN invalidation should be key-oriented: subscribers evict or refresh entries named by IDs in the notification rather than merging partial state from the event stream.</li>
+            <li>Event volume or fan-out is high relative to payload size, so minimizing serialized bytes reduces broker cost and consumer CPU.</li>
+            <li>You already standardize envelopes on CloudEvents and govern <code>type</code> strings and optional <code>dataschema</code> URLs through AsyncAPI and a registry.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>When consumer autonomy is required</strong> — if the source service is unavailable or rate-limited and consumers cannot afford a follow-up fetch, use ECST to embed state in the event.</li>
-            <li><strong>High-frequency events with stable large payloads</strong> — if every notification triggers a full-entity fetch, you pay N API calls for N events; ECST amortises this cost by bundling state with the event.</li>
-            <li><strong>Audit or compliance logs</strong> — a compliance log needs a point-in-time snapshot of the state at the moment of the event; notifications without embedded state cannot reconstruct history.</li>
+            <li>Downstream consumers cannot tolerate a follow-up read when the producer is degraded, rate-limited, or geographically distant—ECST or a materialized read model fed by a durable log may be safer.</li>
+            <li>Every notification would trigger a full-entity fetch and the entity is large or slow to load, so bandwidth and API load dominate compared with shipping a curated projection once in the event.</li>
+            <li>Regulators or auditors require a point-in-time snapshot at the moment the business event occurred; notification-only messages cannot reconstruct that view without separate event sourcing or archival.</li>
+            <li>Consumers need historical replay of what the entity looked like when the event was emitted; use event-carried state, event sourcing, or a retained streaming log instead.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>A source service writes a domain event (minimal payload: IDs, event type, timestamp) to a topic. Subscribers receive the notification and, if they need entity data, call the source's query API to fetch current state. A schema registry ensures the notification schema is versioned and subscribers can validate events.</p>
+          <p>After a successful local transaction, the producer publishes a skinny domain notification to a topic (Kafka, SNS, Google Pub/Sub, RabbitMQ fanout, or EventBridge). Subscribers deserialize the CloudEvents envelope, decide whether they care based on <code>type</code> and optional filters, and either act on identifiers alone or invoke the producer’s read API before applying side effects. Schema compatibility checks and documented AsyncAPI channels keep producers and consumers aligned as versions evolve.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     svc["Order service&lt;br/&gt;write DB"]
@@ -159,64 +161,69 @@ Topic: "order-events"
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Small event payloads — brokers store less; consumers deserialise less.</li>
-              <li>Data ownership stays with the source — no stale embedded copies.</li>
-              <li>Source can refactor internal model without changing event schema.</li>
-              <li>Consumers always see current, validated state from the authoritative source.</li>
-              <li>CloudEvents standard enables cross-platform interoperability.</li>
+              <li>Small payloads reduce broker storage, network fan-out, and deserialization cost compared with shipping full aggregates on every change.</li>
+              <li>The producer retains clear data ownership, so consumers read current state from the authoritative API instead of trusting embedded snapshots.</li>
+              <li>Internal domain refactors can proceed while the notification contract (identifiers and <code>type</code>) stays stable.</li>
+              <li>CloudEvents and AsyncAPI give portable metadata across Knative, EventBridge, Event Grid, Eventarc, and self-hosted brokers.</li>
+              <li>Pub/sub channels naturally broadcast the same notification to many independent reactions without producer awareness of subscribers.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>N+1 fetches — each notification triggers a follow-up API call, increasing load on the source service.</li>
-              <li>Source availability dependency — consumers cannot process notifications if the source API is down.</li>
-              <li>No historical state — cannot replay old events to reconstruct what the entity looked like at the time of the event (use ECST for this).</li>
-              <li>Increased latency — notification + fetch round trip adds latency vs reading state embedded in the event.</li>
+              <li>High fan-out plus per-consumer fetches multiplies read load on the producer unless you add shared caches or selective ECST.</li>
+              <li>Notification processing stalls or degrades when the producer query API is unavailable unless consumers queue work and retry with backpressure.</li>
+              <li>Replaying old notifications cannot by itself answer “what did the entity look like then” without event-carried state or an event log.</li>
+              <li>End-to-end latency includes publish time plus at least one read round trip when consumers need more than IDs.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Event schema design:</strong> The notification payload should carry the minimum needed for a consumer to identify what changed and fetch more if needed: the entity type, entity ID, event type, timestamp, and schema version. Do not include business attributes that change frequently — those belong in the source API response.</p>
-          <p><strong>CloudEvents specification:</strong> Adopting CloudEvents provides a vendor-neutral envelope. Required attributes: <code>specversion</code> (always "1.0"), <code>id</code> (unique per event), <code>source</code> (URI of the service), <code>type</code> (reverse-DNS dotted string like <code>com.example.order.placed</code>). Optional but recommended: <code>subject</code> (entity reference), <code>time</code> (ISO 8601), <code>dataschema</code> (schema URL). CloudEvents is supported natively by Knative, Azure Event Grid, Google Eventarc, and AWS EventBridge.</p>
-          <p><strong>Event registry:</strong> Maintain a central catalogue of event types, schemas, producers, and consumers. An event registry prevents duplicated types, enables discoverability, and is the governance mechanism for preventing breaking schema changes. Tools: AsyncAPI (documentation), Confluent Schema Registry (enforcement), AWS EventBridge Schema Registry.</p>
-          <p><strong>Schema versioning:</strong> Use semantic versioning on event schemas. For backwards-compatible changes (adding optional fields), increment the minor version. For breaking changes (removing/renaming required fields), create a new event type (e.g., <code>order.placed.v2</code>) and run old and new versions in parallel during migration.</p>
+          <p><strong>Minimal <code>data</code>:</strong> Include stable identifiers, the business event name, and optional correlation fields. Keep rapidly mutating attributes on the read API or a downstream projection, not in every notification.</p>
+          <p><strong>CloudEvents:</strong> Populate required attributes per the <a href="https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md" rel="noopener noreferrer" target="_blank">CloudEvents core specification</a>. Use reverse-DNS <code>type</code> strings, set <code>subject</code> to the entity reference, and point <code>dataschema</code> at versioned JSON Schema or Avro in the registry when consumers validate payloads.</p>
+          <p><strong>Governance:</strong> Register each <code>type</code> in AsyncAPI with owning team, compatibility mode, and example payloads. Enforce BACKWARD or FULL compatibility in the schema registry before production publishes.</p>
+          <p><strong>Fetch path:</strong> Wrap producer reads with timeouts, circuit breakers, and bulkhead limits. Consider a short-lived read-through cache keyed by entity ID when many subscribers fetch the same object after one notification.</p>
+          <p><strong>Reliable publish:</strong> Pair domain writes with the <a href="transactional-outbox.html">transactional outbox</a> pattern so notifications are not lost when the broker is temporarily unavailable.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Notification received but source API unavailable:</strong> The consumer cannot fetch entity state; events pile up unprocessed. Mitigate with a circuit breaker on the fetch call and consumer retry with backoff.</li>
-            <li><strong>Consumer fetches stale state:</strong> Between event publish and consumer fetch, the entity is updated again; the consumer fetches the new state, skipping intermediate changes. This is normal and expected — design consumers to handle current state, not delta.</li>
-            <li><strong>Missing schema registry:</strong> Different services publish <code>order.placed</code> with different schemas; consumers fail randomly depending on which producer's version they receive.</li>
-            <li><strong>Over-fetching:</strong> A consumer fan-out of 10 subscribers each fetching the full entity for every event creates 10× load on the source API; use ECST or a read model cache to reduce fetch pressure.</li>
+            <li><strong>Fetch storms after fan-out:</strong> Many subscribers each pull the full entity on every notification and overwhelm the producer API; mitigate with ECST for hot paths, coalesced reads, or edge caches.</li>
+            <li><strong>Silent schema drift:</strong> Two teams emit the same <code>type</code> with incompatible JSON; consumers fail intermittently until registry enforcement and AsyncAPI reviews catch the divergence.</li>
+            <li><strong>Treating current state as delta:</strong> A consumer fetches after a later update and misses intermediate transitions; design for idempotent application of latest state or consume a richer event stream when sequence matters.</li>
+            <li><strong>Publishing before commit:</strong> A notification leaves the broker while the database transaction rolls back, causing phantom downstream work; commit and outbox in one transaction first.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Can consumers tolerate a follow-up API call on each notification? If source availability is poor, consider ECST.</li>
-            <li>Is the notification payload structured per the CloudEvents specification?</li>
-            <li>Is there a schema registry with event type registration and compatibility enforcement?</li>
-            <li>Is the event type string versioned (e.g., <code>com.example.order.placed.v2</code>) for breaking changes?</li>
-            <li>Is there a circuit breaker on the follow-up fetch to prevent notification processing stalls during source outages?</li>
-            <li>For high fan-out: is per-consumer fetch load on the source service acceptable under peak conditions?</li>
+            <li>Can every subscriber tolerate a read dependency on the producer (or a replica fed from the same source) under expected outage windows?</li>
+            <li>Are notifications wrapped in CloudEvents (or an equivalent standard envelope) with unique <code>id</code> values for deduplication?</li>
+            <li>Are event types and payloads registered in AsyncAPI with schema compatibility enforced in CI?</li>
+            <li>Is there a documented breaking-change policy (new <code>type</code> or major schema version, dual publishing during migration)?</li>
+            <li>Are follow-up fetches protected with circuit breakers and backoff so broker lag does not amplify into API outages?</li>
+            <li>Is producer read capacity sized for notification fan-out at peak, including cache hit ratios where applicable?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Inventory cache invalidation:</strong> Product service fires <code>product.updated { productId }</code>; inventory caches in five regional services evict the named product and fetch fresh stock levels on next request.</li>
-            <li><strong>User account lifecycle:</strong> Auth service fires <code>user.deactivated { userId }</code>; notification service, CRM, and audit service each react independently using the userId to fetch context relevant to their own domain.</li>
-            <li><strong>CI pipeline trigger:</strong> Source control fires <code>com.example.repo.pushed { repoId, branch, commitSha }</code>; the CI platform fetches the full diff and configuration to start the build.</li>
+            <li><strong>Illustrative scenario —</strong> A catalogue service publishes <code>com.example.product.updated</code> with only <code>productId</code> in <code>data</code>; edge caches evict that key and lazy-load fresh attributes on the next shopper request.</li>
+            <li><strong>Illustrative scenario —</strong> After payment capture, the payments boundary emits a skinny <code>payment.completed</code> notification; fulfilment loads order lines via the orders API using the payment’s correlation identifiers before reserving stock.</li>
+            <li><strong>Illustrative scenario —</strong> A platform team documents all domain notifications in AsyncAPI and blocks deploys when a producer’s schema fails registry compatibility checks against existing consumers.</li>
+            <li><strong>Case study —</strong> Martin Fowler’s event-style taxonomy (notification versus state transfer versus event sourcing) is the common reference architects use when choosing how much data rides on the wire; see <a href="https://martinfowler.com/articles/201701-event-driven.html" rel="noopener noreferrer" target="_blank">What Do You Mean by Event-Driven?</a></li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="command-pattern.html">Command Pattern</a> — imperative counterpart; what happens after a command succeeds is often an event notification.</li>
-            <li><a href="pub-sub.html">Publish/Subscribe</a> — the delivery mechanism for event notifications.</li>
-            <li><a href="webhooks.html">Webhooks</a> — push-based event notification for external system integration.</li>
-            <li><a href="../architecture-styles/event-driven-architecture.html">Event-Driven Architecture</a> — the broader architectural style built on event notifications and reactions.</li>
+            <li><a href="command-pattern.html">Command Pattern</a> — successful commands often conclude by emitting a domain notification that downstream systems observe.</li>
+            <li><a href="pub-sub.html">Publish/Subscribe</a> — fan-out transport for notifications to many subscribers.</li>
+            <li><a href="webhooks.html">Webhooks</a> — HTTP push variant of event notification to external partners.</li>
+            <li><a href="event-streaming.html">Event Streaming</a> — when notifications must be replayed from a durable log rather than ephemeral signals alone.</li>
+            <li><a href="../architecture-styles/event-driven-architecture.html">Event-Driven Architecture</a> — system-level style combining notifications, choreography, and projections.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md" rel="noopener noreferrer" target="_blank">CloudEvents Specification (v1.0.2)</a> — CNCF standard event envelope for interoperability.</li>
-            <li><a href="https://martinfowler.com/articles/201701-event-driven.html" rel="noopener noreferrer" target="_blank">What Do You Mean by Event-Driven?</a> — Martin Fowler distinguishes notification, state transfer, sourcing, and CQRS.</li>
-            <li><a href="https://www.asyncapi.com/docs" rel="noopener noreferrer" target="_blank">AsyncAPI Specification</a> — document-driven event schema registry and discovery.</li>
+            <li><a href="https://martinfowler.com/articles/201701-event-driven.html" rel="noopener noreferrer" target="_blank">What Do You Mean by Event-Driven? — Martin Fowler</a></li>
+            <li><a href="https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md" rel="noopener noreferrer" target="_blank">CloudEvents Specification v1.0.2 — CNCF</a></li>
+            <li><a href="https://www.asyncapi.com/docs" rel="noopener noreferrer" target="_blank">AsyncAPI Documentation — event API contracts</a></li>
+            <li><a href="https://docs.confluent.io/platform/current/schema-registry/index.html" rel="noopener noreferrer" target="_blank">Confluent Schema Registry — Kafka payload governance</a></li>
+            <li><a href="https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-schema.html" rel="noopener noreferrer" target="_blank">Amazon EventBridge Schemas — managed event catalog</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

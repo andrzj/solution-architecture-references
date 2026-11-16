@@ -90,30 +90,33 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>A command is an imperative message that says "do this": <code>PlaceOrder</code>, <code>CancelReservation</code>, <code>TransferFunds</code>. It expresses the <em>intent</em> of a sender directed at a specific service, and it expects that service to either carry out the action or reject it with a meaningful reason. Commands differ fundamentally from events: an event is a <em>fact</em> (something that <em>has happened</em>), while a command is a <em>request</em> (something the sender wants to happen, which may or may not succeed).</p>
-          <p>Commands are addressed to a single handler — there is exactly one service responsible for processing a given command type — whereas events can be broadcast to many consumers.</p>
-          <p>The Command pattern is one of the core messaging primitives in Domain-Driven Design and CQRS. On the write side of a CQRS system, all mutations arrive as commands: the command is validated, the aggregate's business rules are evaluated, and if accepted, the aggregate emits one or more domain events that are persisted and published. Rejection is a first-class outcome — "I understood what you asked, but the current state of the system does not allow it" — returned as a structured error, not an exception.</p>
+          <p><strong>Command messaging</strong> packages an imperative request—“perform this action with this data”—as a typed message routed to exactly one logical handler. In Gregor Hohpe and Bobby Woolf’s catalog, a <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/CommandMessage.html" rel="noopener noreferrer" target="_blank">Command Message</a> contrasts with an <a href="event-notification.html">event notification</a>: events describe facts that already happened; commands express desired mutations that may be accepted or rejected.</p>
+          <p>Commands are point-to-point: one command type maps to one owning service or aggregate handler. That ownership boundary is how microservices keep write consistency without multiple writers applying the same instruction. On the CQRS write path (see <a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">CQRS</a> and <a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">saga</a> orchestration on microservices.io), APIs and sagas emit commands; handlers enforce invariants and emit domain events when state changes commit.</p>
+          <p>Whether the command travels in-process on a mediator bus or asynchronously through RabbitMQ, Amazon SQS, or Kafka keyed topics, the envelope carries identity metadata (command id, correlation id, issuer, timestamp) so operators can trace, deduplicate, and audit write intent separately from resulting events.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without a named command type, write operations arrive as generic HTTP PUT/POST calls with opaque JSON bodies. Routing logic, validation, and business rule evaluation are scattered across controllers and services. The Command pattern gives each write operation a named, typed object that encapsulates intent, carries all required data, and can be routed, validated, logged, queued, and replayed as a first-class unit. This separation also enables async command dispatch: the sender publishes the command to a queue and receives an acknowledgment that the command was received, while the actual processing happens asynchronously — decoupling API response latency from command execution time.</p>
+          <p>Generic REST bodies hide intent: the same <code>POST</code> shape might create, amend, or cancel depending on undocumented conventions. Named command types make write operations explicit in logs, metrics, and message traces, and they give you a single place to enforce authorization, validation, and idempotency before domain logic runs.</p>
+          <p>Async command dispatch also decouples client-facing latency from handler duration: the edge acknowledges receipt (or enqueues) while workers process at sustainable throughput, which is how order, payment, and fulfilment boundaries survive traffic spikes without holding HTTP connections open across slow downstream checks.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>CQRS write side</strong> — all state-changing operations enter the system as typed commands dispatched to aggregate command handlers.</li>
-            <li><strong>Async task initiation</strong> — the sender needs to initiate an operation but does not need the result synchronously; commands are queued and processed in order per aggregate.</li>
-            <li><strong>Audit trail</strong> — storing command envelopes (who sent what, when, with what payload) provides a full audit log of all write operations independent of the resulting events.</li>
-            <li><strong>Workflow orchestration</strong> — a saga or process manager sends commands to services as steps in a distributed workflow, receiving events back to advance state.</li>
+            <li>State changes belong to one aggregate or service boundary and you need a clear single handler responsible for acceptance or rejection.</li>
+            <li>The write path uses CQRS, event sourcing, or DDD aggregates where commands are the only supported mutation entry point.</li>
+            <li>Orchestrated sagas or process managers issue instructions to remote participants and need structured failure reasons rather than opaque HTTP errors.</li>
+            <li>You must audit who requested each change, independent of the events that later appear on the bus.</li>
+            <li>Clients can enqueue work and poll or subscribe for outcomes when synchronous confirmation is unnecessary or impossible.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Simple CRUD with no business rules</strong> — introducing command objects for trivial create/update/delete operations adds boilerplate without benefit; a straightforward service call is clearer.</li>
-            <li><strong>Queries</strong> — commands mutate state; never use a command to read data. Use dedicated query models (CQRS read side) or simple service methods.</li>
-            <li><strong>Broadcasting to multiple handlers</strong> — if multiple services need to react, use an event, not a command. Commands are addressed to one handler.</li>
+            <li>The operation is a read-only query; use the read model, a cache, or a dedicated query API instead of overloading command infrastructure.</li>
+            <li>Multiple independent services must react to the same fact; publish an event and let each subscriber decide, rather than fanning one command to many handlers.</li>
+            <li>The domain is trivial CRUD with no invariant rules and no audit requirements—the command envelope may be ceremony without payoff.</li>
+            <li>You need broadcast discovery semantics; commands are the wrong message shape for pub/sub fan-out.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>A command is constructed by the sender (API controller, saga, UI), validated syntactically, then dispatched via a command bus (in-process) or a command queue (async). The command bus routes based on the command type to a registered handler. The handler performs authorisation, executes business logic against the aggregate, and either accepts (persisting resulting events) or rejects (returning a structured reason). One command type maps to exactly one handler.</p>
+          <p>An API edge or saga step validates wire format, builds a command envelope, and dispatches through a command bus or dedicated queue keyed by aggregate id where ordering matters. The handler loads the aggregate, checks authorization, runs business rules, persists, and either rejects with a typed reason or commits and publishes resulting events via outbox or broker. Reply paths (synchronous HTTP response, callback topic, or polling status resource) communicate acceptance or rejection back to the initiator when required.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     api["API layer&lt;br/&gt;POST /orders"]
@@ -160,64 +163,69 @@ PlaceOrderHandler
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Explicit intent — every write operation is a named, typed object with clear semantics.</li>
-              <li>Single handler per type — no ambiguity about which service owns the logic for a given operation.</li>
-              <li>Auditable — command envelopes can be logged, replayed, and analysed independently of side effects.</li>
-              <li>Async-compatible — commands can be queued for background processing without changing the sender interface.</li>
-              <li>Business rejection is a first-class outcome — structured rejection reasons, not exceptions.</li>
+              <li>Write intent is explicit in type names, metrics, and traces instead of being buried in anonymous JSON bodies.</li>
+              <li>Single-handler ownership aligns with bounded contexts and prevents competing writers on the same aggregate.</li>
+              <li>Command logs support compliance, dispute resolution, and replay analysis separate from emitted events.</li>
+              <li>The same shape works synchronously at the API and asynchronously on a broker without changing domain rules.</li>
+              <li>Structured business rejection distinguishes expected “no” answers from infrastructure faults that should retry.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>Boilerplate — introducing command objects, handlers, and a bus adds ceremony for simple operations.</li>
-              <li>Async rejection feedback is harder — when commands are queued, the sender cannot receive a rejection synchronously; requires reply-to patterns or polling.</li>
-              <li>Learning curve — teams unfamiliar with CQRS/DDD need time to distinguish commands from events and learn the routing conventions.</li>
-              <li>Multiple handler frameworks exist (MediatR, Axon, NServiceBus) with differing conventions, making migration or standardisation across services difficult.</li>
+              <li>Commands, handlers, buses, and registration add boilerplate when the domain is simple CRUD.</li>
+              <li>Asynchronous commands need a deliberate reply strategy when callers must learn rejection reasons.</li>
+              <li>Teams new to messaging confuse commands with events and may broadcast commands or emit commands instead of events.</li>
+              <li>Framework conventions differ across MediatR, Axon, NServiceBus, and custom buses, complicating polyglot estates.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Command envelope:</strong> Every command should carry: <code>commandId</code> (UUID, for idempotency), <code>correlationId</code> (UUID, linking the chain of commands and events), <code>issuedAt</code> (ISO 8601 timestamp), <code>issuedBy</code> (user/service identity), <code>commandType</code> (fully qualified name), and <code>payload</code> (the actual data). The envelope enables routing, auditing, tracing, and deduplication without coupling to payload content.</p>
-          <p><strong>Validation before dispatch:</strong> Apply two layers of validation. Syntactic validation (types, required fields, format constraints) runs before dispatch and returns 400 to the sender — the command is not queued. Semantic/business validation (does the aggregate allow this in its current state?) runs inside the handler — if it fails, the command is rejected with a structured reason.</p>
-          <p><strong>Command rejection vs failure:</strong> A <em>rejection</em> is a business-rule outcome ("insufficient inventory") — expected, logged at INFO, returned to the sender as a structured response. A <em>failure</em> is a technical error (database unavailable, timeout) — unexpected, logged at ERROR, triggers retry. Do not conflate the two.</p>
-          <p><strong>One-handler-per-command rule:</strong> A command type must map to exactly one handler. If you find yourself routing one command to multiple handlers, you probably need an event (emit from the handler and let multiple consumers subscribe). Violating this rule leads to split logic, coordination problems, and partial execution under failure.</p>
+          <p><strong>Envelope:</strong> Include <code>commandId</code>, <code>correlationId</code>, <code>issuedAt</code>, <code>issuedBy</code>, and a stable <code>commandType</code> string. Handlers deduplicate on <code>commandId</code> so broker redelivery does not repeat side effects.</p>
+          <p><strong>Two-stage validation:</strong> Reject malformed messages before they hit the queue. Evaluate business rules inside the handler against current aggregate state; return typed rejection codes instead of throwing for expected violations.</p>
+          <p><strong>Failure taxonomy:</strong> Map technical failures (timeout, serialization error) to retry and dead-letter policies; map business rejections to non-retry responses so poison loops do not form.</p>
+          <p><strong>Routing:</strong> Use typed destinations—dedicated queues, routing keys, or Kafka topics per command—and consult <a href="message-routing.html">message routing</a> patterns when a gateway fans in many command types.</p>
+          <p><strong>Outcomes:</strong> Successful handlers persist and publish events through the <a href="transactional-outbox.html">transactional outbox</a> so commands and downstream notifications stay consistent.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Command treated as event:</strong> Multiple handlers registered for one command type; both execute, causing duplicate side effects.</li>
-            <li><strong>No commandId for idempotency:</strong> On retry, the command is processed a second time, causing double billing, double inventory deduction, etc.</li>
-            <li><strong>Business rejection thrown as exception:</strong> Handler throws an exception for a known business rule violation; the message broker retries it indefinitely, wasting resources.</li>
-            <li><strong>Stale command processing:</strong> A command queued hours ago arrives when the aggregate's state has changed, and the handler applies it without checking current state first.</li>
+            <li><strong>Multiple handlers for one command type:</strong> Split brain writes and partial updates when more than one consumer executes the same instruction.</li>
+            <li><strong>Missing idempotency key:</strong> Retries duplicate financial or inventory effects because the handler cannot recognize a replayed <code>commandId</code>.</li>
+            <li><strong>Business rejection on the retry path:</strong> Expected rule violations thrown as exceptions cause brokers to retry forever.</li>
+            <li><strong>Stale commands:</strong> Long queue delays let superseded instructions apply to aggregates that already moved on; handlers must validate version or sequence.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does the command envelope include a unique commandId for idempotency and a correlationId for tracing?</li>
-            <li>Is exactly one handler registered for this command type?</li>
-            <li>Is syntactic validation performed before dispatch (fail fast, no queuing of invalid commands)?</li>
-            <li>Does the handler distinguish business rejection (structured response) from technical failure (error/retry)?</li>
-            <li>If async: is there a mechanism to deliver rejection feedback to the original caller?</li>
-            <li>Is the command handler idempotent — i.e., processing the same commandId twice produces the same result as processing it once?</li>
+            <li>Is there exactly one registered handler per command type in each environment?</li>
+            <li>Does every command carry <code>commandId</code> and <code>correlationId</code> for idempotency and tracing?</li>
+            <li>Is wire-level validation separated from aggregate business rules?</li>
+            <li>Do handlers return structured rejections without triggering infinite broker retry?</li>
+            <li>For async flows, can the initiator learn the outcome (callback, reply queue, or status API)?</li>
+            <li>Are resulting domain events published reliably after successful commits?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Order placement:</strong> <code>PlaceOrder</code> command dispatched to the order aggregate; handler validates credit limit and inventory, emits <code>OrderPlaced</code> event on success, or rejects with <code>InsufficientInventory</code> reason.</li>
-            <li><strong>Funds transfer:</strong> <code>TransferFunds { fromAccount, toAccount, amount }</code> dispatched to the account aggregate; handler checks balance, atomically deducts and credits, emits <code>FundsTransferred</code>.</li>
-            <li><strong>Saga orchestration:</strong> A flight-booking saga sends <code>ReserveSeat</code>, <code>ChargeCard</code>, and <code>SendConfirmationEmail</code> commands to three separate services as steps; compensating commands (<code>ReleaseSeat</code>, <code>RefundCard</code>) are sent on failure.</li>
+            <li><strong>Illustrative scenario —</strong> A checkout API maps <code>POST /orders</code> to a <code>PlaceOrder</code> command; the order aggregate rejects when credit check fails and emits <code>OrderPlaced</code> only after a successful commit.</li>
+            <li><strong>Illustrative scenario —</strong> A ledger service accepts <code>TransferFunds</code> commands on a FIFO queue keyed by account id so mutations for one account stay ordered while different accounts parallelize.</li>
+            <li><strong>Illustrative scenario —</strong> A trip-booking saga issues <code>ReserveSeat</code> and <code>CapturePayment</code> commands to remote services and issues compensating commands when a downstream step rejects.</li>
+            <li><strong>Case study —</strong> Chris Richardson’s <a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">saga pattern</a> material on microservices.io centers on command/event exchanges between participants in long-running transactions.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="event-notification.html">Event Notification</a> — the fact that a command succeeded; emitted by the command handler.</li>
-            <li><a href="../architecture-styles/cqrs.html">CQRS</a> — the architectural pattern that separates command (write) and query (read) models.</li>
-            <li><a href="../distributed-systems/saga-pattern.html">Saga Pattern</a> — orchestrates multi-step workflows by issuing commands and reacting to events.</li>
-            <li><a href="message-routing.html">Message Routing</a> — how commands are dispatched to the correct handler.</li>
+            <li><a href="event-notification.html">Event Notification</a> — handlers emit facts after commands succeed.</li>
+            <li><a href="../architecture-styles/cqrs.html">CQRS</a> — commands feed the write model; queries use separate read paths.</li>
+            <li><a href="../distributed-systems/saga-pattern.html">Saga Pattern</a> — coordinates multi-service commands and compensations.</li>
+            <li><a href="message-routing.html">Message Routing</a> — delivers commands to the correct queue or handler.</li>
+            <li><a href="message-queues.html">Message Queues</a> — async transport for command messages.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">CQRS</a> — Martin Fowler's introduction to command-query separation.</li>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/CommandMessage.html" rel="noopener noreferrer" target="_blank">Command Message Pattern</a> — Hohpe &amp; Woolf pattern reference.</li>
-            <li><a href="https://docs.axoniq.io/" rel="noopener noreferrer" target="_blank">Axon Framework Documentation</a> — production implementation of command routing and handling.</li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/CommandMessage.html" rel="noopener noreferrer" target="_blank">Command Message — Enterprise Integration Patterns</a></li>
+            <li><a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">CQRS — Martin Fowler</a></li>
+            <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Saga — microservices.io (Chris Richardson)</a></li>
+            <li><a href="https://docs.axoniq.io/" rel="noopener noreferrer" target="_blank">Axon Framework Documentation — command handling and event sourcing</a></li>
+            <li><a href="https://www.rabbitmq.com/tutorials/tutorial-four-go" rel="noopener noreferrer" target="_blank">RabbitMQ routing tutorial — direct exchange and routing keys</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
