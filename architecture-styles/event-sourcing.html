@@ -146,6 +146,7 @@
  <li>Teams without event sourcing experience — the operational and conceptual complexity is high, and mistakes are hard to reverse in an append-only store.</li>
  <li>GDPR/right-to-erasure requirements conflict with immutable event stores unless event encryption and key deletion strategies are carefully designed.</li>
  </ul>
+ <p>Immutability does not exempt you from privacy law. Crypto-shredding—encrypting subject-identifying fields with per-data-subject keys and destroying those keys on erasure—keeps the append-only log intact for aggregates that still need history while making erased subjects unreadable. Legal and security teams should sign off on retention versus erasure before engineering treats the event store as the only audit source.</p>
 
  <h2 id="typical-architecture">Typical architecture</h2>
  <p>Aggregates are loaded by replaying their event stream. Commands produce new events appended to the stream. Projectors consume the event stream to update read models.</p>
@@ -208,15 +209,13 @@
  </ul>
  </div>
  </div>
+ <p>Storage growth is the slow-burn risk: backups, replay windows, and disaster-recovery drills all scale with retained event bytes. Capacity planning should include worst-case projection rebuild duration on production hardware, not developer laptops. Teams that cannot rehearse a full rebuild quarterly often discover drift only after a bad deploy corrupts search or finance read models.</p>
 
  <h2 id="implementation-notes">Implementation notes</h2>
  <p>Use a dedicated event store (EventStoreDB, Axon Server) or build on top of an append-only Kafka topic or PostgreSQL table with a stream-per-aggregate partition key. Implement snapshots for aggregates that accumulate hundreds of events — periodically save current state alongside a pointer to the last event, and start replay from the snapshot. Design event schemas carefully and version them from day one. Use <em>upcasters</em> to transparently transform old event versions to the current schema when replaying.</p>
- <p>For GDPR compliance, encrypt personal data fields within events using a per-user encryption key; deleting the key renders the data unreadable without deleting the event. Always include aggregate version (sequence number) in the event to enable optimistic concurrency — reject commands that conflict with an already-appended event at the same version.</p>
- <p><strong>Snapshot cadence:</strong> Replay cost grows linearly with events—snapshot every N events (often 100–500 per aggregate) or when replay exceeds an agreed p99 (for example 200 ms). Store snapshot + stream revision; rebuild projector from snapshot watermark.</p>
- <p><strong>Upcaster pipeline:</strong> Version events from day one; run upcasters in order on read/replay paths only—never rewrite historical blobs in place. Test upcasters against archived production event samples in CI.</p>
- <p><strong>Global ordering:</strong> Per-aggregate streams do not give cross-aggregate total order—design process managers and projections for causal boundaries, not wall-clock assumptions.</p>
- <p><strong>Capacity planning:</strong> Event store disk grows with retained history; tier cold streams to object storage where vendors support it, or enforce retention policies on non-audit streams.</p>
- <p><strong>When NOT to event-source:</strong> Mutable CRUD with weak audit requirements and no temporal queries—append-only storage and projector ops are expensive insurance.</p>
+ <p>For GDPR compliance, encrypt personal data fields within events using a per-user encryption key; deleting the key renders the data unreadable without deleting the event—a pattern often called crypto-shredding. Always include aggregate version (sequence number) in the event to enable optimistic concurrency — reject commands that conflict with an already-appended event at the same version.</p>
+ <p>Replay time is an operational SLO, not a one-time tuning exercise. Snapshot when tail replay exceeds an agreed latency (many teams snapshot every 100–500 events per aggregate or when load p99 crosses roughly 200&nbsp;ms). Persist snapshot state plus the stream revision it represents so cold starts and projector rebuilds can begin from that watermark instead of event zero. Version every event schema from day one and transform older payloads through an ordered upcaster pipeline on read and replay only—never rewrite historical blobs in place. CI should replay archived production event samples through upcasters before release.</p>
+ <p>Per-aggregate streams provide order within one aggregate, not a global timeline across the system. Plan projection rebuilds as a first-class runbook: spin a fresh read model, replay from snapshots plus stream tail, cut over with an alias or feature flag, and measure wall-clock rebuild time before an incident forces it. Disk and retention grow without bound unless governance tiers cold streams to object storage or applies retention policies on non-audit streams. Event sourcing pairs naturally with CQRS but does not require it—you can append events and still serve reads from the same projector database until query shapes diverge.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
@@ -255,6 +254,9 @@
             <li><a href="https://martinfowler.com/eaaDev/EventSourcing.html" rel="noopener noreferrer" target="_blank">Event Sourcing</a> — Martin Fowler's foundational pattern description.</li>
             <li><a href="https://www.eventstore.com/event-sourcing" rel="noopener noreferrer" target="_blank">Event Sourcing Guide</a> — EventStoreDB's comprehensive guide.</li>
             <li><a href="https://docs.axoniq.io/reference-guide/" rel="noopener noreferrer" target="_blank">Axon Framework Reference Guide</a> — Java/CQRS+ES framework documentation.</li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing" rel="noopener noreferrer" target="_blank">Event Sourcing pattern</a> — Microsoft Azure Architecture Center.</li>
+            <li><a href="https://www.eventstore.com/blog/gdpr-and-event-sourcing" rel="noopener noreferrer" target="_blank">GDPR and Event Sourcing</a> — EventStoreDB on encryption and erasure.</li>
+            <li><a href="https://leanpub.com/esversioning" rel="noopener noreferrer" target="_blank">Versioning in an Event Sourced System</a> — Greg Young on schema evolution and upcasting.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

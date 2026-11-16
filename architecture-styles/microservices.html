@@ -130,6 +130,7 @@
  <h2 id="why-it-exists">Why it exists</h2>
  <p>Microservices emerged from the pain of large-scale monolith deployment bottlenecks at companies like Netflix, Amazon, and eBay. Conway's Law states that organizations design systems mirroring their communication structure — a large team working on a single codebase naturally creates coordination overhead and slow deployments. Microservices flips this around: small, autonomous teams own small services, enabling parallel development, independent deployment cadences, and failure isolation. The architecture also enables technology heterogeneity — a machine learning service can use Python while the order service uses Java.</p>
  <p>The cost is significant operational complexity, which is why microservices are an organizational solution as much as a technical one.</p>
+ <p>Conway's Law cuts both ways. Autonomous squads need boundaries that match how they communicate, but decomposition without deploy independence produces a <em>distributed monolith</em>: separate containers that still share a database, ride the same release train, and fail together in long synchronous call chains. Mature organizations adopt microservices as the payoff for stable bounded contexts, not as the default day-one shape.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
@@ -147,6 +148,7 @@
  <li>The organization lacks DevOps maturity — without CI/CD automation, container platforms, and distributed observability, microservices become chaos.</li>
  <li>Strong consistency across the system is a hard requirement — distributed transactions are extremely complex.</li>
  </ul>
+ <p>The platform bill lands before the first customer feature. Expect container orchestration, per-service CI/CD, secrets and certificate rotation, service discovery, an API gateway, and—if you publish domain events—a schema registry with compatibility checks. Consumer-driven contract testing (Pact or equivalent) catches breaking RPC changes in CI. None of that substitutes for distributed tracing and correlated logging: without W3C trace context on every hop, incidents devolve into war rooms that guess which downstream call vanished.</p>
 
  <h2 id="typical-architecture">Typical architecture</h2>
  <p>Clients interact through an API Gateway. Services communicate synchronously via REST/gRPC or asynchronously via a message broker. Each service owns its own database, and a service mesh handles cross-cutting concerns like mTLS and retries.</p>
@@ -220,14 +222,12 @@
 
  <h2 id="implementation-notes">Implementation notes</h2>
  <p>Align service boundaries to bounded contexts from Domain-Driven Design, not to technical layers. Avoid sharing databases between services — this is the single most common mistake that creates hidden coupling. Each service must be independently deployable, so invest early in a robust CI/CD pipeline per service. Implement distributed tracing (OpenTelemetry) from day one — debugging cascading failures across services without traces is nearly impossible.</p>
- <p>Use a service mesh for cross-cutting concerns (mTLS, circuit breaking, retries) rather than implementing them in every service individually. Start with an API Gateway to centralize authentication, rate limiting, and request routing.</p>
- <p><strong>Sagas and consistency:</strong> Cross-service workflows need choreographed events or orchestrated sagas (Temporal, Camunda) with explicit compensation and timeouts—two-phase commit across services rarely scales. Pair with <a href="../foundations/idempotency.html">idempotency</a> at every step; measure saga stuck duration and compensation failure rate.</p>
- <p><strong>Data migrations:</strong> Database-per-service implies expand–contract migrations with no cross-schema joins in production. Use events or replicated read models for queries that span contexts; never “just query the other service’s Postgres” from a batch job.</p>
- <p><strong>Deploy and SLOs:</strong> Canary or progressive delivery per service; error budgets owned by the service team. Alert on RPC fan-out depth (more than three synchronous hops on checkout) and p99 budget burn, not only pod restart counts.</p>
- <p><strong>Contract testing:</strong> Pact or equivalent in CI on producer and consumer PRs. Version event schemas in a registry with compatibility gates before merge.</p>
- <p><strong>When NOT to split further:</strong> If two services always deploy together and share on-call pain without independent scale needs, merge them or adopt a modular monolith until boundaries stabilize—microservices are an org scaling tool, not a default.</p>
+ <p>Use a service mesh for cross-cutting concerns (mTLS, circuit breaking, retries) rather than reimplementing them in every service. Start with an API gateway for authentication, rate limiting, and routing, and publish OpenAPI or protobuf contracts with semver and deprecation windows.</p>
+ <p>Size services by bounded context and rate of organizational change, not by table count. A healthy boundary is one team can own schema, API, pipeline, and error budget without daily alignment meetings. Cross-service workflows need sagas with explicit timeouts, compensating steps, and <a href="../foundations/idempotency.html">idempotency</a> at each leg; two-phase commit across databases rarely survives real partitions. Database-per-service implies expand–contract migrations and no stealth cross-database joins from batch jobs—federated reporting belongs in read models fed by events.</p>
+ <p>Granularity heuristics: split when release cadence, scaling profile, or compliance zone force isolation; resist “one microservice per entity.” Pay the observability tax early—RED metrics per service, SLOs on synchronous fan-out depth, and alert budgets when p99 latency burns during canaries. Contract tests in CI on every producer and consumer pull request prevent silent breaking RPC drift.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
+ <p>The distributed monolith is the failure mode people fear most: independent deploy artifacts with shared persistence, shared domain libraries, or five synchronous RPC hops for one user gesture. Network latency and partial failure apply, but the blast radius still feels like one system. Merge services that always ship together and do not scale independently until genuine autonomy appears.</p>
  <ul>
  <li><strong>Shared database:</strong> Two services writing to the same database schema — the most common anti-pattern that recreates monolith coupling across a network.</li>
  <li><strong>Chatty services:</strong> A single user action triggers 10 synchronous service-to-service calls, amplifying latency and failure probability with each hop.</li>
@@ -266,6 +266,9 @@
             <li><a href="https://martinfowler.com/articles/microservices.html" rel="noopener noreferrer" target="_blank">Microservices</a> — Martin Fowler &amp; James Lewis' original article defining microservices.</li>
             <li><a href="https://samnewman.io/books/building_microservices/" rel="noopener noreferrer" target="_blank">Building Microservices</a> — Sam Newman, O'Reilly. The definitive practitioner's guide.</li>
             <li><a href="https://www.youtube.com/watch?v=wgdBVIX9ifA" rel="noopener noreferrer" target="_blank">GOTO 2014 — Microservices</a> — Martin Fowler's original conference talk.</li>
+            <li><a href="https://martinfowler.com/bliki/MicroservicePremium.html" rel="noopener noreferrer" target="_blank">Microservice Premium</a> — Martin Fowler on the platform and cultural prerequisites.</li>
+            <li><a href="https://martinfowler.com/bliki/MonolithFirst.html" rel="noopener noreferrer" target="_blank">MonolithFirst</a> — When decomposition is premature.</li>
+            <li><a href="https://www.informit.com/store/fundamentals-of-software-architecture-a-comprehensive-9781492043451" rel="noopener noreferrer" target="_blank">Fundamentals of Software Architecture</a> — Richards &amp; Ford on decomposition heuristics and quality attributes.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
