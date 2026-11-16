@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Synthetic Monitoring — SA References</title>
-  <meta name="description" content="Synthetic monitoring: scripted browser tests with Playwright, API probes, global probe locations, Pingdom, Datadog Synthetics, Grafana Cloud, and how it complements real user monitoring.">
+  <meta name="description" content="Synthetic monitoring and Google SRE black-box probing: global canaries, API checks, journey scripts, SLI baselines when traffic is low, and complementing real user metrics.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -95,29 +95,33 @@
             <span class="badge badge--primary">Observability &amp; Operations</span>
           </div>
           <h1 class="article-header__title">Synthetic Monitoring</h1>
-          <p class="article-header__desc">Scripted browser tests with Playwright, API probes, global probe locations, Pingdom, Datadog Synthetics, and Grafana Cloud Synthetic Monitoring — and how synthetic tests complement real user monitoring.</p>
+          <p class="article-header__desc">Black-box synthetic monitoring in the Google SRE style: probers and canaries outside your network, scripted user journeys, multi-region availability, SLI coverage when real traffic is sparse, plus RUM for the full picture.</p>
           <div class="article-header__meta"><span>⏱ 9 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The main test types are: <strong>HTTP API probes</strong> — send an HTTP request to an endpoint, verify status code, response time, and optionally response body content. Suitable for uptime monitoring and SLI measurement. <strong>Browser tests</strong> (Playwright, Selenium) — launch a headless browser and execute a scripted user journey (load homepage, search for product, add to cart, proceed to checkout). Measures end-to-end performance including JavaScript execution, third-party scripts, and rendering.</p>
-          <p>Catches regressions invisible to pure API tests. <strong>Multi-step API tests</strong> — chain multiple API calls to simulate a complete workflow (authenticate → create resource → verify resource → delete resource), validating that the entire sequence completes successfully. <strong>TCP/UDP probes</strong> — verify that a port is open and accepting connections; useful for infrastructure-level availability monitoring of databases, message brokers, and other non-HTTP services.</p>
-          <p>Geographic probe distribution is a key feature: running synthetic tests from probes in North America, Europe, and APAC detects latency or availability issues affecting specific regions — CDN misconfiguration, DNS routing failures, or data centre issues. Without multi-region synthetic tests, a service might be completely unavailable in APAC while appearing fully healthy in dashboards driven by US-based probes.</p>
+          <p><strong>Synthetic monitoring</strong> is black-box probing: automated clients outside your stack execute representative requests on a schedule and report success, latency, and content checks. Google’s monitoring guidance treats these probers as part of measuring distributed systems — they observe what users would see at the edge without requiring live traffic.</p>
+          <p>Common probe types: <strong>HTTP/HTTPS API checks</strong> (status, latency, JSON assertions) for SLI floors and dependency SLAs; <strong>browser journeys</strong> (Playwright, Selenium) that render pages, run JavaScript, and validate multi-step flows; <strong>multi-step API workflows</strong> that authenticate, mutate state, and verify outcomes; <strong>network reachability</strong> (TCP/TLS/DNS) for non-HTTP dependencies. Probes run from multiple geographic and network vantage points so regional CDN, DNS, or routing failures surface even when one region looks healthy.</p>
+          <p>Synthetic results complement <strong>real user monitoring (RUM)</strong> and server-side metrics: synthetics give continuous, comparable baselines; RUM captures device diversity, cache state, and behaviour you cannot script. For SLOs, many teams include synthetic success in SLI numerators during low-traffic windows so error budgets still move when nobody is awake to hit the API.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>RUM only tells you about failures that real users experience and report through your telemetry — it requires users to be present and for their telemetry data to be collected. Synthetic monitoring runs whether users are present or not, providing continuous availability verification. Critically, synthetic monitors can detect issues before real users encounter them: a canary deploy that breaks the checkout flow will be caught by a synthetic checkout test within 1-5 minutes, before significant user traffic has routed to the new version. Synthetic monitoring is also the primary tool for enforcing uptime SLAs with third-party dependencies — automated probes to third-party API endpoints provide objective evidence of SLA compliance or breach.</p>
+          <p>Server metrics can be green while the edge returns errors — misconfigured load balancers, expired certificates, WAF blocks, or CDN faults often appear only on paths real users take. SRE monitoring emphasises measuring at user boundaries; synthetics are controlled transactions that cross those boundaries continuously. They shorten mean time to detect for deploy regressions (run after every release), cover overnight and holiday traffic lulls, and supply neutral evidence when disputing vendor uptime claims.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Critical user journeys (checkout, login, core business workflows) — synthetic browser tests provide end-to-end validation on a schedule.</li>
-            <li>Low-traffic periods or regional coverage gaps — synthetic monitoring fills observability gaps where RUM data is sparse.</li>
-            <li>Third-party SLA monitoring — automated probes provide objective evidence for SLA claims with vendors.</li>
+            <li>Critical journeys with low or bursty traffic — overnight APIs, admin consoles, launch spikes.</li>
+            <li>Post-deploy verification — smoke probes in CI/CD or progressive delivery before full traffic shift.</li>
+            <li>Multi-region products — at least one probe per region with meaningful users.</li>
+            <li>Third-party dependencies — objective external measurement for contract SLAs.</li>
+            <li>SLO dashboards — synthetic availability as a parallel SLI input when RUM is sparse.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>As a replacement for RUM — synthetic tests simulate idealised user journeys; real users encounter different network conditions, browser versions, and usage patterns that only RUM captures. Both are needed for comprehensive coverage.</li>
+            <li>As the only SLI on high-traffic services — RUM and server metrics must dominate where volume exists.</li>
+            <li>Scripting every page — maintenance cost explodes; cover few golden journeys.</li>
+            <li>Production write paths without test accounts or sandboxes — probes must not corrupt customer data.</li>
+            <li>Single-location probes for global products — one healthy POP hides regional outage.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -233,9 +237,9 @@ RUM vs SYNTHETIC:
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Deployment smoke test</strong>: After every production deploy, synthetic tests run automatically against the new version; a broken checkout test fires within 3 minutes of deploy; deployment is automatically rolled back before any real users encounter the failure; on-call is notified but no user-visible incident occurs.</li>
-            <li><strong>Regional CDN outage detection</strong>: CDN edge node fails for APAC region; synthetic probes from Singapore and Tokyo return 504 errors; US probes continue returning 200; on-call is alerted with clear regional attribution; CDN failover is initiated.</li>
-            <li><strong>SLA monitoring for third-party payment gateway</strong>: Synthetic probes hit payment gateway sandbox API every 5 minutes; monthly availability report generated automatically; used in quarterly SLA review meeting with payment vendor as objective evidence of below-SLA performance in two months.</li>
+            <li><strong>Illustrative scenario —</strong> Post-deploy synthetics fail on checkout within three minutes; progressive delivery halts before burn-rate alerts would have enough RUM volume to fire.</li>
+            <li><strong>Illustrative scenario —</strong> APAC probes fail while US probes pass; routing issue isolated to one CDN POP and failovered without customer tickets.</li>
+            <li><strong>Case study —</strong> Google’s SRE monitoring material describes black-box probers as part of practical measurement alongside white-box service metrics.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -247,7 +251,7 @@ RUM vs SYNTHETIC:
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.datadoghq.com/synthetics/" target="_blank" rel="noopener noreferrer">Datadog Synthetic Monitoring Docs</a></li>
+            <li><a href="https://sre.google/sre-book/monitoring-distributed-systems/" target="_blank" rel="noopener noreferrer">Google SRE Book — Monitoring Distributed Systems</a></li>
             <li><a href="https://grafana.com/docs/grafana-cloud/testing/synthetic-monitoring/" target="_blank" rel="noopener noreferrer">Grafana Cloud Synthetic Monitoring</a></li>
             <li><a href="https://playwright.dev/docs/intro" target="_blank" rel="noopener noreferrer">Playwright Documentation</a></li>
           </ul>
