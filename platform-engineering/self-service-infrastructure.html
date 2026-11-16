@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Self-Service Infrastructure — SA References</title>
-  <meta name="description" content="Enabling developers to provision infrastructure through automated, policy-compliant workflows.">
+  <meta name="description" content="Self-service infrastructure: Crossplane claims on Kubernetes, policy-gated provisioning, portal UX, and automated teardown for developer-led infra.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -97,102 +97,139 @@
         <div class="article-header">
           <div class="article-header__tags">
             <span class="badge badge--primary">Platform Engineering</span>
+            
           </div>
           <h1 class="article-header__title">Self-Service Infrastructure</h1>
-          <p class="article-header__desc">Enabling developers to provision infrastructure through automated, policy-compliant workflows.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">Policy-gated, automated provisioning of namespaces, data stores, and cloud resources through Crossplane on Kubernetes and portal workflows—without central ticket bottlenecks.</p>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
+
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Implementations combine developer portals (Backstage), infrastructure workflows (Terraform/Tofu modules, Crossplane), and policy engines that validate requests before apply.</p>
+          <p><strong>Self-service infrastructure</strong> lets product engineers provision approved platform resources—Kubernetes namespaces, databases, queues, caches, object storage—without ticketing a central ops team, while policy engines enforce guardrails before anything reaches production. The user experience is usually a portal form, CLI, or API; the implementation is declarative workflows (Crossplane on Kubernetes, Terraform/OpenTofu modules, or operators) plus audit and cost metadata.</p>
+          <p>On Kubernetes-heavy platforms, Crossplane compositions expose high-level claims (XRDs) that hide cloud provider APIs; reconciliation runs in the cluster control plane alongside application workloads. GitOps can manage claim YAML in app repos or a dedicated infra repo; either way the provisioned state is observable via <code>kubectl</code>, the catalog, and cloud audit logs.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Centralised ops teams become bottlenecks when every environment change needs a ticket.</p>
-          <p>Developers waiting days for infra lose flow and ship workarounds (shadow AWS accounts, local docker-compose prod-parity gaps).</p>
+          <p>Ticket-driven provisioning does not scale with microservice growth: developers wait days for environments, context-switch out of flow, and sometimes create shadow accounts. Self-service restores autonomy within boundaries the platform team defines once.</p>
+          <p>It also improves reliability—every provisioned database uses the same backup window, encryption, and network placement because the composition encodes those rules, not individual runbooks.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Mature IDP with standard resource types and clear SLAs.</li>
-            <li>Terraform modules or Crossplane compositions maintained by platform team.</li>
-            <li>Temporary environments per pull request for integration testing.</li>
+            <li>Mature landing zones (network, IAM, org policies) and a staffed platform team.</li>
+            <li>Crossplane compositions or vetted Terraform modules for high-demand resource types.</li>
+            <li>Ephemeral environments (per pull request) with automated TTL teardown.</li>
+            <li>Developer portal integration where request status is visible without Slack pings.</li>
+            <li>Policy-as-code (Kyverno, OPA, Sentinel) ready to validate plans and claims.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Organisations without baseline landing zones and IAM boundaries — self-service amplifies existing chaos.</li>
-            <li>Highly bespoke one-off infrastructure where automation cost exceeds ticket cost.</li>
+            <li>No baseline security boundaries—self-service multiplies misconfiguration speed.</li>
+            <li>One-off bespoke infra where automation cost exceeds rare ticket cost.</li>
+            <li>Teams unable to operate Kubernetes or Crossplane control planes reliably.</li>
+            <li>Resources lacking automated destroy paths (orphan risk).</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart LR
-    req["Portal form / CLI / API"]
-    workflow["Approval + policy engine"]
-    provision["Provisioner&lt;br/&gt;Terraform runner"]
-    state["State store + audit trail"]
-    req --> workflow --> provision --> state</div>
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    ui["Portal / CLI / API"]
+    pol["Policy + quota check"]
+    cp["Crossplane reconciler&lt;br/&gt;in K8s"]
+    cloud["Cloud APIs"]
+    cat["Catalog + audit"]
+    ui --> pol --> cp --> cloud
+    cp --> cat</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>SELF-SERVICE REQUEST PATH
-────────────────────────────────────────────
-  Portal form / CLI / API
+              <pre class="architecture-diagram__canvas"><code>SELF-SERVICE ON KUBERNETES + CROSSPLANE
+──────────────────────────────────────────────────────────
+  Request (Backstage plugin / kubectl / REST)
         ▼
-  Policy validation + quota check
+  Admission / policy (Kyverno validate Claims, OPA on TF plan)
         ▼
-  Workflow (Terraform/Crossplane)
+  Crossplane Claim (namespaced)
         ▼
-  Credentials + docs returned to dev
+  Composition → Managed Resources (RDS, S3, IAM role)
         ▼
-  Recorded in service catalog</code></pre>
+  Status + connection secrets → ESO → app namespace
+        ▼
+  Catalog Resource entity + cost allocation tags</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Self-service path: standardized requests pass policy gates before automated provisioning records auditable state.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Self-service on Kubernetes: validated requests become Crossplane claims, cloud resources reconcile in-cluster, and outcomes register in the catalog and audit trail.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Faster feedback loops for developers.</li>
-            <li>Standardised resources reduce snowflake environments.</li>
-            <li>Audit trail of who provisioned what.</li>
+                <li>Provisioning latency moves from days to minutes for standard resources.</li>
+                <li>Compositions eliminate snowflake databases and buckets.</li>
+                <li>Full audit: who applied which claim, when, and resulting cloud resource IDs.</li>
+                <li>Quotas and label policies enforced uniformly at admission.</li>
+                <li>Developers stay in familiar GitOps and kubectl mental models on K8s platforms.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Building workflows for every resource type is expensive.</li>
-            <li>Poor UX drives teams back to tickets.</li>
-            <li>Quota and cost guardrails must evolve with usage.</li>
+                <li>Building and maintaining compositions for every resource type is expensive.</li>
+                <li>Poor UX (opaque errors, no status page) sends teams back to tickets.</li>
+                <li>Crossplane control plane is another critical system to on-call.</li>
+                <li>Destroy flows are often neglected compared to create—cost and security debt.</li>
+                <li>Over-privileged provider credentials in the cluster are a high-value target.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Expose a small catalog of high-demand resources first (Postgres dev instance, S3 bucket, K8s namespace). Expand based on support tickets converted to workflows.</p>
-          <p>Return connection strings, dashboards, and runbook links automatically in the provisioning response.</p>
+          <p>Start with a narrow catalog: dev Postgres, S3 bucket, K8s namespace, Redis—resources that generate the most tickets. Expand from ticket taxonomy quarterly.</p>
+          <p>Expose claims as namespaced CRDs with small parameter surfaces. Use composition Functions or patches for environment differences (dev vs prod) instead of duplicate XRDs. Store provider credentials in scoped IRSA/GCP WI identities per composition family.</p>
+          <p>Integrate Backstage: software templates for greenfield, “Add database” actions for brownfield. Return deep links—Grafana dashboards, runbooks, secret names, claim status conditions.</p>
+          <p>Implement TTL controllers or scheduled GitOps pruning for ephemeral envs. Make <code>delete</code> as automated as <code>create</code>; test teardown in CI with disposable accounts.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Orphaned resources:</strong> Ephemeral envs never torn down — TTL and reaper jobs required.</li>
-            <li><strong>Over-privileged automation:</strong> Workflow role can create any resource — scope IAM per composition.</li>
+            <li><strong>Orphaned resources:</strong> PR namespaces and databases without TTL; run reapers and chargeback reports.</li>
+            <li><strong>God-mode provider config:</strong> One cloud credential creates any resource; split ProviderConfigs per environment and use least privilege.</li>
+            <li><strong>Claim stuck pending:</strong> Developers retry and duplicate; surface events in portal and alert platform on reconciliation errors.</li>
+            <li><strong>Drift outside GitOps:</strong> Manual console edits fight Crossplane; enable management policies and drift detection.</li>
+            <li><strong>Quota blind spots:</strong> Single team exhausts RDS subnet IPs; enforce per-team quotas at policy layer.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Can developers see status of their request without paging platform?</li>
-            <li>Are destroy/teardown flows as automated as create?</li>
-            <li>Do quotas prevent a single team exhausting shared limits?</li>
+            <li>Can developers see claim/workflow status without paging platform?</li>
+            <li>Are destroy/teardown paths automated and tested?</li>
+            <li>Do quotas prevent one team exhausting shared network or API limits?</li>
+            <li>Are provider credentials scoped and rotated with break-glass documented?</li>
+            <li>Does every provisioned resource appear in the service catalog with owner?</li>
+            <li>Are policy denials actionable (message + doc link), not opaque?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>PR environments:</strong> Backstage plugin triggers Terraform module; namespace auto-deleted after 72 hours.</li>
+            <li><strong>Illustrative scenario — PR environments:</strong> Opening a pull request applies a namespaced Claim set; Argo CD deploys the branch; TTL job deletes claims after seventy-two hours.</li>
+            <li><strong>Illustrative scenario — data team self-serve:</strong> Analysts request read-only warehouse connections via portal; composition creates IAM role + Secret; catalog records lineage owner.</li>
+            <li><strong>Case study — GitLab:</strong> Public write-ups on internal developer portal patterns describe self-service environment creation integrated with Kubernetes—useful reference for portal-driven flows.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="internal-developer-platform.html">Internal Developer Platform</a> — Platform product framing.</li>
-            <li><a href="platform-apis.html">Platform APIs</a> — API design for provisioning.</li>
-            <li><a href="service-catalogs.html">Service Catalogs</a> — Discovery and ownership.</li>
+            <li><a href="platform-apis.html">Platform APIs</a> — CRD and composition design.</li>
+            <li><a href="policy-as-code.html">Policy as Code</a> — gates on claims and Terraform plans.</li>
+            <li><a href="golden-paths.html">Golden Paths</a> — initial scaffold plus optional claims.</li>
+            <li><a href="service-catalogs.html">Service Catalogs</a> — ownership and discovery for provisioned resources.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://crossplane.io/docs/" target="_blank" rel="noopener noreferrer">Crossplane</a></li>
+            <li><a href="https://docs.crossplane.io/latest/" target="_blank" rel="noopener noreferrer">Crossplane Documentation</a></li>
             <li><a href="https://backstage.io/docs/features/kubernetes-infrastructure/" target="_blank" rel="noopener noreferrer">Backstage Kubernetes Plugin</a></li>
-            <li><a href="https://platformengineering.org/" target="_blank" rel="noopener noreferrer">Platform Engineering community</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/operator/" target="_blank" rel="noopener noreferrer">Kubernetes Operators</a></li>
           </ul>
+
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
           <a href="policy-as-code.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Policy as Code</span></a>
