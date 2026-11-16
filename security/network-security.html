@@ -104,25 +104,28 @@
           <p><strong>East-west traffic</strong> refers to service-to-service traffic within a network (lateral movement), as opposed to north-south traffic (ingress from external users). Traditional network security focused almost exclusively on north-south (perimeter) traffic and did not inspect east-west traffic at all — allowing attackers who gained a foothold inside to move freely. Modern architectures address east-west through microsegmentation (Zero Trust network policies), service mesh mTLS, and in some cases, an internal NGFW or network inspection layer that all inter-service traffic passes through. <strong>AWS PrivateLink</strong> and equivalent cloud services allow applications to consume third-party or partner APIs over private network paths without traffic traversing the public internet, reducing the external attack surface.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Network-based attacks — DDoS, SQL injection via HTTP, lateral movement — are among the most common attack vectors. Network security controls provide defence in depth at a layer below the application, so that application-layer vulnerabilities can be mitigated partially or detected by network-layer controls. A WAF can block a SQL injection attempt even if the application code contains the vulnerability, buying time for a code fix. A properly segmented VPC means an attacker who compromises a web tier server cannot directly reach the database tier without passing through an additional security group boundary.</p>
-          <p>Network monitoring (VPC Flow Logs, network IDS) provides visibility into anomalous traffic patterns that application logs may miss.</p>
+          <p>Most compromise paths still traverse the network: volumetric DDoS, application exploits over HTTP, and lateral movement after initial access. Perimeter and segmentation controls buy time when application code is vulnerable—a WAF running OWASP Core Rule Set can block common injection patterns while teams ship fixes. <a href="https://csrc.nist.gov/publications/detail/sp/800-41/rev-1/final" target="_blank" rel="noopener noreferrer">NIST SP 800-41</a> treats firewalls and monitored boundaries as foundational; <a href="https://csrc.nist.gov/publications/detail/sp/800-207/final" target="_blank" rel="noopener noreferrer">NIST SP 800-207</a> extends that to east-west flows in Zero Trust designs.</p>
+          <p>Flow logs, IDS telemetry, and service mesh mTLS expose patterns that application logs miss—beaconing, unusual east-west port use, and exfiltration over allowed egress. Network architecture is how architects make blast radius measurable instead of theoretical.</p>
+          <p>Design reviews should trace every inbound path to an owning security group or policy object so orphan rules are retired during refactors.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All production cloud deployments — proper VPC segmentation and security groups are baseline requirements, not optional.</li>
-            <li>Public-facing web applications — WAF with OWASP Core Rule Set is standard practice.</li>
-            <li>Environments processing sensitive data — PrivateLink for cloud service access, private subnets for data stores.</li>
-            <li>Regulated environments (PCI DSS, HIPAA) — explicit network segmentation requirements with audit evidence.</li>
-            <li>Zero Trust adoption — east-west inspection is required to control lateral movement in a Zero Trust model.</li>
+            <li>Every production VPC or equivalent landing zone with tiered subnets and default-deny posture.</li>
+            <li>Internet-facing properties where managed WAF rule sets complement secure coding and OWASP testing.</li>
+            <li>Regulated or high-sensitivity data paths requiring private service connectivity and no public datastore routes.</li>
+            <li>Zero Trust rollouts that must inspect and policy-bind east-west traffic, not only north-south edges.</li>
+            <li>Multi-account cloud estates where centralized egress inspection and shared services VPCs reduce duplicated perimeter tooling.</li>
+            <li>Partner integrations requiring private connectivity (PrivateLink, ExpressRoute, Cloud VPN) instead of exposing administrative ports.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>WAF as only application security control</strong>: WAFs have false positive and bypass risks; they supplement but do not replace application-layer input validation and parameterised queries.</li>
-            <li><strong>IDS/IPS over encrypted traffic without TLS inspection</strong>: Network IDS cannot inspect encrypted payloads; TLS inspection (which has its own privacy implications) is required for deep packet inspection of HTTPS traffic.</li>
+            <li><strong>WAF as the only control</strong>—false positives and bypass techniques mean apps still need validation and parameterised data access.</li>
+            <li><strong>Deep inspection without TLS strategy</strong>—encrypted payloads blind IDS unless termination or approved inspection architecture exists (with privacy review).</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>North-south traffic passes CDN, DDoS scrubbing, and WAF before reaching private application tiers; data stores accept only security-group–referenced ports on private subnets without internet gateway routes.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     inet["Internet"]
@@ -191,46 +194,47 @@ ZTNA (Zero Trust Network Access):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>VPC segmentation limits blast radius: a compromised web tier cannot directly access database tier without passing additional security controls.</li>
-                <li>WAF provides automated protection against common web attacks (SQLi, XSS, SSRF) even when application code contains vulnerabilities.</li>
-                <li>Security groups with inter-group references (allow from ALB-SG) are more secure and maintainable than IP-based rules that become stale.</li>
-                <li>PrivateLink eliminates public internet egress for cloud service calls, reducing data exfiltration risk and compliance scope.</li>
-                <li>VPC Flow Logs and NGFW logs provide network-level visibility for threat detection even when application logs are insufficient.</li>
+                <li>Tiered subnets and security-group references contain lateral movement after web-tier compromise.</li>
+                <li>Managed WAF packs provide OWASP-oriented coverage while code fixes are in flight.</li>
+                <li>Inter–security-group rules stay stable under autoscaling unlike brittle CIDR lists.</li>
+                <li>Private connectivity to PaaS APIs shrinks internet-exposed attack surface and audit scope.</li>
+                <li>Central flow and firewall logs feed SIEM detections when app logging is thin.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>WAF false positives can block legitimate traffic; tuning WAF rules requires ongoing operational effort.</li>
-                <li>East-west inspection via central NGFW adds latency and creates a potential bottleneck if not properly scaled.</li>
-                <li>Security group sprawl: large environments with hundreds of security groups become difficult to audit without automation.</li>
-                <li>PrivateLink endpoints have cost implications and add endpoint management overhead.</li>
+                <li>WAF tuning is continuous work—over-blocking harms revenue paths.</li>
+                <li>Hub-and-spoke inspection adds latency and capacity planning for east-west peaks.</li>
+                <li>Large estates suffer security-group sprawl without policy-as-code and graph analytics.</li>
+                <li>Private endpoints add per-AZ cost and lifecycle ownership.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Design security groups with the principle of least privilege: each security group should allow only the specific protocol and port required from a specific source (another security group, not a CIDR). Never use <code>0.0.0.0/0</code> as an ingress source except for public-facing load balancers accepting internet traffic on port 443. Enable VPC Flow Logs to S3 or CloudWatch for all production VPCs — they are essential for incident investigation and anomaly detection. For WAF deployment, start with AWS WAF Managed Rules (OWASP Core Rule Set) in count mode, monitor false positive rate for 1–2 weeks, then switch to block mode.</p>
-          <p>Use WAF rate-based rules to automatically block IP addresses making more than a defined threshold of requests per 5-minute period.</p>
-          <p>For microsegmentation in Kubernetes, use Kubernetes NetworkPolicies (with a CNI plugin that enforces them — Calico, Cilium, or Antrea) to restrict pod-to-pod communication to the minimum required. The default allow-all policy in Kubernetes means any pod can communicate with any other pod; NetworkPolicies are deny-by-default once applied to a namespace. Define both ingress and egress NetworkPolicies for all production workloads. Cilium with eBPF-based enforcement provides Layer 7 aware policies (e.g., allow HTTP GET /api only) beyond the Layer 3/4 NetworkPolicy standard.</p>
+          <p>Model security groups as least-privilege tuples: protocol, port, source security group—avoid open admin ports on <code>0.0.0.0/0</code> except intentionally public HTTPS on load balancers. Ship VPC Flow Logs to immutable storage with retention aligned to NIST logging guidance. Roll out WAF in count mode, triage false positives on representative traffic, then enable block on validated rule groups including OWASP CRS. Pair rate-based rules with bot management for credential-stuffing storms.</p>
+          <p>In Kubernetes, enforce deny-by-default NetworkPolicies on ingress and egress; prefer CNIs that honor policies in production (Calico, Cilium, Antrea). Layer 7 rules (HTTP method/path) reduce over-broad allow lists. Document intentional east-west paths for auditors and map controls to CIS cloud benchmarks where required.</p>
+          <p>For hybrid connectivity, inspect traffic at transit gateways or dedicated inspection VPCs when regulatory language demands visibility into partner or on-prem paths. Pair DNS logging with firewall deny rules to detect command-and-control domains early. Review security-group and NACL changes through infrastructure-as-code pull requests with automated diff alerting, consistent with NIST configuration management expectations.</p>
+          <p>Validate WAF exclusions during every major application release—new JSON fields and mobile API shapes frequently reintroduce false negatives. Document allowed east-west flows in architecture decision records so future microservices do not silently widen internal attack surfaces.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Database in public subnet</strong>: RDS or similar databases placed in a public subnet with a security group restricting access — security group misconfiguration or removal exposes the database to the internet. Always place databases in private subnets with no internet gateway route.</li>
-            <li><strong>0.0.0.0/0 SSH/RDP in security groups</strong>: Allowing SSH or RDP from any IP is one of the most commonly misconfigured settings in cloud environments and one of the most scanned by attackers.</li>
-            <li><strong>WAF in count-only mode permanently</strong>: WAFs left in count mode provide visibility but no protection; teams enable count mode for testing and forget to switch to block mode.</li>
-            <li><strong>No egress filtering</strong>: Security groups that restrict inbound traffic but allow all outbound traffic enable data exfiltration and C2 communication from compromised instances.</li>
-            <li><strong>Overlapping NACL deny/allow rules</strong>: NACL rules are processed in numbered order; an allow rule with a lower number than a deny rule for the same traffic causes the deny to be ineffective.</li>
+            <li><strong>Data plane in routable public subnets</strong>—one overly permissive rule exposes databases globally.</li>
+            <li><strong>Administrative exposure</strong>—SSH/RDP open to the internet remains a top scanner hit.</li>
+            <li><strong>Eternal WAF learning mode</strong>—count-only configurations never enforce blocks.</li>
+            <li><strong>Unrestricted egress</strong>—compromised instances phone home or exfiltrate freely.</li>
+            <li><strong>NACL rule ordering mistakes</strong>—lower-number allows override intended denies.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are databases and application servers in private subnets with no direct internet gateway route?</li>
-            <li>Do security groups use inter-group references rather than CIDR-based rules for internal traffic?</li>
-            <li>Is a WAF deployed in front of all public-facing web applications in block mode?</li>
-            <li>Are VPC Flow Logs enabled and shipped to a centralised log store?</li>
-            <li>Is east-west traffic inspected for lateral movement, either via NGFW or service mesh mTLS?</li>
-            <li>Are Kubernetes NetworkPolicies enforced with a deny-by-default posture?</li>
+            <li>Are compute and data tiers on subnets without direct internet gateway paths?</li>
+            <li>Do internal rules reference security groups instead of drifting CIDR blocks?</li>
+            <li>Is production WAF blocking (not only counting) after tuning windows?</li>
+            <li>Are flow logs centralized, correlated, and retained for investigations?</li>
+            <li>Is east-west traffic governed by mesh mTLS, NGFW, or equivalent inspection?</li>
+            <li>Do clusters enforce default-deny NetworkPolicies for production namespaces?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -238,13 +242,15 @@ ZTNA (Zero Trust Network Access):
             <li><strong>Illustrative scenario — three-tier web app:</strong> Public ALB → private app tier (ingress only from ALB security group) → private data tier (database port only from app security group); no IGW route on data subnets.</li>
             <li><strong>Case study — edge DDoS and WAF:</strong> CDN and managed WAF rule sets (for example AWS WAF OWASP CRS) absorb attack volume and filter application exploits before origin load—pattern described in major cloud provider WAF guidance.</li>
             <li><strong>Illustrative scenario — Kubernetes microsegmentation:</strong> Cilium L7 NetworkPolicies allow only <code>POST /charge</code> from the order workload to the payment workload; all other pod traffic denied by default.</li>
+            <li><strong>Illustrative scenario — SaaS egress control</strong>: Central egress proxy with TLS inspection policy exempting health-data subnets; VPC endpoints for KMS and secrets managers keep key material off the public internet.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="zero-trust-architecture.html">Zero Trust Architecture</a> — Network security is the Zero Trust network layer.</li>
-            <li><a href="defense-in-depth.html">Defense in Depth</a> — Network security is the perimeter and network layers of DiD.</li>
-            <li><a href="../deployment/container-orchestration.html">Container Orchestration</a> — Kubernetes NetworkPolicies for pod-to-pod security.</li>
+            <li><a href="zero-trust-architecture.html">Zero Trust Architecture</a> — Policy-driven access replacing implicit east-west trust.</li>
+            <li><a href="defense-in-depth.html">Defense in Depth</a> — Network layer controls within layered programmes.</li>
+            <li><a href="api-security.html">API Security</a> — Application authorisation after traffic passes the edge.</li>
+            <li><a href="../deployment/container-orchestration.html">Container Orchestration</a> — Pod network policy in Kubernetes estates.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>

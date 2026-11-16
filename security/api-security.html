@@ -105,22 +105,25 @@
           <p>Other critical OWASP API risks include: <strong>Broken Authentication</strong> (weak API key schemes, missing token expiry), <strong>Excessive Data Exposure</strong> (returning full data models and relying on the client to filter — a mobile app might show 5 fields but the API returns 50, including sensitive ones), <strong>Mass Assignment</strong> (blindly binding request body fields to data model objects, allowing a user to set fields like <code>isAdmin: true</code>), <strong>Security Misconfiguration</strong> (debug endpoints left enabled, verbose error messages revealing stack traces), and <strong>Injection</strong> (SQL, NoSQL, command injection via API parameters). GraphQL introduces additional surface: <strong>introspection</strong> exposes the full schema to attackers, deeply <strong>nested queries</strong> can cause denial of service by triggering deeply recursive database joins, and <strong>field-level authorisation</strong> must be implemented explicitly as GraphQL does not have built-in field visibility controls.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>APIs have become the primary attack target because they are the authoritative data access layer for all application types (web, mobile, IoT, third-party integrations). The Verizon Data Breach Investigations Report has consistently identified web application attacks (primarily API exploitation) as the top action in data breaches. API-specific vulnerabilities are often invisible to traditional web application scanners, which check for HTML-form-based attacks but miss BOLA, mass assignment, and GraphQL depth attacks. The programmatic, predictable nature of API endpoints makes them highly amenable to automated scanning and exploitation: an attacker can enumerate <code>/api/orders/1</code> through <code>/api/orders/1000000</code> in minutes to exfiltrate all orders in the database if BOLA is not mitigated.</p>
+          <p>Every modern channel—web, mobile, partner, and batch—eventually calls the same API surface, which makes that surface the highest-value target for credential stuffing, automated enumeration, and authorisation bypass. Industry breach data and the <strong>OWASP API Security Top 10</strong> consistently rank broken access control and unsafe consumption ahead of exotic exploit chains. Dynamic application scanners tuned for HTML forms frequently miss BOLA, mass assignment, and GraphQL depth abuse because those failures require token context and object ownership semantics. NIST access-control guidance (SP 800-53 families AC and SC) expects systems to enforce least privilege at the resource level, not only at the front door.</p>
+          <p>Predictable URLs and machine-readable JSON responses lower the cost of abuse: a single missing ownership predicate on <code>GET /api/orders/{id}</code> can turn a legitimate session into a fleet-wide data harvest in minutes. API security programmes exist to close that gap with consistent gateway policy, service-layer authorisation, and testable patterns auditors and red teams can verify.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All public-facing APIs — OWASP API security controls are baseline requirements.</li>
-            <li>Internal microservice APIs — BOLA and mass assignment vulnerabilities are exploitable by internal attackers or via lateral movement.</li>
-            <li>GraphQL APIs — require additional controls beyond REST (query depth limiting, complexity analysis, introspection disabling in production).</li>
-            <li>Partner or third-party API integrations — API key management and scoped authorisation are essential.</li>
+            <li>Internet-exposed REST, GraphQL, gRPC, and webhook endpoints—treat OWASP API Top 10 mitigations as non-negotiable baselines.</li>
+            <li>East-west microservice APIs where lateral movement after one compromised pod could reach sensitive aggregates.</li>
+            <li>GraphQL gateways that need query cost limits, depth caps, and production introspection lockdown beyond typical REST controls.</li>
+            <li>B2B integrations where scoped API keys or mTLS must replace long-lived shared secrets in configuration files.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>These are not "use or not use" controls — all APIs require security. The question is which specific controls apply. For read-only public APIs with no user data, BOLA is less relevant but rate limiting and injection prevention still apply.</li>
+            <li>Security is never optional for APIs; calibrate depth to data classification. Public read-only catalogues may deprioritise BOLA testing but still require injection defences, TLS, and abuse throttling.</li>
+            <li>Do not rely on “security by obscurity” (undocumented admin routes) instead of role checks—discovery tooling finds them quickly.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Request path: terminate TLS at the edge, validate tokens and quotas at an API gateway, enforce object-level rules in domain services, and emit structured audit events—aligned with OWASP cheat sheets for REST and GraphQL hardening.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     client["Client"]
@@ -182,46 +185,44 @@ API KEY MANAGEMENT:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Object-level ownership checks in all data retrieval and modification endpoints prevent the most common API breach vector.</li>
-                <li>Allowlist-based field binding (rather than mass assignment) makes it impossible to set unexpected fields via API request bodies.</li>
-                <li>API gateway–level rate limiting provides automated protection against credential stuffing, enumeration, and scraping attacks.</li>
-                <li>Explicit response schemas prevent accidental sensitive data exposure — only approved fields are included in API responses.</li>
+                <li>Consistent object-level authorisation shrinks the OWASP API Top 10 “broken object-level authorisation” class of incidents.</li>
+                <li>DTO-first responses and allowlisted binders prevent mass assignment and accidental over-disclosure in mobile payloads.</li>
+                <li>Central rate limits and bot rules absorb credential stuffing and scraping without per-service reinvention.</li>
+                <li>Schema validation at the gateway catches malformed traffic before it reaches fragile parser code paths.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Object-level authorisation checks must be implemented consistently in every endpoint; a single missed check creates a vulnerability.</li>
-                <li>Rate limiting requires careful tuning — too strict blocks legitimate high-volume API consumers, too loose provides no protection.</li>
-                <li>GraphQL complexity analysis requires upfront effort to assign complexity scores to each field and calibrate acceptable thresholds.</li>
-                <li>Disabling GraphQL introspection in production means developers cannot use GraphiQL, requiring alternative documentation solutions.</li>
+                <li>Authorisation logic must be repeated and tested per resource type—one gap equals a headline breach.</li>
+                <li>Aggressive throttling can break bulk integrators unless tiered quotas and partner allowlists exist.</li>
+                <li>GraphQL cost controls need ongoing tuning as schemas evolve and resolvers gain joins.</li>
+                <li>Strong production GraphQL lockdown shifts developer ergonomics toward schema registries and offline explorers.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Implement BOLA protection as a mandatory architectural pattern: <em>every</em> database query that retrieves a resource by ID must include the authenticated user's ID (or tenant ID) as an additional filter condition. This pattern should be enforced through code review and automated testing with authorisation tests that verify cross-user access is denied. The authorisation logic belongs in the service layer, not the API gateway — the gateway validates the token but cannot know the ownership semantics of individual resources.</p>
-          <p>For excessive data exposure, define explicit response DTOs (Data Transfer Objects) rather than returning ORM model objects directly. Use serialisation libraries that require explicit field inclusion (opt-in) rather than opt-out exclusion. For pagination, enforce maximum page size limits to prevent bulk data extraction. For error handling, return generic error messages to API clients (do not include stack traces, SQL error messages, or internal service names), but log full details server-side.</p>
-          <p>Use structured error responses with error codes that developers can reference in documentation.</p>
-          <p>API keys should be treated as credentials, not configuration values: hash them before storage, display them only once at generation time, prefix with a service/environment indicator (<code>sk_live_</code>, <code>sk_test_</code>), scope them to minimum necessary permissions, and set expiry dates for automated rotation. For high-value APIs, use mutual TLS (mTLS) between partners rather than API keys — certificates provide stronger identity guarantees and are harder to phish.</p>
+          <p>Adopt a <strong>fail-closed authorisation pattern</strong>: persistence access always includes tenant or subject filters derived from validated claims—never trust client-supplied user IDs in the body. Complement manual review with contract tests that attempt cross-tenant reads and writes; map cases to OWASP API scenarios for regression suites. Gateways should verify JWT signature, issuer, audience, and expiry (per RFC 8725 and the OWASP JWT cheat sheet) but cannot substitute for domain ownership rules inside services.</p>
+          <p>Serialise with explicit projection types; forbid returning raw ORM entities to external callers. Cap page sizes and export endpoints; log high-volume reads for fraud analytics. Return stable, coarse error codes to clients while logging rich detail to a tamper-evident store. Store API keys hashed with scoped IAM-style permissions, rotation schedules, and last-used telemetry; prefer mTLS or OAuth client credentials for high-trust partners under NIST-oriented key-management practices.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>BOLA via integer ID enumeration</strong>: Sequential integer IDs in REST URLs (<code>/api/users/1001</code>) are trivial to enumerate. Use UUIDs or opaque IDs — but this reduces friction, it does not replace ownership checks, which are still mandatory.</li>
-            <li><strong>Verbose error messages</strong>: APIs returning <code>"User email@example.com not found"</code> confirm to an attacker whether an email address is registered — use <code>"Invalid credentials"</code> uniformly.</li>
-            <li><strong>Missing rate limiting on auth endpoints</strong>: Login, password reset, and OTP verification endpoints without rate limits are vulnerable to credential stuffing and brute force attacks.</li>
-            <li><strong>Admin API endpoints accessible to regular users</strong>: Admin operations (<code>GET /api/admin/users</code>) that rely only on "obscurity" (the endpoint isn't in docs) rather than proper role checks are exploitable by anyone who discovers the endpoint path.</li>
-            <li><strong>GraphQL introspection enabled in production</strong>: Introspection gives attackers a complete map of all types, fields, and mutations, dramatically accelerating exploitation.</li>
+            <li><strong>Opaque IDs without ownership checks</strong>: UUIDs reduce guessing but do not stop BOLA when authorisation is absent.</li>
+            <li><strong>User enumeration via errors</strong>: Different responses for “unknown user” vs “bad password” leak account existence—normalise auth failure text.</li>
+            <li><strong>Unthrottled token and OTP flows</strong>: Password reset and MFA endpoints become brute-force lanes without per-IP and per-account throttles.</li>
+            <li><strong>Hidden admin routes</strong>: Undocumented <code>/internal/admin</code> handlers reached by scanners when RBAC is missing.</li>
+            <li><strong>Production GraphQL maps</strong>: Introspection and unbounded nested queries enable schema-driven exploitation and DoS.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are all data retrieval endpoints scoped to the authenticated user/tenant (BOLA prevention)?</li>
-            <li>Is field binding explicit (allowlist) rather than implicit (mass assignment)?</li>
-            <li>Are API responses defined as explicit DTOs with no extra fields?</li>
-            <li>Is rate limiting applied per-user and per-IP at the API gateway?</li>
-            <li>Are GraphQL introspection, query depth, and complexity limits configured in production?</li>
-            <li>Are API keys hashed in storage with defined scopes and expiry?</li>
+            <li>Does every mutating and reading path enforce tenant or owner scope server-side?</li>
+            <li>Are request DTOs allowlisted and response shapes explicitly projected?</li>
+            <li>Do gateway policies include per-identity rate limits and anomaly alerts?</li>
+            <li>Are GraphQL depth, cost, and introspection settings verified in production config?</li>
+            <li>Are partner credentials hashed, scoped, expiring, and never logged?</li>
+            <li>Do CI suites include OWASP API–style authorisation negative tests?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -234,9 +235,10 @@ API KEY MANAGEMENT:
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="../api-design/api-authentication.html">API Authentication</a> — Token-based authentication for API security.</li>
-            <li><a href="../api-design/api-rate-limiting.html">API Rate Limiting</a> — Rate limiting implementation strategies.</li>
-            <li><a href="network-security.html">Network Security Architecture</a> — WAF as a complementary API protection layer.</li>
+            <li><a href="../api-design/api-authentication.html">API Authentication</a> — Issuing and presenting tokens before authorisation checks.</li>
+            <li><a href="../api-design/api-rate-limiting.html">API Rate Limiting</a> — Quota design for integrators and abusive traffic.</li>
+            <li><a href="jwt-best-practices.html">JWT Best Practices</a> — Validating bearer tokens at the gateway and mesh.</li>
+            <li><a href="network-security.html">Network Security Architecture</a> — WAF and edge controls that complement API logic.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>

@@ -107,19 +107,20 @@
           <p><strong>Encryption at rest and in transit</strong> is the pairing of symmetric protection for stored data with transport-layer cryptography for data moving across networks. <strong>Encryption at rest</strong> typically uses <strong>AES-256</strong> in an authenticated mode such as GCM to encrypt database volumes, object storage, block devices, backups, and snapshots so that stolen media or misconfigured buckets yield ciphertext rather than plaintext. <strong>Encryption in transit</strong> uses <strong>TLS</strong> (preferably TLS 1.3 per <a href="https://csrc.nist.gov/publications/detail/sp/800-52/rev-2/final" target="_blank" rel="noopener noreferrer">NIST SP 800-52 Rev. 2</a>) between clients and services and between services on untrusted or shared networks.</p>
           <p>Cloud platforms implement at-rest encryption through a <strong>Key Management Service (KMS)</strong>: <strong>AWS KMS</strong>, <strong>Azure Key Vault</strong>, and <strong>Google Cloud KMS</strong> generate, store, and audit use of customer master keys (CMKs). Applications rarely embed long-lived keys; they call KMS to wrap per-object <em>data encryption keys</em> (envelope encryption), as described in <a href="https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final" target="_blank" rel="noopener noreferrer">NIST SP 800-57</a>. Field-level encryption adds another layer for the most sensitive columns while volume encryption protects everything else by default.</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Regulators, frameworks, and customer contracts expect demonstrable confidentiality for stored and transmitted information. The NIST Cybersecurity Framework <em>Protect</em> function assumes organizations can safeguard data at rest and in transit; HIPAA, PCI DSS, and GDPR each map to explicit encryption or equivalent control language. Encryption alone is insufficient without key governance—keys stored beside ciphertext, shared across environments, or never rotated provide little real protection. Pairing algorithms with KMS-backed keys, rotation, and audit trails turns encryption from a checkbox into evidence auditors and incident responders can rely on.</p>
+          <p>Confidentiality obligations—from GDPR and HIPAA to PCI DSS and customer MSA language—assume data cannot be read from stolen disks, miscloned volumes, or passive network capture. The NIST Cybersecurity Framework <em>Protect</em> family and SP 800-52 Rev. 2 expect both at-rest and in-transit safeguards. Cryptography without lifecycle governance fails reviews: keys in source control, shared long-term secrets, or never-rotated CMKs offer comfort without actual control. KMS-backed envelope encryption, TLS 1.2+, and auditable decrypt paths produce evidence incident responders and auditors can trust.</p>
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All customer and employee data stores.</li>
-            <li>Backups and snapshots.</li>
-            <li>Service-to-service calls crossing untrusted networks.</li>
+            <li>Customer, employee, and payment data at rest—including backups, snapshots, and analytics replicas.</li>
+            <li>Any hop crossing tenant networks, internet paths, or shared backbone without out-of-band trust.</li>
+            <li>Field-level protection for regulated columns when volume encryption alone is insufficient.</li>
           </ul>
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Encrypting already-public assets with no benefit.</li>
-            <li>Custom ciphers — use vetted libraries only.</li>
+            <li>Public marketing assets where encryption adds cost without risk reduction.</li>
+            <li>Home-grown algorithms—use FIPS-validated libraries and platform-managed TLS stacks per OWASP TLS guidance.</li>
           </ul>
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Clients negotiate TLS 1.2+ to services; persisted objects use platform volume encryption plus optional field envelopes wrapped by KMS—pattern aligned with NIST SP 800-57 key hierarchy.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     client["Client"]
@@ -144,40 +145,40 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Limits plaintext exposure from disk theft.</li>
-            <li>TLS prevents network eavesdropping.</li>
-            <li>Supports compliance attestations.</li>
-            <li>Field encryption narrows insider risk.</li>
+            <li>Stolen media and mis-published buckets yield ciphertext, not immediate plaintext.</li>
+            <li>Modern TLS mitigates passive network capture on untrusted paths.</li>
+            <li>Demonstrable controls satisfy HIPAA, PCI, and SOC evidence requests.</li>
+            <li>Field-level encryption limits insider and support-tool overexposure.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Key management operational overhead.</li>
-            <li>Encrypted fields harder to query.</li>
-            <li>TLS misconfiguration causes outages.</li>
-            <li>Performance cost without hardware AES.</li>
+            <li>KMS operations, rotation ceremonies, and break-glass add operational load.</li>
+            <li>Encrypted columns complicate search, sort, and analytics unless tokenised.</li>
+            <li>Cipher suite or cert missteps cause painful outages and client incompatibility.</li>
+            <li>CPU overhead matters at extreme throughput without hardware acceleration.</li>
               </ul>
             </div>
           </div>
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Enforce TLS 1.2+; enable HSTS. Turn on default encryption for buckets and databases; use customer-managed keys for regulated tiers.</p>
-          <p>Never disable certificate validation in clients; automate cert renewal with ACME or cloud CA.</p>
+          <p>Disable legacy TLS; enforce forward secrecy and HSTS on browser-facing properties per OWASP TLS cheat sheet. Enable default SSE-KMS (or equivalent) on object stores and databases; escalate to customer-managed keys for regulated tiers with separate keys per environment. Automate certificate lifecycle via ACME or cloud CA; never ship clients that skip chain validation.</p>
+          <p>Separate data keys from master keys (envelope encryption); log decrypt events to immutable audit streams. For microservices, terminate TLS at mesh sidecars where policy requires uniform cipher policy and mutual authentication on east-west paths.</p>
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Keys next to ciphertext</strong>.</li>
-            <li><strong>TLS termination logging bodies</strong>.</li>
-            <li><strong>Expired certificates</strong> on internal services.</li>
-            <li><strong>IV reuse</strong> in custom AES-GCM.</li>
+            <li><strong>Keys adjacent to ciphertext</strong> in repos, env vars, or backup bundles.</li>
+            <li><strong>TLS proxies logging bodies</strong> or storing PAN in cleartext diagnostics.</li>
+            <li><strong>Expired internal certs</strong> causing silent client disablement of verification.</li>
+            <li><strong>Nonce or IV reuse</strong> in bespoke AES-GCM implementations.</li>
           </ul>
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>TLS 1.2+ everywhere external?</li>
-            <li>At-rest encryption on all data stores?</li>
-            <li>Keys in KMS/HSM?</li>
-            <li>Cert auto-renewal?</li>
-            <li>HSTS enabled?</li>
-            <li>Backups encrypted?</li>
+            <li>Is TLS 1.2+ mandatory on all external and sensitive internal paths?</li>
+            <li>Are databases, buckets, disks, and backups encrypted by default?</li>
+            <li>Do master keys live in KMS/HSM with IAM-scoped decrypt?</li>
+            <li>Is certificate renewal automated with alerting before expiry?</li>
+            <li>Is HSTS deployed where browsers are clients?</li>
+            <li>Are restore drills verifying ciphertext without live key loss?</li>
           </ul>
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
@@ -187,9 +188,9 @@
           </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="encryption-patterns.html">Encryption Patterns</a> — Envelope and mTLS depth.</li>
-            <li><a href="key-management.html">Key Management Systems</a> — KMS operations.</li>
-            <li><a href="data-security.html">Data Security</a> — Classification and tokenization.</li>
+            <li><a href="encryption-patterns.html">Encryption Patterns</a> — mTLS, field-level, and tokenisation depth.</li>
+            <li><a href="key-management.html">Key Management Systems</a> — CMK lifecycle and envelope usage.</li>
+            <li><a href="data-security.html">Data Security</a> — Classification driving where to encrypt.</li>
           </ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>

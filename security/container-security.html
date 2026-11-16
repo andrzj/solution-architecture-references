@@ -105,23 +105,27 @@
           <p><strong>Kubernetes RBAC</strong> (Role-Based Access Control) controls access to the Kubernetes API — which users and service accounts can create, read, update, or delete which Kubernetes resources. Misconfigured RBAC (overly permissive roles, cluster-admin granted broadly) is a primary vector for Kubernetes cluster compromise. <strong>PodSecurity admission</strong> (the successor to PodSecurityPolicy) enforces a set of pod-level security constraints at admission time, preventing workloads from running as root, mounting host filesystems, or using privileged mode, even if the deployment manifest requests it. The three standard profiles are <em>privileged</em> (no restrictions), <em>baseline</em> (prevents the most dangerous configurations), and <em>restricted</em> (most security, requires non-root, drops capabilities, read-only root filesystem).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Container environments introduce unique security challenges not present in traditional VM-based deployments. Containers share the host kernel — a kernel vulnerability exploitable from within a container potentially compromises the entire host and all other containers on it. A container running as root that mounts a host path has direct access to host files. The Kubernetes API is a powerful administrative interface; misconfigured RBAC or a compromised service account token can allow an attacker to deploy privileged pods, read secrets, or take over the entire cluster.</p>
-          <p>The 2022 Datadog "State of Cloud Security" report found that 75% of Kubernetes containers run as root and 67% have no resource limits — both significantly increase the impact of a container compromise. Runtime security tools like Falco detect attacks that have bypassed all preventive controls by monitoring actual behaviour.</p>
+          <p>Containers collapse isolation assumptions: shared kernels, mutable images, and powerful orchestrator APIs expand blast radius when workloads run as root or hold cluster-admin tokens. A single privileged pod or hostPath mount can pivot to the node and neighbor pods. Industry benchmarks (CIS Kubernetes, OWASP container guidance) exist because default cluster posture is permissive—wide RBAC, automounted service account tokens, and allow-all pod networking. Runtime detections such as Falco close the loop when preventive controls fail.</p>
+          <p>Supply-chain incidents show that vulnerable base images ship to production faster than patch cycles; signing and admission verification are now baseline expectations for regulated tenants.</p>
+          <p>Kubernetes control planes expose high-value APIs; compromised credentials there bypass application-layer controls entirely. Namespace isolation, admission controllers (Kyverno, OPA Gatekeeper), and audit logging of API mutations align with CIS and NIST supply-chain guidance for software artifacts. Treat cluster bootstrap and node images as part of the same trust boundary as application containers.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All containerised production workloads — image scanning, non-root containers, and basic RBAC are baseline requirements.</li>
-            <li>Kubernetes deployments — RBAC, PodSecurity admission, and NetworkPolicies are standard cluster security controls.</li>
-            <li>Multi-tenant Kubernetes clusters — strong namespace isolation with RBAC and NetworkPolicies is mandatory.</li>
-            <li>High-security environments — Falco runtime monitoring and OPA/Kyverno admission control policies provide defence in depth beyond the standard controls.</li>
+            <li>Production container fleets—scan, sign, non-root execution, and least-privilege RBAC are mandatory.</li>
+            <li>Shared Kubernetes platforms serving multiple teams or customers—namespace isolation plus NetworkPolicies.</li>
+            <li>Regulated workloads needing admission policy, provenance checks, and runtime syscall monitoring.</li>
+            <li>CI/CD pipelines that must block critical CVEs before images reach registries.</li>
+            <li>Platform engineering teams operating internal Kubernetes-as-a-service for product squads with different trust levels.</li>
+            <li>Edge or on-prem clusters where air-gapped registries and offline vulnerability feeds are part of the threat model.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Some workloads legitimately require elevated privileges (system-level tools, eBPF programs, node-level monitoring agents like Falco itself) — these require privileged pod security profiles and should be isolated to dedicated system namespaces with restricted access.</li>
+            <li>Privileged node agents (CNI, CSI, observability) may require elevated profiles—isolate them in system namespaces with tight RBAC rather than relaxing standards for application tiers.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Security threads build → deploy → operate: minimal signed images, admission enforcement, hardened pod specs, network policy, and continuous syscall monitoring mapped to CIS and NIST supply-chain practices.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     subgraph build["Build"]
@@ -224,19 +228,19 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Non-root containers with read-only filesystems dramatically limit the blast radius of an application-layer compromise — attackers cannot write malware to disk or escalate to root.</li>
-                <li>PodSecurity admission prevents entire classes of misconfigurations from reaching production, even if developers accidentally commit insecure pod specs.</li>
-                <li>Falco runtime monitoring detects in-progress attacks that have bypassed all static controls — a zero-day exploit in an application that spawns a reverse shell is detected by Falco even before a CVE is published.</li>
-                <li>Distroless images remove the shell, package manager, and most utilities from the container — significantly reducing the attacker's toolkit after gaining container access.</li>
+                <li>Non-root, read-only root filesystems deny persistence and local privilege escalation in many exploit chains.</li>
+                <li>PodSecurity admission blocks dangerous specs before they schedule—even when manifests slip through review.</li>
+                <li>Runtime rules catch shell spawns and unexpected egress after preventive controls fail.</li>
+                <li>Minimal signed images shrink the attacker toolkit after initial code execution.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Distroless and non-root containers are harder to debug — there is no shell to exec into for troubleshooting; requires ephemeral debug containers or external tooling.</li>
-                <li>Read-only root filesystem requires application code to explicitly write to mounted volumes or tmpfs mounts; applications that write to arbitrary filesystem paths require refactoring.</li>
-                <li>Falco rule tuning is ongoing work; default rules generate significant noise in active environments; custom rules require deep knowledge of normal application behaviour.</li>
-                <li>Kubernetes RBAC is complex; least-privilege RBAC for all service accounts requires significant upfront investment to identify required permissions per workload.</li>
+                <li>Distroless and restricted profiles complicate break-fix unless debug pods are standardised.</li>
+                <li>Read-only roots force explicit volume design for temp and cache paths.</li>
+                <li>Falco and similar tools need continuous tuning to balance noise versus coverage.</li>
+                <li>Least-privilege RBAC per workload is labor-intensive without automated permission mining.</li>
               </ul>
             </div>
           </div>
@@ -245,24 +249,26 @@
           <p>Implement container security controls progressively using the Kubernetes PodSecurity standard levels: start by applying <em>baseline</em> (blocks the most dangerous configurations) to all namespaces in warn mode to identify violations without breaking workloads, fix violations, then switch to enforce mode. Then apply <em>restricted</em> incrementally namespace by namespace, starting with least-critical workloads and working toward production. Use the <code>pod-security.kubernetes.io/warn</code> and <code>pod-security.kubernetes.io/audit</code> labels alongside <code>enforce</code> to identify remaining violations.</p>
           <p>For Kubernetes secrets management, avoid storing sensitive configuration in Kubernetes Secrets directly unless the cluster has etcd encryption at rest enabled — Kubernetes Secrets are base64 encoded, not encrypted, by default. Use an external secrets operator (ESO) to sync secrets from Vault or AWS Secrets Manager into Kubernetes Secrets, with the source of truth in a properly encrypted secrets manager rather than in etcd. Configure RBAC to restrict which service accounts can read which secrets.</p>
           <p>Scan images in CI with Trivy or Grype and block critical CVEs before push. Sign release digests with Cosign via Sigstore OIDC; admission controllers should verify signatures and optionally SLSA provenance attestations. Export CIS Kubernetes Benchmark scan results periodically as audit evidence for regulated workloads.</p>
+          <p>Define pod security standards per namespace label: start with audit and warn modes, remediate workloads violating restricted profiles, then enforce. Integrate image policy with registry allowlists so only CI-promoted digests can run in production. Pair Falco with SIEM forwarding so container events correlate with cloud audit trails during incident response.</p>
+          <p>Review Linux capabilities granted to DaemonSets and init containers during change management—capabilities persist across restarts and are easy to overlook in Helm chart upgrades. Align worker node hardening (CIS benchmarks, immutable OS images) with pod-level controls so attackers cannot pivot from a soft node to a strict pod boundary.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Privileged containers in production</strong>: <code>securityContext.privileged: true</code> grants the container effectively root access to the host — equivalent to removing all container isolation.</li>
-            <li><strong>hostPath volume mounts</strong>: Mounting host filesystem paths (particularly <code>/etc</code>, <code>/var/run/docker.sock</code>) into containers allows container breakout to the host.</li>
-            <li><strong>Default service account tokens auto-mounted</strong>: All Kubernetes pods automatically mount a service account token that can authenticate to the Kubernetes API; without RBAC restrictions, this is a lateral movement vector. Set <code>automountServiceAccountToken: false</code> for pods that don't need API access.</li>
-            <li><strong>Cluster-admin bindings for CI/CD</strong>: CI/CD systems that deploy to Kubernetes often use cluster-admin permissions; if the CI/CD system is compromised, the attacker has full cluster control. Use namespace-scoped roles with only the permissions required for deployment.</li>
-            <li><strong>Unscanned base images with critical CVEs</strong>: Using popular base images like <code>ubuntu:latest</code> without scanning — these accumulate significant CVE counts between releases.</li>
+            <li><strong>Privileged production pods</strong>—effectively host root from a single workload spec typo.</li>
+            <li><strong>Dangerous hostPath mounts</strong> including Docker socket paths enabling cluster takeover.</li>
+            <li><strong>Automounted API tokens</strong> on workloads that never call the Kubernetes API—lateral movement enablers.</li>
+            <li><strong>Cluster-admin CI accounts</strong>—pipeline compromise equals full cluster compromise.</li>
+            <li><strong>Floating <code>:latest</code> tags</strong> without digest pinning or CVE gates.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are container images scanned for CVEs in CI/CD with critical findings blocking deployment?</li>
-            <li>Do containers run as non-root users with read-only root filesystems?</li>
-            <li>Are all Linux capabilities dropped (and only specific required ones added)?</li>
-            <li>Is PodSecurity admission enforcing at least the baseline profile on all namespaces?</li>
-            <li>Are Kubernetes RBAC roles following least-privilege (namespace-scoped, specific resources and verbs)?</li>
-            <li>Is runtime security monitoring (Falco or equivalent) deployed and alerting on critical rules?</li>
+            <li>Do CI pipelines block critical/high CVEs on promoted images?</li>
+            <li>Are application pods non-root with read-only root filesystems where feasible?</li>
+            <li>Are capabilities dropped by default with explicit adds only?</li>
+            <li>Is PodSecurity <em>restricted</em> or <em>baseline</em> enforced on prod namespaces?</li>
+            <li>Is RBAC namespace-scoped with automount disabled unless required?</li>
+            <li>Does runtime monitoring alert on shell execution and suspicious egress?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -270,13 +276,15 @@
             <li><strong>Illustrative scenario — multi-tenant platform</strong>: Restricted PodSecurity, Kyverno registry allowlists, NetworkPolicies, Falco on shell execution.</li>
             <li><strong>Illustrative scenario — regulated hardening</strong>: Distroless, non-root, read-only root FS; CIS benchmark scans as PCI audit evidence.</li>
             <li><strong>Illustrative scenario — Sigstore admission</strong>: Cosign keyless CI signing; Kyverno verifies signatures before scheduling pods.</li>
+            <li><strong>Illustrative scenario — batch analytics</strong>: Spark jobs on isolated nodes with read-only mounts, dedicated service accounts, and network policies allowing egress only to encrypted object storage endpoints.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="supply-chain-security.html">Supply Chain Security</a> — Container image signing and scanning.</li>
-            <li><a href="network-security.html">Network Security Architecture</a> — Kubernetes NetworkPolicies for pod-level traffic control.</li>
-            <li><a href="../deployment/container-orchestration.html">Container Orchestration</a> — Kubernetes architecture and operational patterns.</li>
+            <li><a href="supply-chain-security.html">Supply Chain Security</a> — Provenance, signing, and dependency integrity.</li>
+            <li><a href="network-security.html">Network Security Architecture</a> — Segmenting pod traffic with NetworkPolicies.</li>
+            <li><a href="secure-sdlc.html">Secure SDLC</a> — Shifting scans and policy tests left in CI.</li>
+            <li><a href="../deployment/container-orchestration.html">Container Orchestration</a> — Cluster operations and upgrades.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>

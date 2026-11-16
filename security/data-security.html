@@ -104,23 +104,27 @@
           <p><strong>Tokenisation</strong> replaces a sensitive value (credit card number, SSN) with a non-sensitive surrogate token that has no mathematical relationship to the original value and can only be de-tokenised by authorised parties with access to the token vault. It differs from encryption in that the token cannot be de-tokenised without the vault, even with the algorithm. <strong>Data masking</strong> transforms data for lower-trust environments: static masking creates a de-identified copy for development/testing; dynamic masking returns masked values in real-time to unprivileged users. PII (Personally Identifiable Information) handling requires additional controls under GDPR and CCPA: data minimisation (don't collect what you don't need), purpose limitation (don't use data beyond its stated purpose), retention limits (delete data when no longer needed), and the right to erasure (technical ability to delete all data associated with a user).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Data breaches are among the most costly security incidents: the IBM Cost of a Data Breach Report 2023 found an average cost of $4.45M per breach. Encryption at rest means that stolen database backups or cloud storage contents are unreadable without access to the encryption keys. Column-level encryption for the most sensitive fields (SSNs, payment card data, medical records) means that even a SQL injection attack that reads the database returns ciphertext rather than plaintext PII. GDPR/CCPA have created significant legal and financial obligations for data protection: GDPR fines can reach €20M or 4% of global revenue, whichever is higher.</p>
-          <p>Technical controls (encryption, masking, access logging) provide both security and the compliance evidence required during regulatory audits.</p>
+          <p>Data loss incidents drive regulatory fines, churn, and forensic cost—often measured in millions per event. Layered controls ensure stolen backups or SQL-driven dumps return ciphertext or tokens instead of usable PII. Privacy law (GDPR, CCPA) and sector rules (HIPAA, PCI DSS) expect demonstrable technical safeguards aligned with the <a href="https://www.nist.gov/privacy-framework" target="_blank" rel="noopener noreferrer">NIST Privacy Framework</a> and OWASP cryptographic storage guidance.</p>
+          <p>Classification, encryption, masking, and immutable access logs produce the evidence privacy officers and external auditors request—not merely policy PDFs.</p>
+          <p>Board and regulator questions increasingly ask for quantitative metrics—percentage of restricted data encrypted, mean time to complete erasure tickets, and counts of unmasked copies in lower environments—so instrumentation should expose those figures without manual spreadsheet audits.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All systems storing personal data (PII) — GDPR/CCPA technical controls including encryption, access logging, and erasure capability are legally required.</li>
-            <li>Payment card data — PCI DSS mandates tokenisation or encryption of stored card data.</li>
-            <li>Healthcare data — HIPAA requires encryption of PHI at rest and in transit.</li>
-            <li>Shared development/staging environments — production data should never be used; masked or synthetic data must be used instead.</li>
+            <li>Any datastore holding personal, financial, or health information subject to breach notification.</li>
+            <li>Cardholder environments where PAN must be tokenised or vaulted per PCI DSS.</li>
+            <li>Analytics and AI pipelines that must minimise raw PII retention.</li>
+            <li>Lower-trust environments (dev/stage) fed only by masked or synthetic datasets.</li>
+            <li>Cross-border replication where data residency tags must travel with records and keys stay in-region.</li>
+            <li>Machine-learning feature stores that aggregate attributes requiring minimization and purpose binding.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Column-level encryption on all fields</strong>: Column-level encryption prevents database-side filtering, aggregation, and indexing on encrypted fields. Apply it only to the most sensitive fields (SSN, credit card, password, medical record number) where the performance cost is justified by the protection requirement.</li>
+            <li><strong>Blanket column encryption</strong>—reserve field-level crypto for truly sensitive attributes; over-encryption breaks indexing and reporting unless paired with tokenisation or blind indexes.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Sensitivity tiers from public to restricted drive control depth: token vaults for PAN, envelope encryption for regulated columns, and WORM audit logs for access reviews.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     pub["Public"]
@@ -198,19 +202,20 @@ DATA ACCESS LOGGING:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Encryption at rest ensures that stolen database backups provide no value to attackers without the encryption keys.</li>
-                <li>Tokenisation of payment card data removes PAN from application storage entirely, dramatically reducing PCI DSS scope.</li>
-                <li>Data masking in development environments eliminates the risk of PII exposure to developers and in development security incidents.</li>
-                <li>Data access logging creates the immutable audit trail required for compliance audits and enables detection of insider threats or compromised service accounts.</li>
+                <li>At-rest encryption and tokenisation shrink exploitable value in leaked dumps.</li>
+                <li>Vaulted PAN patterns materially reduce PCI assessment scope for merchants.</li>
+                <li>Masking and synthesis keep engineers off production PII without halting delivery.</li>
+                <li>Immutable query logs support insider-threat detection and privacy audits.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Column-level encryption prevents database-side predicates on encrypted fields; queries like <code>WHERE ssn = ?</code> cannot use indexes and require full table scans or application-side decryption.</li>
-                <li>Key management complexity: column-level encryption requires application-level key management, key rotation processes, and re-encryption of existing data on key rotation.</li>
-                <li>Data erasure in event-sourced or append-only log architectures is architecturally challenging; erasure requires crypto-shredding (destroying the encryption key for erased user's data) rather than physical deletion.</li>
-                <li>Data masking tools may not perfectly preserve data relationships needed for integration testing.</li>
+                <li>Field-level ciphertext complicates ad hoc SQL analytics and equality search.</li>
+                <li>Per-field KMS usage increases cost and requires disciplined rotation runbooks.</li>
+                <li>Erasure on append-only streams needs crypto-shredding design up front.</li>
+                <li>Synthetic data may break referential tests unless generators model relationships.</li>
+                <li>Cross-border transfers may require additional legal basis and key residency even when ciphertext looks identical technically.</li>
               </ul>
             </div>
           </div>
@@ -219,24 +224,26 @@ DATA ACCESS LOGGING:
           <p>Use envelope encryption for column-level fields: per-record DEK, AES-256-GCM on the value, KEK wrap via AWS KMS, Azure Key Vault, or Google Cloud KMS; store encrypted DEK beside ciphertext so rotation re-wraps keys rather than re-encrypting entire tables. Enable default encryption on object storage and managed databases; deny unencrypted uploads with policy where the platform supports it.</p>
           <p>For searchable encrypted data, consider deterministic encryption (same plaintext always produces same ciphertext, allowing equality comparison) for low-cardinality fields, or use a blind index (hash of the plaintext, indexed separately) for lookups, understanding that this leaks some information about equality.</p>
           <p>For GDPR erasure, design the system from the start to support pseudonymisation: store a stable internal user_id as a foreign key in all data tables rather than PII like email. On erasure, the PII record is deleted or nulled, but the user_id foreign key rows in analytics and audit tables remain intact (now pseudonymous). For event streams and append-only logs, implement crypto-shredding: encrypt user-specific events with a per-user encryption key; when erasure is requested, delete the user's encryption key from KMS — all their encrypted events become unreadable.</p>
+          <p>Inventory data flows with catalog tools; tag columns in schemas so encryption and masking policies apply automatically in ETL jobs. Coordinate with legal on retention schedules and subprocessors documented in privacy notices. Where OWASP logging guidance applies, scrub identifiers from diagnostic output while preserving correlation IDs for support.</p>
+          <p>Periodically sample production queries against sensitive tables and compare to access-policy intent—unexpected BI tools or support accounts reading restricted columns indicate control drift. Pair data-loss prevention rules on endpoints and email with database activity monitoring for defense in depth on exfiltration paths.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Encryption at rest but plaintext backups</strong>: Databases with transparent encryption but unencrypted backup files that are exported to S3 without encryption — the backup provides plaintext access.</li>
-            <li><strong>Encryption keys stored alongside data</strong>: Encryption keys stored in the same database as the encrypted data provide no security — an attacker who reads the database reads both the data and the key.</li>
-            <li><strong>PII in application logs</strong>: Request logging that captures HTTP bodies or query parameters may inadvertently log PII (email addresses in query strings, names in JSON bodies) — logs are often stored with weaker access controls than the database.</li>
-            <li><strong>No data retention policy enforcement</strong>: Data is collected with stated retention periods (GDPR: retain for purpose duration only) but deletion jobs are never implemented, resulting in data retained indefinitely.</li>
-            <li><strong>No erasure capability for event streams</strong>: Kafka topics or event logs with no crypto-shredding strategy make GDPR erasure technically infeasible.</li>
+            <li><strong>Encrypted primary store, cleartext exports</strong>—nightly dumps to open buckets undo TDE.</li>
+            <li><strong>DEKs beside rows without wrap</strong>—single-table compromise reveals keys and ciphertext.</li>
+            <li><strong>PII in traces and access logs</strong>—weaker retention on logs leaks more than the database ACL.</li>
+            <li><strong>Retention policies without jobs</strong>—infinite hoarding violates purpose limitation.</li>
+            <li><strong>Immutable events without shred plan</strong>—erasure requests cannot be implemented post hoc.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is all data classified with sensitivity levels and controls applied proportionately?</li>
-            <li>Is encryption at rest enabled for all databases, object storage, and backups?</li>
-            <li>Are the most sensitive fields (SSN, PAN, medical data) protected with column-level encryption or tokenisation?</li>
-            <li>Is production PII masked or synthetic before use in development/testing?</li>
-            <li>Is there a technical erasure capability for GDPR right-to-be-forgotten requests?</li>
-            <li>Are data access logs collected and retained in an immutable store?</li>
+            <li>Is every dataset tagged with a classification driving control choice?</li>
+            <li>Are backups and replicas encrypted with the same rigor as primaries?</li>
+            <li>Are PAN/SSN/PHI fields tokenised or field-encrypted with KMS audit?</li>
+            <li>Is non-production fed only by masked or generated data?</li>
+            <li>Can erasure requests complete with auditable evidence?</li>
+            <li>Are sensitive-table queries logged to WORM storage?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -244,13 +251,14 @@ DATA ACCESS LOGGING:
             <li><strong>Illustrative scenario — healthcare PHI:</strong> Column-level ciphertext for clinical notes with per-patient DEKs wrapped in AWS KMS; PHI access logged to immutable audit storage.</li>
             <li><strong>Case study — payment tokenisation:</strong> Processors such as Stripe store PANs in PCI-scoped vaults; merchants retain only tokens and last-four—pattern that shrinks PCI DSS scope for ecommerce platforms.</li>
             <li><strong>Illustrative scenario — GDPR erasure:</strong> Crypto-shred per-user keys in Cloud KMS plus pseudonymous analytics identifiers; erasure jobs emit completion events for privacy audit trails.</li>
+            <li><strong>Illustrative scenario — multinational CRM:</strong> Region-scoped encryption keys with data residency tags enforced in API gateways; dynamic masking for offshore support contractors viewing EU customer records.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="encryption-patterns.html">Encryption Patterns</a> — Cryptographic primitives underlying data security controls.</li>
-            <li><a href="secret-management.html">Secret Management</a> — KMS key management for encryption keys.</li>
-            <li><a href="../data-architecture/data-cataloging.html">Data Cataloging</a> — Classification metadata managed in data catalog.</li>
+            <li><a href="encryption-patterns.html">Encryption Patterns</a> — Envelope, field-level, and mTLS techniques.</li>
+            <li><a href="key-management.html">Key Management Systems</a> — CMKs powering column encryption.</li>
+            <li><a href="../data-architecture/data-cataloging.html">Data Cataloging</a> — Publishing classification tags to consumers.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
