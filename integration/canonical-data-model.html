@@ -103,11 +103,12 @@
           <h2 id="what-it-is">What it is</h2>
           
           <p>A <strong>canonical data model (CDM)</strong> is a shared, system-neutral schema that parties agree to when exchanging data so each endpoint maps to one hub format instead of maintaining pairwise transformations. Gregor Hohpe and Bobby Woolf document the pattern in <em>Enterprise Integration Patterns</em> as the way to collapse an N×(N−1) integration mesh into roughly 2N adapters around a common message vocabulary.</p>
-          <p>The CDM can be an industry standard (HL7 FHIR, ISO 20022), an internal enterprise schema in Avro, JSON Schema, or Protobuf, or an event contract described with <a href="https://www.asyncapi.com/" target="_blank" rel="noopener noreferrer">AsyncAPI</a> and carried in <a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents</a> envelopes on Kafka or AMQP. It is a integration contract—not necessarily your domain model inside each service.</p>
+          <p>The CDM is usually owned by an integration or platform team and versioned independently of any one application. It may be an industry standard (HL7 FHIR, ISO 20022, ACORD), an internal schema in Avro, JSON Schema, XSD, or Protobuf, or an event contract described with <a href="https://www.asyncapi.com/" target="_blank" rel="noopener noreferrer">AsyncAPI</a> and carried in <a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents</a> envelopes on Kafka or AMQP. Treat it as an interchange contract—not necessarily the domain model inside each service.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Point-to-point mapping does not scale: ten systems can require ninety bidirectional transforms, each tested in isolation and brittle when either side versions independently. A canonical layer makes every new participant implement one inbound and one outbound mapper, and lets routers, enrichers, and policy engines operate on a single shape.</p>
-          <p>Shared semantics reduce silent drift. When one source names a field <code>KUNNR</code>, another <code>AccountId</code>, and a warehouse column <code>customer_id</code>, the CDM records one authoritative definition, unit, and cardinality. That clarity supports audit, lineage, and reuse of validation logic across buses, iPaaS flows, and stream processors.</p>
+          <p>Point-to-point mapping does not scale: integrating N systems without a hub needs on the order of N×(N−1) directional transforms—ninety mappings for ten systems—each bespoke, separately tested, and fragile when either endpoint versions. A canonical hub reduces that toward 2N mappers (one in, one out per participant) and gives routers, enrichers, and policy engines one shape to target.</p>
+          <p>Shared semantics reduce silent drift. When one source names a field <code>KUNNR</code>, another <code>AccountId</code>, and a warehouse column <code>customer_id</code>, the CDM records one authoritative <code>customerId</code> with unit and cardinality. That clarity supports audit, lineage, regulatory reporting, and reuse of validation logic across buses, iPaaS flows, and stream processors.</p>
+          <p>Where standards bodies already invested in domain vocabulary—HL7 FHIR in healthcare, ACORD in insurance, ISO 20022 in finance, RosettaNet in supply chain—adopting or extending those models is often cheaper than inventing a private enterprise super-schema that every partner must learn from scratch.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -188,17 +189,17 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Store schemas in Confluent Schema Registry, AWS Glue Schema Registry, Azure Schema Registry, or a git-backed repo with CI compatibility checks. Default to backward-compatible evolution for event streams so consumers can upgrade before producers. Publish AsyncAPI documents alongside Avro/JSON Schema so partners know channels, bindings, and payload rules.</p>
-          <p>Keep mappers with the owning team of each source or sink—avoid a central “mapping factory” that becomes a ticket queue. Use Camel TypeConverters or MuleSoft DataWeave in ESB/iPaaS deployments; in Kafka-centric estates, use Kafka Connect single message transforms only for trivial edits and reserve structural mapping to tested code. Scope the CDM to interchange entities, not every persistence table.</p>
-          <p>Prefer property-based or table-driven tests for mappers; verify round-trip fidelity where business rules require it. For cloud-native integration, <a href="https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/integration-technology-choice" target="_blank" rel="noopener noreferrer">Azure Integration Services</a> and AWS messaging patterns both assume a stable contract at the hub—align your CDM with those operational models.</p>
+          <p>Store schemas in Confluent Schema Registry, AWS Glue Schema Registry, Azure Schema Registry, or a git-backed repo with CI compatibility checks on every pull request. Document rules explicitly: <em>backward</em> compatibility lets new schema read old data (consumers upgrade first); <em>forward</em> lets old schema read new data (producers upgrade first); <em>full</em> requires both. Event-driven estates often default to backward-transitive compatibility so rolling upgrades stay safe.</p>
+          <p>Keep mappers with the owning team of each source or sink—avoid a central mapping factory that becomes a ticket queue. Prefer pure, unit-tested mapper functions over reflection-heavy frameworks. Use Camel TypeConverters or MuleSoft DataWeave in ESB/iPaaS deployments; in Kafka estates, reserve Kafka Connect single-message transforms for trivial edits and put structural mapping in tested code. Scope the CDM to interchange entities; fields consumed by only one system usually belong in that system’s private schema.</p>
+          <p>Use property-based or table-driven tests and prove round-trip fidelity where business rules require it. Publish AsyncAPI alongside Avro or JSON Schema so partners see channels and bindings. <a href="https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/integration-technology-choice" target="_blank" rel="noopener noreferrer">Azure Integration Services</a> and AWS messaging guidance both assume a stable hub contract—align registry policy and ops with that reality.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Governance gridlock:</strong> Required-field changes wait weeks; teams bypass the CDM with side-channel JSON blobs.</li>
-            <li><strong>Big-bang modeling:</strong> Years-long canonical design blocks shipping integrations that could start with one entity.</li>
-            <li><strong>Silent nulling:</strong> Renamed source fields map to null without alerts, corrupting downstream analytics.</li>
-            <li><strong>Version switches in code:</strong> Consumers branch on a string <code>version</code> field instead of registry-managed schema IDs.</li>
-            <li><strong>God schema:</strong> Hundreds of optional fields slow serialization and confuse authors.</li>
+            <li><strong>Governance gridlock:</strong> Adding a required field needs sign-off from every consumer; teams bypass the CDM with untyped extension blobs.</li>
+            <li><strong>Big-bang modeling:</strong> Attempting a complete enterprise CDM before any live traffic leads to analysis paralysis and missed delivery windows.</li>
+            <li><strong>Silent nulling:</strong> A renamed source field maps to null without alerts; downstream analytics treat missing data as truth.</li>
+            <li><strong>Version switches in code:</strong> Consumers branch on a string <code>version</code> field instead of registry-managed schema IDs, multiplying fragile code paths.</li>
+            <li><strong>God schema:</strong> The CDM accumulates hundreds of optional fields to please every edge case, slowing evolution and serialization hot paths.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -208,27 +209,19 @@
             <li>Do you have a registry, owners, and a written compatibility policy?</li>
             <li>Can each team maintain its own mappers without centralizing every change request?</li>
             <li>Is the CDM scoped to integration contracts, not internal service databases?</li>
+            <li>Have you scoped entities to a bounded set rather than “all enterprise data”?</li>
             <li>Are canonical messages documented in AsyncAPI or equivalent for human and tooling consumption?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> A retail hub publishes a canonical <code>Order</code> Avro record on Kafka; ERP, WMS, and loyalty each maintain one mapper while a router applies shared fraud checks on the canonical shape.</li>
-            <li><strong>Illustrative scenario —</strong> An insurer exchanges policy payloads through an ACORD-based CDM so reinsurance, claims, and partner portals do not negotiate pairwise XSDs.</li>
+            <li><strong>Illustrative scenario —</strong> At Larkspur Markets, a retail hub publishes a canonical <code>Order</code> Avro record on Kafka; three downstream systems each maintain one mapper while a router applies shared fraud checks on the canonical shape.</li>
+            <li><strong>Illustrative scenario —</strong> Brookhaven Mutual exchanges policy payloads through an ACORD-based CDM so reinsurance, claims, and partner portals avoid negotiating pairwise XSDs.</li>
+            <li><strong>Illustrative scenario —</strong> A marketplace operator defines a canonical <code>Product</code> schema that hundreds of seller-specific catalogues map into, powering one search index and storefront renderer.</li>
             <li><strong>Case study —</strong> HL7 FHIR defines a widely adopted canonical patient and clinical resource model that EMR vendors map to for interoperable healthcare data exchange.</li>
           </ul>
 
-          <h2 id="further-reading">Further reading</h2>
-          <ul>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/CanonicalDataModel.html" target="_blank" rel="noopener noreferrer">Enterprise Integration Patterns — Canonical Data Model</a></li>
-            <li><a href="https://martinfowler.com/eaaDev/CanonicalDataModel.html" target="_blank" rel="noopener noreferrer">Canonical Data Model — Martin Fowler (EAA)</a></li>
-            <li><a href="https://docs.confluent.io/platform/current/schema-registry/index.html" target="_blank" rel="noopener noreferrer">Confluent Schema Registry</a></li>
-            <li><a href="https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html" target="_blank" rel="noopener noreferrer">AWS Glue Schema Registry</a></li>
-            <li><a href="https://www.asyncapi.com/docs" target="_blank" rel="noopener noreferrer">AsyncAPI documentation</a></li>
-            <li><a href="https://docs.mulesoft.com/general/cdm-standards" target="_blank" rel="noopener noreferrer">MuleSoft — Canonical data models and standards</a></li>
-          </ul>
-
-<h2 id="related-patterns">Related patterns</h2>
+          <h2 id="related-patterns">Related patterns</h2>
           <ul>
             <li><a href="esb.html">Enterprise Service Bus</a> — Classic integration buses route through a canonical payload so mediators can transform without point-to-point adapters everywhere.</li>
             <li><a href="anti-corruption-layer.html">Anti-Corruption Layer</a> — ACLs sit at the edge of a context and normalize legacy or partner schemas into the canonical vocabulary.</li>
@@ -239,8 +232,12 @@
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/CanonicalDataModel.html" target="_blank" rel="noopener noreferrer">Canonical Data Model — Enterprise Integration Patterns</a></li>
-            <li><a href="https://docs.confluent.io/platform/current/schema-registry/index.html" target="_blank" rel="noopener noreferrer">Confluent Schema Registry Documentation</a></li>
-            <li><a href="https://www.hl7.org/fhir/overview.html" target="_blank" rel="noopener noreferrer">HL7 FHIR Overview — example industry canonical model</a></li>
+            <li><a href="https://martinfowler.com/eaaDev/CanonicalDataModel.html" target="_blank" rel="noopener noreferrer">Canonical Data Model — Martin Fowler (EAA)</a></li>
+            <li><a href="https://docs.confluent.io/platform/current/schema-registry/index.html" target="_blank" rel="noopener noreferrer">Confluent Schema Registry</a></li>
+            <li><a href="https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html" target="_blank" rel="noopener noreferrer">AWS Glue Schema Registry</a></li>
+            <li><a href="https://www.hl7.org/fhir/overview.html" target="_blank" rel="noopener noreferrer">HL7 FHIR Overview — industry canonical example</a></li>
+            <li><a href="https://www.asyncapi.com/docs" target="_blank" rel="noopener noreferrer">AsyncAPI documentation</a></li>
+            <li><a href="https://docs.mulesoft.com/general/cdm-standards" target="_blank" rel="noopener noreferrer">MuleSoft — Canonical data models and standards</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

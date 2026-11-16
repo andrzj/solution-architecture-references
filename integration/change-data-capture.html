@@ -101,34 +101,36 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p><strong>Change data capture (CDC)</strong> reads a database’s transaction log—PostgreSQL WAL, MySQL binlog, SQL Server change tables, Oracle redo—and turns committed row changes into a stream of insert, update, and delete events. Applications keep writing SQL as usual; integration consumes the log, which avoids dual-write races and many invasive code changes in legacy systems.</p>
-          <p>CDC is infrastructure-level integration: events describe storage-level diffs, not domain intents. Platforms such as <a href="https://debezium.io/" target="_blank" rel="noopener noreferrer">Debezium</a> (Kafka Connect), AWS Database Migration Service and MSK Connect, Azure Event Hubs with capture, and Oracle GoldenGate sit at this layer. Downstream teams often wrap or map CDC into <a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents</a> or canonical schemas before business services consume them.</p>
+          <p><strong>Change data capture (CDC)</strong> monitors a database’s transaction log—PostgreSQL WAL, MySQL binlog, SQL Server change tables, Oracle redo—and emits row-level insert, update, and delete events for downstream consumers in near real time. Unlike timestamp polling, which can miss deletes and races against in-flight transactions, CDC reads the same replication infrastructure the database already maintains for HA. Application SQL stays unchanged; integration attaches at the storage boundary.</p>
+          <p>CDC is infrastructure-level integration: events carry <code>before</code> and <code>after</code> column images plus operation metadata, not business intents such as <code>OrderShipped</code>. Open tooling includes <a href="https://debezium.io/" target="_blank" rel="noopener noreferrer">Debezium</a> on Kafka Connect, AWS DMS and MSK Connect, Azure capture paths, and Oracle GoldenGate. Teams often map envelopes into <a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents</a> or a <a href="canonical-data-model.html">canonical model</a> before domain services subscribe.</p>
+          <p>Connectors combine an <strong>initial snapshot</strong> (consistent table export) with <strong>streaming</strong> (ongoing log tail). Offsets—LSN, binlog position, or SCN—bookmark progress so restarts resume without full reloads when retention permits.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Publishing “what changed” alongside an application transaction is hard: message brokers and databases do not share one atomic commit unless you use patterns like the transactional outbox. CDC treats the database log as the authoritative chronology of committed state—integration replays truth the database already recorded.</p>
-          <p>That enables near-real-time search indexes, caches, warehouses, and read models without polling wide tables or retrofitting event emission into every legacy code path. It is a common extract mechanism for ELT and streaming pipelines when operational stores remain system of record during modernization.</p>
+          <p>Publishing integration events in the same transaction as a database write is the classic dual-write problem: unless you use a transactional outbox or XA, one side can commit while the other fails, and replicas diverge silently. CDC sidesteps application cooperation by treating the commit log as the single source of truth for “what definitely changed.”</p>
+          <p>That unlocks search indexes, denormalized read models, cache invalidation, and warehouse staging without retrofitting emitters into legacy code you do not own. During strangler migrations, CDC can feed a new service’s database from monolith tables until traffic cuts over. For ELT, CDC supplies a continuous extract leg—often paired with Kafka and dbt—so freshness moves from daily batches to minutes without widening the operational blast radius of writers.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>You need change streams from systems you cannot modify to emit domain events directly.</li>
-            <li>Search, cache, or replica stores must track inserts, updates, and hard deletes with low latency.</li>
-            <li>Incremental warehouse or lake loads should replace large batch extracts.</li>
-            <li>Cross-region or cross-store replication needs ordered, durable change feeds.</li>
-            <li>An outbox table in the same database can be tapped via CDC instead of application polling.</li>
-            <li>Strangler migrations must keep a new service’s datastore aligned with a monolith table during cutover.</li>
+            <li><strong>Non-invasive legacy:</strong> You need change streams but cannot change source application code or stored procedures.</li>
+            <li><strong>Search and cache:</strong> Elasticsearch, OpenSearch, or Redis must reflect hard deletes and updates, not only inserts.</li>
+            <li><strong>Incremental analytics:</strong> Lake or warehouse loads should merge keyed upserts instead of nightly full-table exports.</li>
+            <li><strong>Cross-region copy:</strong> Sub-second propagation with ordered per-partition feeds matters more than byte-level snapshot simplicity.</li>
+            <li><strong>Outbox fan-out:</strong> An outbox table in the same database can be tapped via CDC instead of pollers in application pods.</li>
+            <li><strong>Parallel migration:</strong> A new datastore must track monolith writes until cutover validation passes.</li>
+            <li><strong>Audit and lineage:</strong> Compliance needs an append-only change trail without dual-writing audit tables in every service.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>The managed database forbids logical replication or external log access required by your connector.</li>
-            <li>Consumers need rich domain events (<code>OrderShipped</code>) rather than row diffs—you still need a translation or outbox layer.</li>
-            <li>Tables undergo constant disruptive DDL without a schema governance process connectors can follow.</li>
-            <li>Sensitive columns cannot be masked before events reach shared topics, and policy cannot enforce field-level controls.</li>
+            <li><strong>No log access:</strong> Managed DBaaS tiers forbid logical replication, external slots, or binlog consumers your connector requires.</li>
+            <li><strong>Domain events only:</strong> Consumers need rich business semantics—you still need translation, an outbox, or a stream processor on top of CDC.</li>
+            <li><strong>DDL churn:</strong> Tables change shape weekly without registry or connector governance; pipelines will break in production.</li>
+            <li><strong>PII exposure:</strong> Sensitive columns cannot be masked or tokenized before events land on broadly readable topics.</li>
+            <li><strong>You own the writer:</strong> Greenfield services you control may get cleaner contracts from transactional outbox than from table leakage.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>A log-reading connector publishes per-table or unified topics; stream processors or sink connectors fan out to indexes, warehouses, and cache invalidation workers.</p>
+          <p>A connector tails the source log, serializes change records, and publishes to one topic per table or a unified stream. Sink connectors, stream jobs, or materialized-view workers consume with idempotent upserts; lag and offset health are first-class operational metrics alongside database replication slot pressure.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     db[("Source DB&lt;br/&gt;WAL / binlog")]
@@ -170,54 +172,68 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>No application code changes to start streaming committed changes.</li>
-                <li>Captures deletes and updates polling often misses or delays.</li>
-                <li>Low latency compared with batch extracts for large tables.</li>
-                <li>Per-partition ordering preserves mutation sequence for a key when keyed correctly.</li>
-                <li>Initial snapshot plus streaming supports backfill and steady-state in one connector.</li>
+                <li>Starts streaming committed changes without modifying source application code.</li>
+                <li>Captures hard deletes and in-place updates that timestamp polling misses.</li>
+                <li>Sub-second latency versus batch extracts on large, churning tables.</li>
+                <li>Per-partition ordering preserves mutation sequence per key when keyed correctly.</li>
+                <li>Snapshot plus streaming supports backfill and steady-state in one connector lifecycle.</li>
+                <li>Leverages database replication plumbing already maintained for HA.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Events are storage-shaped; domain meaning requires interpretation or an ACL.</li>
-                <li>DDL and type changes can break deserialization without registry discipline.</li>
-                <li>Replication slots and binlog retention consume disk; lag can become unrecoverable.</li>
-                <li>Connectors, offsets, and Kafka Connect clusters add operational surface area.</li>
-                <li>Full row payloads may expose PII unless masked before publication.</li>
+                <li>Events expose storage shape; business meaning needs translation or an ACL.</li>
+                <li>DDL and type changes break deserializers without strict registry governance.</li>
+                <li>Slots and binlog retention tie connector health to database disk pressure.</li>
+                <li>Kafka Connect clusters, offsets, and replay drills add operational surface area.</li>
+                <li>Full-row payloads can publish PII unless masked before shared topics.</li>
+                <li>Hot tables can overwhelm brokers if message size and partitioning are not planned.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>On PostgreSQL, set <code>wal_level = logical</code>, create a replication user and slot, and monitor lag against <code>max_slot_wal_keep_size</code>. On MySQL, use row-format binlog with full row images. Run Debezium on Kafka Connect or use AWS DMS / MSK Connect / Azure-hosted equivalents where managed ops matter.</p>
-          <p>Register Avro or Protobuf schemas for change events; apply Debezium single message transforms to mask fields or route topics. Enable delete tombstones when topics use log compaction. Document topics in AsyncAPI for consumers that are not JVM-based.</p>
-          <p>Downstream, idempotent sinks apply upserts and handle out-of-order arrivals where needed. Combine with an anti-corruption layer or stream processor to emit CloudEvents domain notifications instead of leaking table column names into every microservice.</p>
+          <p>On PostgreSQL, set <code>wal_level = logical</code>, create a replication user and slot, and alert on lag versus <code>max_slot_wal_keep_size</code> before WAL retention becomes an outage. On MySQL, require row-format binlog with full row images so updates carry complete before/after payloads. Size Kafka Connect workers for parsing throughput; connector tasks are often CPU-bound on wide tables.</p>
+          <p>Register Avro or Protobuf in a schema registry; block incompatible DDL from production until serializers accept new versions. Use Debezium single message transforms to mask columns, route topics, or flatten keys. Enable delete tombstones when topics are compacted. Publish topic contracts in AsyncAPI so polyglot consumers know envelope shapes without reading JVM-only examples.</p>
+          <p>Downstream sinks must be idempotent on primary key or natural key plus source LSN. During snapshot plus streaming, consumers may see duplicates at the handoff—dedupe keys or upsert semantics are mandatory. Place translation in a dedicated stream job or <a href="anti-corruption-layer.html">anti-corruption layer</a> so microservices never import raw column names as their public API.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Slot or binlog pressure:</strong> Connector lag fills disk; recovery requires painful resnapshot.</li>
-            <li><strong>Schema surprise:</strong> DDL without registry update breaks consumers mid-deploy.</li>
-            <li><strong>Snapshot overlap:</strong> Duplicate or out-of-order events during initial load if consumers lack idempotency keys.</li>
-            <li><strong>PII on the bus:</strong> Unmasked columns replicated to broadly readable Kafka topics.</li>
-            <li><strong>Schema coupling:</strong> Services embed table-layout assumptions instead of stable contracts.</li>
+            <li><strong>Replication slot starvation:</strong> A stalled connector lets WAL or binlog grow until disks fill; recovery may require a full resnapshot and hours of catch-up.</li>
+            <li><strong>Schema surprise:</strong> A nullable-to-required column change ships without a registry bump; deserializers fail mid-deploy and poison consumer groups.</li>
+            <li><strong>Snapshot overlap:</strong> Events during initial load duplicate rows unless sinks treat LSN or offset as an idempotency token.</li>
+            <li><strong>PII on the bus:</strong> Full-row replication publishes regulated fields to shared Kafka ACLs; remediation becomes a cross-team incident.</li>
+            <li><strong>Schema coupling:</strong> Domain logic branches on storage column renames; every DDL becomes a coordinated multi-service release.</li>
+            <li><strong>Throughput cliffs:</strong> Wide tables or hot keys produce oversized messages that breach broker limits or stall connect tasks.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does the database expose a supported logical log or capture API?</li>
-            <li>Can operations monitor connector lag, disk retention, and offset health?</li>
-            <li>Is there a schema evolution process aligned with CDC serializers?</li>
-            <li>Are sensitive fields masked or tokenized before publication?</li>
-            <li>Do consumers need domain events—and if so, where will translation happen?</li>
-            <li>Is transactional outbox a better fit when you own the writing application?</li>
+            <li>Does the database expose logical replication, binlog, or an supported capture API on your tier?</li>
+            <li>Can operations monitor slot lag, offset lag, and disk retention with paging before databases fail?</li>
+            <li>Is DDL gated with schema-registry compatibility checks for CDC topics?</li>
+            <li>Are sensitive fields masked or hashed before publication to shared infrastructure?</li>
+            <li>Do consumers need domain events—and where will translation run (stream job vs ACL vs outbox)?</li>
+            <li>When you own the writer, is transactional outbox simpler than leaking table semantics enterprise-wide?</li>
+            <li>Have you sized network and broker capacity for peak write rates including delete volume?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> Product row changes stream to Kafka; a search sink connector updates an index within seconds of merchandising edits.</li>
-            <li><strong>Illustrative scenario —</strong> Warehouse staging tables merge CDC events keyed by primary key instead of nightly full-table exports.</li>
-            <li><strong>Case study —</strong> Debezium, widely used with Kafka Connect, documents connectors and event formats for major relational and NoSQL databases as an open CDC reference implementation.</li>
+            <li><strong>Illustrative scenario —</strong> A merchandising catalog table streams to Kafka; a search sink connector upserts Elasticsearch within seconds of price or availability edits, including deletes that would never appear in poll-based jobs.</li>
+            <li><strong>Illustrative scenario —</strong> Operational MySQL feeds Snowflake staging through CDC and JDBC sinks; finance dashboards move from 24-hour batch freshness to sub-five-minute incremental merge.</li>
+            <li><strong>Illustrative scenario —</strong> During a strangler cutover, an orders table in the monolith replicates into a microservice database until traffic shifts and the dual-write window closes.</li>
+            <li><strong>Case study —</strong> Debezium documents connectors, event envelopes, and offset semantics for major relational and document stores as a widely referenced open CDC stack on Kafka Connect.</li>
+          </ul>
+
+          <h2 id="related-patterns">Related patterns</h2>
+          <ul>
+            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — Publishes domain events in the same database transaction when you control the writer and want cleaner semantics than row diffs.</li>
+            <li><a href="streaming-integration.html">Streaming Integration</a> — Flink or Kafka Streams jobs enrich, join, and fan out CDC records into multiple derived topics.</li>
+            <li><a href="etl-vs-elt.html">ETL vs ELT</a> — CDC replaces bulk extract steps with continuous incremental loads into lake or warehouse landing zones.</li>
+            <li><a href="anti-corruption-layer.html">Anti-Corruption Layer</a> — Translates low-level change envelopes into stable inward contracts and CloudEvents for product teams.</li>
+            <li><a href="data-synchronization.html">Data Synchronization</a> — Bidirectional or multi-store sync may use CDC as the detection leg on the authoritative database.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
@@ -225,24 +241,9 @@
             <li><a href="https://debezium.io/documentation/reference/stable/" target="_blank" rel="noopener noreferrer">Debezium documentation</a></li>
             <li><a href="https://www.postgresql.org/docs/current/logical-replication.html" target="_blank" rel="noopener noreferrer">PostgreSQL — Logical replication</a></li>
             <li><a href="https://docs.aws.amazon.com/prescriptive-guidance/latest/patterns/perform-cdc-using-amazon-msk-connect.html" target="_blank" rel="noopener noreferrer">AWS Prescriptive Guidance — CDC with MSK Connect</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/event-hubs/event-hubs-capture-overview" target="_blank" rel="noopener noreferrer">Azure Event Hubs — Capture overview</a></li>
+            <li><a href="https://martin.kleppmann.com/2015/06/02/change-data-capture-at-linkedin.html" target="_blank" rel="noopener noreferrer">Change Data Capture at LinkedIn — Martin Kleppmann</a></li>
             <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageTranslator.html" target="_blank" rel="noopener noreferrer">Enterprise Integration Patterns — Message Translator</a></li>
             <li><a href="https://cloudevents.io/" target="_blank" rel="noopener noreferrer">CloudEvents specification</a></li>
-          </ul>
-
-<h2 id="related-patterns">Related patterns</h2>
-          <ul>
-            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — The outbox pattern publishes integration events in the same database transaction when log-based CDC is not available or not desired.</li>
-            <li><a href="streaming-integration.html">Streaming Integration</a> — Debezium and similar connectors feed stream processors that enrich, join, and fan out CDC records in near real time.</li>
-            <li><a href="etl-vs-elt.html">ETL vs ELT</a> — CDC replaces nightly bulk extract jobs with continuous incremental loads into lake or warehouse landing zones.</li>
-            <li><a href="anti-corruption-layer.html">Anti-Corruption Layer</a> — An ACL can reshape `INSERT`/`UPDATE` envelopes into CloudEvents that match your internal AsyncAPI catalog.</li>
-          </ul>
-
-          <h2 id="further-reading">Further reading</h2>
-          <ul>
-            <li><a href="https://debezium.io/documentation/reference/stable/" target="_blank" rel="noopener noreferrer">Debezium Documentation — Official reference for CDC connectors</a></li>
-            <li><a href="https://www.postgresql.org/docs/current/logical-replication.html" target="_blank" rel="noopener noreferrer">PostgreSQL Logical Replication documentation</a></li>
-            <li><a href="https://docs.aws.amazon.com/prescriptive-guidance/latest/patterns/perform-cdc-using-amazon-msk-connect.html" target="_blank" rel="noopener noreferrer">CDC with Amazon MSK Connect — AWS Prescriptive Guidance pattern</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
