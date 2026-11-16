@@ -118,11 +118,12 @@
             <li>Before major marketing campaigns or store featuring, when first-impression latency drives retention.</li>
           </ul>
 
-                    <h2 id="when-not-to-use">When not to use</h2>
+          <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Premature micro-optimisation</strong> before measuring with Instruments/Android Profiler — optimise hotspots proven by profiling, not assumptions.</li>
-            <li><strong>Stripping animations and polish</strong> solely for benchmark scores when the brand experience depends on motion design.</li>
-            <li><strong>Aggressive background work</strong> that violates OS power guidelines — performance tuning must respect battery and App Store / Play policy limits.</li>
+            <li>When you have not profiled a reproducible user journey with Perfetto, Android Studio CPU profiler, or Instruments, chasing micro-optimisations usually wastes effort.</li>
+            <li>When marketing or accessibility depends on motion and haptics, disabling transitions solely to win synthetic scroll benchmarks can harm comprehension and brand perception.</li>
+            <li>When background sync could run on next open, scheduling high-frequency wakeups via legacy alarm APIs or abusive silent push violates Android Doze and Apple Background Tasks limits.</li>
+            <li>When the backend is the bottleneck, client-side caching cannot fix slow APIs—address server latency and mobile API shape before tuning RecyclerView adapters.</li>
           </ul>
 
 <h2 id="typical-architecture">Typical architecture</h2>
@@ -238,19 +239,19 @@ ANR PREVENTION (Android)
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Fast startup and smooth rendering directly correlate with user retention and store ratings.</li>
-                <li>Battery efficiency reduces user churn caused by users identifying the app as a battery drain and force-quitting it.</li>
-                <li>Network efficiency reduces backend costs and improves UX on slow connections.</li>
-                <li>Platform profiling tools (Perfetto, Instruments) provide detailed, actionable diagnostics without additional instrumentation in most cases.</li>
+                <li>Cold and warm start improvements that hit documented budgets (often sub-two-second p90 cold start) lift day-one retention visible in Play Console vitals and App Store reviews.</li>
+                <li>Staying within a 16.7 ms frame budget at 60 Hz keeps scrolling and transitions feeling responsive, which MetricKit animation metrics can monitor in production on iOS.</li>
+                <li>Coalesced network reads and smaller payloads reduce radio time, which directly improves battery reports users see in Android settings and iOS Battery screen.</li>
+                <li>Baseline Profiles and Macrobenchmark give Android teams repeatable startup gates in CI when paired with reference low-RAM device profiles.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Baseline profiles (Android) require regeneration whenever startup paths change, adding to CI maintenance.</li>
-                <li>Aggressive prefetching can increase server load and waste bandwidth if predictions are wrong.</li>
-                <li>Battery restrictions (Doze, background fetch) make some background use cases difficult to implement reliably.</li>
-                <li>Profiling on real low-end devices requires a device lab; emulators do not accurately represent the worst-case hardware performance.</li>
+                <li>Baseline Profiles must be regenerated when navigation or SDK init order changes, which adds Gradle module maintenance every release train.</li>
+                <li>Prefetching the wrong screen wastes cellular data and can trigger backend spikes when prediction models drift from real navigation.</li>
+                <li>Doze, App Standby, and iOS background execution caps make “always fresh” data expensive unless you combine push with disciplined sync windows.</li>
+                <li>Emulators misreport GPU and I/O latency; meaningful jank and ANR work still requires physical low-end hardware in the test matrix.</li>
               </ul>
             </div>
           </div>
@@ -263,20 +264,23 @@ ANR PREVENTION (Android)
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Heavy Application.onCreate():</strong> Initialising all SDKs synchronously in Application.onCreate() adds 300–800ms to cold start time; most SDKs can be lazily initialized on first use.</li>
-            <li><strong>Main thread I/O:</strong> SQLite queries, file reads, or SharedPreferences commits on the main thread cause ANRs and jank; enable strict mode (<code>StrictMode.enableDefaults()</code> on Android) in debug builds to detect these.</li>
-            <li><strong>Memory leaks via Context references:</strong> Holding a static reference to an Activity Context (often through a singleton that accepts a Context) prevents GC and causes memory to grow unboundedly across navigations.</li>
-            <li><strong>Full list reloads:</strong> Replacing an entire RecyclerView adapter dataset instead of using DiffUtil causes full redraws; DiffUtil calculates the minimal diff and applies targeted updates, preserving animations.</li>
+            <li><strong>Synchronous Application bootstrap:</strong> Eager SDK init in <code>Application.onCreate()</code> or heavy <code>+load</code> hooks delays first frame until critical journeys could already be interactive.</li>
+            <li><strong>Main-thread storage:</strong> Room, Core Data, or file reads on the UI thread surface as jank traces and Android ANRs above Play vitals thresholds.</li>
+            <li><strong>Oversized bitmap decode:</strong> Loading full-resolution assets into list cells without Glide, Coil, Kingfisher, or downsampling spikes memory and triggers low-memory kills.</li>
+            <li><strong>Adapter thrash:</strong> Calling <code>notifyDataSetChanged()</code> instead of diff-based updates forces full layout passes and drops scroll position on long feeds.</li>
+            <li><strong>Polling instead of push:</strong> Timer-driven inbox refresh keeps the cellular radio active and conflicts with guidance to prefer FCM or APNs nudges plus lazy fetch.</li>
+            <li><strong>Ignoring trim signals:</strong> Caches that ignore <code>onTrimMemory()</code> or memory warnings retain bitmaps until the OS terminates the process.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is cold start time measured in CI using Macrobenchmark (Android) or XCTest metrics (iOS)?</li>
-            <li>Are Baseline Profiles generated for critical user journeys (Android)?</li>
-            <li>Is LeakCanary (Android) / Instruments Leaks (iOS) run as part of the development workflow?</li>
-            <li>Are all database, network, and file I/O operations performed off the main thread?</li>
-            <li>Is background work scheduled via WorkManager (Android) / BGTaskScheduler (iOS) to respect Doze and battery restrictions?</li>
-            <li>Is frame rate monitored with janky frames reports in Play Console / MetricKit?</li>
+            <li>Are cold and warm start durations tracked with Macrobenchmark or XCTest performance tests on each release candidate?</li>
+            <li>Do Baseline Profile modules cover the top three user journeys after material navigation changes?</li>
+            <li>Is StrictMode or an equivalent main-thread I/O guard enabled in debug builds for Android?</li>
+            <li>Are images always decoded off the main thread at display-sized resolution?</li>
+            <li>Is background refresh routed through WorkManager and BGTaskScheduler with network and charging constraints?</li>
+            <li>Are janky frame rates and Android vitals ANR rates reviewed before store submission?</li>
+            <li>Has the team traced at least one low-end physical device per platform this quarter?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -288,16 +292,24 @@ ANR PREVENTION (Android)
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="mobile-api-design.html">Mobile API Design</a> — Network efficiency techniques (payload optimization, HTTP/2, request coalescing) are designed at the API layer.</li>
-            <li><a href="offline-first.html">Offline-First Design</a> — Local caching and offline-first patterns eliminate network round trips and improve perceived performance.</li>
-            <li><a href="mobile-architecture-patterns.html">Mobile Architecture Patterns</a> — ViewModel lifecycle management (MVVM) prevents leaks and redundant work across configuration changes.</li>
+            <li><a href="mobile-api-design.html">Mobile API Design</a> — Payload shaping, compression, and multiplexed reads that reduce client-side wait time.</li>
+            <li><a href="offline-first.html">Offline-First Design</a> — Local repositories that render instantly while sync catches up in the background.</li>
+            <li><a href="push-notifications.html">Push Notifications</a> — Server-initiated nudges that avoid polling loops when fresh data arrives.</li>
+            <li><a href="mobile-architecture-patterns.html">Mobile Architecture Patterns</a> — ViewModels and unidirectional data flow that limit redundant recomposition during scroll.</li>
+            <li><a href="app-lifecycle.html">App Lifecycle</a> — Startup categories and background transitions that define where optimisation effort pays off.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://developer.android.com/topic/performance/baselineprofiles/overview" target="_blank" rel="noopener noreferrer">Baseline Profiles overview — Android Developers</a></li>
-            <li><a href="https://developer.apple.com/documentation/metrickit" target="_blank" rel="noopener noreferrer">MetricKit — Apple Developer Documentation</a></li>
+            <li><a href="https://developer.android.com/topic/performance/vitals" target="_blank" rel="noopener noreferrer">Android vitals — Play Console technical quality</a></li>
             <li><a href="https://developer.android.com/studio/profile/perfetto" target="_blank" rel="noopener noreferrer">Perfetto system profiler — Android Developers</a></li>
+            <li><a href="https://developer.android.com/topic/performance/power" target="_blank" rel="noopener noreferrer">Optimize for power — Android Developers</a></li>
+            <li><a href="https://developer.android.com/develop/connectivity/network-ops" target="_blank" rel="noopener noreferrer">Manage network usage — Android Developers</a></li>
+            <li><a href="https://developer.apple.com/documentation/metrickit" target="_blank" rel="noopener noreferrer">MetricKit — Apple Developer Documentation</a></li>
+            <li><a href="https://developer.apple.com/documentation/xcode/analyzing-your-app-s-battery-use" target="_blank" rel="noopener noreferrer">Analyzing your app’s battery use — Apple Xcode</a></li>
+            <li><a href="https://developer.apple.com/documentation/technotes/tn3108-reducing-your-app-s-launch-time" target="_blank" rel="noopener noreferrer">TN3108: Reducing your app’s launch time — Apple</a></li>
+            <li><a href="https://firebase.google.com/docs/perf-mon" target="_blank" rel="noopener noreferrer">Firebase Performance Monitoring — Google</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
