@@ -110,6 +110,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Most downstream decisions tolerate delay. Finance close, capacity planning, and historical reporting need accurate aggregates over complete datasets more than they need sub-second updates. Batch fits that profile: run when data is ready, exploit parallelism over the full partition set, and shut clusters down between runs so you pay for peak capacity only when you need it.</p>
           <p>Batch also simplifies correctness. Given immutable inputs and deterministic transforms, the same job re-run for the same partition should produce the same outputs—making backfills, audits, and incident recovery predictable compared with long-lived streaming state.</p>
+          <p>Large-scale batch also shaped how platforms store data: GFS and its successors treat files as appendable, replicated chunks so MapReduce workers read locality-friendly splits. Modern lakehouse tables preserve that immutability story while adding ACID commits—batch jobs remain the default way to compact small files, roll up aggregates, and publish curated snapshots consumers treat as contracts.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -126,6 +127,7 @@
             <li>Regulatory rules demand per-event reporting with no acceptable micro-batch gap.</li>
             <li>Data volume is small enough that interactive SQL or a single-node script is simpler and faster end to end.</li>
           </ul>
+          <p>Even when streaming handles the speed path, batch often remains the reconciliation authority: compacted lakes, cost-efficient history, and regulator-friendly exports still favor partition-scoped jobs over unbounded stateful operators.</p>
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Sources land in raw or bronze zones; an orchestrator waits for upstream completeness, then launches idempotent transform jobs. Curated tables feed BI, ML, and serving systems. Raw layers stay append-only so partitions can be reprocessed without rewriting history in place.</p>
@@ -173,6 +175,9 @@
           <p><strong>Idempotency:</strong> Writes should overwrite or merge into a partition deterministically (for example merge into Iceberg/Delta, or `INSERT OVERWRITE` with explicit predicates). Avoid append-only fact tables without deduplication keys unless the pipeline is strictly once-only.</p>
           <p><strong>Readiness, not cron alone:</strong> Gate runs on upstream file arrival, row-count sensors, or data-quality checks—not only on wall-clock schedule—so partial upstream outages do not publish incomplete marts.</p>
           <p><strong>Observability:</strong> Record input/output row counts, bytes processed, and lineage per run; alert when metrics deviate from trailing baselines.</p>
+          <p><strong>Foundations:</strong> Google’s <a href="https://static.googleusercontent.com/media/research.google.com/en//archive/mapreduce-osdi04.pdf" rel="noopener noreferrer" target="_blank">MapReduce</a> paper and GFS motivating work describe map/shuffle/reduce over immutable chunks—modern Spark and Beam retain that shape with in-memory optimization and richer APIs. Kleppmann’s DDIA batch chapters stress immutability and derived datasets: each job output is a new artifact with lineage, not silent overwrites of shared tables unless the table format defines merges explicitly.</p>
+          <p><strong>Partition economics:</strong> right-size tasks so each mapper/reducer stage has enough work to amortize scheduling overhead without blowing task memory—Spark docs tune partition count from input size; Airflow backfill should cap parallelism on shared clusters. Idempotent writes keyed by partition (for example <code>dt=2025-11-16</code>) let retries replace outputs instead of duplicating fact rows.</p>
+          <p><strong>When not to batch:</strong> sub-minute freshness on operational KPIs usually needs stream or HTAP paths—batch SLAs should be published per dataset so product teams do not assume hourly jobs power live dashboards without an explicit fast path.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -183,6 +188,7 @@
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
+          <p>Use this checklist before promoting a new batch job to production schedules or backfill playbooks.</p>
           <ul class="checklist">
             <li>Can the job be safely rerun for the same input partition without corrupting downstream tables?</li>
             <li>Are raw inputs immutable and curated outputs versioned or partition-addressable?</li>
@@ -204,6 +210,8 @@
             <li><a href="https://airflow.apache.org/docs/apache-airflow/stable/" target="_blank" rel="noopener noreferrer">Apache Airflow documentation</a></li>
             <li><a href="https://static.googleusercontent.com/media/research.google.com/en//archive/mapreduce-osdi04.pdf" target="_blank" rel="noopener noreferrer">MapReduce (OSDI 2004 paper)</a></li>
             <li><a href="https://iceberg.apache.org/docs/latest/configuration/" target="_blank" rel="noopener noreferrer">Apache Iceberg — configuration</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Designing Data-Intensive Applications — Martin Kleppmann</a></li>
+            <li><a href="https://static.googleusercontent.com/media/research.google.com/en//archive/gfs-sosp2003.pdf" rel="noopener noreferrer" target="_blank">The Google File System (GFS) — SOSP 2003</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

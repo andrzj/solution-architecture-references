@@ -108,6 +108,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Lambda Architecture separates batch accuracy from stream freshness, but that split forces two code paths for one definition of truth. The batch job and the stream job diverge over time: bug fixes land in one place first, libraries age differently, and edge cases get handled inconsistently. Operations pay twice—for scheduling, monitoring, and incident response—whenever metrics disagree between layers.</p>
           <p>Kappa collapses those paths when the organization already invests in stream processing and log infrastructure. Reprocessing becomes an operational procedure (new consumer group, parallel run, cutover) rather than a second platform. Kreps framed this in <em>Questioning the Lambda Architecture</em> after building Kafka-centric systems at LinkedIn.</p>
+          <p>Kappa is not “streaming only” in the careless sense: historical queries still need tiered storage, compacted topics, or replay jobs that rebuild state from the log. Flink and Beam both support batch-shaped replay of the same transforms—success depends on retention policies, checkpoint recovery, and change-management discipline when logic versions roll forward.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -123,6 +124,7 @@
             <li>Retention for the entire history you must replay is economically impractical without tiered storage or archival replay paths.</li>
             <li>You inherit a mature Lambda deployment and migration cost outweighs relief from dual-code-path drift unless that drift is already causing production pain.</li>
           </ul>
+          <p>Kappa succeeds when replay is an ordinary change procedure: capacity for second consumer groups, isolated serving stores, and retention that covers the longest correction window. Kafka tiering and object-storage replay extend reach but add ops surfaces teams must own explicitly.</p>
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Producers append events to a durable log; stream jobs project aggregates or entity state into a serving store; applications query that store. When processing logic changes, a new job replays from the earliest required offset into a isolated store until cutover.</p>
@@ -235,6 +237,9 @@ KAPPA VS LAMBDA COMPARISON
           <p><strong>Consumer group isolation:</strong> Give each live or reprocessing job its own consumer group so offsets do not collide. Run the new version from the required starting offset while the previous version continues serving until the replay reaches the live tail.</p>
           <p><strong>Serving store versioning:</strong> Write replay output to a separate namespace or table suffix until lag is zero and spot checks match expectations; only then repoint readers. Treat partial replay as non-authoritative for customer-facing queries.</p>
           <p><strong>Retention policy:</strong> Document the oldest offset you must be able to seek to for compliance or rebuild SLAs, and size retention, compaction, and tiered storage to match—not default broker limits.</p>
+          <p><strong>Kreps lineage:</strong> kappa treats the log as source of truth and reprocesses history by replay—Kreps’s lambda critique motivates “one logic path” when streaming engines can approximate batch correctness. Replay still costs compute: full history replays after bug fixes need capacity plans and consumer isolation so production readers are not starved.</p>
+          <p><strong>Compaction and tiers:</strong> Kafka tiered storage and compacted topics change replay economics—document whether consumers read from hot brokers only or from object-store tiers with higher latency. Spark Structured Streaming and Flink can both consume Kafka; pick one operational stack and test replay from earliest offset before claiming kappa replaces batch clusters.</p>
+          <p><strong>When not kappa:</strong> cross-topic joins with large state, heavy ML training on years of history, or regulated deletes that cannot be modeled as append-only corrections may still need batch or lakehouse jobs alongside the log.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -244,6 +249,7 @@ KAPPA VS LAMBDA COMPARISON
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
+          <p>Validate replay mechanics and retention economics before committing to Kappa instead of parallel batch reconciliation.</p>
           <ul class="checklist">
             <li>Does retention (including tiered or archived segments) cover the full history you must be able to replay?</li>
             <li>Does every job version use a dedicated consumer group and documented starting offset?</li>
@@ -271,6 +277,8 @@ KAPPA VS LAMBDA COMPARISON
             <li><a href="https://www.oreilly.com/radar/questioning-the-lambda-architecture/" target="_blank" rel="noopener noreferrer">Questioning the Lambda Architecture — Jay Kreps (O'Reilly)</a></li>
             <li><a href="https://kafka.apache.org/documentation/#tiered_storage" target="_blank" rel="noopener noreferrer">Apache Kafka — Tiered Storage Documentation</a></li>
             <li><a href="https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html" target="_blank" rel="noopener noreferrer">Spark Structured Streaming programming guide</a></li>
+            <li><a href="https://nightlies.apache.org/flink/flink-docs-stable/" rel="noopener noreferrer" target="_blank">Apache Flink documentation</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Designing Data-Intensive Applications — Kleppmann</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

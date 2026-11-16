@@ -110,6 +110,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>In many organisations the warehouse already holds the truth for orders, sessions, and device events—but three ML-adjacent failures still appear without a feature store. <strong>Training-serving skew</strong> shows up when batch SQL or PySpark builds training columns while a separate service recomputes “the same” aggregates at inference with different null handling or time zones. <strong>Duplicated pipeline work</strong> spreads when fraud, recommendations, and growth each schedule their own 30-day velocity jobs from the same Kafka topic. <strong>Data leakage</strong> slips in when trainers join fact tables on <code>user_id</code> alone and accidentally pull feature rows timestamped after the label event—offline AUC looks strong until production catches up.</p>
           <p>A feature store pushes feature engineering into governed, reusable batch and stream jobs, writes consistent snapshots to offline and online stores, and exposes one retrieval API for training exports and serving. That is the same problem space data engineering already solves with medallion layers; the store adds entity-centric versioning, freshness SLAs, and serving latency guarantees on top.</p>
+          <p>Stores sit at the intersection of batch and stream chapters in DDIA: training wants historical snapshots; serving wants low-latency lookups. Platforms that only solve one side recreate skew. Event-time windows and watermarks from stream processing docs apply directly when velocity features are computed live then backfilled for training parity.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -127,6 +128,7 @@
             <li>No capacity to operate materialisation jobs, online store HA, and freshness alerting.</li>
             <li>Features are only raw identifiers with no shared aggregations—serving might be a thin lookup API.</li>
           </ul>
+          <p>Introduce a store when the second team asks for the same velocity window or when training-serving skew appears in incident reviews—not when a lone notebook export still meets latency and audit needs.</p>
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Sources land in bronze/silver; feature pipelines (Spark batch, Flink or Spark Structured Streaming) compute entity-time series; dual writes or sync jobs populate offline history and online latest-value stores; trainers and inference clients read through the store SDK.</p>
@@ -195,6 +197,9 @@
           <p><strong>Version features explicitly:</strong> Bump names or semantic versions when aggregation windows or source tables change (<code>purchase_count_30d_v2</code>). Pin versions at train time; migrate serving deliberately with shadow comparisons.</p>
           <p><strong>Match freshness to the model:</strong> Batch features can follow the gold table schedule; fraud or personalisation signals may need stream materialisation into the online store with monotonic event timestamps so out-of-order writes do not regress values.</p>
           <p><strong>Observe like data pipelines:</strong> Emit row counts, null rates, and max feature age per materialisation run into the same stack used for data quality—block promotion when drift or staleness crosses thresholds.</p>
+          <p><strong>Offline/online split:</strong> the offline store (warehouse files, parquet exports) favours wide scans for training; the online store (key-value, wide-column) favours entity lookups at single-digit millisecond budgets—capacity planning must treat them separately. Spark batch backfills replay history; Flink or Beam streaming jobs maintain sliding windows that must honour event-time watermarks per the Dataflow model.</p>
+          <p><strong>Point-in-time correctness:</strong> training sets need as-of joins so future facts never leak labels; serving reads latest materialised state—both must trace to one registered definition. Lambda estates risk double maintenance unless stream and batch feature jobs share registry metadata and version pins.</p>
+          <p><strong>Privacy:</strong> features derived from PII inherit classification—online stores replicated globally multiply erasure work; keep sensitive aggregates offline or tokenised at ingest.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -205,6 +210,11 @@
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
+          <p>Stores compound quickly—confirm shared-feature ROI and ops capacity before greenfield build.</p>
+          <p>Pin feature versions in model registries when definitions change.</p>
+          <p>Shadow-compare online lookups after materialisation logic changes before cutover.</p>
+          <p>Capacity-plan Redis or DynamoDB online tiers separately from offline warehouse storage growth.</p>
+          <p>Define on-call for materialisation failures.</p>
           <ul class="checklist">
             <li>Which features are shared across models and must not be recomputed per team?</li>
             <li>Is batch freshness enough, or do specific signals need stream materialisation?</li>
@@ -225,6 +235,8 @@
             <li><a href="https://docs.feast.dev/getting-started/architecture" target="_blank" rel="noopener noreferrer">Feast architecture overview</a> — registry, materialisation, and store components.</li>
             <li><a href="https://www.tecton.ai/blog/what-is-a-feature-store/" target="_blank" rel="noopener noreferrer">What is a Feature Store? — Tecton</a> — managed platform patterns for batch and streaming features.</li>
             <li><a href="https://cloud.google.com/vertex-ai/docs/featurestore/overview" target="_blank" rel="noopener noreferrer">Vertex AI Feature Store overview</a> — managed online and offline serving on Google Cloud.</li>
+            <li><a href="https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html" rel="noopener noreferrer" target="_blank">Spark Structured Streaming guide</a></li>
+            <li><a href="https://research.google/pubs/pub43838/" rel="noopener noreferrer" target="_blank">The Dataflow Model (Akidau et al.)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
