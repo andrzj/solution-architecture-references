@@ -101,7 +101,7 @@
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
           <p><strong>Distributed tracing</strong> records the end-to-end path of a single logical operation as it crosses process and network boundaries. A <strong>trace</strong> is the full story; each <strong>span</strong> is one unit of work inside that story — an HTTP handler, a database query, a message publish — with start time, duration, attributes, events, and status.</p>
-          <p>Spans form a tree (or directed acyclic graph when fan-out and links are modeled). Visualised as a waterfall or flame-style timeline, a trace answers where time went for one request, not just average latency across all requests.</p>
+          <p>Spans form a tree (or directed acyclic graph when fan-out and links are modeled). Visualised as a waterfall or flame-style timeline, a trace answers where time went for one request, not just average latency across all requests. Every span carries a name, wall-clock bounds, key-value attributes, optional events, and a status code—together they are structured micro-records of work, not just timing bars.</p>
           <p><strong>Context propagation</strong> stitches spans together. When an upstream service calls downstream, it must pass the active trace identifiers and sampling decision. The <strong>W3C Trace Context</strong> recommendation standardises this for HTTP and other carriers via two fields:</p>
           <ul>
             <li><code>traceparent</code> — a dash-separated value <code>{version}-{trace-id}-{parent-id}-{trace-flags}</code>. Example: <code>00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01</code>. The 32-hex <code>trace-id</code> identifies the whole trace; the 16-hex <code>parent-id</code> is the caller’s span id for the child to reference; flag <code>01</code> means sampled.</li>
@@ -112,6 +112,7 @@
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Google’s Dapper paper (2010) framed the problem: one user action may touch dozens of services, and neither aggregated metrics nor uncorrelated logs explain why <em>this</em> request was slow. Microservices multiplied the pain — each team owned logs in isolation. Tracing provides a shared identifier (the W3C <code>trace-id</code>) and a hierarchical timeline so operators can localise delay or errors without manually joining log lines across hosts.</p>
+          <p>Large product organisations built in-house tracers before standards converged—Zipkin popularised B3 headers, Jaeger brought Cassandra-backed storage, and OpenTelemetry now unifies SDKs. The underlying need never changed: attribute latency to a specific hop in a specific user journey, not to fleet-wide aggregates alone.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -171,9 +172,9 @@ TRACE WATERFALL (conceptual):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Per-request latency decomposition across services — the fastest route from “slow checkout” to “payment API span”.</li>
-                <li>Rich span attributes connect technical and business context when instrumentation is deliberate.</li>
-                <li>Service graphs derived from traces stay closer to production reality than static diagrams.</li>
+                <li>Per-request latency decomposition across services — the fastest route from “slow checkout” to “payment API span” instead of hours spent grepping unrelated log streams.</li>
+                <li>Rich span attributes connect technical and business context when instrumentation is deliberate—HTTP routes, database systems, tenant identifiers, and feature flags ride on the same timeline.</li>
+                <li>Service graphs derived from traces stay closer to production reality than static diagrams because parent-child edges reflect what actually ran last week, not what was drawn in the architecture review.</li>
                 <li>W3C Trace Context enables interoperability across languages and vendors.</li>
               </ul>
             </div>
@@ -192,6 +193,7 @@ TRACE WATERFALL (conceptual):
           <p>Start with OpenTelemetry auto-instrumentation for HTTP, gRPC, and database clients, then add manual spans where business semantics matter. Configure the W3C Trace Context propagator as default; use collector processors to copy B3 or X-Ray headers only during migration windows.</p>
           <p>For message brokers, inject context into message attributes or headers at publish time and extract at consume time. OpenTelemetry models many async paths with <strong>span links</strong> so consumers are related to producers without faking synchronous parent-child timing.</p>
           <p>Align logs and metrics: structured logs should include <code>trace_id</code> (and often <code>span_id</code>) matching W3C values so Grafana or similar tools can pivot trace → logs → exemplars. Scrub SQL text and headers at the collector if auto-instrumentation captures sensitive parameters.</p>
+          <p>Size collector tail sampling with realistic trace cardinality: a <code>decision_wait</code> window long enough for slow checkout paths, policies that always keep <code>ERROR</code> status and spans above your latency SLO, and a low probabilistic sample for healthy traffic. Document expected retention so finance and SRE agree on cost versus debuggability—full fidelity is a policy choice, not a default.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -216,7 +218,8 @@ TRACE WATERFALL (conceptual):
           <ul>
             <li><strong>Illustrative scenario — N+1 after deploy</strong>: p99 latency doubles; filtered traces show every slow request spending most duration in a new repeated database span introduced in the latest release.</li>
             <li><strong>Case study — Google Dapper</strong>: Large-scale tracing at Google established the span model and sampling techniques later adopted industry-wide.</li>
-            <li><strong>Illustrative scenario — trace-based tests</strong>: CI asserts that checkout produces spans with expected names and attributes, catching regressions in propagation or instrumentation.</li>
+            <li><strong>Illustrative scenario — trace-based tests</strong>: CI asserts that checkout produces spans with expected names and attributes, catching regressions in propagation or instrumentation before a gateway strips <code>traceparent</code> in production.</li>
+            <li><strong>Illustrative scenario — payment bottleneck</strong>: A waterfall shows most checkout time inside a third-party charge span; on-call escalates to the processor with a trace identifier instead of debating whether the problem is “the network” or “the database.”</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

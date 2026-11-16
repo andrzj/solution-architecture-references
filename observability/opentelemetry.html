@@ -103,9 +103,11 @@
           <p><strong>OpenTelemetry (OTel)</strong> is a CNCF project that standardises how applications produce, enrich, and export telemetry — traces, metrics, and logs — without locking teams to a single observability vendor. Application code depends on the stable <strong>OTel API</strong>; the <strong>SDK</strong> implements sampling, batching, and export; the optional <strong>Collector</strong> receives OTLP (and other formats), processes telemetry centrally, and fans out to backends.</p>
           <p>For traces, OTel’s default <strong>text map propagator</strong> implements <strong>W3C Trace Context</strong>: inject <code>traceparent</code> and optional <code>tracestate</code> on outbound HTTP/gRPC and extract them on ingress. The same 128-bit trace identifier flows to logs (via log bridges), metric exemplars, and downstream services — one correlation key across signals.</p>
           <p><strong>Auto-instrumentation</strong> (agents or library hooks) covers common frameworks — HTTP servers and clients, gRPC, JDBC, Redis, message consumers — with minimal code changes. <strong>Manual instrumentation</strong> adds domain spans and attributes (order identifiers, payment state, feature flags) that generic hooks cannot infer. <strong>Semantic conventions</strong> document standard attribute names (<code>http.request.method</code>, <code>db.system</code>, <code>messaging.destination.name</code>) so dashboards and alerts work across services written in different languages.</p>
+          <p>Beyond traces, the same SDK emits metrics and log bridges over <strong>OTLP</strong> (gRPC or HTTP). Exemplars on histograms can reference active trace IDs, and log appenders attach the same resource attributes as spans—so one bootstrap library feeds all three pillars without three proprietary agents.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Before OTel, organisations accumulated incompatible tracing APIs (OpenTracing, OpenCensus, vendor agents) and paid twice: once to instrument, again to switch backends. Merging those efforts produced a single SDK trajectory supported by major vendors. OTLP is now natively accepted by Jaeger, Tempo, Prometheus remote write paths, Datadog, New Relic, Honeycomb, and others — instrumentation becomes a durable asset, not a lease on one vendor.</p>
+          <p>As a top-tier CNCF project, OTel benefits from vendor contributions and long-lived semver on the API surface. Platform teams treat collector pipelines as shared infrastructure—much like ingress controllers—so application squads export OTLP locally and never embed vendor-specific exporters in service repos.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -159,25 +161,26 @@ RESOURCE ATTRIBUTES (every signal):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Vendor-neutral instrumentation — change exporters, not application code.</li>
-                <li>Central Collector handles tail sampling, PII scrubbing, and fan-out once.</li>
-                <li>W3C Trace Context by default improves cross-language and cross-vendor correlation.</li>
-                <li>Semantic conventions reduce bespoke attribute naming per team.</li>
+                <li>Vendor-neutral instrumentation — retarget Jaeger, Tempo, or a commercial APM by editing Collector exporter blocks while JVM, Go, and Node services keep the same OTel SDK import.</li>
+                <li>Central Collector handles tail sampling, PII scrubbing, and fan-out once—capabilities that would otherwise be reimplemented per language or per team.</li>
+                <li>W3C Trace Context by default improves cross-language and cross-vendor correlation; meshes and API gateways can participate without custom header vocabularies.</li>
+                <li>Semantic conventions reduce bespoke attribute naming per team so a <code>db.system</code> filter in Grafana works whether the service was written in Java or Python.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>SDK maturity varies by language; auto-instrumentation coverage differs.</li>
-                <li>Collectors are another tier to size, upgrade, and monitor — misconfiguration can drop telemetry silently.</li>
-                <li>Auto-instrumentation can conflict with exotic frameworks or security agents — validate in staging.</li>
-                <li>Operational learning curve for pipeline YAML, receivers, and processor ordering.</li>
+                <li>SDK maturity varies by language; Java and Go are battle-tested, while some dynamic languages expose thinner auto-instrumentation libraries that need staging validation.</li>
+                <li>Collectors are another tier to size, upgrade, and monitor — misconfiguration can drop telemetry silently while applications still believe export succeeded.</li>
+                <li>Auto-instrumentation can conflict with exotic frameworks, bytecode weaving policies, or security agents—load tests should compare span counts before and after enabling agents.</li>
+                <li>Operational learning curve for pipeline YAML, receiver ports, and processor ordering—especially when tail sampling, auth extensions, and multiple exporters stack in one gateway deployment.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Deploy agent Collectors per node for low-latency OTLP ingest; gateway Collectors for tail sampling and backend routing. Always place <code>memory_limiter</code> first in processor chains to avoid OOM under spike load.</p>
+          <p>Deploy agent Collectors per node for low-latency OTLP ingest; gateway Collectors for tail sampling and backend routing. Always place <code>memory_limiter</code> first in processor chains to avoid OOM under spike load—dropping spans under pressure is preferable to the collector process exiting and losing entire batches.</p>
+          <p>A common Kubernetes layout uses a DaemonSet agent on each node (applications talk over loopback) and a horizontally scaled gateway tier that owns tail sampling and multi-exporter fan-out. That split keeps application configuration dumb while expensive, stateful decisions live where operators can roll out collector upgrades independently of service deploys.</p>
           <p>Set resource attributes at startup: <code>service.name</code>, <code>service.version</code>, <code>deployment.environment</code>. Enable the W3C propagator; disable legacy B3-only modes unless required for a specific dependency during migration.</p>
           <p>Use <strong>baggage</strong> sparingly for cross-cutting business keys — never secrets. Prefer span attributes for data that should land in trace storage. Bridge logs to OTel so log records include trace and span IDs matching W3C values.</p>
           <p>Configure tail sampling policies: retain errors, high latency, and debug headers; probabilistically sample the remainder. Document sampling rates so on-call engineers know expected trace completeness.</p>
@@ -203,9 +206,10 @@ RESOURCE ATTRIBUTES (every signal):
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario — backend swap</strong>: Exporters retarget from a commercial APM to Grafana Tempo and Mimir; applications unchanged; only Collector YAML updates.</li>
-            <li><strong>Case study — CNCF OpenTelemetry</strong>: Merger of OpenTracing and OpenCensus created the dominant neutral telemetry standard adopted across cloud providers.</li>
-            <li><strong>Illustrative scenario — dual export</strong>: Security operations receives a filtered OTLP copy of error spans while platform SREs use the full tail-sampled stream in Tempo.</li>
+            <li><strong>Illustrative scenario — backend swap</strong>: A retailer moves observability from a hosted APM to Grafana Tempo and Mimir; squads change only Collector exporter stanzas while hundreds of microservices keep the same OTel bootstrap—migration weeks instead of re-instrumenting every repository.</li>
+            <li><strong>Case study — CNCF OpenTelemetry</strong>: The OpenTracing and OpenCensus merger produced the neutral telemetry stack cloud vendors now document as the default onboarding path for new workloads.</li>
+            <li><strong>Illustrative scenario — dual export</strong>: Security operations ingests a filtered OTLP stream of error spans into a SIEM while platform engineers browse tail-sampled traces in Tempo—one SDK emission, two governance-approved destinations configured in the gateway collector.</li>
+            <li><strong>Illustrative scenario — cost-aware sampling</strong>: At tens of thousands of requests per second, engineers configure tail policies that retain all errors, retain slow traces above two seconds, and probabilistically sample routine traffic—trace storage spend drops roughly an order of magnitude while incident investigations still see failing paths.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
