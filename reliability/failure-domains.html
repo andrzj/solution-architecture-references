@@ -104,74 +104,57 @@
 
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A failure domain is a group of components that share a common failure mode — when one component in the domain fails, all other components in the same domain are at risk of failing for the same underlying cause. Conversely, components in different failure domains are isolated from each other's failures by design: hardware boundaries (separate physical servers, racks, data centres), network boundaries (separate subnets, availability zones, regions), software boundaries (separate processes, pods, deployments), and dependency boundaries (separate databases, queues, external APIs). Failure domain analysis is the practice of identifying these groupings and deliberately architecting systems so that the maximum impact of any single failure is bounded to a single domain.</p>
-          <p>Failure domains exist at multiple layers of the infrastructure stack simultaneously: an AWS Availability Zone is a failure domain at the physical layer; a Kubernetes node is a failure domain at the compute layer; a database primary instance is a failure domain at the data layer; a microservice is a failure domain at the application layer;</p>
-          <p>and a shared dependency (centralised auth service, shared Redis cluster) can inadvertently make multiple services part of the same failure domain even when they are deployed to separate infrastructure.</p>
+          <p>A <strong>failure domain</strong> is a set of components that share a single underlying failure mode—when one member fails for that reason, peers in the same domain are likely to fail too. Components in <em>different</em> domains should be isolated by hardware, network, software process, or dependency boundaries so one fault cannot take everything down. Failure domain analysis maps those groupings and deliberately sizes blast radius: a bad deploy, AZ outage, or shared dependency crash should degrade a bounded fraction of capacity or tenants, not the whole platform.</p>
+          <p>Domains nest: rack, AZ, region, Kubernetes node, deployment cell, microservice, database primary, shared cache cluster. Architecture succeeds when the domain you design for (e.g. “single AZ loss”) matches real shared fate— not when services merely spread replicas without eliminating shared databases, NAT gateways, or config stores that collapse isolation.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>The goal of failure domain analysis is to make the maximum impact of any single failure commensurate with the size of the failure, not the size of the entire system. Without explicit failure domain design, a single hardware failure, configuration error, or bad deployment can cascade through the entire system via shared dependencies, shared infrastructure, or tightly coupled components. By designing explicit domain boundaries, each failure's blast radius is contained: a bad deployment to one canary cell affects 5% of traffic; an availability zone failure affects 33% of capacity; a region failure triggers regional failover with predetermined RTO/RPO targets. The system degrades gracefully in proportion to the scope of the failure rather than failing completely for any failure at any layer.</p>
+          <p>Without explicit domains, correlated failures dominate incident history: one Redis cluster, one auth service, one bad flag, one NAT—all become global outages. Domain design aligns impact with failure size: lose one AZ → ~1/N capacity; lose one cell → that tenant slice only; lose one canary → 5% of traffic. SLO math, chaos experiments, and deployment strategy all depend on knowing which components share fate.</p>
+          <p>It also forces trade-offs into the open: per-service databases and per-AZ NAT gateways cost more but remove hidden single points. Documented domains make those costs accountable to availability targets.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Every production system with a non-trivial availability requirement — failure domain analysis is a core architectural activity, not an advanced optimisation.</li>
-            <li>When designing multi-AZ or multi-region architectures — AZ/region boundaries must be actual failure domain boundaries, not just deployment topology.</li>
-            <li>Before deploying shared infrastructure (shared databases, shared caches, shared message brokers) — shared infrastructure creates shared failure domains.</li>
-            <li>When setting availability SLOs — the achievable SLO is bounded by the worst-case single failure domain's impact on end-to-end availability.</li>
-            <li>When performing blast radius analysis for chaos engineering experiments — experiments should respect failure domain boundaries.</li>
+            <li>Any production system with availability or recovery objectives—not optional for multi-AZ or multi-region designs.</li>
+            <li>Before adopting shared infrastructure (one broker, one cache, one config server) for many services.</li>
+            <li>When defining SLOs, error budgets, and incident severity—impact fractions come from domain maps.</li>
+            <li>When scoping chaos experiments and GameDays—fault injection should respect domain edges.</li>
+            <li>When planning cell-based or sharded architectures for highest-criticality paths.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>There is no scenario where failure domain analysis should be skipped — but the depth of analysis should be proportionate to the system's criticality and scale.</li>
-            <li>For low-criticality internal tools where any failure is acceptable, fine-grained domain isolation adds cost without meaningful benefit — keep the architecture simple.</li>
+            <li>Depth should match criticality—internal sandboxes may accept a single domain with simple ops.</li>
+            <li>Over-sharding tiny systems creates cost and complexity without measurable availability gain.</li>
+            <li>Domain maps that are never updated become dangerous fiction—skip only if you will not maintain them.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Region, AZ, and shared-dependency boundaries define blast radius; mitigate cross-cutting single points.</p>
+          <p>Model region → AZ → compute; mark shared dependencies that span domains and break isolation unless mitigated.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    reg["Region us-east-1"]
-    reg --> az1["AZ 1a: EC2, RDS primary, cache primary"]
-    reg --> az2["AZ 1b: EC2, RDS standby, cache replica"]
-    reg --> az3["AZ 1c: EC2"]
-    risks["Mitigate shared DB, single NAT, single-AZ config"]</div>
+    R["Region"]
+    R --> A1["AZ a compute and data replica"]
+    R --> A2["AZ b compute and data replica"]
+    R --> A3["AZ c compute"]
+    SH["Shared risk: single DB NAT global config"]
+    A1 -.-> SH
+    A2 -.-> SH</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Failure Domain Hierarchy — AWS Multi-AZ Application
-═══════════════════════════════════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>Failure Domain Map (simplified)
+═══════════════════════════════
 
-REGION (us-east-1)  ←── region failure domain
-│
-├── AZ: us-east-1a  ←── AZ failure domain
-│   ├── EC2 instances (ASG)
-│   ├── RDS Primary
-│   └── ElastiCache Primary
-│
-├── AZ: us-east-1b  ←── separate AZ failure domain
-│   ├── EC2 instances (ASG)
-│   ├── RDS Standby (Multi-AZ)
-│   └── ElastiCache Replica
-│
-└── AZ: us-east-1c  ←── separate AZ failure domain
-    └── EC2 instances (ASG)
+Region
+├── AZ-a  (domain: power + networking in a)
+├── AZ-b  (independent domain)
+└── AZ-c
 
-Shared failure domain risks to identify and mitigate:
-┌──────────────────────────────────────────────────────────────┐
-│ Risk: All services share one database → DB is a failure       │
-│       domain that spans all service boundaries.               │
-│ Mitigation: Per-service databases, read replicas, circuit     │
-│             breaker per service.                              │
-│                                                               │
-│ Risk: All AZs use same NAT Gateway → NAT is single point     │
-│       of failure within the region.                           │
-│ Mitigation: One NAT Gateway per AZ.                          │
-│                                                               │
-│ Risk: Config service is single AZ → config deployment is      │
-│       a failure domain for all services that depend on it.    │
-│ Mitigation: Multi-AZ config service with local caching.      │
-└──────────────────────────────────────────────────────────────┘</code></pre>
+Cross-domain hazards to mitigate:
+  • One database for all services
+  • One NAT gateway for all AZs
+  • Single-AZ config or secrets store
+  • Simultaneous deploy to all cells</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Multi-AZ hierarchy plus shared DB, NAT, and config risks that can span otherwise isolated services.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">AZs are failure domains; shared DB, NAT, or config can rejoin otherwise independent services into one blast radius.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -179,69 +162,73 @@ Shared failure domain risks to identify and mitigate:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Bounds the maximum blast radius of any single failure — a correctly isolated failure domain cannot cascade to other domains.</li>
-                <li>Makes availability SLO calculations tractable — probability of domain failure × fraction of traffic in that domain = expected unavailability contribution.</li>
-                <li>Provides the architectural foundation for graceful degradation — each domain can be designed to degrade independently.</li>
-                <li>Enables independent deployment and upgrade within domains — a bad deployment to one cell affects only that cell's traffic fraction.</li>
-                <li>Aligns chaos engineering experiment design with real failure boundaries — experiments targeting failure domains produce the most realistic and useful results.</li>
+                <li>Caps maximum blast radius for deploys, hardware, and dependency failures.</li>
+                <li>Makes SLO and capacity-loss calculations explicit (1 of N AZs, 1 of M cells).</li>
+                <li>Supports graceful degradation and bulkheads aligned to real shared fate.</li>
+                <li>Enables canary and cell deploys that limit bad release impact.</li>
+                <li>Guides chaos experiments toward realistic, bounded faults.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Strict domain isolation increases infrastructure cost — per-service databases, per-AZ NAT gateways, and per-domain shared resources are more expensive than shared infrastructure.</li>
-                <li>Cross-domain operations (distributed transactions, cross-AZ reads) add complexity and latency — domain isolation and data locality are in tension.</li>
-                <li>Dependency analysis is ongoing work — new dependencies and shared components continuously erode domain boundaries if not actively managed.</li>
-                <li>Over-isolation at fine-grained levels (per-pod failure domains) can make a system complex without proportionate reliability benefit.</li>
+                <li>Strong isolation increases cost—more gateways, databases, and redundancy.</li>
+                <li>Cross-domain workflows add latency and operational complexity.</li>
+                <li>Hidden dependencies erode domains unless architecture reviews repeat.</li>
+                <li>Cell or shard sprawl can overcomplicate small teams without platform support.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Draw failure domain boundaries as concentric zones in a dependency diagram and identify every cross-domain dependency. For each cross-domain dependency, ask: if the dependency fails completely, what is the impact on each dependent? The answer reveals hidden shared failure domains. Common cross-domain dependencies that collapse domain isolation: a shared database accessed by multiple microservices (fix: per-service databases or read replicas with circuit breakers); a centralised authentication service without caching (fix: local JWT validation with fallback to cached validation on auth service outage); a shared Kafka cluster (fix: circuit breakers, consumer-side backpressure, separate topic quotas per consumer group).</p>
-          <p>Design cell-based architectures for the highest criticality services: partition the user population into cells (by user ID range, geographic region, or tenant ID), deploy a full stack of services per cell, and ensure cells share no mutable state. A cell failure affects only the users assigned to that cell. This is the approach used by Amazon, Netflix, and Stripe for their most critical services — each cell is an independent failure domain.</p>
+          <p>Draw a dependency graph and highlight every shared node (database, cache, broker, identity provider, feature-flag SDK backend). For each shared node, list dependents and ask: “If this fails 100%, what fraction of users or revenue is down?” Mitigate with per-service data stores, circuit breakers, local caches, multi-AZ replicas, or queue isolation.</p>
+          <p>Use one NAT gateway per AZ; distribute load balancer nodes across AZs; run config and secrets services highly available with client-side cache and TTL. For top-tier services, consider <strong>cells</strong>: partition tenants or geography into stacks with no shared mutable state between cells—Stripe-style payment cells are the reference pattern. Stagger deploys across cells; never push one revision to all cells simultaneously without a prior canary cell.</p>
+          <p>Pair with <a href="bulkhead-pattern.html">Bulkhead</a> and <a href="circuit-breaker.html">Circuit Breaker</a> at domain crossings so faults do not propagate across boundaries.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Shared dependency collapse:</strong> multiple microservices share a single dependency (database, cache, auth service) that becomes a single failure domain spanning all services — one dependency failure takes down all services simultaneously.</li>
-            <li><strong>Cross-AZ single points:</strong> using a single NAT gateway, a single load balancer, or a single configuration service in one AZ while claiming multi-AZ resilience — the shared single-AZ component is a hidden failure domain.</li>
-            <li><strong>Correlated deployments:</strong> deploying all cells or all AZs simultaneously in a rolling update — a bad deployment hits all cells before being detected, removing cell isolation as a protection against bad deployments.</li>
-            <li><strong>Implicit shared state:</strong> microservices that appear independent but write to the same database tables or read from the same cache namespace — they are actually in the same failure domain.</li>
-            <li><strong>Region-level shared components:</strong> a global configuration store, a global rate limiter, or a global authentication token cache that spans regions — a failure corrupts the global component and takes down all regions simultaneously.</li>
+            <li><strong>Shared database:</strong> “microservices” that still share one primary DB.</li>
+            <li><strong>Single-AZ choke points:</strong> NAT, DNS, or control plane in one AZ only.</li>
+            <li><strong>Big-bang deploy:</strong> one revision to every cell before validation.</li>
+            <li><strong>Implicit shared state:</strong> same cache namespace or table across services.</li>
+            <li><strong>Global control plane outage:</strong> one regional config store takes all regions when mis-scoped.</li>
+            <li><strong>Paper multi-AZ:</strong> replicas exist but traffic or data still single-AZ.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have all failure domains been explicitly documented in an architecture diagram showing shared components?</li>
-            <li>Is the maximum impact of any single AZ failure bounded to &lt;34% of capacity (assuming 3 AZs with even traffic distribution)?</li>
-            <li>Are all shared dependencies (databases, caches, auth services, config services) either multi-AZ or backed by a circuit breaker with local fallback?</li>
-            <li>Is there one NAT gateway per AZ (not one per region) to avoid cross-AZ NAT as a single failure domain?</li>
-            <li>Are new shared infrastructure components reviewed for failure domain impact before deployment?</li>
-            <li>Are deployments staggered across cells/canaries (not all-at-once) to preserve cell isolation as a protection against bad deployments?</li>
-            <li>Does the availability SLO calculation account for shared dependency failure modes, not just per-component availability?</li>
+            <li>Failure domain diagram reviewed with every new shared dependency?</li>
+            <li>Single-AZ loss bounded to ~1/N capacity for N balanced AZs?</li>
+            <li>Shared dependencies multi-AZ or protected with breakers and local fallback?</li>
+            <li>NAT, LB, and config paths verified per-AZ—not single-AZ hidden SPOFs?</li>
+            <li>Deploy pipeline staggers cells or AZs; canary precedes full promotion?</li>
+            <li>SLO calculations include correlated failure modes, not independent component math only?</li>
+            <li>Chaos experiments target one domain at a time with documented expected impact fraction?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>AWS deploys each service across three AZs as independent failure domains with per-AZ NAT gateways, per-AZ load balancer nodes, and per-AZ database standbys — any single AZ failure causes at most 33% capacity loss, not a full outage.</li>
-            <li>Stripe's cell-based architecture partitions payment processing into independent cells by merchant ID range — a configuration error affecting one cell impacts a bounded fraction of merchants without affecting others.</li>
-            <li>A microservices architecture identifies that five independent services share a single Redis cluster for session caching — after failure domain analysis, each service is given a separate Redis namespace with its own circuit breaker, preventing a single Redis OOM from cascading across all five services.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> maps ride-matching cells by metro; a bad config in one cell strands 8% of trips while others operate—rollback scope is the cell deployment, not global.</li>
+            <li><strong>Illustrative scenario —</strong> Five services share one Redis cluster; failure domain review gives each service a dedicated namespace and breaker; a memory pressure event affects one vertical instead of all checkout paths.</li>
+            <li><strong>Case study —</strong> AWS fault isolation whitepaper describes region and AZ boundaries and how managed services contain blast radius within partitions.</li>
+            <li><strong>Case study —</strong> Stripe and similar payment platforms publicly describe cell-based architectures that shard merchants into isolated stacks for blast-radius control.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="bulkhead-pattern.html">Bulkhead Pattern</a> — implements software-level failure domain isolation for concurrent workloads.</li>
-            <li><a href="circuit-breaker.html">Circuit Breaker</a> — provides the cross-domain protection needed when services in different failure domains must interact.</li>
-            <li><a href="chaos-engineering.html">Chaos Engineering</a> — experiments should be designed to respect failure domain boundaries as their blast radius.</li>
+            <li><a href="bulkhead-pattern.html">Bulkhead Pattern</a> — concurrency isolation inside a service.</li>
+            <li><a href="circuit-breaker.html">Circuit Breaker</a> — protects calls across domain boundaries.</li>
+            <li><a href="chaos-engineering.html">Chaos Engineering</a> — validates domain assumptions under fault.</li>
+            <li><a href="self-healing-systems.html">Self-Healing Systems</a> — recovery scoped within each domain.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://aws.amazon.com/builders-library/avoiding-fallback-in-distributed-systems/" rel="noopener noreferrer" target="_blank">Avoiding Fallback in Distributed Systems — AWS Builder's Library</a> — discusses failure domain isolation and avoiding hidden shared failure modes.</li>
-            <li><a href="https://docs.aws.amazon.com/whitepapers/latest/aws-fault-isolation-boundaries/abstract-and-introduction.html" rel="noopener noreferrer" target="_blank">AWS Fault Isolation Boundaries</a> — how AWS designs blast-radius containment across regions and Availability Zones.</li>
-            <li><a href="https://sre.google/sre-book/table-of-contents/" target="_blank" rel="noopener noreferrer">Google SRE book</a></li>
+            <li><a href="https://docs.aws.amazon.com/whitepapers/latest/aws-fault-isolation-boundaries/abstract-and-introduction.html" rel="noopener noreferrer" target="_blank">AWS Fault Isolation Boundaries</a></li>
+            <li><a href="https://aws.amazon.com/builders-library/avoiding-fallback-in-distributed-systems/" rel="noopener noreferrer" target="_blank">Avoiding Fallback in Distributed Systems — AWS Builder’s Library</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/design-principles/scale-out" rel="noopener noreferrer" target="_blank">Scale out and fault domains — Azure Architecture Center</a></li>
           </ul>
-        </div>
+        </div>        </div>
 
         <nav class="article-nav" aria-label="Article navigation">
           <a href="self-healing-systems.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Self-Healing Systems</span></a>

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Exactly-Once Delivery — SA References</title>
-  <meta name="description" content="Guaranteeing that a message is processed exactly one time, neither lost nor processed as a duplicate.">
+  <meta name="description" content="Effectively-once messaging: bounded broker guarantees, idempotent consumers, and where Transactional Outbox fits when databases and queues must stay consistent.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -104,71 +104,73 @@
 
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Exactly-once delivery is the strongest message delivery guarantee: a producer's message is delivered to a consumer and its effects are applied to the system state precisely one time, with no possibility of loss (at-least-once risk) or duplication (at-most-once risk). It is a compound guarantee comprising two properties: <strong>exactly-once delivery</strong> (the broker delivers the message exactly once end-to-end) and <strong>exactly-once processing</strong> (the consumer's side effects are applied exactly once even if the message is delivered or processed multiple times due to failures).</p>
-          <p>True exactly-once delivery across arbitrary distributed systems is impossible under all failure models (the "exactly-once myth"), but practical exactly-once semantics can be achieved through a combination of idempotent producers, transactional consumers, and distributed coordination — with the caveat that this applies within specific component boundaries. Kafka's transactional API provides exactly-once semantics within a Kafka-to-Kafka read-process-write loop. AWS SQS FIFO with deduplication and idempotent consumers achieves effectively-exactly-once processing. True cross-system exactly-once (e.g., database + message broker atomicity) requires the Transactional Outbox pattern or two-phase commit.</p>
+          <p><strong>Exactly-once delivery</strong> is the messaging guarantee that each logical message is applied to durable state <em>once</em>—neither lost nor double-counted. In practice it splits into two questions: did the broker hand off the message at most once per logical send attempt, and did the consumer’s side effects happen once even when delivery or ACKs retry? Brokers can narrow duplicate windows; consumers still need idempotency unless the platform coordinates both legs inside a bounded scope.</p>
+          <p>End-to-end exactly-once across arbitrary databases, queues, and third parties is not achievable under general failure models—the “exactly-once myth.” Production systems instead implement <strong>effectively-once</strong> behaviour: Kafka transactional read-process-write within topic boundaries, SQS FIFO deduplication for producer retries, Flink checkpointing with idempotent sinks, or <a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> for database-and-broker spans. The architectural decision is which boundary you certify, not whether magic exists outside it.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Many business operations are non-idempotent by nature: charging a payment card twice causes real financial harm; updating an account balance twice corrupts data; sending a confirmation email twice confuses customers. At-least-once delivery — the default for most reliable messaging systems — accepts the possibility of duplicates and shifts the burden of deduplication to the consumer via idempotency. But building idempotent consumers for every operation is complex and error-prone. Exactly-once delivery aims to eliminate that burden at the infrastructure level, simplifying application logic for scenarios where duplicate processing is genuinely unacceptable.</p>
+          <p>At-least-once is the pragmatic default for reliable messaging, but many operations are not safely repeatable: ledger postings, inventory decrements, entitlement grants, and fee assessments. Pushing deduplication entirely into every consumer works, yet teams repeatedly miss edge cases—concurrent redelivery, partial batch ACK, crash between write and ACK. Infrastructure-level exactly-once semantics (or broker-assisted deduplication) centralise correctness for the highest-risk paths so application code does not reimplement the same race-prone check in every handler.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Financial transactions where duplicate processing causes direct monetary harm (double charges, double credits).</li>
-            <li>Stateful stream processing with Kafka where read-process-write loops must not produce duplicate results (aggregations, joins, windowed computations).</li>
-            <li>Inventory management where a duplicate decrement results in incorrect stock counts that affect physical fulfilment.</li>
-            <li>Any bounded exactly-once scope where the infrastructure cost (transactional producers, Kafka transactions) is justified by the criticality of the operation.</li>
+            <li>Stateful stream processing where duplicate outputs corrupt aggregations, joins, or windowed totals.</li>
+            <li>Payment, billing, or ledger pipelines where a duplicate side effect has regulatory or monetary impact.</li>
+            <li>Order or inventory mutations tied to physical fulfilment where stock must not drift negative.</li>
+            <li>Bounded broker pairs that officially support coordinated commits (Kafka source→sink loops, FIFO queues with business-key deduplication).</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Operations that are already naturally idempotent (setting a value to a specific state) — at-least-once + idempotent processing is simpler and cheaper.</li>
-            <li>High-throughput, low-value streams (analytics events, metrics, logs) where the performance cost of transactions is not justified.</li>
-            <li>Cross-system exactly-once (message broker + relational DB) without a Transactional Outbox — this cannot be achieved reliably without distributed 2PC.</li>
-            <li>Systems using brokers that do not support transactional or deduplication semantics natively — without broker support, the complexity of achieving exactly-once falls entirely on the application.</li>
+            <li>Operations that are naturally idempotent—prefer at-least-once plus a unique constraint or idempotency key; it is simpler and faster.</li>
+            <li>High-volume telemetry, metrics, or logs where duplicate samples are acceptable and transactional overhead hurts cost.</li>
+            <li>Spans that cross a relational database and a message broker without Outbox or 2PC—you cannot honestly claim exactly-once across that gap.</li>
+            <li>Brokers without native idempotent producers, transactions, or deduplication—the guarantee becomes bespoke application complexity with no platform help.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Transactional produce-and-commit (Kafka EOS) or broker deduplication (SQS FIFO) narrow duplicate windows.</p>
+          <p>Pick one certified boundary per pipeline: in-broker transactions for stream loops, broker deduplication for enqueue retries, or outbox plus idempotent consumers for DB-plus-queue flows.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    subgraph kafka["Kafka transactional EOS"]
-        p["Producer"] -->|read process write| kt["Source and sink topics"]
-        p -->|atomic commit| off["Consumer offsets"]
+    subgraph eos["Kafka read-process-write EOS"]
+        P["Transactional producer"]
+        S["Source topic"]
+        K["Sink topic"]
+        O["Consumer offsets"]
+        P --> S
+        P --> K
+        P --> O
     end
-    subgraph sqs["SQS FIFO deduplication"]
-        pr["Producer with MessageDeduplicationId"] --> fq["FIFO queue"]
-        fq --> cr["Consumer receives once per window"]
+    subgraph fifo["SQS FIFO dedup"]
+        PR["Producer with dedup id"]
+        Q["FIFO queue"]
+        C["Consumer"]
+        PR --> Q --> C
+    end
+    subgraph outbox["DB plus broker"]
+        APP["Application"]
+        DB["Database outbox row"]
+        REL["Relay publishes event"]
+        APP --> DB
+        DB --> REL
     end</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Kafka Exactly-Once Semantics (EOS) — Read-Process-Write
-═══════════════════════════════════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>Exactly-Once Boundaries (choose one per flow)
+═══════════════════════════════════════════
 
-Producer (transactional)            Kafka Broker
-────────────────────────            ──────────────────────────────
-initTransactions()
-beginTransaction()
-  read from source topic  ──────►   Source Topic (input events)
-  process event
-  produce to sink topic   ──────►   Sink Topic (results)
-  commitSync offset       ──────►   Consumer Group Offsets (atomic)
-commitTransaction()
-                                    All three writes are atomic:
-                                    - sink message published
-                                    - offset committed
-                                    → consumer never re-processes
-                                      or loses a processed event
+A) Kafka EOS (in-broker loop)
+   beginTransaction → read → process → produce → commit offsets → commitTransaction
+   Atomic within Kafka topics + group offsets (not external DB)
 
-SQS FIFO with Deduplication
-────────────────────────────────────
-Producer → SendMessage with MessageDeduplicationId=hash(content)
-           │
-           ▼
-SQS deduplication window (5 minutes)
-  - Duplicate MessageDeduplicationId suppressed by broker
-  - Consumer receives each logical message exactly once
-  - Consumer must still be idempotent for cross-window replays</code></pre>
+B) SQS FIFO
+   Producer sets MessageDeduplicationId = business key
+   Broker drops duplicates inside dedup window (~5 min)
+   Consumer still idempotent for late replays
+
+C) Transactional Outbox
+   Single DB transaction: business row + outbox row
+   Relay publishes with same idempotency key → consumer dedupes</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Kafka read-process-write commits outputs and offsets atomically; SQS FIFO suppresses duplicates inside the deduplication window.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Effectively-once designs certify one boundary: Kafka EOS loops, FIFO deduplication, or outbox relay with idempotent consumers.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -176,69 +178,73 @@ SQS deduplication window (5 minutes)
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Eliminates duplicate processing without requiring each consumer to implement deduplication logic individually.</li>
-                <li>Simplifies application code for operations where duplicate application would cause correctness or financial errors.</li>
-                <li>Kafka's EOS provides auditable, transaction-scoped processing that can be replayed to a consistent point.</li>
-                <li>SQS FIFO deduplication integrates transparently at the broker level — no consumer code change required for the deduplication window.</li>
+                <li>Reduces duplicate-application bugs on the paths where mistakes are expensive.</li>
+                <li>Kafka EOS gives replayable, transaction-scoped stream pipelines auditors can reason about.</li>
+                <li>Broker deduplication absorbs producer retry storms without custom client code.</li>
+                <li>Documents an explicit correctness contract for downstream teams and SLO owners.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Significant performance overhead: Kafka EOS adds latency due to transactional coordination; SQS FIFO has lower throughput than standard queues.</li>
-                <li>Exactly-once semantics only apply within bounded components — a Kafka EOS producer cannot atomically commit to a database without Transactional Outbox.</li>
-                <li>Complex failure recovery: transactional aborts must roll back all writes atomically; partial failures leave the system in inconsistent state if not handled correctly.</li>
-                <li>SQS FIFO deduplication is scoped to a 5-minute window — duplicates outside this window still require idempotent consumers.</li>
-                <li>"Exactly-once" is a marketing term that must be examined carefully per-broker — the scope and guarantees vary significantly across implementations.</li>
+                <li>Transactional and FIFO paths add latency and cap throughput versus fire-and-forget.</li>
+                <li>Marketing “exactly-once” often oversells scope—read the fine print per product.</li>
+                <li>Operational complexity: fencing epochs, aborted transactions, and upgrade ordering.</li>
+                <li>Cross-component spans still need Outbox; EOS alone does not fix DB-and-queue atomicity.</li>
+                <li>False confidence if teams skip idempotent consumers “because the broker handles it.”</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For Kafka exactly-once semantics, enable <code>enable.idempotence=true</code> on the producer (required) and set <code>transactional.id</code> to a stable, unique identifier per producer instance. Set <code>isolation.level=read_committed</code> on consumers to ensure they never read messages from aborted transactions. Note that EOS adds approximately 15–30% latency overhead due to transactional coordination — benchmark carefully before adopting in high-throughput paths. Kafka Streams and Apache Flink provide higher-level EOS abstractions that handle transactional producer lifecycle automatically.</p>
-          <p>For SQS FIFO, set <code>MessageDeduplicationId</code> to a deterministic hash of the message content or a business key (order ID, payment reference). The deduplication window is 5 minutes — within this window, any message with the same deduplication ID is silently dropped by the broker. Beyond 5 minutes, the consumer must implement idempotency using a persistent deduplication store keyed on the same business ID. ContentBasedDeduplication (enabled at queue level) computes the hash automatically from message body, but requires all logically identical messages to have identical bodies.</p>
+          <p><strong>Kafka:</strong> Enable <code>enable.idempotence=true</code>, assign a unique <code>transactional.id</code> per producer instance, and use <code>read_committed</code> on consumers of transactional topics. Benchmark EOS on realistic batch sizes; 15–30% overhead is common. Prefer Kafka Streams or Flink EOS connectors instead of hand-rolled transaction lifecycle if possible.</p>
+          <p><strong>SQS FIFO:</strong> Derive <code>MessageDeduplicationId</code> from a stable business key (payment ID, order ID), not random UUIDs per retry. Treat the deduplication window as producer-retry protection only; persist processed IDs in the consumer for longer horizons. Enable content-based deduplication only when message bodies are byte-identical for logical duplicates.</p>
+          <p><strong>Database plus broker:</strong> Use Outbox or inbox patterns; never “write DB, then send message” without a shared commit. Consumers should use <code>INSERT … ON CONFLICT DO NOTHING</code> or a deduplication table keyed by message ID. Document the certified boundary in the service README and architecture diagram.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Scope confusion:</strong> believing Kafka EOS guarantees atomicity with external databases — it only guarantees atomicity within the Kafka topic-to-topic scope.</li>
-            <li><strong>Transactional ID reuse:</strong> multiple producer instances sharing the same <code>transactional.id</code> causes epoch conflicts and broker fencing of one producer.</li>
-            <li><strong>read_committed omitted:</strong> consumers using <code>read_uncommitted</code> (the default) read messages from aborted transactions, causing exactly-not-once processing.</li>
-            <li><strong>SQS FIFO throughput limits:</strong> FIFO queues have a 3,000 messages/second limit (with batching) versus standard queues' effectively unlimited throughput — using FIFO for high-throughput paths causes throttling.</li>
-            <li><strong>Relying on 5-minute window:</strong> treating the SQS FIFO deduplication window as a permanent guarantee, and not implementing idempotent consumers for the broader case.</li>
+            <li><strong>Scope drift:</strong> assuming Kafka EOS covers external JDBC writes—it does not.</li>
+            <li><strong>Shared transactional.id:</strong> duplicate IDs fence producers and stall pipelines.</li>
+            <li><strong>read_uncommitted consumers:</strong> reading aborted transaction data breaks correctness.</li>
+            <li><strong>FIFO on hot paths:</strong> throughput limits cause throttling where standard queues would survive.</li>
+            <li><strong>Window-only dedup:</strong> no consumer idempotency store for messages redelivered after the FIFO window.</li>
+            <li><strong>Dual writes:</strong> DB commit succeeds, publish fails (or reverse)—classic split-brain without Outbox.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the operation genuinely non-idempotent and would duplicates cause correctness errors or financial harm?</li>
-            <li>Is the scope of exactly-once bounded to a component pair that supports it (Kafka-to-Kafka, SQS FIFO-to-consumer)?</li>
-            <li>Have you benchmarked the performance overhead of transactional production and confirmed it is acceptable?</li>
-            <li>For Kafka EOS: is <code>isolation.level=read_committed</code> set on all consumers of the output topic?</li>
-            <li>For SQS FIFO: is the deduplication ID deterministic and collision-resistant for the message business key?</li>
-            <li>For operations spanning message broker + database: is the Transactional Outbox pattern being used instead?</li>
-            <li>Is the exactly-once boundary documented so future developers understand its scope and limitations?</li>
+            <li>Is duplicate processing unacceptable for correctness, compliance, or revenue?</li>
+            <li>Is the certified boundary drawn on the architecture diagram (which components are in scope)?</li>
+            <li>For Kafka EOS: unique transactional IDs, read_committed consumers, and load tests completed?</li>
+            <li>For FIFO: business-key deduplication plus durable consumer dedup for replays?</li>
+            <li>For DB plus queue: Outbox or equivalent—no naked dual writes?</li>
+            <li>Are integration tests exercising redelivery, abort, and producer retry—not only happy path?</li>
+            <li>Does runbook documentation state what is *not* guaranteed outside the boundary?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>A Kafka Streams payment aggregation job uses EOS to ensure that each payment event is counted exactly once in the running balance, even when the job restarts after a crash mid-batch.</li>
-            <li>An SQS FIFO queue with content-based deduplication routes order creation events to a fulfilment service, ensuring that network retries from the producer do not create duplicate orders within the 5-minute window.</li>
-            <li>Apache Flink's checkpointing mechanism combined with Kafka transactional sinks provides exactly-once output for a fraud detection pipeline that writes alerts to a results topic.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind</strong> routes settlement events through Kafka EOS so each payment ID updates the rolling balance once across restarts; external ledger export still uses Outbox because it crosses JDBC.</li>
+            <li><strong>Illustrative scenario —</strong> A checkout API retries enqueue to SQS FIFO with <code>MessageDeduplicationId=order_id</code>; fulfilment workers idempotently insert orders so late redeliveries noop.</li>
+            <li><strong>Case study —</strong> Confluent’s Kafka transactions design (see Confluent blog on transactions) documents how idempotent producers and transactional commits bound duplicates inside the broker.</li>
+            <li><strong>Case study —</strong> Stream processors such as Apache Flink combine checkpointing with exactly-once sinks for fault-tolerant analytics pipelines—documented in Flink’s delivery semantics guides.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="at-least-once-delivery.html">At-Least-Once Delivery</a> — the more common guarantee; exactly-once is built on top of at-least-once with deduplication.</li>
-            <li><a href="../foundations/idempotency.html">Idempotency</a> — when exactly-once at the broker level is impossible, idempotency at the consumer level achieves the same effect.</li>
-            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — achieves effectively-exactly-once for database + message broker spans.</li>
+            <li><a href="at-least-once-delivery.html">At-Least-Once Delivery</a> — the substrate; exactly-once adds coordination or deduplication.</li>
+            <li><a href="../foundations/idempotency.html">Idempotency</a> — still required at boundaries EOS cannot certify.</li>
+            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — effectively-once across database and broker.</li>
+            <li><a href="poison-messages.html">Poison Message Handling</a> — duplicates and poison messages interact in DLQ design.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.confluent.io/blog/transactions-apache-kafka/" rel="noopener noreferrer" target="_blank">Transactions in Apache Kafka — Confluent Blog</a> — deep dive into Kafka's exactly-once transactional API design.</li>
-            <li><a href="https://exactly-once.github.io/" rel="noopener noreferrer" target="_blank">Exactly-Once Processing in Distributed Systems</a> — comprehensive academic-style treatment of the achievability and scope of exactly-once guarantees.</li>
-            <li><a href="https://sre.google/sre-book/table-of-contents/" target="_blank" rel="noopener noreferrer">Google SRE book</a></li>
+            <li><a href="https://www.confluent.io/blog/transactions-apache-kafka/" rel="noopener noreferrer" target="_blank">Transactions in Apache Kafka — Confluent</a></li>
+            <li><a href="https://exactly-once.github.io/" rel="noopener noreferrer" target="_blank">Exactly-Once Processing in Distributed Systems</a></li>
+            <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues.html" rel="noopener noreferrer" target="_blank">Amazon SQS FIFO queues — AWS Documentation</a></li>
           </ul>
-        </div>
+        </div>        </div>
 
         <nav class="article-nav" aria-label="Article navigation">
           <a href="poison-messages.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Poison Message Handling</span></a>
