@@ -102,33 +102,33 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Caching is the practice of storing copies of frequently accessed data in a fast-access storage layer (in-process memory, a distributed cache like Redis, or a CDN edge node) to reduce the latency and load of retrieving that data from the authoritative source (a database, an API, or a file system). A cache hit serves the data immediately from fast storage; a cache miss fetches from the origin and optionally populates the cache for subsequent requests. The cache-to-origin latency ratio is typically 100–1000×, making caching the single most impactful performance optimization available to most systems.</p>
-          <p>Several distinct caching patterns exist, each with different consistency and complexity tradeoffs. <strong>Cache-aside</strong> (lazy loading) is the most common: the application checks the cache first, handles misses by loading from the database, and writes the result to the cache. <strong>Read-through</strong> delegates both the cache check and the origin load to a caching library or proxy, keeping application code simpler. <strong>Write-through</strong> writes to both cache and database synchronously on every write, keeping the cache always consistent. <strong>Write-behind</strong> (write-back) writes to the cache immediately and asynchronously persists to the database, optimizing write latency at the cost of potential data loss.</p>
+          <p>Caching stores frequently used data in a faster tier—process memory, a distributed store such as Redis, or a CDN edge—so requests avoid repeated work against the authoritative source (database, upstream API, object store). On a hit the caller reads from the fast tier; on a miss it loads from origin, optionally populates the cache, and returns. Latency ratios of 100× or more versus a database round trip make caching the default first lever for read-heavy systems.</p>
+          <p>Four application patterns dominate: <strong>cache-aside</strong> (application loads on miss), <strong>read-through</strong> (cache library loads transparently), <strong>write-through</strong> (synchronous cache and DB update), and <strong>write-behind</strong> (cache first, async persistence). Redis supports all four via client libraries, Lua scripts for atomic read-modify-write, and optional persistence (RDB/AOF) when the cache must survive restarts without full cold reload.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Database queries are expensive: they require network round trips, disk I/O for uncached pages, CPU for query planning and execution, and lock acquisition. For read-heavy workloads, a cache serves the same data at microsecond latency compared to millisecond database latency, and without consuming any database CPU or I/O resources. This means a small Redis cluster can absorb traffic that would otherwise require many expensive database read replicas. Cache hit ratios of 90–99% are achievable for stable reference data, translating to a 10–100× reduction in database load.</p>
-          <p>Caching is also essential for external API calls. Third-party APIs have rate limits, latency unpredictability, and cost per call. Caching their responses for minutes or hours reduces both cost and latency while providing resilience against API outages. CDN caching extends this to static assets and even dynamic API responses, delivering content from edge nodes geographically close to users with latencies under 5ms regardless of origin location.</p>
+          <p>DDIA treats caches as read replicas in memory: they duplicate authoritative state to avoid repeating expensive work. A round trip to PostgreSQL or a remote API pays latency, CPU, and contention on shared storage that a Redis GET or an in-process hit avoids entirely. For skewed read workloads, a modest Redis cluster routinely achieves 90–99% hit ratios on catalog, config, and session keys, which can translate into an order-of-magnitude reduction in primary read load compared with adding more database replicas alone.</p>
+          <p>Caching also decouples your SLA from someone else’s. Third-party APIs impose quotas, variable latency, and outage risk; caching their responses for bounded intervals cuts cost and shields users when upstream fails. Cloudflare and Fastly extend the same idea to the edge: geographically distributed PoPs serve static and selectively cacheable dynamic responses in single-digit milliseconds, multiplying effective origin capacity during viral spikes when auto-scaling alone cannot keep pace.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Data is read far more frequently than it changes and the system can tolerate brief staleness.</li>
-            <li>Computing or fetching the data is expensive (complex database queries, external API calls, CPU-intensive computations).</li>
-            <li>The same data is accessed by many users or processes concurrently — cache hit ratio will be high.</li>
-            <li>You need to absorb traffic spikes without proportionally scaling the database or origin service.</li>
-            <li>You are serving static or semi-static assets (HTML, CSS, JS, images, API responses) to geographically distributed users.</li>
-            <li>Session data needs to be shared across horizontally scaled application instances.</li>
+            <li>Read frequency dominates write frequency and stakeholders accept documented staleness between invalidation or TTL expiry.</li>
+            <li>Origin work is costly: multi-table joins, aggregation, geocoding calls, or model inference that should not run on every HTTP request.</li>
+            <li>Many clients request the same key space concurrently, so shared Redis or CDN entries amortize work across users.</li>
+            <li>Traffic is bursty or viral and you need a buffer before read replicas, connection pools, or primary CPU saturate.</li>
+            <li>Global users fetch static or semi-static assets and cacheable JSON from origins far away; edge caching shifts bytes closer to eyeballs.</li>
+            <li>Horizontally scaled stateless apps need a central session or token store—Redis is the usual shared-nothing session backplane.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Data changes on every request or is unique to each user/request (e.g., personalized real-time feeds, financial account balances).</li>
-            <li>Strict consistency is required and stale reads would cause incorrect system behavior (inventory levels, financial transactions).</li>
-            <li>The cache hit ratio would be too low to justify the operational overhead (data with near-uniform random access across millions of unique keys).</li>
-            <li>Sensitive data that must not be stored outside the primary database for compliance or security reasons (PII, credentials).</li>
+            <li>Each request returns a unique payload with no reuse across users, so every key is a miss and cache memory is wasted.</li>
+            <li>Read-your-writes or linearizable reads are mandatory and you have not invested in write-through, versioning, or invalidation on commit.</li>
+            <li>Access patterns are uniformly random across huge key spaces, producing persistently low hit ratio despite operational overhead.</li>
+            <li>Regulation or threat models forbid retaining certain fields outside the primary datastore, even encrypted in Redis or at a CDN vendor.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Cache-aside, write-through, and write-behind trade off consistency, latency, and durability; L1/L2/CDN stack them.</p>
+          <p>Requests traverse L1 in-process, L2 Redis, then origin; writes choose cache-aside, write-through, or write-behind depending on durability needs.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     aside["Cache-aside: miss loads DB then populates cache"]
@@ -182,7 +182,7 @@
   FIFO: evict oldest inserted item (rare)
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Cache-aside on miss, write-through synchronous DB, write-behind async queue, plus multi-level L1 Redis CDN.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">CDN absorbs static traffic; app instances use in-process then Redis before hitting the database on a miss.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -190,21 +190,21 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Dramatically reduces database load and query latency; 100–1000× faster than a database round trip.</li>
-                <li>Enables horizontal application scaling without proportional database scaling.</li>
-                <li>Provides resilience against database outages for read operations on cached data.</li>
-                <li>CDN caching reduces origin bandwidth costs and improves global latency for static assets.</li>
-                <li>Write-behind caching can absorb write bursts, smoothing database write load.</li>
+                <li>Sub-millisecond reads from RAM shrink user-facing latency and free primary database connections for writes and rare misses.</li>
+                <li>App tiers can scale out under DDIA’s shared-nothing model while hot keys concentrate in Redis and CDN rather than every pod.</li>
+                <li>Graceful degradation is possible: serve slightly stale catalog from Redis when the primary is degraded, within policy.</li>
+                <li>Cloudflare and Fastly edge hits cut cross-region egress bills and latency for assets and cacheable API responses.</li>
+                <li>Write-behind queues smooth write spikes into the database at the cost of durability complexity you can document explicitly.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Cache invalidation is notoriously difficult; stale data can persist longer than expected.</li>
-                <li>Adds operational complexity: cache warming on deployments, eviction tuning, monitoring hit ratios.</li>
-                <li>Write-behind caching risks data loss if the cache fails before the async write completes.</li>
-                <li>Thundering herd on cache misses: all instances simultaneously query the database for the same key after eviction.</li>
-                <li>Cache poisoning: malformed or malicious data written to cache spreads to all consumers.</li>
+                <li>Consistency is never free; cache-aside without invalidation guarantees stale reads until TTL, as Kleppmann emphasizes for derived data.</li>
+                <li>Operators must tune eviction policies, warm caches on deploy, and alert on hit ratio and memory pressure.</li>
+                <li>Write-behind loses in-flight updates if Redis restarts before the async flush completes unless you add durable queues.</li>
+                <li>Popular key expiry can synchronize stampedes; mitigate with Redis single-flight locks or probabilistic early refresh.</li>
+                <li>A single bad write poisons every consumer of that key until deletion—validate before <code>SET</code> and namespace keys carefully.</li>
               </ul>
             </div>
           </div>
@@ -212,49 +212,53 @@
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Eviction and TTL tuning:</strong> TTL is the most important parameter — too short and cache hit rate drops; too long and stale data accumulates. Start with empirical measurement: P95 time between updates for the data type. For product catalogs updated hourly, TTL=5 minutes is appropriate. For user profile data updated rarely, TTL=1 hour is fine.</p>
           <p>Use LRU eviction for general caches where access patterns follow a power law (20% of keys receive 80% of traffic). Use LFU for caches where frequency of access is a better predictor of future access than recency (e.g., global top-K popular items). Use TTL-only eviction when data expires independently of access pattern (session tokens, rate limit counters).</p>
-          <p><strong>Thundering herd prevention:</strong> When a popular cache key expires, all concurrent requests that miss the cache simultaneously query the database. Prevent this with probabilistic early expiration: instead of expiring at exactly TTL, each request computes <code>if (current_time + delta &gt; expiry)</code> where delta is drawn from a probability distribution — allowing one request to regenerate the cache before it actually expires. An alternative is the "mutex on miss" pattern: the first miss acquires a distributed lock (Redis SET NX with expiry), re-fetches from DB and populates cache, while subsequent misses wait for the lock and then re-check the cache. <strong>Cache warming:</strong> After a deployment or Redis restart, the cache is cold and all requests miss simultaneously.</p>
-          <p>Implement a warm-up job that pre-populates the most frequently accessed keys from the database before routing production traffic to new instances.</p>
+          <p><strong>Redis eviction and memory:</strong> Set <code>maxmemory-policy</code> to <code>allkeys-lru</code> or <code>volatile-lru</code> per access pattern; monitor <code>evicted_keys</code> and <code>used_memory</code>. Use separate logical databases or key prefixes for session, catalog, and rate-limit data so one tenant cannot evict another's keys. For cluster mode, design keys so hot keys shard across hash slots—see Redis cluster slot guidance before pinning everything on one hashtag.</p>
+          <p><strong>Thundering herd prevention:</strong> Use probabilistic early expiration (XFetch) or a miss mutex: <code>SET lock:{key} 1 NX EX 10</code> in Redis, single loader refreshes, others re-read the key. <strong>Cache warming:</strong> After deploy or failover, run a warm-up job that preloads top-N keys from read replicas or primary before shifting traffic; pair with <a href="cache-invalidation.html">explicit invalidation</a> on writes so warm data is not stale.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Cache stampede (thundering herd):</strong> Popular key expires; hundreds of concurrent requests miss and hammer the database. Mitigate with mutex-on-miss or probabilistic early expiration.</li>
-            <li><strong>Stale cache serving incorrect data:</strong> An item is updated in the database but the cache TTL has not expired. Clients see old data. Use event-driven invalidation for data that must be fresh immediately after writes.</li>
-            <li><strong>Cache key collisions:</strong> Two different data types share the same key namespace; a product with ID 42 collides with a user with ID 42. Always namespace keys: <code>product:42</code>, <code>user:42</code>.</li>
-            <li><strong>Cache used as primary store:</strong> Application logic depends on data always being in cache without a fallback to the database. Redis restart causes data loss and application failure. Cache is volatile; the database is always the source of truth.</li>
-            <li><strong>High memory eviction rate:</strong> Cache is undersized, causing constant eviction of recently added entries. The cache hit rate collapses and the database receives nearly all traffic. Monitor eviction rate metrics and right-size the cache.</li>
+            <li><strong>Thundering herd on expiry:</strong> A hero key’s TTL aligns across pods; simultaneous misses overload the primary. Use Redis <code>SET lock NX</code>, early refresh, or a longer soft TTL with background reload.</li>
+            <li><strong>Uninvalidated staleness:</strong> Writers update the database but readers keep serving old Redis values until TTL. Pair cache-aside with <a href="cache-invalidation.html">post-commit invalidation</a> for freshness-sensitive types.</li>
+            <li><strong>Key namespace collisions:</strong> Numeric IDs reused across entity types produce cross-talk. Prefix every key with type and schema version, for example <code>v2:product:42</code>.</li>
+            <li><strong>Cache-as-source-of-truth:</strong> Business logic assumes Redis always has state; restart empties data and breaks checkout. Always implement miss paths to the authoritative store.</li>
+            <li><strong>Eviction-driven collapse:</strong> <code>maxmemory</code> is too small for working set; Redis evicts hot keys continuously and hit ratio falls off a cliff. Track <code>evicted_keys</code> and scale memory or shard.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Cache hit ratio target has been defined (e.g., &gt;90%) and the data access pattern supports it (some data has natural locality).</li>
-            <li>A caching strategy (cache-aside, read-through, write-through, write-behind) has been chosen based on consistency and complexity requirements.</li>
-            <li>TTL values are set based on the actual update frequency of each data type, not an arbitrary default.</li>
-            <li>Thundering herd prevention is implemented for high-traffic cache keys.</li>
-            <li>Cache is namespaced to prevent key collisions across data types and application versions.</li>
-            <li>Fallback behavior on cache miss (and Redis unavailability) is implemented and tested.</li>
-            <li>Cache hit ratio, eviction rate, and memory usage are monitored with appropriate alerts.</li>
+            <li>Target hit ratio and acceptable staleness per data class are documented and measurable in metrics.</li>
+            <li>Read/write pattern (cache-aside, read-through, write-through, write-behind) matches consistency needs and team operational skill.</li>
+            <li>TTL defaults come from measured change frequency, not copied from another service’s config.</li>
+            <li>High-cardinality hot keys have stampede protection tested under load.</li>
+            <li>Key naming conventions prevent collisions across services, tenants, and deployment versions.</li>
+            <li>Miss and Redis-outage behavior is defined (fail open to DB vs fail closed) and covered in chaos or integration tests.</li>
+            <li>Dashboards alert on hit ratio drops, memory near <code>maxmemory</code>, and elevated eviction rates alongside origin latency.</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Product catalog:</strong> An e-commerce site caches product detail pages in Redis with a 5-minute TTL. 95% of product page requests are served from cache, reducing database read load by 20× and dropping median response time from 120ms to 4ms.</li>
-            <li><strong>User session storage:</strong> A horizontally scaled API tier stores user session tokens in Redis with a 30-minute TTL. Any application instance can validate a session without a database lookup, enabling stateless horizontal scaling.</li>
-            <li><strong>External API response caching:</strong> A weather service API response is cached in Redis for 10 minutes. During peak traffic, thousands of requests per second are served from the cache while only one request per 10 minutes hits the external API, staying within rate limits.</li>
+            <li><strong>Illustrative scenario — product catalog:</strong> Product detail JSON lives in Redis with five-minute TTL and <code>product:{id}</code> namespacing. Hit ratio above 95% cuts database reads roughly 20× and median latency from ~120ms to single-digit milliseconds.</li>
+            <li><strong>Illustrative scenario — session store:</strong> A stateless API fleet stores sessions in Redis with 30-minute TTL; any pod validates tokens without sticky sessions or database lookups.</li>
+            <li><strong>Case study — Cloudflare CDN:</strong> Static assets and cacheable API responses are served from edge PoPs with <code>Cache-Control</code> headers set at origin, offloading origin egress during traffic spikes.</li>
+            <li><strong>Illustrative scenario — upstream API budget:</strong> Third-party geocoding responses cache in Redis for ten minutes; one origin call per key per window keeps the integration inside vendor rate limits.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="cache-invalidation.html">Cache Invalidation</a> — the critical follow-on topic: how to keep cached data fresh when the source changes.</li>
-            <li><a href="cdn-architecture.html">CDN Architecture</a> — extends caching to the network edge for static and semi-static content.</li>
-            <li><a href="read-replicas.html">Read Replicas</a> — a complementary database-level read scaling strategy when caching hit rates are insufficient.</li>
-            <li><a href="hot-partition-mitigation.html">Hot Partition Mitigation</a> — caching is the primary fix for read hotspots in partitioned databases.</li>
+            <li><a href="cache-invalidation.html">Cache Invalidation</a> — every caching strategy eventually needs a freshness policy; TTL alone is rarely enough for mutable data.</li>
+            <li><a href="cdn-architecture.html">CDN Architecture</a> — L3 cache in DDIA terms: geographic fan-out with provider-specific cache keys and purge semantics.</li>
+            <li><a href="read-replicas.html">Read Replicas</a> — when working sets exceed Redis or hit ratios fall, push repeated SQL to replicas and cache only the hottest keys.</li>
+            <li><a href="hot-partition-mitigation.html">Hot Partition Mitigation</a> — front hot shard keys with Redis to spread read load without moving data immediately.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://redis.io/docs/manual/patterns/" target="_blank" rel="noopener noreferrer">Redis — Common Caching Patterns and Recipes</a></li>
-            <li><a href="https://aws.amazon.com/caching/best-practices/" target="_blank" rel="noopener noreferrer">AWS — Caching Best Practices</a></li>
-            <li><a href="https://martinfowler.com/bliki/TwoHardThings.html" target="_blank" rel="noopener noreferrer">Martin Fowler — Two Hard Things (cache invalidation)</a></li>
+            <li><a href="https://redis.io/docs/manual/patterns/" target="_blank" rel="noopener noreferrer">Redis — common caching patterns and recipes</a></li>
+            <li><a href="https://redis.io/docs/manual/eviction/" target="_blank" rel="noopener noreferrer">Redis — key eviction (maxmemory policies)</a></li>
+            <li><a href="https://redis.io/docs/manual/patterns/distributed-locks/" target="_blank" rel="noopener noreferrer">Redis — distributed locks (miss mutex / single-flight)</a></li>
+            <li><a href="https://developers.cloudflare.com/cache/" target="_blank" rel="noopener noreferrer">Cloudflare — cache and CDN behavior</a></li>
+            <li><a href="https://docs.fastly.com/products/caching" target="_blank" rel="noopener noreferrer">Fastly — edge caching product overview</a></li>
+            <li><a href="https://martinfowler.com/bliki/TwoHardThings.html" target="_blank" rel="noopener noreferrer">Martin Fowler — two hard things (cache invalidation)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

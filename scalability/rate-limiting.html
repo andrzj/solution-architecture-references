@@ -102,31 +102,33 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Rate limiting controls the number of requests a client can make to an API or service within a given time window. When a client exceeds its allowed rate, subsequent requests are rejected with HTTP 429 Too Many Requests until the window resets or the client slows down. Rate limiting serves two distinct purposes: it protects the service from being overwhelmed by any single client (even a legitimate one experiencing a bug), and it provides fair resource sharing across all clients in a multi-tenant system.</p>
-          <p>Five primary algorithms implement rate limiting, each with different characteristics. <strong>Fixed window counter</strong> counts requests in discrete time windows (e.g., 0–60 seconds). <strong>Sliding window log</strong> tracks exact timestamps of every request for precise counting but uses significant memory. <strong>Sliding window counter</strong> approximates a sliding window using two fixed window counters and is the most practical distributed approach. <strong>Token bucket</strong> allows bursts up to a bucket capacity while enforcing a long-term average rate. <strong>Leaky bucket</strong> enforces a strictly uniform output rate by queuing and processing requests at a fixed rate.</p>
+          <p><strong>Rate limiting</strong> caps how many requests a client—or tenant, API key, or IP—may make to an API within a time window. When the limit is exceeded, the edge returns HTTP 429 Too Many Requests (often with <code>Retry-After</code> and rate-limit headers) instead of admitting more work. The control is deliberately harsh: excess demand is rejected, not queued, so one caller cannot consume shared capacity indefinitely.</p>
+          <p>Production systems choose among several counter shapes. <strong>Fixed-window</strong> counters are simple but allow boundary bursts. <strong>Sliding-window counter</strong> blends two windows for a practical distributed default. <strong>Token bucket</strong> permits bounded bursts while enforcing a long-term average. <strong>Leaky bucket</strong> smooths output to protect strict downstream rates. <strong>Sliding-window log</strong> is exact but memory-heavy—usually reserved for low-cardinality keys.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without rate limiting, a single misbehaving client can consume all available server resources, causing degraded performance or outright failures for all other clients. A buggy application that enters an infinite retry loop, a web scraper running at maximum speed, or a DDoS attack all present as sudden traffic spikes from specific sources. Rate limiting provides the first line of defense that caps per-client impact before it cascades to system-wide failures.</p>
-          <p>For public APIs with SLA tiers (free/basic/premium), rate limiting is the enforcement mechanism for those tiers. A free tier limited to 100 requests/minute cannot degrade service for a paid tier at 10,000 requests/minute because the application layer enforces the boundary. Rate limiting also protects downstream dependencies: a database that handles 5,000 queries/second will fail at 50,000; rate limiting the API tier ensures that no combination of clients can drive more than the safe maximum throughput.</p>
+          <p>Unbounded clients can monopolize CPU, sockets, and database time. Runaway retries, aggressive crawlers, and volumetric attacks look like legitimate traffic until the shared tier collapses—rate limits cap how much damage one identity can inflict before overload propagates.</p>
+          <p>Commercial APIs encode entitlements as numbers: free, standard, and enterprise tiers differ by requests per minute and burst allowance. Enforcement at the edge turns pricing into mechanical truth instead of hoping noisy neighbors behave. A free tier capped at 100 requests per minute cannot crowd out a paid tier at 10,000 requests per minute when counters are enforced consistently.</p>
+          <p>The same counters guard fragile downstreams—inference clusters, partner webhooks, and OLTP pools—so aggregate demand cannot exceed documented safe throughput. A database comfortable at 5,000 queries per second will not survive 50,000 unless the API tier shapes arrivals first.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Public APIs exposed to arbitrary clients — bots, scrapers, misconfigured applications, and DDoS attacks are all real threats.</li>
-            <li>Multi-tenant SaaS platforms where a single tenant's traffic must not starve other tenants.</li>
-            <li>APIs with tiered subscription plans (free vs. paid) where the tier limits are business-critical.</li>
-            <li>Any API that calls a downstream resource with known capacity limits (external APIs, databases, AI inference endpoints).</li>
-            <li>Login and authentication endpoints to prevent brute-force and credential stuffing attacks.</li>
+            <li>Internet-facing endpoints where callers are unauthenticated, unknown, or only weakly identified.</li>
+            <li>Multi-tenant products that must isolate noisy neighbors before one tenant skews P99 for everyone else.</li>
+            <li>Monetized APIs where plan limits are part of the contract and support tooling.</li>
+            <li>Facades over capacity-constrained dependencies—third-party SaaS, GPUs, or shards with hard QPS ceilings.</li>
+            <li>Authentication surfaces (login, MFA, password reset) to blunt brute force and credential-stuffing automation.</li>
+            <li>Webhook receivers and partner callbacks where retry storms from one integration can drown shared workers.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Internal service-to-service calls within a trusted network where the caller is always known and controlled — circuit breakers and bulkheads are more appropriate.</li>
-            <li>Single-tenant systems with a single known client where per-client rate limiting provides no benefit.</li>
-            <li>When server-side throttling (request queuing and backpressure) is more appropriate than rejection — rate limiting rejects excess requests, while throttling queues them.</li>
+            <li>East-west calls inside a mesh with mTLS, service identity, and existing bulkheads—prefer breakers and budgets there.</li>
+            <li>Dedicated single-tenant integrations with contractual traffic profiles and private networking.</li>
+            <li>Workloads that need queueing and backpressure rather than hard 429—pair with <a href="request-throttling.html">request throttling</a> when delay is acceptable.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Pick fixed window, sliding counter, token bucket, or leaky bucket; enforce consistently in Redis with 429 headers.</p>
+          <p>Middleware evaluates a counter keyed by client identity; allowed requests continue, rejected ones return 429 with standard headers.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     fw["Fixed window — boundary burst"]
@@ -179,7 +181,7 @@
   X-RateLimit-Reset: 1699123456
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Algorithm tradeoffs and distributed Redis sliding-window counter returning standard rate limit headers.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Distributed counters decide admit vs 429; token bucket and sliding-window variants differ only in how the store updates.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -187,67 +189,75 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Protects server resources from runaway clients; provides a hard ceiling on per-client impact.</li>
-                <li>Enables fair multi-tenancy: no single client can starve others of resources.</li>
-                <li>Doubles as a security control: limits brute-force, credential stuffing, and DDoS amplification attacks.</li>
-                <li>Token bucket algorithm allows legitimate burst traffic while enforcing long-term averages — good for APIs with bursty but bounded workloads.</li>
-                <li>Redis-based distributed rate limiting works correctly across horizontally scaled API instances with atomic Lua scripts.</li>
+                <li>Hard per-identity ceilings stop one bad actor from pinning CPU, threads, or connection pools.</li>
+                <li>Fairness across tenants and API keys preserves SLA headroom for paying customers.</li>
+                <li>Coarse abuse controls on login and webhook endpoints reduce fraud and amplification risk.</li>
+                <li>Token buckets honor short legitimate bursts while constraining sustained averages.</li>
+                <li>Central counters in Redis (Lua/CAS) stay consistent across horizontally scaled gateway replicas.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Fixed window counters allow double the limit at window boundaries (boundary burst attack).</li>
-                <li>Sliding window log uses O(requests) memory per client — untenable for millions of clients at high request rates.</li>
-                <li>Distributed rate limiting adds Redis round-trip latency (1–2ms) to every API request.</li>
-                <li>IP-based rate limiting is ineffective when many users share a NAT IP (corporate offices, ISP CGNAT).</li>
-                <li>Legitimate clients that exceed limits during peak usage need retry logic and backoff; poor implementation causes cascading retry storms.</li>
+                <li>Fixed windows admit 2× traffic across boundaries unless you blend or slide windows.</li>
+                <li>Exact sliding logs need O(requests) storage—impractical at millions of keys and high RPS.</li>
+                <li>Every check adds datastore RTT unless you embed limits in the edge or sidecar with local cache.</li>
+                <li>NAT and carrier-grade NAT collapse many humans into one IP bucket—false positives abound.</li>
+                <li>Clients that hammer retries on 429 multiply load; backoff discipline must be documented and tested.</li>
+                <li>Misconfigured limits on shared infrastructure (API gateway + app) can double-charge clients or reject legitimate traffic.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Algorithm selection:</strong> For most APIs, the sliding window counter implemented with Redis is the best choice: it approximates a true sliding window, uses only 2 counters (O(1) memory), and is accurate within ~0.5% of the ideal algorithm. Use token bucket when your API clients have legitimately bursty access patterns (e.g., an analytics job that queries 500 records at startup then only 5 records/minute ongoing). Use leaky bucket when protecting a downstream with a strict rate requirement (e.g., an external AI API with a hard 10 req/s limit). Avoid sliding window log in production — O(requests) memory does not scale.</p>
-          <p><strong>Rate limit keys:</strong> Choose the right client identifier. API key rate limiting is the most precise — it tracks by authenticated client regardless of IP. IP-based rate limiting is appropriate for unauthenticated endpoints (login) but is unreliable for corporate or mobile clients behind NAT. User-based rate limiting (authenticated user ID) is best for per-user fairness in SaaS products.</p>
-          <p>Implement multiple dimensions: per-IP for unauthenticated, per-API-key for authenticated, and global limits per endpoint as a last resort against total overload. Use separate Redis key namespaces per dimension: <code>rl:ip:{ip}</code>, <code>rl:key:{apikey}:{endpoint}</code>.</p>
+          <p><strong>Algorithm selection:</strong> Default to sliding-window counter in Redis—two buckets per key, near-ideal accuracy, O(1) memory, typically within ~0.5% of a true sliding window. Choose token bucket when onboarding bursts are expected (an analytics job that reads 500 rows then trickles). Use leaky bucket when shaping output to a partner’s rigid RPS (for example an external AI API capped at 10 req/s). Reserve sliding-window logs for audits or tiny cardinalities, not production hot paths—O(requests) memory per key explodes at scale.</p>
+          <p><strong>Rate limit keys:</strong> Authenticated traffic should key on API key or user ID; reserve IP keys for pre-auth routes. IP limits are appropriate for login and registration but unreliable behind corporate NAT or mobile carrier CGNAT. Layer dimensions: per-IP guardrails, per-key quotas, per-route expensive POST caps, and optional global circuit breakers on pathological endpoints.</p>
+          <p>Namespace keys deliberately (<code>rl:ip:{ip}</code>, <code>rl:key:{id}:{route}</code>) so TTL eviction and observability stay understandable during incidents. Run limiter logic in a single Lua script or atomic transaction so horizontally scaled gateways do not double-count under race.</p>
+          <p><strong>Response contract:</strong> Standardize on HTTP 429 with <code>Retry-After</code>, <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, and <code>X-RateLimit-Reset</code> (or IETF <code>RateLimit-*</code> headers where adopted). Clients and SDKs should parse headers instead of guessing backoff intervals.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Redis unavailability:</strong> If the rate limiting Redis cluster goes down, should the API allow all traffic (fail open) or reject all traffic (fail closed)? Fail open is safer for availability but vulnerable to abuse during outages. Implement Redis availability monitoring and fail-open with alerting.</li>
-            <li><strong>Retry storm amplification:</strong> Clients receive 429, retry immediately without backoff, and generate more requests. Always respond with <code>Retry-After</code> and document exponential backoff requirements. Implement progressive penalties for clients that don't respect Retry-After.</li>
-            <li><strong>Shared IP rate limit starvation:</strong> Corporate users all behind one NAT IP all share an IP-based rate limit. An automated process at one user's desk exhausts the IP limit for 500 colleagues. Use API key authentication to provide per-user limits rather than per-IP for authenticated endpoints.</li>
-            <li><strong>Clock skew in distributed counters:</strong> If two API instances have clock skew of 1 second and use a 1-second fixed window, they may be in different windows simultaneously. Use server-side Unix timestamps from Redis (REDIS TIME command) to avoid this.</li>
+            <li><strong>Redis unavailability:</strong> Decide fail-open vs fail-closed before the outage—open preserves revenue but invites abuse; closed protects capacity but creates total outage. Automate health checks and page when limiter bypass activates.</li>
+            <li><strong>Retry storm amplification:</strong> Clients ignore <code>Retry-After</code> and retry in tight loops—document backoff, jitter, and cap client concurrency; optionally penalize repeat offenders with longer windows.</li>
+            <li><strong>Shared IP rate limit starvation:</strong> Corporate NAT exhausts a single IP quota—require API keys for steady-state traffic and raise IP limits only on login-specific routes.</li>
+            <li><strong>Clock skew in distributed counters:</strong> Mixed host clocks desynchronize fixed windows—use Redis <code>TIME</code> or a single authority for window boundaries.</li>
+            <li><strong>Boundary burst on fixed windows:</strong> Attackers or buggy clients may send limit traffic at window rollovers—blend previous and current window counts or migrate to sliding counter/token bucket.</li>
+            <li><strong>Limiter cache staleness:</strong> Edge-local counters that lag central Redis may admit brief overages—tune sync interval versus accuracy for your SLA tier.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Rate limit algorithm has been chosen based on burst tolerance requirements: token bucket for bursty clients, sliding window counter for most use cases.</li>
-            <li>Client identifier is appropriate: API key or user ID for authenticated endpoints, IP-based only for unauthenticated (login/registration) endpoints.</li>
-            <li>HTTP 429 responses include <code>Retry-After</code>, <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, and <code>X-RateLimit-Reset</code> headers.</li>
-            <li>Fail-open behavior on Redis unavailability is acceptable for the use case; monitoring and alerting is in place.</li>
-            <li>Client SDK or documentation provides retry logic with exponential backoff for 429 responses.</li>
-            <li>Separate rate limits are defined per endpoint for expensive operations (e.g., 100/min for GET, 20/min for POST that triggers heavy computation).</li>
+            <li>Algorithm matches burst profile: sliding counter by default, token bucket where spikes are contractual.</li>
+            <li>Limiter keys align with identity: user/key for auth, IP only where identity is unknown.</li>
+            <li>429 responses carry <code>Retry-After</code> plus limit/remaining/reset headers clients can parse.</li>
+            <li>Fail-open/closed policy documented; Redis SLO monitored with runbook.</li>
+            <li>SDKs and public docs mandate exponential backoff with jitter on 429.</li>
+            <li>Heavy routes have stricter limits than cheap GETs—cost-aware quotas per endpoint class.</li>
+            <li>Limiter metrics (allowed, rejected, near-limit) are dashboarded per route and tenant for capacity planning.</li>
+            <li>Load tests validate limiter behavior under parallel clients, not only single-threaded functional tests.</li>
+            <li>Documentation explains tier limits, burst behavior, and how to request quota increases for enterprise customers.</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>SaaS API tiers:</strong> A REST API enforces 100 requests/min for free tier API keys, 1,000/min for basic, and 10,000/min for enterprise. Each tier's limit is checked in Redis using the API key as the rate limit key. Exceeding the limit returns 429 with <code>Retry-After: 60</code>.</li>
-            <li><strong>Login endpoint protection:</strong> A login endpoint applies IP-based rate limiting of 10 attempts per 15 minutes. After 5 failed attempts, the account is also temporarily locked for that IP. This prevents credential stuffing attacks that cycle through password lists at high speed.</li>
-            <li><strong>AI inference API protection:</strong> An API that calls an expensive AI model backend applies per-user token bucket limiting: 50 requests burst capacity, 5 requests/minute sustained. Power users can make 50 rapid requests when needed (e.g., batch processing) without permanently consuming the 5/min average allocation.</li>
+            <li><strong>Illustrative scenario — Northwind Logistics API:</strong> Tiered API keys map to sliding-window limits in Redis (100/min free, 1_000/min standard, 10_000/min enterprise). Over-limit calls receive 429 with <code>Retry-After</code> and remaining quota headers for SDK backoff.</li>
+            <li><strong>Illustrative scenario — login hardening:</strong> Unauthenticated login routes rate-limit by IP (10 attempts per 15 minutes) and pair with account lockout after repeated failures to slow credential-stuffing bots without throttling the whole site.</li>
+            <li><strong>Case study — Stripe:</strong> Public REST APIs document rate limits per key and rely on counter infrastructure that scales with horizontal API tiers—an established reference for algorithm choice and client backoff expectations.</li>
+            <li><strong>Illustrative scenario — inference burst:</strong> A model-serving façade applies per-user token buckets (50 burst, 5/min sustained) so batch jobs can spike briefly while protecting GPU-backed upstream quotas.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="request-throttling.html">Request Throttling</a> — the server-side complement: instead of rejecting excess requests, throttling queues and slows them down.</li>
-            <li><a href="../reliability/circuit-breaker.html">Circuit Breaker</a> — rate limiting protects a server from its clients; circuit breakers protect a client from a failing server.</li>
-            <li><a href="cdn-architecture.html">CDN Architecture</a> — CDN-level rate limiting and WAF rules can enforce coarse-grained limits before requests reach the application.</li>
+            <li><a href="request-throttling.html">Request Throttling</a> — queue and shape excess work server-side when rejection is worse than delay.</li>
+            <li><a href="../reliability/circuit-breaker.html">Circuit Breaker</a> — clients stop calling unhealthy upstreams; rate limits stop upstreams from unhealthy clients.</li>
+            <li><a href="cdn-architecture.html">CDN Architecture</a> — edge WAF and CDN tokens enforce coarse limits before origin compute.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://stripe.com/blog/rate-limiters" target="_blank" rel="noopener noreferrer">Stripe Engineering — Rate Limiters and Algorithms</a></li>
-            <li><a href="https://redis.io/glossary/rate-limiting/" target="_blank" rel="noopener noreferrer">Redis — Rate Limiting with Redis</a></li>
-            <li><a href="https://www.figma.com/blog/an-alternative-approach-to-rate-limiting/" target="_blank" rel="noopener noreferrer">Figma Engineering — An Alternative Approach to Rate Limiting</a></li>
+            <li><a href="https://stripe.com/blog/rate-limiters" target="_blank" rel="noopener noreferrer">Stripe Engineering — rate limiter design notes</a></li>
+            <li><a href="https://redis.io/glossary/rate-limiting/" target="_blank" rel="noopener noreferrer">Redis glossary — distributed rate limiting patterns</a></li>
+            <li><a href="https://www.figma.com/blog/an-alternative-approach-to-rate-limiting/" target="_blank" rel="noopener noreferrer">Figma Engineering — alternative limiter architecture</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

@@ -100,32 +100,45 @@
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>Vertical scaling (also called "scaling up") means increasing the resources of an existing machine: more CPU cores, more RAM, faster storage (NVMe vs. SATA SSD), or higher network bandwidth. Instead of running 10 × 4-vCPU instances, you run 1 × 40-vCPU instance. The software architecture does not need to change for vertical scaling — the same binary runs on a bigger box and benefits from more resources without any code modifications.</p>
-          <p>In cloud environments, vertical scaling means moving from a smaller instance type to a larger one (e.g., AWS RDS db.r6g.2xlarge → db.r6g.8xlarge). On bare-metal systems it may mean adding physical DIMM slots or swapping CPU packages. Modern cloud providers support "live resize" for some resources (EBS volume expansion, RDS storage autoscaling), but resizing compute typically requires a restart, making vertical scaling a planned operation rather than an elastic one.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p><strong>Vertical scaling</strong> (scale-up) increases throughput or capacity by giving an existing host more CPU, memory, faster storage, or network bandwidth—not by adding peers. The same process image, connection string, and deployment unit run on a larger instance type (for example AWS RDS <code>db.r6g.2xlarge</code> to <code>db.r6g.8xlarge</code>) or on bare metal with additional DIMMs and sockets.</p>
+          <p>In DDIA’s vocabulary, vertical scaling keeps data and compute on one failure domain and one memory space. That simplifies transactions, joins, and in-process caches but inherits a hard ceiling: the largest SKU your provider sells, and Amdahl’s law for workloads that do not parallelize. Cloud “live resize” often applies to disks more easily than vCPU; compute changes commonly imply restart or brief failover on managed databases.</p>
+          <p>Scale-up remains the default first response in incident playbooks when replication lag and cache hit ratio are healthy but the primary still misses latency SLO—because it changes capacity without changing application code paths or shard maps.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Not all workloads parallelize well. A single-threaded legacy application, a relational database write primary, or an in-memory analytics engine with complex cross-record joins may extract little benefit from a fleet of small instances. For these cases, vertical scaling is the only practical path to higher throughput. It is also operationally simpler: there is no load balancer to configure, no distributed session management, and no coordination overhead — one machine handles everything.</p>
-          <p>Databases are the canonical vertical scaling use case. PostgreSQL, MySQL, and Oracle are all optimized to exploit large shared_buffers, more CPU parallelism for query execution, and faster I/O. Doubling the RAM on a database server can eliminate almost all disk I/O for a working set that previously only half-fit in cache. The total cost of ownership often favors one very large RDS instance over the complexity of running a distributed database cluster with sharding, cross-shard query routers, and resharding operations.</p>
+          <p>Many production bottlenecks are genuinely single-node problems. A PostgreSQL write primary benefits from more RAM for <code>shared_buffers</code> and OS page cache; doubling memory can turn random disk reads into buffer hits overnight. Legacy binaries that cannot be sharded without a multi-year rewrite still need headroom—vertical scaling is the fastest lever during an incident.</p>
+          <p>Operators also choose scale-up to defer sharding complexity. DDIA notes that distributing data solves scale but introduces cross-shard queries and operational multiplicity. When read replicas and caching still leave the write primary CPU-saturated, a larger instance is often the next lowest-risk step—provided profiling confirms the limiting resource is CPU or RAM, not lock contention or disk IOPS caps.</p>
+          <p>Managed databases expose vertical scale as a first-class API because customers still need it: Aurora storage autoscales independently of compute, but writers still bump instance classes when CPU pegs. Kubernetes vertical pod autoscaling (VPA) and “limits requests” tuning are the container analogue—though stateless apps more often scale horizontally, statefulSets for databases still grow PVCs and CPU requests when metrics justify it.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>The bottleneck is a stateful component that cannot be horizontally scaled without significant architectural change (database write primary, single-leader Kafka broker, ZooKeeper ensemble member).</li>
-            <li>Your application is stateful with large in-memory working sets (in-memory caches, analytics engines like ClickHouse or DuckDB) that benefit greatly from more RAM.</li>
-            <li>You need a quick, low-risk capacity increase with minimal code change — vertical scaling is often the fastest path to relief during an incident.</li>
-            <li>Licensing costs or complexity of distributed coordination makes a single large instance preferable to many small ones.</li>
-            <li>CPU-bound workloads with high thread contention may benefit from NUMA-aware scheduling on a single large machine rather than cross-network communication in a cluster.</li>
-            <li>The current instance type is demonstrably under-provisioned and a cost/performance analysis shows a larger type delivers better price-performance than the next horizontal tier.</li>
+            <li>Profiling shows a clear resource ceiling on one node (memory for cache working set, CPU for single-writer OLTP, IOPS for NVMe-bound analytics).</li>
+            <li>The component cannot horizontally shard without redesign (relational write leader, ZooKeeper quorum member, singleton license).</li>
+            <li>You need hours-not-weeks relief and can accept a maintenance window or managed failover during instance class change.</li>
+            <li>In-memory engines (column stores, embedded analytics) reward larger RAM more than more network hops.</li>
+            <li>Operational headcount favors fewer, larger databases over dozens of shards to patch and back up.</li>
+            <li>You are below the cloud maximum instance size with budget for the jump in hourly cost.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>You have already reached the largest available instance type and throughput is still insufficient — there is no bigger box to move to.</li>
-            <li>Traffic patterns are spiky and unpredictable; a large always-on instance is cost-inefficient compared to auto-scaled horizontal fleets.</li>
-            <li>High availability is critical and you cannot afford even the brief downtime that most vertical resize operations require.</li>
-            <li>The workload is embarrassingly parallel and stateless — horizontal scaling will give you better throughput per dollar and better fault tolerance.</li>
+            <li>You already run the largest SKU and still miss SLO—only partitioning, sharding, or architecture change remains.</li>
+            <li>Traffic is spiky; a always-on mega-instance wastes money versus autoscaling fleets.</li>
+            <li>High availability cannot tolerate failover during resize; active-active horizontal patterns fit better.</li>
+            <li>Adding cores increases mutex contention; profiling shows regressions on larger machines (common on heavily contended OLTP).</li>
+            <li>Licensing charges per core—doubling vCPU doubles license fees, erasing hardware savings.</li>
           </ul>
 
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Scale-up moves the working set from disk-bound to memory-resident; on multi-socket hosts, NUMA locality determines whether extra RAM actually accelerates queries.</p>
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Scale-up moves the working set from disk-bound to memory-resident; on multi-socket hosts, NUMA locality determines whether extra RAM actually accelerates queries.</p>
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Scale-up moves the working set from disk-bound to memory-resident; on multi-socket hosts, NUMA locality determines whether extra RAM actually accelerates queries.</p>
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Scale-up moves the working set from disk-bound to memory-resident; on multi-socket hosts, NUMA locality determines whether extra RAM actually accelerates queries.</p>
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Scale-up moves the working set from disk-bound to memory-resident; on multi-socket hosts, NUMA locality determines whether extra RAM actually accelerates queries.</p>
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Growing vCPU and RAM keeps working sets in memory; NUMA topology matters on large sockets.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
@@ -174,74 +187,82 @@
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Before/after RDS instance scale-up and two-socket NUMA local vs remote memory access.</figcaption>
           </figure>
-
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>No application code changes required; the same binary benefits automatically.</li>
-                <li>No distributed coordination, load balancers, or session externalization needed.</li>
-                <li>Lower latency for workloads with large shared state (all data fits in a single memory space).</li>
-                <li>Operationally simple — fewer moving parts, easier to monitor and debug.</li>
-                <li>Effective for database workloads where cache hit ratio improvements are dramatic.</li>
+                <li>No application partitioning logic; same SQL and drivers, bigger box.</li>
+                <li>Lower tail latency for hot in-memory structures that would fragment across a cluster.</li>
+                <li>Simpler operations: one backup schedule, one failover pair, one upgrade window.</li>
+                <li>Effective bridge while planning sharding or read-scale-out.</li>
+                <li>Managed services automate storage autoscaling and some class changes with Multi-AZ failover.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Hard ceiling: there is a largest available instance type, and you will eventually hit it.</li>
-                <li>Typically requires downtime to resize compute (though some cloud services minimize this).</li>
-                <li>Diminishing returns: doubling CPU rarely doubles throughput beyond a certain point due to lock contention and memory bandwidth limits.</li>
-                <li>Single point of failure: one big instance means one failure domain; high availability requires expensive standby replicas.</li>
-                <li>Cost inefficiency during low-traffic periods: a large instance runs 24/7 regardless of demand.</li>
+                <li>Finite ceiling at max instance size; no elastic shrink during quiet periods.</li>
+                <li>Resize events can still page on-call even when automated.</li>
+                <li>Single failure domain unless expensive standby pairs are maintained.</li>
+                <li>Diminishing returns past the point where serial work or lock contention dominates.</li>
+                <li>Cost curve is non-linear—largest SKUs have poor price-performance per core.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Diminishing returns and Amdahl's Law:</strong> Vertical scaling follows Amdahl's Law — if 20% of your workload is serial and non-parallelizable, the maximum theoretical speedup is capped at 5× regardless of how many cores you add. Profile your application first to identify the actual bottleneck before resizing. For databases, use pg_stat_statements, EXPLAIN ANALYZE, and slow query logs to confirm whether you are CPU-bound, memory-bound (cache miss rate), or I/O-bound before choosing the instance upgrade direction.</p>
-          <p><strong>NUMA considerations:</strong> On large multi-socket servers (96+ cores), Non-Uniform Memory Access topology matters. A PostgreSQL instance will perform differently depending on whether its memory allocations are NUMA-local or must cross the interconnect. Use <code>numactl --hardware</code> to inspect topology and pin the database process to a NUMA node with <code>numactl --cpunodebind=0 --membind=0</code> to prevent cross-NUMA latency. In cloud environments, "bare metal" instance types (e.g., i4i.metal on AWS) expose NUMA directly, while virtualized instances abstract it away.</p>
-          <p>Cloud resize procedure: for RDS, initiate an instance class modification during a maintenance window; Multi-AZ deployments will perform a failover to the standby, minimizing disruption to typically under 60 seconds.</p>
+          <p><strong>Profile before purchase:</strong> Use <code>pg_stat_statements</code>, wait event analysis, and I/O metrics to distinguish CPU, memory, and disk bounds. AWS RDS Performance Insights and Azure Database advisories highlight top waits; upgrading CPU when the database is I/O-starved wastes money.</p>
+          <p><strong>Right-size dependent pools:</strong> After RAM grows, increase connection pool sizes and PostgreSQL <code>max_connections</code> cautiously—more RAM invites more concurrent queries, which can increase lock traffic. JVM heaps and G1 region sizes need retuning on larger nodes.</p>
+          <p><strong>NUMA on metal and large VMs:</strong> Pin database processes to NUMA nodes with <code>numactl</code> when cross-socket memory access shows in profiler. Cloud “metal” instance types expose topology; small burstable instances hide it.</p>
+          <p><strong>Change procedure:</strong> Schedule class modifications during low traffic; verify standby lag before failback. Document rollback to the previous class if latency does not improve—sometimes contention, not capacity, was the culprit.</p>
+          <p><strong>Combine with read path scale:</strong> Vertical scale on the primary does not add read replicas. Pair class upgrades with read replicas or caches so the write leader stops serving analytical scans. AWS Builders Library notes that scaling the wrong tier—apps when the database is the limit—only relocates the queue.</p>
+          <p><strong>Storage and IOPS:</strong> Scale-up is not only vCPU. Provisioned IOPS, throughput mode on EBS, and local NVMe instance stores must match the larger compute or queries remain disk-bound despite ample CPU. Azure premium SSD v2 and similar SKUs expose independent IOPS sliders—use them when <code>pg_stat_io</code> or equivalent shows wait time dominating.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Upgrade to wrong bottleneck dimension:</strong> Adding CPU when the real bottleneck is memory bandwidth, or adding RAM when you're I/O-bound. Always profile first.</li>
-            <li><strong>License cost explosion:</strong> Some database engines (Oracle, SQL Server) charge per-core; doubling cores doubles licensing costs, quickly exceeding hardware savings.</li>
-            <li><strong>Lock contention at higher concurrency:</strong> A larger instance allows more parallel threads, which can increase contention on global mutexes (e.g., PostgreSQL's lock manager, InnoDB buffer pool mutex), causing performance to plateau or regress.</li>
-            <li><strong>Memory fragmentation:</strong> Long-running processes on large memory instances can suffer heap fragmentation; Java applications benefit from explicit GC tuning (G1GC heap region sizing) at large heap sizes.</li>
-            <li><strong>Standby lag during failover:</strong> When failing over a Multi-AZ database after a resize, the standby may be temporarily behind in replication, causing brief write unavailability.</li>
+            <li><strong>Wrong dimension upgraded:</strong> More CPU added while buffer cache miss ratio stays high—RAM was the need.</li>
+            <li><strong>License cliff:</strong> Oracle or SQL Server per-core licensing makes scale-up economically irrational.</li>
+            <li><strong>Contention plateau:</strong> More parallel workers pile onto the same row-level hot spots; p99 latency worsens.</li>
+            <li><strong>Heap and GC pain:</strong> Large Java heaps without GC tuning cause long pause times on bigger boxes.</li>
+            <li><strong>Failover surprise:</strong> Resize triggers Multi-AZ failover; applications without reconnect backoff see error bursts.</li>
+            <li><strong>Disk not scaled:</strong> Compute class increases but EBS/IOPS limits remain—throughput caps persist.</li>
+            <li><strong>Monitoring blind spot:</strong> Dashboards show green CPU while p99 grows—check memory pressure and I/O wait, not only utilization averages.</li>
+            <li><strong>Overshoot cost:</strong> Jumping two SKUs at once doubles bill before validating the first step improved SLO.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Profiling has identified the specific resource bottleneck (CPU, RAM, I/O, network) rather than assuming.</li>
-            <li>The cost of the target instance type is compared against horizontal scaling alternatives including operational overhead.</li>
-            <li>A maintenance window or failover procedure is planned to minimize user-visible downtime during the resize.</li>
-            <li>Application configuration (connection pool sizes, thread pool sizes, JVM heap) will be updated to take advantage of new resource limits.</li>
-            <li>A rollback plan exists if the larger instance type does not yield expected improvement (e.g., performance regression from lock contention).</li>
-            <li>High availability implications are reviewed: does a Multi-AZ or standby replica need to be resized simultaneously?</li>
+            <li>Evidence identifies CPU, RAM, I/O, or network as the binding constraint?</li>
+            <li>Target instance cost compared to horizontal alternatives including engineering time?</li>
+            <li>Maintenance window, failover path, and customer communication planned?</li>
+            <li>Pool sizes, thread counts, and JVM flags updated for new limits?</li>
+            <li>Rollback instance class documented if improvement is under threshold?</li>
+            <li>Standby or replica resized in lockstep to avoid skewed failover performance?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>PostgreSQL write primary:</strong> An OLTP database serving 5,000 writes/second is consistently hitting 80% CPU on db.r6g.2xlarge. Upgrading to db.r6g.4xlarge with double the cores and RAM reduces CPU to 35% and eliminates the slow-query backlog.</li>
-            <li><strong>In-memory analytics:</strong> A ClickHouse node processing real-time dashboards benefits from moving to a 192 GB RAM instance, allowing the entire working dataset to reside in memory and reducing query latency by 10×.</li>
-            <li><strong>Legacy monolith:</strong> A single-threaded legacy Java application cannot be easily refactored to run in a distributed fashion; upgrading to a faster single-core CPU instance (higher clock speed) provides the most effective improvement.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Ledgerstone</strong> OLTP PostgreSQL hits eighty percent CPU on <code>db.r6g.2xlarge</code> during month-end; class change to <code>4xlarge</code> restores headroom while the team designs shard-by-tenant for next year.</li>
+            <li><strong>Illustrative scenario —</strong> An analytics node on ClickHouse moves to a high-memory SKU so the full thirty-day working set stays in RAM, cutting scan latency an order of magnitude.</li>
+            <li><strong>Illustrative scenario —</strong> A legacy single-threaded payroll binary cannot distribute; the team chooses higher clock-speed metal instances while wrapping new APIs in horizontally scaled services at the edge.</li>
+            <li><strong>Case study —</strong> AWS RDS documentation describes modifying instance class with Multi-AZ failover to minimize write unavailability.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="horizontal-scaling.html">Horizontal Scaling</a> — the complementary pattern; combine both for cost-efficient scalability.</li>
-            <li><a href="read-replicas.html">Read Replicas</a> — a form of horizontal scaling specifically for database read traffic, enabling the write primary to remain vertically scaled.</li>
-            <li><a href="connection-pooling.html">Connection Pooling</a> — larger instances support more concurrent connections; pooling prevents exhaustion when the instance grows.</li>
+            <li><a href="horizontal-scaling.html">Horizontal Scaling</a> — complementary elastic compute tier once data tier has headroom.</li>
+            <li><a href="read-replicas.html">Read Replicas</a> — scale reads while keeping a vertically sized write primary.</li>
+            <li><a href="connection-pooling.html">Connection Pooling</a> — prevents connection storms after larger <code>max_connections</code>.</li>
+            <li><a href="sharding-strategies.html">Sharding Strategies</a> — when vertical and replica strategies are exhausted.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ModifyInstance.html" target="_blank" rel="noopener noreferrer">AWS RDS — Modifying an Instance (Vertical Scaling Guide)</a></li>
-            <li><a href="https://en.wikipedia.org/wiki/Amdahl%27s_law" target="_blank" rel="noopener noreferrer">Amdahl's Law — Wikipedia</a></li>
-            <li><a href="https://www.postgresql.org/docs/current/kernel-resources.html" target="_blank" rel="noopener noreferrer">PostgreSQL — Kernel Resource Management (NUMA tuning)</a></li>
+            <li>Martin Kleppmann — <em>Designing Data-Intensive Applications</em>: single-node versus distributed trade-offs.</li>
+            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ModifyInstance.html" target="_blank" rel="noopener noreferrer">AWS RDS — Modifying a DB instance</a>.</li>
+            <li><a href="https://www.postgresql.org/docs/current/kernel-resources.html" target="_blank" rel="noopener noreferrer">PostgreSQL — Kernel resource usage</a>.</li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/design-principles/scale-up" target="_blank" rel="noopener noreferrer">Azure Architecture Center — Scale up</a>.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
