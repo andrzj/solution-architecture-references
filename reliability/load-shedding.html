@@ -103,70 +103,59 @@
         </div>
 
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>Load shedding is the deliberate rejection of incoming requests when a system detects it is operating beyond its safe capacity. Rather than accepting all requests and degrading uniformly — increasing latency, exhausting resources, and eventually failing entirely — a system under overload identifies which requests are least critical and rejects them immediately with an HTTP 503 Service Unavailable (with a <code>Retry-After</code> header), preserving capacity for higher-priority workloads that must continue to succeed.</p>
-          <p>Load shedding is distinct from rate limiting: rate limiting enforces per-client quotas to prevent any single client from consuming disproportionate resources; load shedding is a global, server-side admission control mechanism that activates when overall system capacity is exceeded. The two are complementary — rate limiting prevents individual client abuse; load shedding protects the system during aggregate overload regardless of source.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p>Load shedding is intentional overload protection: when a service measures that it is at or beyond safe capacity, it refuses some incoming work immediately instead of accepting everything and collapsing. Refusals are usually fast errors (often HTTP 503 with <code>Retry-After</code>) so threads, memory, and connection pools stay available for higher-priority traffic. Shedding is a server-side admission decision based on global health, distinct from per-client rate limits that police fairness.</p>
+          <p>Effective shedding requires classifying work by priority, watching multiple saturation signals, and cooperating with clients that backoff when told. The goal is not zero errors—it is preventing total failure where every request times out and no critical path succeeds.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>A system that accepts all requests under overload will queue them, consuming memory, threads, and CPU for work that will likely time out before completion. As the queue grows, latency for all requests increases, including high-priority ones. Eventually, the system enters a state of collapse where it is fully occupied processing (or timing out) low-value work while high-value requests cannot get service at all. Load shedding prevents this collapse by deliberately keeping the system below its safe operating limit — accepting fewer requests but processing each one correctly within SLA rather than accepting all requests and processing none of them correctly.</p>
+          <p>Under overload, systems that accept unbounded work build queues. Latency rises for all callers, retries amplify load, and eventually the process OOMs or the kernel thrashes. High-priority transactions (payments, auth, health checks) wait behind bulk exports or analytics traffic unless something actively refuses low-value work.</p>
+          <p>Shedding converts uncontrolled meltdown into a controlled trade-off: some callers receive explicit “try later” signals while the service preserves correct behaviour and SLOs for the workloads that matter most. It is a last-resort layer after autoscaling and queueing have been exhausted or cannot react quickly enough.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Services that experience unpredictable burst traffic (viral events, flash sales, DDoS) where autoscaling cannot respond fast enough.</li>
-            <li>Systems with a meaningful priority split between workloads (user-facing vs. background, payment vs. analytics).</li>
-            <li>Any service that cannot horizontally scale fast enough to absorb sudden traffic spikes.</li>
-            <li>Services where the cost of total collapse under overload is higher than the cost of rejecting a fraction of requests.</li>
-            <li>Batch processing pipelines that mix real-time urgent tasks with best-effort background work on the same infrastructure.</li>
+            <li>User-facing APIs with mixed criticality (reads vs batch, premium vs free tenants).</li>
+            <li>Burst-prone systems where horizontal scale lags demand (viral events, flash sales, DDoS).</li>
+            <li>Shared pools where background jobs compete with synchronous traffic on the same fleet.</li>
+            <li>Services where a partial error rate is acceptable if core journeys keep succeeding.</li>
+            <li>Gateways or meshes that can classify requests from path, header, or identity metadata.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>When all requests are equally critical and no priority ordering can be defined.</li>
-            <li>When the system can reliably autoscale fast enough to absorb bursts before overload occurs — prefer autoscaling to shedding.</li>
-            <li>Synchronous user-facing flows where a 503 response causes an unacceptable user experience — graceful degradation or queueing may be preferable.</li>
-            <li>When clients are not designed to handle 503 + retry-after responses gracefully — the behaviour of naive clients must be understood first.</li>
+            <li>When every request is equally critical and no priority order exists—fix capacity or partition workloads instead.</li>
+            <li>When clients cannot honour 503/backoff and will retry-storm the service harder.</li>
+            <li>When queueing with SLA-aware delay delivers better UX than hard failure (and backlog is bounded).</li>
+            <li>When shedding would mask chronic under-provisioning—metrics should drive capacity fixes, not permanent shedding.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Overload triggers priority-based admission: shed low-priority work first and return 503 with Retry-After.</p>
+          <p>Admission control at the edge classifies priority, compares load signals to thresholds, and admits or rejects before work reaches application threads.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart TB
-    in["Incoming requests"] --> measure["Load signals CPU queue latency threads"]
-    measure --> classify["Priority P0–P3"]
-    classify --> admit["Admitted — process"]
-    classify --> reject["Rejected — HTTP 503 Retry-After"]</div>
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    req["Requests"] --> gw["Gateway / proxy"]
+    gw --> classify["Priority label"]
+    classify --> admit{"Below threshold?"}
+    admit -->|yes| app["App handlers"]
+    admit -->|no low priority| shed["503 + Retry-After"]
+    metrics["CPU, queue, latency"] --> admit</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Load Shedding with Priority Admission Control
-════════════════════════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>Priority-Based Load Shedding
+════════════════════════════
 
-Incoming Requests → Load Measurement → Admission Decision
-                         │
-              ┌──────────┴──────────┐
-              │  Load Signals:       │
-              │  • CPU utilisation   │
-              │  • Queue depth       │
-              │  • p99 latency       │
-              │  • Active threads    │
-              └──────────┬──────────┘
-                         │ overload detected
-                         ▼
-         Priority Classification
-         ┌─────────────────────────────┐
-         │ P0: Health checks / payments│ ← always admit
-         │ P1: User reads (browse)     │ ← shed if CPU &gt; 90%
-         │ P2: User writes (orders)    │ ← shed if CPU &gt; 80%
-         │ P3: Background sync / audit │ ← shed if CPU &gt; 70%
-         └─────────────────────────────┘
-                         │
-         ┌───────────────┴──────────────┐
-         │ Admitted                      │ Rejected
-         ▼                              ▼
-   Process normally              HTTP 503
-                                 Retry-After: 5
-                                 (client backs off)</code></pre>
+  Request → Gateway → Priority (P0..P3) → Admission
+                              │
+                 load signals ┘
+                 (queue depth, p99 latency, in-flight)
+
+  P0: health / payments     → admit unless hard limit
+  P1: interactive reads   → shed at high watermark
+  P2: writes / exports      → shed earlier
+  P3: batch / webhooks      → shed first
+
+  Rejected: HTTP 503, Retry-After: N, optional X-Reason header</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Load signals drive priority classification; admitted requests run normally, rejected ones get fast 503 responses.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">The edge measures saturation, applies priority rules, and rejects low-value work before it consumes application capacity.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -174,68 +163,67 @@ Incoming Requests → Load Measurement → Admission Decision
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Protects the system from total collapse under extreme load, preserving correct behaviour for admitted requests.</li>
-                <li>High-priority workloads (payments, health checks) continue to succeed even when overall request volume exceeds capacity.</li>
-                <li>A 503 with Retry-After is a well-understood HTTP semantic that enables client cooperation — well-behaved clients back off.</li>
-                <li>Provides a controllable, measurable safety valve for handling unexpected traffic bursts.</li>
-                <li>Adaptive load shedding can adjust thresholds dynamically as system capacity changes (e.g., during rolling restarts).</li>
+                <li>Protects tail latency and success rate for prioritized traffic during spikes.</li>
+                <li>Surfaces overload explicitly—503 semantics are machine-actionable for well-behaved clients.</li>
+                <li>Cheaper than runaway retry loops that amplify outages across tiers.</li>
+                <li>Composable with autoscaling: shed while scale-out catches up.</li>
+                <li>Metrics on shed volume explain incident impact to stakeholders.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Rejecting requests is never ideal — affected users see errors, which damages experience and trust.</li>
-                <li>Priority classification is complex and must be maintained as the system evolves — new request types need classification.</li>
-                <li>Misconfigured thresholds can trigger shedding too aggressively (over-shedding) or not aggressively enough (under-shedding).</li>
-                <li>Clients that do not handle 503 gracefully may retry aggressively, worsening load rather than helping.</li>
-                <li>Does not address the root cause — if the service is regularly shedding load, it needs more capacity or efficiency improvement.</li>
+                <li>Users and partners still see errors—product and comms planning required.</li>
+                <li>Priority taxonomies decay as new endpoints ship without labels.</li>
+                <li>Wrong thresholds cause chronic over- or under-shedding.</li>
+                <li>Naive clients ignore <code>Retry-After</code> and worsen overload.</li>
+                <li>Does not replace right-sizing, caching, or bulkhead isolation.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Measure load using multiple signals simultaneously, not just CPU: CPU is a lagging indicator during I/O-bound workloads. Queue depth (length of the inbound request queue), active goroutine/thread count, and p99 response latency are often more accurate early warning signals. Combine signals with a weighted formula or use a hysteresis threshold (activate shedding at 80% load; deactivate only when load drops below 60%) to prevent rapid oscillation.</p>
-          <p>Priority assignment should be done at the entry point — API gateway or service mesh — where request metadata (HTTP method, path, tenant tier, user type) is most easily accessible. Use token bucket algorithms for priority-weighted admission: P0 traffic always gets tokens; P1 traffic gets tokens when the P0 bucket is not exhausted; P2 and P3 traffic get tokens only when surplus capacity remains. Always return HTTP 503 with a <code>Retry-After</code> header specifying the recommended wait in seconds, and include a <code>X-Reason: load-shedding</code> header for client observability.</p>
+          <p>Combine signals: queue depth and in-flight counts often lead CPU for I/O-bound services. Use hysteresis—open shedding at 85% saturation, close at 70%—to stop flapping. Implement admission at the API gateway, service mesh, or a sidecar so classification uses stable metadata (route, JWT claim, tenant tier).</p>
+          <p>Return consistent refusal bodies: HTTP 503, meaningful <code>Retry-After</code>, and optional headers such as <code>X-Reason: load-shedding</code> for client telemetry. Emit counters per priority tier and alert when P0 shed count is non-zero—that usually indicates misconfiguration or true hard limit. Load-test shedding paths: clients must parse 503 and jitter retries; document behaviour in public API guides.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Shedding critical traffic:</strong> misclassifying a critical endpoint as low-priority and shedding it during the overload event that most needs it to succeed.</li>
-            <li><strong>No client cooperation:</strong> clients ignore 503 responses and retry immediately, creating a retry storm that keeps the server permanently overloaded.</li>
-            <li><strong>Threshold too conservative:</strong> shedding begins at 50% CPU, unnecessarily rejecting traffic during normal load spikes that autoscaling would handle.</li>
-            <li><strong>Single signal threshold:</strong> using only CPU means I/O-bound overload (e.g., all threads blocked on slow DB) is not detected until CPU has actually spiked.</li>
-            <li><strong>No Retry-After header:</strong> clients cannot determine when to retry, either retrying too soon or giving up too early.</li>
+            <li><strong>Wrong priority mapping:</strong> checkout labelled P2 while marketing pixels are P0.</li>
+            <li><strong>Retry storms:</strong> mobile or partner SDKs retry immediately without backoff.</li>
+            <li><strong>Single-metric triggers:</strong> CPU low while every thread blocks on a slow database.</li>
+            <li><strong>Missing Retry-After:</strong> clients pick arbitrary delays and re-hit overload.</li>
+            <li><strong>Shedding without observability:</strong> incidents look like mysterious 5xx with no priority breakdown.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have you defined priority tiers for all request types with explicit P0/P1/P2/P3 classifications?</li>
-            <li>Are load signals multi-dimensional (CPU + queue depth + latency) rather than single-metric?</li>
-            <li>Do all 503 responses include a <code>Retry-After</code> header with a meaningful backoff suggestion?</li>
-            <li>Are shedding events logged and exposed as metrics (shed_requests_total per priority tier)?</li>
-            <li>Have you tested client behaviour under 503 responses to confirm clients back off rather than storm?</li>
-            <li>Is the shedding threshold high enough to avoid false triggers during normal load spikes?</li>
-            <li>Is there a hysteresis gap between the activate and deactivate thresholds to prevent oscillation?</li>
+            <li>Is every route or tenant mapped to an explicit priority tier?</li>
+            <li>Do shedding rules use multiple load signals with hysteresis?</li>
+            <li>Do 503 responses include <code>Retry-After</code> and structured reason headers?</li>
+            <li>Are shed and admitted requests metered separately in dashboards?</li>
+            <li>Have representative clients been tested for cooperative backoff?</li>
+            <li>Is shedding disabled or relaxed automatically when load returns below close threshold?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Google's distributed systems shed background replication and analytics requests when serving the critical user-facing search path under traffic spikes.</li>
-            <li>An API gateway that sheds webhook delivery calls (P3) and batch export requests (P2) when CPU exceeds 85%, while continuing to serve synchronous user API requests (P1) and payment processing (P0).</li>
-            <li>A Kafka consumer group with a priority queue that processes payment events before analytics events, dropping analytics messages during peak load to keep payment processing within SLA.</li>
+            <li><strong>Case study — Google:</strong> Production systems described in the SRE book shed non-critical background work to protect user-facing search under extreme load.</li>
+            <li><strong>Illustrative scenario — API gateway:</strong> Webhook delivery (P3) and CSV exports (P2) receive 503 while synchronous JSON APIs (P1) and payment callbacks (P0) continue.</li>
+            <li><strong>Illustrative scenario — stream processing:</strong> A consumer pauses analytics partition consumption during payment backlog while keeping fraud-scoring partitions fully staffed.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="graceful-degradation.html">Graceful Degradation</a> — disables features; load shedding rejects requests entirely.</li>
-            <li><a href="bulkhead-pattern.html">Bulkhead Pattern</a> — pre-allocates resource pools by workload type, a complementary isolation mechanism.</li>
-            <li><a href="circuit-breaker.html">Circuit Breaker</a> — shed at the client side; load shedding is the server-side equivalent.</li>
+            <li><a href="graceful-degradation.html">Graceful Degradation</a> — reduces features instead of rejecting requests.</li>
+            <li><a href="bulkhead-pattern.html">Bulkhead Pattern</a> — pre-partitions capacity so shedding is less needed.</li>
+            <li><a href="circuit-breaker.html">Circuit Breaker</a> — client-side fail-fast; shedding is server-side admission.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://sre.google/sre-book/handling-overload/" rel="noopener noreferrer" target="_blank">Handling Overload — Google SRE Book</a> — authoritative treatment of load shedding in Google's production systems.</li>
-            <li><a href="https://aws.amazon.com/builders-library/using-load-shedding-to-avoid-overload/" rel="noopener noreferrer" target="_blank">Using Load Shedding to Avoid Overload — AWS Builder's Library</a> — practical implementation guidance from Amazon engineering.</li>
-            <li><a href="https://sre.google/sre-book/table-of-contents/" target="_blank" rel="noopener noreferrer">Google SRE book</a></li>
+            <li><a href="https://sre.google/sre-book/handling-overload/" rel="noopener noreferrer" target="_blank">Handling Overload — Google SRE Book</a></li>
+            <li><a href="https://aws.amazon.com/builders-library/using-load-shedding-to-avoid-overload/" rel="noopener noreferrer" target="_blank">Using Load Shedding to Avoid Overload — AWS Builder's Library</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/best-practices/traffic-management" rel="noopener noreferrer" target="_blank">Traffic management — Azure Architecture Center</a></li>
           </ul>
         </div>
 

@@ -103,76 +103,71 @@
         </div>
 
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>Graceful degradation is an architectural strategy where a system intentionally reduces its feature set when under pressure — whether from dependency failures, resource exhaustion, or extreme load — while continuing to serve its most critical functions. Rather than failing completely when a component breaks, the system identifies which features are essential to its core value proposition and which are enhancements, and it sheds the enhancements to protect the essentials. This is different from the Fallback pattern (which operates at the individual call level); graceful degradation operates at the system or feature level and involves deliberate, managed transitions between defined service tiers.</p>
-          <p>Graceful degradation is closely related to graceful enhancement (also called progressive enhancement) in web development: a baseline experience works everywhere, and richer layers are added when capabilities permit. Applied to distributed systems, the degradation tiers define what "baseline" looks like — the minimum viable version of the service that must always be available — and what rich features can be disabled under pressure.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p>Graceful degradation is a reliability strategy in which a system deliberately runs in reduced-capacity modes when dependencies fail or resources are scarce, while still delivering its core user-facing value. Teams define explicit service tiers: a baseline that must keep working, optional enrichments that can be turned off, and emergency modes that serve cached or static content. The decision is usually product-driven (which journeys must survive an incident) and implemented with timeouts, feature flags, and fallbacks at the edges of non-critical paths.</p>
+          <p>Graceful degradation sits above call-level patterns such as the <a href="fallback-pattern.html">Fallback pattern</a> and <a href="circuit-breaker.html">Circuit breaker</a>: those patterns answer “what happens on this single dependency call?” Degradation answers “what does the whole product look like when several dependencies are unhealthy?” A well-designed tiered experience prevents one slow recommendation service or reviews API from blocking checkout, search, or playback.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Modern services depend on dozens of microservices, databases, caches, CDNs, third-party APIs, and ML inference engines. Any one of these can fail or slow down at any time. A naive system that blocks on every dependency will fail completely whenever any dependency degrades. Graceful degradation moves the architecture from an "all or nothing" posture to a spectrum of service quality, dramatically increasing user-perceived availability even when infrastructure is partially broken.</p>
-          <p>High-traffic consumer applications (Netflix, Amazon, Twitter) have invested heavily in degradation design because even brief total outages cost millions in revenue and user trust. Netflix famously designed their recommendation engine as a non-essential feature — if it is unavailable, the home screen shows a curated static list instead of personalised recommendations, and the user can still browse and play content without any interruption.</p>
+          <p>Distributed products stack many optional capabilities—personalisation, social proof, rich media, analytics—on top of a narrow critical path. If every page render waits synchronously for every dependency, a partial outage looks like a total outage: threads fill with blocked calls, error budgets burn on non-essential work, and users cannot complete the journey that actually generates revenue or fulfils the SLA.</p>
+          <p>Tiered degradation converts “all or nothing” availability into a spectrum. Operators can shed enrichments first, preserve reads over writes, or serve slightly stale data rather than hard errors. Incidents shrink to “degraded banner + missing widgets” instead of blank screens—provided tiers are designed, tested, and observable before the first page production incident.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Services that depend on external or shared dependencies that cannot be guaranteed to be available 100% of the time.</li>
-            <li>High-traffic consumer products where even partial availability is significantly better than total outage from the user's perspective.</li>
-            <li>Applications with a clearly identifiable core function (browse, search, checkout) surrounded by enhancements (recommendations, reviews, social features).</li>
-            <li>Systems that anticipate seasonal or event-driven traffic spikes where non-essential features should be pre-emptively disabled to protect core capacity.</li>
-            <li>Infrastructure migrations or deployments where a fallback to a simpler mode is needed during the transition window.</li>
+            <li>Products with a clear critical path (browse, search, pay, stream, authenticate) surrounded by optional features.</li>
+            <li>High fan-out user interfaces that aggregate many microservices, third-party APIs, or ML inference endpoints.</li>
+            <li>Event-driven traffic where you may need to pre-emptively disable enrichments before a known spike.</li>
+            <li>Migration windows where a legacy or simplified mode must remain reachable if the new path misbehaves.</li>
+            <li>Teams willing to maintain feature flags, degradation runbooks, and chaos tests for each tier—not just happy-path CI.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Services where all features are equally critical and there is no safe subset to fall back to — degrading would be misleading rather than helpful.</li>
-            <li>Financial or compliance-critical operations where presenting partial data could cause incorrect decisions or regulatory violations.</li>
-            <li>When the "degraded" mode is so limited that it is no longer useful to the user — a checkout flow that cannot process payment is not gracefully degraded, it is broken.</li>
-            <li>Small, simple services with only one or two functions — the overhead of designing and maintaining degradation tiers exceeds the benefit.</li>
+            <li>Workflows where partial answers are worse than failure (regulated balances, safety interlocks, authoritative legal text).</li>
+            <li>Systems with no meaningful subset of features—all capabilities are equally mandatory to the user’s task.</li>
+            <li>When “degraded” would mislead users into incorrect financial, medical, or operational decisions.</li>
+            <li>Tiny services with one responsibility and no optional surface—operational cost of tiers exceeds benefit.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Feature flags drop non-essential capabilities in stages while keeping checkout-critical paths alive.</p>
+          <p>Feature flags and health signals select a tier; critical paths stay synchronous with tight budgets while enrichments load asynchronously or skip entirely.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    t0["Tier 0 — full experience"]
-    t1["Tier 1 — drop personalized recs"]
-    t2["Tier 2 — cached price, no reviews"]
-    t3["Tier 3 — static CDN page only"]
-    t0 --> t1 --> t2 --> t3</div>
+    health["Health / SLO signals"] --> tier["Degradation tier selector"]
+    flags["Feature flags"] --> tier
+    tier --> t0["Tier 0 — full UX"]
+    tier --> t1["Tier 1 — drop personalisation"]
+    tier --> t2["Tier 2 — cache-only pricing"]
+    tier --> t3["Tier 3 — static shell"]
+    t0 --> bff["Edge / BFF"]
+    t1 --> bff
+    t2 --> bff
+    t3 --> bff
+    bff --> core["Critical path services"]
+    bff -.-> opt["Optional enrichments"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Degradation Tiers — E-Commerce Product Page
-═══════════════════════════════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>Graceful Degradation — Tiered Product Experience
+═══════════════════════════════════════════════════
 
-  Tier 0: Full Experience (all systems healthy)
-  ─────────────────────────────────────────────
-  Product details + Images + Reviews + Recommendations
-  + Personalised pricing + Stock levels + Social proof
-
-  Tier 1: Reduced (recommendation service degraded)
-  ─────────────────────────────────────────────────
-  Product details + Images + Reviews
-  + Generic "popular in category" static list
-  + Stock levels (still live)
-  - No personalised recommendations
-
-  Tier 2: Minimal (reviews + pricing service degraded)
-  ─────────────────────────────────────────────────────
-  Product details + Images
-  + Last known price (cached, up to 5 min old)
-  + "Add to cart" still works
-  - No reviews, no recommendations
-
-  Tier 3: Emergency (only static CDN available)
-  ──────────────────────────────────────────────
-  Static product page from CDN cache
-  + "Check back soon" message for dynamic features
-  - No cart, no checkout
-
-Feature Flag Toggle (LaunchDarkly / Unleash):
-  recommendations_enabled: true  → false (Tier 1)
-  reviews_enabled: true          → false (Tier 2)
-  dynamic_pricing_enabled: true  → false (Tier 2)</code></pre>
+  Signals: error rate, latency, circuit state, manual incident flag
+                    │
+                    ▼
+           ┌────────────────────┐
+           │ Tier selector       │
+           │ (flags + automation)│
+           └─────────┬──────────┘
+                     │
+     Tier 0 ── full personalised page
+     Tier 1 ── hide recommendations / social widgets
+     Tier 2 ── serve cached catalogue + stale pricing
+     Tier 3 ── static CDN shell + “limited mode” banner
+                     │
+                     ▼
+              BFF / edge aggregator
+         critical calls: sync + short timeout
+         optional calls: async, fire-and-forget, or skipped</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">E-commerce product page tiers from full experience down to static CDN-only emergency mode.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Health and flags pick a tier; the BFF keeps critical calls on the hot path and treats enrichments as best-effort.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -180,67 +175,68 @@ Feature Flag Toggle (LaunchDarkly / Unleash):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Maintains core service availability even when non-critical dependencies fail, preserving revenue and user trust.</li>
-                <li>Forces upfront architectural thinking about which features are essential vs. optional, improving overall design quality.</li>
-                <li>Enables pre-emptive degradation before incidents — teams can disable non-essential features proactively during planned high-traffic events.</li>
-                <li>Feature flags allow instant degradation switching without deployment, dramatically reducing time-to-mitigate during incidents.</li>
-                <li>Reduces the total blast radius of any single dependency failure — the failure scope is bounded to specific non-critical features.</li>
+                <li>Improves perceived availability: users finish core tasks while non-essential widgets fail quietly.</li>
+                <li>Bounds blast radius of dependency outages to specific features instead of whole pages.</li>
+                <li>Supports proactive mitigation—flip flags before a sale instead of reacting after overload.</li>
+                <li>Forces explicit product prioritisation of critical vs optional capabilities.</li>
+                <li>Pairs naturally with circuit breakers, bulkheads, and load shedding at the infrastructure layer.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Designing, testing, and maintaining multiple degradation tiers adds significant ongoing engineering effort.</li>
-                <li>Users in degraded mode may not understand why features are missing, leading to confusion or support tickets.</li>
-                <li>Feature flags add a new failure mode — a misconfigured flag can disable critical features unintentionally.</li>
-                <li>Degraded modes that are never tested in production can break silently — the fallback path may not actually work when needed.</li>
+                <li>Every tier is another code path to build, test, and keep in parity with marketing promises.</li>
+                <li>Poor communication leaves users guessing why features vanished—support load can spike.</li>
+                <li>Feature-flag misconfiguration can disable revenue paths or leave tiers stuck after recovery.</li>
+                <li>Hidden coupling between “optional” widgets and core layout can still block rendering.</li>
+                <li>Degraded UI must stay accessible and on-brand; placeholder text and empty states need design.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start by building a feature dependency graph: for each feature, identify which downstream services, databases, and APIs it depends on. Mark each feature as Critical (service fails without it), Important (degrades user experience), or Optional (enhancement that can be omitted). This classification should be reviewed by product management, not just engineering — the product team often has important context on which features users cannot live without.</p>
-          <p>Implement degradation switching via feature flags (LaunchDarkly, Unleash, AWS AppConfig) rather than code deployments. A feature flag can be flipped in seconds during an incident; a deployment takes minutes. Use a tiered flag taxonomy: flags for each non-critical feature, plus a "global degradation level" flag that can set multiple features to off simultaneously. Test degradation tiers as part of chaos engineering exercises — deliberately disable each non-critical service in staging and verify the degraded UI renders correctly and the core flow still works.</p>
+          <p>Document a dependency graph per feature: which APIs, caches, and data stores it needs, and the maximum staleness acceptable if served from cache. Classify features with product owners as <em>critical</em>, <em>important</em>, or <em>optional</em>; only optional items should disappear in lower tiers. Implement non-critical fetches asynchronously in the BFF or UI shell with aggressive timeouts—never hold the main response thread on recommendations or reviews.</p>
+          <p>Drive tier changes with feature flags plus automated triggers (circuit open, SLO burn, queue depth). Expose a single “degradation level” flag for incident commanders and finer-grained flags per feature for targeted fixes. Instrument <code>degradation_tier</code> and per-feature skip counters on every response so support and SRE can see which mode users experience. Rehearse tiers in staging chaos tests: kill each dependency and verify the page still renders the critical journey with an honest status banner.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Untested degradation paths:</strong> the code path for serving content in degraded mode has never been executed in production and fails silently when activated for the first time during an incident.</li>
-            <li><strong>Hard coupling to non-critical services:</strong> a non-critical feature (e.g., product recommendations) is synchronously called and blocks the entire page render when it fails, even though it should be optional.</li>
-            <li><strong>No user communication:</strong> users see missing features with no explanation, causing confusion and support escalations.</li>
-            <li><strong>Degradation flags without owners:</strong> feature flags are toggled during an incident and never re-enabled after recovery, leaving the system permanently degraded.</li>
-            <li><strong>Cascading degradation:</strong> disabling one feature causes a secondary feature to fail because it depended on the first, causing unexpected wider degradation than intended.</li>
+            <li><strong>Blocking optional calls:</strong> a “nice to have” service sits on the synchronous render path and still times out the page.</li>
+            <li><strong>Never-tested tiers:</strong> fallback markup or cached payloads are stale or broken the first time flags flip in prod.</li>
+            <li><strong>Silent degradation:</strong> features vanish without explanation; users assume data loss or bugs.</li>
+            <li><strong>Sticky flags:</strong> incident toggles stay off after recovery because no owner tracks flag hygiene.</li>
+            <li><strong>Cascading tier drops:</strong> disabling feature A breaks feature B because of undeclared shared state.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have you classified every feature as Critical, Important, or Optional with sign-off from the product team?</li>
-            <li>Is each optional feature's dependency on downstream services decoupled (async, with timeout, with fallback) so failures do not block the critical path?</li>
-            <li>Are degradation tiers implemented via feature flags that can be toggled without a deployment?</li>
-            <li>Are all degradation tiers regularly tested (at minimum in staging) to confirm they actually work?</li>
-            <li>Is there a user-visible indicator when the service is in degraded mode (e.g., a status banner)?</li>
-            <li>Is there an owner responsible for re-enabling features after a degradation event resolves?</li>
+            <li>Does product sign off on critical vs optional features and acceptable stale data windows?</li>
+            <li>Are optional dependencies fetched off the critical path with timeouts and circuit breakers?</li>
+            <li>Can operators change tiers in seconds via flags without a redeploy?</li>
+            <li>Does every tier have an automated or game-day test proving the core journey works?</li>
+            <li>Do responses expose which tier was served for support and incident correlation?</li>
+            <li>Is there a runbook step to restore full tier after dependencies recover?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Netflix disabling personalised recommendations and falling back to genre-based static lists when the recommendation service is degraded, while playback continues unaffected.</li>
-            <li>An e-commerce site disabling customer reviews, personalised pricing, and product suggestions during a flash sale, preserving browse and checkout capacity for the core purchase flow.</li>
-            <li>A banking app hiding investment portfolio widgets when the market data feed is unavailable, while account balance, transfers, and bill pay continue normally.</li>
-            <li>A SaaS dashboard disabling analytics widgets and charts when the time-series database is degraded, while the core resource management features remain functional.</li>
+            <li><strong>Case study — Netflix:</strong> When personalisation APIs fail, the home experience falls back to catalogue-style rails while streaming continues—documented in Netflix’s resilience engineering write-ups.</li>
+            <li><strong>Illustrative scenario — flash-sale retail:</strong> During a traffic spike the storefront disables reviews, recommendations, and live inventory badges but keeps cart and payment on dedicated capacity.</li>
+            <li><strong>Illustrative scenario — mobile banking:</strong> Market-data widgets hide when the feed is down; balances, transfers, and bill pay keep serving from core ledger services.</li>
+            <li><strong>Illustrative scenario — SaaS dashboard:</strong> Analytics charts switch to “last successful snapshot” while CRUD on primary resources stays live.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="fallback-pattern.html">Fallback Pattern</a> — the mechanism that delivers degraded content at the individual call level.</li>
-            <li><a href="load-shedding.html">Load Shedding</a> — drops low-priority requests; graceful degradation drops low-priority features.</li>
-            <li><a href="circuit-breaker.html">Circuit Breaker</a> — automatically triggers degradation by preventing calls to failing dependencies.</li>
+            <li><a href="fallback-pattern.html">Fallback Pattern</a> — supplies substitute data when a single dependency fails.</li>
+            <li><a href="load-shedding.html">Load Shedding</a> — rejects requests; degradation keeps requests but trims features.</li>
+            <li><a href="circuit-breaker.html">Circuit Breaker</a> — often the automatic signal that triggers a lower tier.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://netflixtechblog.com/making-the-netflix-api-more-resilient-a8ec62159c2d" rel="noopener noreferrer" target="_blank">Making the Netflix API More Resilient — Netflix Tech Blog</a> — real-world graceful degradation at scale.</li>
-            <li><a href="https://pragprog.com/titles/mnee2/release-it-second-edition/" rel="noopener noreferrer" target="_blank">Release It! 2nd Ed. — Michael Nygard</a> — chapters on stability patterns and degradation strategies.</li>
-            <li><a href="https://sre.google/sre-book/table-of-contents/" target="_blank" rel="noopener noreferrer">Google SRE book</a></li>
+            <li><a href="https://netflixtechblog.com/making-the-netflix-api-more-resilient-a8ec62159c2d" rel="noopener noreferrer" target="_blank">Making the Netflix API More Resilient — Netflix Tech Blog</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/throttling" rel="noopener noreferrer" target="_blank">Throttling pattern — Azure Architecture Center</a> — complementary admission control ideas.</li>
+            <li><a href="https://pragprog.com/titles/mnee2/release-it-second-edition/" rel="noopener noreferrer" target="_blank">Release It! 2nd Ed. — Michael Nygard</a> — stability patterns including degradation thinking.</li>
           </ul>
         </div>
 
