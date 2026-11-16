@@ -108,6 +108,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Hadoop MapReduce persisted intermediate results to disk after every map and reduce wave, which made iterative ML, graph algorithms, and multi-pass SQL painfully slow. Spark introduced in-memory iteration across stages and a unified API for batch, SQL, streaming, and MLlib—reducing the number of specialized systems in a data platform.</p>
           <p>Spark also met teams where they already were: on YARN and HDFS, later on object storage and Kubernetes. Managed offerings (Databricks, EMR, Dataproc, Synapse) operationalized the cluster model so engineers could focus on transforms rather than JVM tuning—while still needing a mental model of drivers, shuffles, and partitions when jobs misbehave.</p>
+          <p>At senior depth, most production pain clusters around shuffles, skewed keys, and executor memory—not RDD APIs. Adaptive Query Execution and columnar formats reduce but do not remove those concerns; table-format commits (Iceberg, Delta, Hudi) add another failure domain when jobs fail mid-commit. Structured Streaming shares the same cluster: treat micro-batch latency and checkpoint directories as first-class ops surfaces alongside batch DAGs.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -124,6 +125,7 @@
             <li>You need millisecond per-record APIs; Spark’s driver and task scheduling overhead dominates small or ultra-low-latency work.</li>
             <li>No operations capacity and no managed Spark—serverless SQL or warehouse-native ELT may be simpler.</li>
           </ul>
+          <p>Spark shines when one cluster runs SQL, Python, streaming, and ML prep against open table formats; it is a poor default for per-record RPCs or tiny daily extracts. Match cluster mode (YARN, Kubernetes, serverless SQL) to tenancy and isolation requirements before tuning executor sizes.</p>
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Client code calls actions on a SparkSession in the driver. The DAG Scheduler forms stages at shuffles; the Task Scheduler places tasks on executors. Executors run threads, cache blocks, and write shuffle files; the cluster manager only supplies containers or YARN slots.</p>
@@ -267,6 +269,9 @@ SPARK ON KUBERNETES vs YARN
           <p><strong>Partition sizing:</strong> Parallelism follows partition count. Aim for partitions roughly 128–512 MB at rest and enough tasks to keep cores busy without drowning the scheduler. After joins or group-bys, default <code>spark.sql.shuffle.partitions</code> (often 200) may be far too high or too low for your data volume—tune explicitly.</p>
           <p><strong>Shuffles and skew:</strong> Prefer narrow transforms where possible; broadcast small dimension tables; use salting or AQE (Spark 3.x) when a few keys dominate partition size. Review the Spark UI for stages with one straggler task.</p>
           <p><strong>API choice:</strong> Default to DataFrames/SQL so Catalyst can push filters and prune columns; reserve RDDs for primitives Catalyst cannot express.</p>
+          <p><strong>Architecture:</strong> the NSDI 2012 Spark paper’s RDD lineage model underlies fault tolerance—stages recomputed from lineage after executor loss. Shuffle is still the dominant cost: skewed keys cause straggler tasks; AQE (adaptive query execution) mitigates some skew but does not replace salting or two-phase aggregation by hand when metrics prove hot keys.</p>
+          <p><strong>Cluster modes:</strong> YARN, Kubernetes, and standalone deploys change how dynamic allocation and shuffle service interact—document where external shuffle service runs and what happens when executors scale down mid-stage. Structured Streaming micro-batches reuse the same scheduler; treat long-running queries as always-on jobs with their own lag SLOs.</p>
+          <p><strong>Storage:</strong> reading open table formats (Iceberg, Delta, Hudi) through Spark needs correct snapshot isolation options—mixing writes and reads without format-specific conflict rules yields duplicate or missing rows in analytics.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -276,6 +281,7 @@ SPARK ON KUBERNETES vs YARN
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
+          <p>Run through this list when jobs miss SLAs or shuffle stages dominate stage timelines.</p>
           <ul class="checklist">
             <li>Are DataFrames used instead of RDDs (unless there is a specific reason for RDDs)?</li>
             <li>Is <code>spark.sql.shuffle.partitions</code> tuned for the actual data volume and cluster size?</li>
@@ -302,6 +308,8 @@ SPARK ON KUBERNETES vs YARN
             <li><a href="https://spark.apache.org/docs/latest/cluster-overview.html" target="_blank" rel="noopener noreferrer">Spark cluster overview</a></li>
             <li><a href="https://www.usenix.org/system/files/conference/nsdi12/nsdi12-final138.pdf" target="_blank" rel="noopener noreferrer">Spark: Cluster Computing with Working Sets (NSDI 2012)</a></li>
             <li><a href="https://spark.apache.org/docs/latest/sql-performance-tuning.html" target="_blank" rel="noopener noreferrer">Spark SQL performance tuning</a></li>
+            <li><a href="https://kafka.apache.org/documentation/" rel="noopener noreferrer" target="_blank">Apache Kafka documentation</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Designing Data-Intensive Applications — Kleppmann</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

@@ -108,6 +108,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Product teams embed analytics in customer-facing surfaces—ad performance, usage meters, live leaderboards—where latency is part of the user experience, not a back-office report. Operations teams need the same freshness for incident response: error bursts, payment velocity, or fraud signals must appear in rolling windows before a nightly warehouse refresh.</p>
           <p>General-purpose warehouses excel at flexible SQL and batch freshness but struggle to sustain hundreds of concurrent, millisecond-budget queries over billions of rows without dedicated pre-aggregation and serving tiers built for that access pattern.</p>
+          <p>OLAP engines trade schema rigidity for ingest and query latency: dimensions are declared up front, segments are pre-aggregated, and late events trigger reindex or compaction policies that differ by product. Pairing them with Kafka or Flink ingestion without lag SLOs produces dashboards that look live while consumer groups are hours behind.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -123,6 +124,7 @@
             <li>Event volume is low enough that warehouse materialized views or indexed marts meet latency and cost goals.</li>
             <li>You need rich joins, multi-row transactions, or frequent row-level updates—OLAP engines are poor primary transactional stores.</li>
           </ul>
+          <p>Hybrid designs are common: warehouse holds detail history while OLAP serves rollups for live UI. Document which metrics are speed-layer approximations and how batch correction backfills segments—users should not see silent metric jumps without release notes.</p>
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Events arrive on a stream or batch path into an OLAP cluster that segments and optionally rolls up data; a query tier exposes SQL or REST to product dashboards and monitoring tools.</p>
@@ -277,6 +279,9 @@ CHOOSING BETWEEN DRUID / PINOT / CLICKHOUSE
           <p><strong>Rollup granularity:</strong> Pick the coarsest time bucket and dimension set that still answers required queries; finer grains explode storage and rebuild cost. Keep raw events in cheap object storage when occasional drill-down to individual records is required.</p>
           <p><strong>Write pattern:</strong> All three engines expect batched inserts or stream micro-batches; single-row synchronous writes degrade throughput and merge performance.</p>
           <p><strong>High-cardinality dimensions:</strong> Bitmap-style indexing works up to moderate cardinality; user- or device-level keys at millions of values may need dedicated lookup tables, sampling, or restricted query patterns.</p>
+          <p><strong>Ingestion:</strong> Druid, Pinot, and ClickHouse each trade late-ingestion handling, compaction, and segment sizing differently—load tests should include out-of-order events at expected volume. The Dataflow paper’s windowing concepts map to rollup granularity: coarser segments reduce query cost but raise minimum queryable interval.</p>
+          <p><strong>Lambda overlap:</strong> real-time OLAP cubes often pair with batch correction jobs—document whether queries read merged results or speed-only until batch catches up. Kafka as ingest bus needs consumer lag SLOs before the OLAP engine claims “real time.”</p>
+          <p><strong>Cost:</strong> hot tier retention dominates bills—tiering old segments to object storage only helps when query patterns rarely scan ancient history.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -286,6 +291,10 @@ CHOOSING BETWEEN DRUID / PINOT / CLICKHOUSE
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
+          <p>OLAP clusters fail loudly on ingest backpressure before query latency degrades—verify ingest, segment, and query SLOs independently.</p>
+          <p>Load tests should mix historical backfill with live tail traffic; Dremel-class ad hoc patterns rarely match embedded dashboard query shapes.</p>
+          <p>Publish maximum safe query concurrency per datasource to product teams.</p>
+          <p>Monitor segment compaction lag as an ingest health signal distinct from query p95.</p>
           <ul class="checklist">
             <li>Are writes batched or stream-buffered to match the engine’s ingest expectations?</li>
             <li>Does rollup or star-tree coverage match the dimension and time grains product queries need?</li>
@@ -313,6 +322,8 @@ CHOOSING BETWEEN DRUID / PINOT / CLICKHOUSE
             <li><a href="https://docs.pinot.apache.org/basics/concepts" target="_blank" rel="noopener noreferrer">Apache Pinot — basic concepts</a></li>
             <li><a href="https://clickhouse.com/docs/en/intro" target="_blank" rel="noopener noreferrer">ClickHouse — Introduction</a></li>
             <li><a href="https://research.google/pubs/pub43838/" target="_blank" rel="noopener noreferrer">The Dataflow Model (Akidau et al.)</a></li>
+            <li><a href="https://kafka.apache.org/documentation/" rel="noopener noreferrer" target="_blank">Apache Kafka documentation</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Designing Data-Intensive Applications — Kleppmann</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

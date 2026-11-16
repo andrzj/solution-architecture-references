@@ -109,6 +109,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Gold tables and dashboards already answer “what happened,” but ML needs keyed, time-aligned inputs tied to each decision moment. Without platform patterns, the same failures recur. <strong>Training-serving skew</strong> appears when notebook SQL builds training columns while production services reimplement aggregates in another language. <strong>Duplication</strong> multiplies when every squad schedules its own rolling-window job from the same Kafka topic. <strong>Leakage</strong> hides in naive joins: a label at time <em>T</em> paired with a feature computed at <em>T+1</em> inflates offline metrics until live traffic disproves them.</p>
           <p>Formal feature engineering on the big-data stack—medallion sources, idempotent Spark jobs, optional stream enrichment, dual offline/online writes, and point-in-time training exports—makes features as reusable as any other data product while meeting latency and audit requirements.</p>
+          <p>Feature pipelines are still data pipelines: they inherit partition skew, late arrivals, and schema drift from upstream medallion layers. Treating them as ML-only scripts hides operational debt—Spark stages that explode on new categories or Flink state that grows unbounded show up first in training job cost, then in serving outages when the same logic lands online.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -125,6 +126,7 @@
             <li>No online serving path and no expectation of sharing engineered features outside one team.</li>
             <li>Features are passed through unchanged from raw operational tables with no aggregations or versioning needs.</li>
           </ul>
+          <p>Platform investment pays off when models share entity grains and windows—otherwise each squad forks Spark SQL with slightly different filters. Registry discovery and PITC exports are the guardrails that keep that duplication from compounding silently.</p>
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Raw and silver data feeds batch and streaming feature pipelines; computed values land in offline and online stores; trainers pull point-in-time datasets while inference services read latest values per entity key.</p>
@@ -320,6 +322,9 @@ FEATURE MONITORING AND DRIFT DETECTION
           <p><strong>Naming and registry:</strong> Enforce a pattern such as <code>{entity}_{source}_{aggregation}_{window}</code> (for example <code>user_transactions_count_30d</code>) in the registry so teams discover existing features before launching another pipeline.</p>
           <p><strong>Batch vs stream materialisation:</strong> Nightly or hourly Spark jobs from gold tables cover most windows; reserve Flink or Kafka Streams for signals that must land in the online store within minutes. Each streaming feature needs explicit watermarking and out-of-order handling.</p>
           <p><strong>Single source of truth for logic:</strong> Where the store supports it, declare features once (Feast FeatureView, Tecton definition, Vertex entity type) and let the platform materialise both tiers; otherwise log served feature vectors for label joins.</p>
+          <p><strong>Window design:</strong> MapReduce-era batch jobs encouraged arbitrary lookback SQL; at scale, prefer bounded windows with documented late-data policy. Kafka topic retention must cover the longest training window or backfills pull from cold storage with explicit job SLAs.</p>
+          <p><strong>Transformation layers:</strong> silver/gold tables should expose entity keys and event timestamps feature jobs consume—re-deriving keys in notebooks duplicates logic that already failed once in production serving. Beam or Flink runners help when the same windowed aggregation must run in batch replay and live stream with identical semantics.</p>
+          <p><strong>Evaluation hygiene:</strong> holdout sets need the same PITC joins as training; champion-challenger comparisons fail when challengers accidentally join fresher warehouse partitions than champions saw at training time.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -330,6 +335,10 @@ FEATURE MONITORING AND DRIFT DETECTION
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
+          <p>Feature platform reviews should cover PITC joins, versioning, and online freshness in one pass.</p>
+          <p>Log served vectors where duplicate definitions cannot yet be eliminated.</p>
+          <p>Backfill feature history after logic bugs using partition-scoped Spark replay.</p>
+          <p>Review streaming state TTL when entity cardinality grows.</p>
           <ul class="checklist">
             <li>Are all time-varying features joined with point-in-time correct logic when building training sets?</li>
             <li>Does one definition (or logged serving vectors) back both offline export and online lookup?</li>
@@ -358,6 +367,8 @@ FEATURE MONITORING AND DRIFT DETECTION
             <li><a href="https://docs.feast.dev/getting-started/architecture" target="_blank" rel="noopener noreferrer">Feast architecture overview</a></li>
             <li><a href="https://www.tecton.ai/blog/what-is-a-feature-store/" target="_blank" rel="noopener noreferrer">What is a Feature Store? — Tecton</a></li>
             <li><a href="https://cloud.google.com/vertex-ai/docs/featurestore/overview" target="_blank" rel="noopener noreferrer">Vertex AI Feature Store overview</a></li>
+            <li><a href="https://nightlies.apache.org/flink/flink-docs-master/" rel="noopener noreferrer" target="_blank">Apache Flink documentation</a></li>
+            <li><a href="https://static.googleusercontent.com/media/research.google.com/en//archive/mapreduce-osdi04.pdf" rel="noopener noreferrer" target="_blank">MapReduce (OSDI 2004)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
