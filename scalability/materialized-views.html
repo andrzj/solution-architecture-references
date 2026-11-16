@@ -129,47 +129,61 @@
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Two refresh topologies dominate production Azure systems. In the <strong>database-native</strong> path, OLTP remains the system of record; Elastic Job, pg_cron, or Synapse pipelines run <code>REFRESH</code> on schedule while dashboards and internal APIs read the materialized table directly. In the <strong>CQRS</strong> path, command handlers append to Azure SQL or Cosmos transactional storage, publish through transactional outbox or change feed to Event Hubs, and stateless projectors upsert denormalized documents into a read tier sized independently—autoscale RU/s on Cosmos, dedicated search replicas, or Redis fronting hot keys. Both paths keep expensive computation off the request hot path; the diagram below shows how writes fan in while reads stay simple.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart TB
-    cmd["Command API"] --> wh["Command handler"]
-    wh --> ws[("Write store")]
-    ws --> bus["Events / change feed"]
-    bus --> path{"Refresh path"}
-    path -->|CQRS| proj["Projector Function"]
-    path -->|DB-native| sched["Scheduled REFRESH"]
-    proj --> rs[("Materialized read store")]
-    sched --> rs
-    qa["Query API"] --> rs
-    wh -.->|read-your-writes optional| qa</div>
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    oltp["OLTP writes"] --> mv["Materialized view refresh"]
+    mv --> read["Fast summary queries"]
+    cmd["Command events"] --> proj["Read model projector"]
+    proj --> read</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>CQRS + Materialized Read Model (Azure-oriented)
-══════════════════════════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>
+  PostgreSQL MATERIALIZED VIEW:
 
-  Client ──command──▶ Command API ──▶ Write store (Azure SQL / Postgres)
-                           │
-                           └──▶ Domain events ──▶ Event Hubs / Service Bus
-                                            │
-                                            ▼
-                                    Azure Function projector
-                                            │
-                                            ▼
-                                    Read store (Cosmos DB / AI Search /
-                                    Redis / materialized SQL view)
+  -- Create a materialized view for sales summary
+  CREATE MATERIALIZED VIEW monthly_sales_summary AS
+  SELECT
+    date_trunc('month', order_date) AS month,
+    region,
+    SUM(amount)                     AS total_revenue,
+    COUNT(*)                        AS order_count,
+    AVG(amount)                     AS avg_order_value
+  FROM orders
+  JOIN regions USING (region_id)
+  WHERE order_date >= NOW() - INTERVAL '12 months'
+  GROUP BY 1, 2
+  WITH DATA;  -- populate immediately
 
-  Client ──query───▶ Query API ──▶ Read store only (no joins on write DB)
+  -- Index on the materialized view for fast queries
+  CREATE INDEX ON monthly_sales_summary (month, region);
 
-Database-native materialized view (Azure SQL / PostgreSQL)
-────────────────────────────────────────────────────────
-  CREATE MATERIALIZED VIEW sales_by_region AS … WITH DATA;
-  CREATE INDEX … ON sales_by_region (region, month);
+  -- Refresh options:
+  REFRESH MATERIALIZED VIEW monthly_sales_summary;          -- full refresh (blocks reads)
+  REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales_summary; -- non-blocking (needs UNIQUE index)
 
-  REFRESH MATERIALIZED VIEW CONCURRENTLY sales_by_region;
-  -- or SQL Server indexed view with SCHEMABINDING (different semantics)
+  -- Schedule refresh (pg_cron extension):
+  SELECT cron.schedule('*/15 * * * *',           -- every 15 minutes
+    $$REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales_summary$$);
 
-Refresh strategies
-  Scheduled (Elastic Job, pg_cron)  → predictable staleness
-  Incremental (CDC, change feed)    → lower write amplification
-  On-demand (ops / pipeline gate)   → controlled cutover</code></pre>
+  Refresh Strategies:
+  On-commit (triggers):    Refresh on every write → strong consistency, high write cost
+  Scheduled (cron):        Refresh periodically   → predictable staleness, low overhead
+  Incremental:             Apply only changes      → low refresh cost, complex implementation
+  On-demand:               Manual or API-triggered → controlled staleness
+
+  CQRS Read Model as Materialized View:
+  Command side → writes events to event store
+                  │
+                  ▼ event bus
+  Read model projector → receives OrderPlaced, OrderShipped events
+                         → maintains order_summary table (denormalized, fast reads)
+  Query side → reads from order_summary (simple SELECT, no joins)
+
+  vs complex OLTP query:
+  SELECT o.*, c.name, c.email, SUM(i.price) ...
+  FROM orders o JOIN customers c ... JOIN items i ... JOIN shipments s ...
+  → replaced by:
+  SELECT * FROM order_summary WHERE order_id = ?   -- 1ms, no joins
+          </code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Write path emits changes; projectors or scheduled refresh maintain a separate read-optimized materialized store for queries.</figcaption>
           </figure>

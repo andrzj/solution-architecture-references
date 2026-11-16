@@ -130,55 +130,52 @@
           <p>Start from telemetry: Cosmos DB normalized RU consumption per partition-key range, DynamoDB CloudWatch <code>ConsumedWriteCapacityUnits</code> by key, or Cassandra nodetool tablehistograms. Write hotspots usually need scatter before scale; read hotspots often resolve with Redis or CDN in front of a single hot document. Platform autoscale and partition splits buy time, but sustained throttling on one logical key almost always ends in key redesign or a controlled resharding migration—not another RU/s click.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    req["Client read/write"] --> route["Partition router"]
-    route --> detect{"Hot key?"}
-    detect -->|no| even["Even partition"]
-    detect -->|write hot| wmit["Write mitigation"]
-    detect -->|read hot| rmit["Read mitigation"]
-    wmit --> salt["Salted / composite key"]
-    wmit --> time["Time bucket + shard suffix"]
-    rmit --> cache["Cache / CDN"]
-    rmit --> replica["Read replica / materialized copy"]
-    salt --> store[("Partitioned store")]
-    time --> store
-    cache --> store
-    replica --> store
-    even --> store
-    store --> throttle{"429 / throttle?"}
-    throttle -->|yes| scale["Raise RU/s or split"]
-    throttle -->|no| ok["SLO met"]</div>
+    hot["Hot partition absorbs all writes"]
+    salt["Key salting spreads writes"]
+    composite["Composite partition key"]
+    cache["Cache absorbs hot reads"]
+    adapt["Adaptive capacity borrows idle WCU"]
+    hot --> salt --> composite
+    hot --> cache --> adapt</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Hot Partition Mitigation Decision Flow
-═══════════════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>
+  Write Hotspot — Timestamp Key Problem:
+  ┌───────────────────────────────────┐
+  │ All writes → partition "2025-05"  │ ← 100% write load
+  │ Old partitions: idle              │ ← 0% write load
+  └───────────────────────────────────┘
 
-  Request ──▶ hash(partition key) ──▶ physical partition
-                    │
-         metrics: RU/s, throttles, key cardinality
-                    │
-        ┌───────────┴───────────┐
-        │                       │
-   Write hotspot            Read hotspot
-        │                       │
-   ┌────┴────┐             ┌────┴────┐
-   │ Salt /  │             │ Redis / │
-   │ composite│            │ Azure   │
-   │ key     │             │ CDN     │
-   └────┬────┘             └────┴────┘
-        │                       │
-        └───────────┬───────────┘
-                    ▼
-            Still throttling?
-              yes → split key space,
-                    autoscale RU/s,
-                    reassess partition key
+  Fix 1: Key Salting (write scatter)
+  Original key: "2025-05"
+  Salted key:   "2025-05#0" through "2025-05#N"
+  Write → randomly pick salt suffix
+  Read  → query ALL N suffixes and merge results
 
-  Write scatter example (time series):
-    pk = "{shardId}_{yyyyMMddHH}"  with shardId 0..15 round-robin
+  Fix 2: Composite Partition Key (DynamoDB)
+  Before: PK = "USER#celeb123"
+  After:  PK = "USER#celeb123#" + random(0,9)
+          → 10x more partitions for one hot user
+  Read:   fan out 10 queries, merge results
 
-  Read hotspot example:
-    product detail ──▶ Azure Cache for Redis (short TTL, jitter)
-                    ──▶ Cosmos DB on cache miss only</code></pre>
+  Fix 3: Read Hotspot — Cache Popular Items
+  ┌───────────┐    miss    ┌────────────┐
+  │  Request  │──────────►│  DB Shard  │ ← hot
+  │           │◄──────────│            │
+  └───────────┘           └────────────┘
+        │
+        ▼ (after first read)
+  ┌───────────┐    hit     ┌────────────┐
+  │  Request  │──────────►│  Redis     │ ← serves hot reads
+  │           │◄──────────│  Cache     │
+  └───────────┘           └────────────┘
+
+  DynamoDB Adaptive Capacity:
+  Partition A: 500 WCU  (provisioned)
+  Partition B: 500 WCU  (provisioned)
+  Actual load: A = 900 WCU, B = 100 WCU
+  Adaptive: borrows unused B capacity → A gets ~900 WCU
+          </code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Detect skewed keys, scatter writes or cache reads, then scale or split partitions if throttling persists.</figcaption>
           </figure>
