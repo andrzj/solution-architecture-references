@@ -106,61 +106,79 @@
           <h2 id="what-it-is">What it is</h2>
           <p><strong>Chaos engineering</strong> is disciplined experimentation on running systems: inject realistic faults, compare behaviour against a <strong>steady-state hypothesis</strong>, and learn whether resilience and operations work before customers do. The community <a href="https://principlesofchaos.org/" rel="noopener noreferrer" target="_blank">Principles of Chaos Engineering</a> frame it as science, not vandalism—build a hypothesis, run a controlled experiment with minimal blast radius, measure outcomes, and fix gaps.</p>
           <p>Steady state is expressed in the same terms as production health: success rate, latency percentiles, throughput, or SLO-aligned SLIs—not merely “pods are green.” Faults span infrastructure (instance loss, AZ impairment), application (latency or error injection on dependencies), and resources (CPU, memory, disk pressure). Tools such as AWS Fault Injection Simulator, Gremlin, LitmusChaos, and Netflix-style automation orchestrate experiments; the hard part is prerequisites—observability, abort hooks, and organisational permission to learn in production-like conditions.</p>
+          <p>The Principles of Chaos distil the method into four repeatable moves: (1) define steady state as measurable behaviour users care about; (2) vary real-world events—failed hosts, clock skew, dependency outages; (3) run experiments in production with blast radius small enough to contain learning; (4) automate experiments so resilience is continuously proven, not a once-a-year drill. Google’s SRE practice treats chaos as complementary to error budgets: experiments should consume <em>planned</em> budget for learning, never surprise customers—abort on burn-rate alerts the same way you would during a deploy rollback.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Distributed systems fail in combinations integration tests rarely cover: partial partitions, skewed retries, cold caches after failover, and mis-tuned circuit breakers that never trip under real concurrency. Those modes surface under load with real data distributions. Chaos engineering schedules those failures when the team is watching, with runbooks and rollback ready—converting unknown unknowns into tracked remediations instead of 3 a.m. surprises.</p>
-          <p>It also audits resilience design. If killing 5% of pods does not move user-visible SLIs yet pages stay quiet, the monitoring or fallback path is wrong. Experiments make that visible in a GameDay rather than during revenue-impacting peaks.</p>
+          <p>Distributed systems fail in combinations integration tests rarely cover: partial partitions, skewed retries, cold caches after failover, and mis-tuned circuit breakers that never trip under real concurrency. A breaker validated in isolation may never open when two dependencies fail together because thread pools interact unpredictably; a retry policy that passes CI may still stampede a recovering database when every caller retries at once. Those modes surface only under load with real data distributions and real resource contention.</p>
+          <p>Chaos engineering schedules those failures when the team is watching, with runbooks and rollback ready—converting unknown unknowns into tracked remediations instead of 3 a.m. surprises. SRE teams use GameDays and fault injection to rehearse incident command, paging, and customer comms—if dashboards do not light up during a controlled fault, they will not help during an unplanned one.</p>
+          <p>It also audits resilience design. If killing 5% of pods does not move user-visible SLIs yet pages stay quiet, the monitoring or fallback path is wrong. Experiments make that visible before revenue-impacting peaks and produce evidence for architecture reviews, change advisories, and SLO sign-off.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
             <li>Services with published SLOs where you must prove circuit breakers, fallbacks, and bulkheads actually protect user experience.</li>
+            <li>After implementing any new resilience pattern—verify the code path before a real incident is the acceptance test.</li>
             <li>After introducing new dependencies, regions, or deployment platforms—validate assumptions before peak traffic.</li>
             <li>Before high-stakes events (launches, seasonal peaks) once baseline experiments pass in lower blast-radius scopes.</li>
             <li>Kubernetes or auto-scaling fleets where instance and pod churn is routine and should be invisible to customers.</li>
             <li>Multi-AZ or multi-region designs where failover has never been exercised under synthetic or production load.</li>
+            <li>Organisations maturing SRE practice—chaos converts tribal resilience knowledge into repeatable, automatable experiments.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
             <li>No measurable steady state—without SLIs or clear hypotheses you cannot know if the experiment succeeded or when to abort.</li>
+            <li>Inadequate observability (metrics, traces, logs)—you cannot validate a hypothesis you cannot measure.</li>
             <li>No kill switch tied to user impact—fixed-duration tests that ignore error budget burn are reckless.</li>
             <li>Resilience basics missing (timeouts, retries with backoff, health checks)—fix design first, then validate.</li>
+            <li>Undefined scope, duration, or abort criteria—random destructive testing is not chaos engineering.</li>
             <li>Change freeze or incident in progress—experiments belong on the calendar, not during firefighting.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Align with Principles of Chaos: steady state → hypothesis → scoped fault → observe → automate abort on SLO breach → document and fix.</p>
+          <p>Align with Principles of Chaos: steady state → hypothesis → scoped fault → observe → automate abort on SLO breach → document and fix. Wire abort to the same multi-window burn alerts used for deploys so experiments respect error-budget policy. Experiments start from measurable steady state, hypothesise resilience behaviour, inject scoped faults, and record whether SLOs held.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart LR
-    SS["1 Steady state SLIs"]
-    HY["2 Hypothesis"]
-    SC["3 Scope and abort rules"]
-    IN["4 Inject fault"]
-    OB["5 Observe metrics traces"]
-    RS["6 Record and remediate"]
-    SS --> HY --> SC --> IN --> OB --> RS
-    OB --> AB["Abort if SLO guardrail breached"]</div>
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    s1["1. Define steady state metrics"]
+    s2["2. Formulate hypothesis"]
+    s3["3. Design experiment scope and abort criteria"]
+    s4["4. Execute in production off-peak"]
+    s5["5. Record findings and follow-ups"]
+    s1 --> s2 --> s3 --> s4 --> s5
+    s4 --> hyp["Hypothesis confirmed if SLOs hold"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Chaos Experiment (Principles of Chaos aligned)
-══════════════════════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>Chaos Engineering Experiment Lifecycle
+════════════════════════════════════════════════
 
-1. STEADY STATE
-   e.g. checkout success &gt; 99.9%, p99 &lt; 500ms (same queries as SLO dashboards)
+1. Define Steady State
+   Metric: p99 checkout latency &lt; 500ms
+   Metric: error rate &lt; 0.1%
+   Metric: cart service success rate &gt; 99.9%
 
-2. HYPOTHESIS
-   "If dependency X is unavailable, checkout stays within SLO via circuit breaker + cache"
+2. Formulate Hypothesis
+   "If the recommendations service becomes unavailable,
+    checkout latency stays below 500ms because the
+    circuit breaker trips and returns cached results."
 
-3. SCOPE
-   Fault: 10% of pods OR latency injection on one dependency
-   Duration cap + automatic abort if success &lt; 99% or p99 &gt; 1s
+3. Design Experiment
+   Tool: AWS Fault Injection Simulator
+   Target: recommendations service pods (10% of fleet)
+   Fault type: network blackhole (drop all outbound traffic)
+   Duration: 5 minutes
+   Blast radius: 10% of pods (not 100%)
+   Abort condition: error rate &gt; 1% OR p99 &gt; 1s
 
-4. EXECUTE (production or prod-like)
-   Monitor SLIs, traces, alert firings in real time
+4. Execute in Production (off-peak)
+   ┌─────────────────────────────────────────────────────────┐
+   │ T+0:00 Experiment starts                                │
+   │ T+0:30 Circuit breaker trips, fallback engaged          │
+   │ T+2:00 Steady state maintained (p99 420ms, error 0.05%) │
+   │ T+5:00 Experiment ends                                  │
+   │ T+5:30 Circuit breaker resets, normal operation resumes │
+   └─────────────────────────────────────────────────────────┘
+   Hypothesis: CONFIRMED ✓
 
-5. OUTCOME
-   CONFIRMED → document evidence
-   FAILED → file fixes, re-run as regression test</code></pre>
+5. Record findings + schedule follow-up experiments</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Principles of Chaos loop: measurable steady state, falsifiable hypothesis, bounded fault injection, SLI-based abort, documented follow-ups.</figcaption>
           </figure>
@@ -170,11 +188,12 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Surfaces emergent failure modes only visible under partial outages and concurrency.</li>
+                <li>Surfaces emergent failure modes only visible under partial outages and concurrency—the only way to empirically validate distributed resilience is to inject real faults.</li>
                 <li>Validates that alerts, dashboards, and runbooks trigger on user-visible degradation—not just pod restarts.</li>
-                <li>Builds operator confidence; teams that rehearse failures recover faster when failures are unplanned.</li>
+                <li>Builds operator confidence; teams that rehearse failures recover faster when failures are unplanned (lower MTTR in SRE terms).</li>
                 <li>Turns resilience assumptions into evidence for architecture reviews and SLO sign-off.</li>
-                <li>Progressive blast-radius ladders make production experiments governable.</li>
+                <li>Progressive blast-radius ladders make production experiments governable and align with failure-domain boundaries.</li>
+                <li>Converts implicit beliefs about system behaviour into measured facts stored alongside postmortems and experiment archives.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -183,33 +202,38 @@
                 <li>High prerequisites—telemetry, SLOs, abort automation, and executive sponsorship.</li>
                 <li>Miscalculated blast radius can spend error budget or harm customers.</li>
                 <li>Tooling and experiment design investment before first meaningful learning.</li>
-                <li>Cultural resistance without demonstrated wins from small, safe experiments.</li>
+                <li>Organisational resistance—“why break prod on purpose?”—without quick wins from minimal-scope experiments.</li>
+                <li>Risk if abort procedure fails or observers are absent; experiments must never run unattended.</li>
                 <li>Complements—not replaces—unit tests, load tests, and design reviews.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start in staging with traffic that mirrors production shape (shadow or replay). Graduate to production with 1 pod or 1% traffic, then expand only after hypotheses confirm. Copy steady-state queries from SLO dashboards—do not invent experiment-only metrics.</p>
-          <p>Every production experiment needs: written hypothesis; blast-radius limits; duration cap; automated abort on SLI or synthetic check regression; real-time observers; post-experiment write-up with tickets for gaps. Run GameDays quarterly so new dependencies do not rot untested. Tag traces and logs with <code>experiment_id</code> for correlation. Pair with <a href="../observability/chaos-observability.html">chaos observability</a> practices so abort uses the same burn alerts as paging.</p>
+          <p>Start in staging with traffic that mirrors production shape (shadow or replay). Graduate to production with 1 pod or 1% traffic, then expand only after hypotheses confirm—progressive blast radius beats starting at 10% of a fleet. Copy steady-state queries from SLO dashboards—do not invent experiment-only metrics. Maintain an experiment design template: steady state metrics, hypothesis, fault type, target, blast radius, duration, abort conditions, owners, and rollback steps.</p>
+          <p>Every production experiment needs: written hypothesis; blast-radius limits; duration cap with automatic termination; manual kill switch any rostered engineer can hit; automated abort on SLI or synthetic check regression; real-time observers on a shared war room channel; post-experiment write-up with tickets for gaps. Run GameDays quarterly so new dependencies do not rot untested—SRE literature treats GameDays as structured practice, not ad-hoc heroics. Tag traces and logs with <code>experiment_id</code> for correlation. Pair with <a href="../observability/chaos-observability.html">chaos observability</a> practices so abort uses the same burn alerts as paging. Automate recurring low-risk experiments (one random pod termination per week) once guardrails prove sound.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>No steady state:</strong> cannot tell success from noise.</li>
-            <li><strong>100% blast radius:</strong> an experiment becomes an outage.</li>
-            <li><strong>Abort by clock only:</strong> SLIs breach while the fault keeps running.</li>
-            <li><strong>Infrastructure-only faults:</strong> never test latency or error injection on dependencies.</li>
+            <li><strong>No steady state:</strong> cannot tell success from noise or when to abort.</li>
+            <li><strong>100% blast radius:</strong> an experiment becomes an outage instead of a learning event.</li>
+            <li><strong>Abort by clock only:</strong> SLIs breach while the fault keeps running and error budget burns.</li>
+            <li><strong>No manual kill switch:</strong> teams cannot stop injection when impact surprises them.</li>
+            <li><strong>Infrastructure-only faults:</strong> never test latency or error injection on dependencies—the faults users actually feel.</li>
             <li><strong>Findings without fixes:</strong> a backlog of known weaknesses treated as acceptable risk.</li>
             <li><strong>Muted user-impact alerts:</strong> silencing symptom pages hides whether monitoring would catch a real incident.</li>
+            <li><strong>Unattended runs:</strong> experiments execute overnight with no observer—violates Principles of Chaos on minimal blast radius and control.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
             <li>Steady state defined with the same SLI queries used for SLOs?</li>
             <li>Hypothesis falsifiable in one experiment window?</li>
+            <li>Experiment design template documented and version-controlled?</li>
             <li>Blast radius minimal with a documented escalation ladder?</li>
             <li>Automated abort wired to SLO burn or synthetic failure—not only duration?</li>
             <li>Kill switch available to any engineer on the experiment roster?</li>
+            <li>Observers assigned for the full experiment window—not fire-and-forget?</li>
             <li>On-call and change calendar aware; only intentional cause noise muted?</li>
             <li>Outcomes tracked as actionable work items with re-run after fixes?</li>
           </ul>
@@ -218,6 +242,7 @@
           <ul>
             <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> injects 250ms latency on a recommendations dependency; checkout SLI stays green because the circuit breaker serves cache—hypothesis confirmed before Black Friday.</li>
             <li><strong>Illustrative scenario —</strong> A platform team runs an AZ impairment GameDay; connection pools fail to shed bad endpoints and the experiment aborts on p99 guardrails—fix ships before multi-region cutover.</li>
+            <li><strong>Illustrative scenario —</strong> FIS injects network blackhole on 10% of inventory pods; error-budget burn alert trips abort at 0.3% budget consumed; postmortem tightens steady-state definition.</li>
             <li><strong>Case study —</strong> Netflix’s Chaos Monkey and later ChAP demonstrated continuous production fault injection at bounded scope; public write-ups describe the cultural shift from “don’t break prod” to “practice failure safely.”</li>
             <li><strong>Case study —</strong> AWS Fault Injection Simulator documents managed experiments (instance stop, AZ actions, API fault injection) with integration to CloudWatch for steady-state checks.</li>
           </ul>

@@ -106,17 +106,21 @@
           <h2 id="what-it-is">What it is</h2>
           <p>A <strong>self-healing system</strong> detects unhealthy state, takes automated corrective action, and returns to a defined steady state without manual intervention for routine failure classes. The control loop is observe → compare to desired state → remediate → verify → resume monitoring. Remediation happens at multiple layers: the orchestrator restarts unhealthy containers, the cloud replaces bad instances, load balancers drain bad targets, application libraries reopen circuits, and managed data tiers promote standbys.</p>
           <p>Self-healing is not one product feature—it is the composition of health checks, controllers, policies, and runbook automation. Kubernetes liveness and readiness probes, ReplicaSet reconciliation, Horizontal Pod Autoscaler, AWS Auto Scaling health checks, RDS Multi-AZ failover, and alert-driven runbooks (Systems Manager Automation, internal remediation bots) each close a loop for a specific failure mode. The architecture question is which loops you rely on and which failures still require human judgment.</p>
+          <p>Google’s SRE framing separates <em>toil</em> (repetitive manual work) from engineering work that reduces future toil. Well-designed self-healing turns known recovery steps—restart pod, replace instance, fail over read replica—into platform behaviour so on-call engineers are paged only when automation cannot safely proceed. That is distinct from “auto-remediate everything”: humans remain in the loop for novel failures, data-risk events, and cascading incidents where blind scale-out would worsen overload.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>At scale, transient failures are continuous: pods OOM, nodes drain, dependency blips, connection staleness. Human response for every restart does not scale and burns on-call capacity on toil. Automated recovery restores capacity in seconds—often before paging—so engineers focus on novel failures (data corruption, misconfiguration, security events) that automation must not amplify.</p>
-          <p>Self-healing also makes SLO math honest: if recovery depends on someone waking up, the achievable availability ceiling is lower than the same stack with platform-level restart and failover.</p>
+          <p>At scale, transient failures are continuous: pods OOM, nodes drain, dependency blips, connection staleness. A cluster with thousands of pods will see routine churn daily; manual restart for each event consumes all on-call attention on low-value toil while novel incidents wait. Automated recovery restores capacity in seconds—often before paging—so engineers focus on failures that require judgment (data corruption, misconfiguration, security events, unknown root cause).</p>
+          <p>Self-healing also makes SLO math honest: if recovery depends on someone waking up, the achievable availability ceiling is lower than the same stack with platform-level restart and failover. SRE availability targets assume bounded MTTR for restart-class faults; without automation, error budgets are spent on toil instead of product risk.</p>
+          <p>Principles of Chaos complement self-healing: chaos experiments validate that probes, controllers, and failover paths actually restore steady state under injected faults—not merely that dashboards show green after a kubelet restart in the happy path.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
             <li>Production workloads where manual restart or failover is slower than customer-visible impact.</li>
+            <li>Services with 24×7 SLOs where acceptable downtime per failure is shorter than human response time for routine faults.</li>
             <li>Kubernetes or VM fleets with well-understood, repeatable recovery steps.</li>
             <li>24×7 services with documented runbooks that can be encoded safely (scale out, restart, failover).</li>
             <li>Multi-AZ data tiers where managed failover meets RTO targets faster than operator action.</li>
+            <li>Multi-region designs where traffic shift must complete in seconds—faster than paging and human runbook execution.</li>
             <li>Systems already instrumented enough to distinguish “fixed by restart” from “needs investigation.”</li>
           </ul>
 
@@ -125,35 +129,63 @@
             <li>Novel or data-threatening failures where automated action could worsen blast radius (bad deploy, migration bug).</li>
             <li>Insufficient observability—restarts hide chronic bugs and erase evidence needed for root cause.</li>
             <li>Cascading failure risk—blind auto-scale or aggressive restart during overload can amplify an incident.</li>
+            <li>Automated remediation without caps (max replicas, backoff between restarts) that could turn automation into the failure.</li>
             <li>Remediation that requires business approval (financial reversals, legal holds).</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Stack loops from container health through replica reconciliation, node replacement, app-level recovery, and data-tier failover.</p>
+          <p>Stack loops from container health through replica reconciliation, node replacement, app-level recovery, and data-tier failover. Each layer should expose health to the next: probes feed kubelet decisions; kubelet state feeds controllers; controllers feed load balancers and HPA. SRE teams map each loop to an SLI—time-to-ready after pod kill, time-to-healthy-target after instance replacement—so self-healing performance is measurable, not assumed.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    L1["L1 Probes restart or unready pods"]
-    L2["L2 Controllers restore replica count"]
-    L3["L3 Cloud replaces unhealthy instances"]
-    L4["L4 App circuit breakers and pool refresh"]
-    L5["L5 Managed DB failover"]
-    L1 --> L2 --> L3 --> L4 --> L5</div>
+    l1["L1 Pod probes restart unhealthy containers"]
+    l2["L2 ReplicaSet and HPA restore desired count"]
+    l3["L3 ASG replaces bad instances"]
+    l4["L4 Circuit breakers and pool validation"]
+    l5["L5 DB failover promotes standby"]
+    l1 --> l2 --> l3 --> l4 --> l5</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Self-Healing Layers
-═══════════════════
+              <pre class="architecture-diagram__canvas"><code>Self-Healing Layers in a Kubernetes-Based System
+══════════════════════════════════════════════════════════
 
-L1  Liveness fails → kubelet restarts container
-    Readiness fails → endpoint removed from Service
+Layer 1: Container / Pod Health (Kubernetes)
+  ┌──────────────────────────────────────────────────────┐
+  │ Liveness Probe: HTTP GET /healthz every 10s          │
+  │ → 3 failures → kubelet kills + restarts container    │
+  │ Readiness Probe: HTTP GET /ready every 5s            │
+  │ → failure → pod removed from Service endpoints       │
+  │ → traffic stops flowing to unhealthy pod             │
+  └──────────────────────────────────────────────────────┘
 
-L2  Deployment/ReplicaSet → desired replicas reconciled
-    HPA → scale on CPU/RPS/custom metrics (with max cap)
+Layer 2: Replica / Deployment Health (Kubernetes)
+  ┌──────────────────────────────────────────────────────┐
+  │ ReplicaSet controller: desired=3, current=2          │
+  │ → detects pod crash, schedules replacement pod       │
+  │ HorizontalPodAutoscaler: CPU > 80% → scale up        │
+  └──────────────────────────────────────────────────────┘
 
-L3  ASG / MIG → replace instance failing cloud health checks
+Layer 3: Node / Instance Health (AWS)
+  ┌──────────────────────────────────────────────────────┐
+  │ Auto Scaling Group health check                      │
+  │ → EC2 instance fails status check                    │
+  │ → ASG terminates + replaces instance automatically   │
+  └──────────────────────────────────────────────────────┘
 
-L4  Circuit breaker half-open probes; pool validates on borrow
+Layer 4: Application Self-Healing
+  ┌──────────────────────────────────────────────────────┐
+  │ Circuit Breaker: trips on 50% errors → open state    │
+  │ → half-open probe every 30s → reset if healthy       │
+  │ Connection Pool: validate connections on borrow       │
+  │ → evict stale connections, establish new ones        │
+  └──────────────────────────────────────────────────────┘
 
-L5  RDS Multi-AZ / Aurora → promote standby on primary failure</code></pre>
+Layer 5: Data Tier Failover (RDS Multi-AZ)
+  ┌──────────────────────────────────────────────────────┐
+  │ Primary DB fails health check                        │
+  │ → RDS promotes standby to primary (60–120s)          │
+  │ → DNS update to new primary endpoint                 │
+  │ → application reconnects on next attempt             │
+  └──────────────────────────────────────────────────────┘</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Layered self-healing: probes and controllers at the platform, resilience libraries at the app, managed failover at the data tier.</figcaption>
           </figure>
@@ -163,11 +195,12 @@ L5  RDS Multi-AZ / Aurora → promote standby on primary failure</code></pre>
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Sub-minute recovery for common faults; MTTR drops sharply for restart-class failures.</li>
-                <li>Reduces on-call toil; pages trend toward anomalies automation cannot fix.</li>
+                <li>Sub-minute recovery for common faults; MTTR drops sharply for restart-class failures—often before the first page.</li>
+                <li>Reduces on-call toil; pages trend toward anomalies automation cannot fix (aligns with SRE toil reduction goals).</li>
                 <li>Repeatable recovery—no variance from fatigue or missing runbook steps.</li>
                 <li>Enables stricter availability targets when platform loops are trusted and tested.</li>
                 <li>Many loops are platform-native—less bespoke code than bespoke retry logic everywhere.</li>
+                <li>Consistent behaviour across shifts and regions—automation does not forget a runbook step at 3 a.m.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -183,9 +216,9 @@ L5  RDS Multi-AZ / Aurora → promote standby on primary failure</code></pre>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Separate <strong>liveness</strong> (process stuck or corrupt—restart) from <strong>readiness</strong> (not safe for traffic—remove from load balancer). Slow dependencies should fail readiness, not liveness. Use <code>startupProbe</code> for slow-boot apps so liveness does not kill initializing containers. Set reasonable <code>failureThreshold</code> and initial delays from measured boot time.</p>
-          <p>Alert on <code>kube_pod_container_status_restarts_total</code> and CrashLoopBackOff—even when automation “succeeds.” Cap <code>maxReplicas</code> on HPA; pair scale-out with rate limits on clients. Use <code>PodDisruptionBudget</code> so drains and node upgrades do not violate availability. Export health endpoints that report DEGRADED when circuit breakers are open but serving fallbacks—avoid restarting pods that are intentionally degraded yet alive.</p>
-          <p>Validate loops with <a href="chaos-engineering.html">chaos engineering</a>: kill pods, cordon nodes, and confirm SLIs recover within SLO before relying on self-healing in peak season.</p>
+          <p>Separate <strong>liveness</strong> (process stuck or corrupt—restart) from <strong>readiness</strong> (not safe for traffic—remove from load balancer). Slow dependencies should fail readiness, not liveness. Use <code>startupProbe</code> for slow-boot apps so liveness does not kill initializing containers. Set reasonable <code>failureThreshold</code> and initial delays from measured boot time—not copy-pasted defaults from tutorials.</p>
+          <p>Alert on <code>kube_pod_container_status_restarts_total</code> and CrashLoopBackOff—even when automation “succeeds.” Treat sustained restart rates as incidents, not green health. Cap <code>maxReplicas</code> on HPA; pair scale-out with rate limits on clients. Use <code>PodDisruptionBudget</code> so drains and node upgrades do not violate availability. Export health endpoints that report DEGRADED when circuit breakers are open but serving fallbacks—avoid restarting pods that are intentionally degraded yet alive.</p>
+          <p>Encode safe runbook steps in automation (SSM Automation, internal remediation bots) only after dry runs and with approval gates for mutating actions. Document which loops are allowed during incidents versus which require human halt. Validate loops with <a href="chaos-engineering.html">chaos engineering</a>: kill pods, cordon nodes, impair AZs, and confirm SLIs recover within SLO before relying on self-healing in peak season—steady-state hypotheses should include recovery time, not only steady traffic.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -194,7 +227,9 @@ L5  RDS Multi-AZ / Aurora → promote standby on primary failure</code></pre>
             <li><strong>Readiness too early:</strong> traffic hits cold caches or empty pools.</li>
             <li><strong>Thundering herd on recovery:</strong> many replicas restart together and stampede shared dependencies.</li>
             <li><strong>Runaway scale:</strong> HPA adds capacity into a DDoS or misconfigured client retry loop.</li>
+            <li><strong>Overlapping controllers:</strong> restart, scale, and breaker fight each other without coordination.</li>
             <li><strong>Failover without app retry:</strong> DB promotes but clients lack reconnect backoff.</li>
+            <li><strong>False confidence:</strong> no chaos validation—loops untested under load or partial failure.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -212,6 +247,7 @@ L5  RDS Multi-AZ / Aurora → promote standby on primary failure</code></pre>
           <ul>
             <li><strong>Illustrative scenario —</strong> <strong>FieldOps</strong> worker pods deadlock on a poison message; liveness fails after three checks; Kubernetes restarts within 30s while a DLQ rule captures the bad payload for analysis.</li>
             <li><strong>Illustrative scenario —</strong> A stateless API on an Auto Scaling Group loses an instance to hardware fault; replacement joins the target group before synthetic monitors breach SLO.</li>
+            <li><strong>Illustrative scenario —</strong> RDS Multi-AZ promotes standby during primary impairment; applications with JDBC reconnect backoff resume within published RTO while on-call receives informational, not paging, events.</li>
             <li><strong>Case study —</strong> Kubernetes documents liveness, readiness, and startup probes as the standard contract between applications and the control plane for automated recovery.</li>
             <li><strong>Case study —</strong> Amazon RDS Multi-AZ automates primary failover to standby within a documented window—applications must use DNS-aware connection handling for full benefit.</li>
           </ul>
