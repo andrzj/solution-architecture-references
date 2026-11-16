@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Data Security — SA References</title>
-  <meta name="description" content="Data security architecture: data classification, column-level encryption, tokenization, data masking, PII handling, GDPR/CCPA technical controls, and data access logging.">
+  <meta name="description" content="Data security with classification, KMS-backed encryption, tokenisation, masking, and erasure—mapped to NIST Privacy Framework and SP 800-111 storage encryption guidance.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -100,7 +100,7 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The foundation is <strong>data classification</strong>: assigning sensitivity levels to data (Public, Internal, Confidential, Restricted) based on the harm that disclosure would cause, and applying proportionate controls at each level. <strong>Encryption at rest</strong> protects data stored on disk from physical media theft; <strong>encryption in transit</strong> (TLS) protects data from network interception; and <strong>column-level encryption</strong> (also called application-level encryption or field-level encryption) protects specific sensitive fields even within a database to which the application has legitimate read access.</p>
+          <p><strong>Data security</strong> is the set of controls that keep information confidential, intact, and available according to its sensitivity. The foundation is <strong>data classification</strong>: assigning sensitivity levels to data (Public, Internal, Confidential, Restricted) based on the harm that disclosure would cause, and applying proportionate controls at each level. <strong>Encryption at rest</strong> protects data stored on disk from physical media theft; <strong>encryption in transit</strong> (TLS) protects data from network interception; and <strong>column-level encryption</strong> (also called application-level encryption or field-level encryption) protects specific sensitive fields even within a database to which the application has legitimate read access.</p>
           <p><strong>Tokenisation</strong> replaces a sensitive value (credit card number, SSN) with a non-sensitive surrogate token that has no mathematical relationship to the original value and can only be de-tokenised by authorised parties with access to the token vault. It differs from encryption in that the token cannot be de-tokenised without the vault, even with the algorithm. <strong>Data masking</strong> transforms data for lower-trust environments: static masking creates a de-identified copy for development/testing; dynamic masking returns masked values in real-time to unprivileged users. PII (Personally Identifiable Information) handling requires additional controls under GDPR and CCPA: data minimisation (don't collect what you don't need), purpose limitation (don't use data beyond its stated purpose), retention limits (delete data when no longer needed), and the right to erasure (technical ability to delete all data associated with a user).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -216,7 +216,7 @@ DATA ACCESS LOGGING:
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use envelope encryption for column-level encryption: generate a unique data encryption key (DEK) per-record or per-field, encrypt the sensitive value with the DEK, then encrypt the DEK with a KMS-managed key encryption key (KEK). Store the encrypted DEK alongside the ciphertext. This pattern means key rotation only requires re-encrypting the DEKs (lightweight), not re-encrypting all the data. AWS KMS, Google Cloud KMS, and HashiCorp Vault all support this pattern.</p>
+          <p>Use envelope encryption for column-level fields: per-record DEK, AES-256-GCM on the value, KEK wrap via AWS KMS, Azure Key Vault, or Google Cloud KMS; store encrypted DEK beside ciphertext so rotation re-wraps keys rather than re-encrypting entire tables. Enable default encryption on object storage and managed databases; deny unencrypted uploads with policy where the platform supports it.</p>
           <p>For searchable encrypted data, consider deterministic encryption (same plaintext always produces same ciphertext, allowing equality comparison) for low-cardinality fields, or use a blind index (hash of the plaintext, indexed separately) for lookups, understanding that this leaks some information about equality.</p>
           <p>For GDPR erasure, design the system from the start to support pseudonymisation: store a stable internal user_id as a foreign key in all data tables rather than PII like email. On erasure, the PII record is deleted or nulled, but the user_id foreign key rows in analytics and audit tables remain intact (now pseudonymous). For event streams and append-only logs, implement crypto-shredding: encrypt user-specific events with a per-user encryption key; when erasure is requested, delete the user's encryption key from KMS — all their encrypted events become unreadable.</p>
 
@@ -241,9 +241,9 @@ DATA ACCESS LOGGING:
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Healthcare patient records</strong>: PHI fields (diagnosis, medication, notes) encrypted at column level using AWS KMS; encrypted DEKs stored per-patient; only authorised service accounts have IAM permission to call KMS decrypt; all PHI access logged to immutable CloudTrail.</li>
-            <li><strong>E-commerce checkout</strong>: Credit card numbers tokenised via Stripe or Braintree token vault; application stores only token and last 4 digits; PCI DSS scope reduced to tokenisation integration points only; full PAN never touches application servers.</li>
-            <li><strong>GDPR erasure at scale</strong>: User requests account deletion; internal user_id retained in analytics tables; per-user encryption key deleted from KMS (crypto-shredding any encrypted PII in Kafka events); PII database fields nulled; erasure event logged with timestamp for compliance evidence.</li>
+            <li><strong>Illustrative scenario — healthcare PHI:</strong> Column-level ciphertext for clinical notes with per-patient DEKs wrapped in AWS KMS; PHI access logged to immutable audit storage.</li>
+            <li><strong>Case study — payment tokenisation:</strong> Processors such as Stripe store PANs in PCI-scoped vaults; merchants retain only tokens and last-four—pattern that shrinks PCI DSS scope for ecommerce platforms.</li>
+            <li><strong>Illustrative scenario — GDPR erasure:</strong> Crypto-shred per-user keys in Cloud KMS plus pseudonymous analytics identifiers; erasure jobs emit completion events for privacy audit trails.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -255,7 +255,9 @@ DATA ACCESS LOGGING:
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://gdpr.eu/right-to-be-forgotten/" target="_blank" rel="noopener noreferrer">GDPR Right to Erasure</a></li>
+            <li><a href="https://www.nist.gov/privacy-framework" target="_blank" rel="noopener noreferrer">NIST Privacy Framework</a></li>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-111/final" target="_blank" rel="noopener noreferrer">NIST SP 800-111 — Guide to Storage Encryption Technologies</a></li>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final" target="_blank" rel="noopener noreferrer">NIST SP 800-57 Part 1 Rev. 5</a></li>
             <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/security-pillar/data-protection.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected: Data Protection</a></li>
             <li><a href="https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html" target="_blank" rel="noopener noreferrer">OWASP Cryptographic Storage Cheat Sheet</a></li>
           </ul>
