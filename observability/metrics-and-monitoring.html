@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Metrics and Monitoring — SA References</title>
-  <meta name="description" content="Metrics and monitoring: counter/gauge/histogram/summary types, Prometheus pull model, cardinality, recording rules, Grafana dashboards, USE/RED/Four Golden Signals methodologies.">
+  <meta name="description" content="Metrics are numeric time series for detection and SLOs; monitoring operationalizes them with Prometheus scrape, Grafana dashboards, and the RED, USE, and SRE Golden Signals methodologies.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -95,39 +95,35 @@
             <span class="badge badge--primary">Observability &amp; Operations</span>
           </div>
           <h1 class="article-header__title">Metrics and Monitoring</h1>
-          <p class="article-header__desc">Metric types, Prometheus pull-based collection, cardinality management, recording rules for query performance, Grafana dashboards, and structured monitoring methodologies: USE, RED, and Google's Four Golden Signals.</p>
+          <p class="article-header__desc">Metrics and monitoring translate production behavior into Prometheus time series, Grafana visualization, and alert policies grounded in RED, USE, and the Google SRE book’s Four Golden Signals.</p>
           <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The four fundamental Prometheus metric types are:</p>
-          <ul>
-            <li><strong>Counter</strong>: A monotonically increasing value that resets on restart. Measures cumulative counts (requests served, errors, bytes sent). Always query rate over time, not raw value: <code>rate(http_requests_total[5m])</code>.</li>
-            <li><strong>Gauge</strong>: A value that can go up or down. Measures current state (active connections, queue depth, memory usage, CPU percentage). Query the current value directly.</li>
-            <li><strong>Histogram</strong>: Samples observations into configurable buckets, tracking cumulative counts and the total sum. Used for latency distributions — enables p50/p90/p99 calculation with <code>histogram_quantile(0.99, ...)</code>. Buckets must be pre-configured based on expected latency range.</li>
-            <li><strong>Summary</strong>: Like histogram but calculates quantiles client-side. Cannot be aggregated across instances — avoid for distributed systems; prefer histograms.</li>
-          </ul>
-          <p>Prometheus uses a <strong>pull model</strong>: it scrapes HTTP <code>/metrics</code> endpoints exposed by instrumented services at configurable intervals (typically 15s). This is in contrast to push-based systems (StatsD, InfluxDB line protocol) where applications push metrics to a collection endpoint. Pull has advantages: Prometheus can detect when a target is down (missing scrape), metrics are always available for ad-hoc querying from the service, and no centralised push endpoint is needed. The <strong>Prometheus data model</strong> identifies each time series by a metric name and a set of key-value labels: <code>http_requests_total{method="GET", status="200", service="api"}</code> is a unique time series.</p>
-          <p>Cardinality = the number of unique time series = product of unique values per label dimension.</p>
-          <p>The three primary monitoring methodologies structure which metrics to collect: <strong>USE</strong> (Brendan Gregg) for infrastructure resources: Utilisation, Saturation, Errors. <strong>RED</strong> (Tom Wilkie) for services: Rate (requests/sec), Errors (error rate), Duration (latency). <strong>Four Golden Signals</strong> (Google SRE): Latency, Traffic, Errors, Saturation — combining USE and RED with explicit latency focus. All three methodologies start from the same insight: most service degradation is visible in a small, well-chosen set of metrics.</p>
+          <p><strong>Metrics</strong> are numeric measurements recorded over time—counters of work done, gauges of current state, and histograms of latency distributions—that let teams see how a system behaves in aggregate. <strong>Monitoring</strong> is the operational practice of collecting those measurements continuously, visualizing them in dashboards such as Grafana, and firing alerts when symptom-based or SLO-based thresholds breach. In cloud-native stacks, <strong>Prometheus</strong> is the de facto metrics engine: it scrapes HTTP <code>/metrics</code> endpoints on a schedule, stores samples in its TSDB, and evaluates PromQL for alerts and graphs.</p>
+          <p>Prometheus exposes four instrument types. A <strong>counter</strong> only increases (total requests, total errors) and is queried with <code>rate()</code>. A <strong>gauge</strong> moves up or down (queue depth, memory used). A <strong>histogram</strong> buckets observations so you can approximate percentiles with <code>histogram_quantile()</code>—prefer histograms over <strong>summaries</strong> in distributed systems because summaries do not aggregate cleanly across pods. Each series is identified by metric name plus labels; <strong>cardinality</strong> is the count of unique label combinations—the resource Honeycomb and Prometheus operators alike warn you not to explode with unbounded dimensions.</p>
+          <p>Methodologies keep monitoring focused. <strong>RED</strong> (rate, errors, duration) suits services. <strong>USE</strong> (utilization, saturation, errors) suits nodes and disks. The Google SRE book’s <strong>Four Golden Signals</strong>—latency, traffic, errors, saturation—anchor production dashboards and SLI design. OpenTelemetry can emit Prometheus-compatible metrics via OTLP and the Collector, so instrumentation stays aligned with traces and logs in the three pillars model.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Metrics are the first line of detection for system problems. A dashboard showing request rate, error rate, and p99 latency for all services — updated every 15 seconds — enables detection of degradation within seconds to minutes of occurrence. This is far faster than log search or trace analysis. Metrics are cheap to store (numbers, not text), fast to query, and naturally support time-series analysis (trends, anomaly detection, rate-of-change).</p>
-          <p>The Prometheus ecosystem became dominant in cloud-native environments because its pull model integrates naturally with ephemeral container workloads, and the PromQL query language is expressive enough to compute complex derived metrics at query time.</p>
+          <p>Logs are too slow and too voluminous to be the first detector for fleet-wide regressions; traces are too expensive to retain for every request at full fidelity. Metrics compress behavior into numbers you can retain for months and query in milliseconds—exactly what SRE error budgets and paging policies require. Prometheus’s pull model also encodes uptime: a missing scrape is itself a signal that a target vanished, which matches ephemeral Kubernetes pods that come and go faster than humans notice.</p>
+          <p>Monitoring without methodology devolves into chart sprawl. RED, USE, and Golden Signals exist so teams instrument the smallest sufficient set and spend investigative energy on logs and traces only after metrics prove something changed.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All production services — RED metrics (rate, errors, duration) for every service are a non-negotiable baseline.</li>
-            <li>Infrastructure monitoring — USE metrics (utilisation, saturation, errors) for all compute, network, and storage resources.</li>
-            <li>SLO alerting — SLI metrics are the foundation of error budget tracking and burn rate alerts.</li>
+            <li>Every production service exposing RED metrics on its HTTP, gRPC, or message handlers.</li>
+            <li>Infrastructure tiers instrumented with USE metrics via node exporters, kube-state-metrics, or cloud provider integrations scraped into Prometheus.</li>
+            <li>SLO programs that translate user journeys into SLI metrics and multi-window burn-rate alerts—as described in the SRE workbook chapters on alerting.</li>
+            <li>Grafana dashboards shared with product and leadership for traffic, error, and latency trends—not as vanity charts, but as agreed operational views.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>High-cardinality event detail (per-user, per-request data) should go into traces and logs, not metrics. Adding unbounded labels to metrics causes cardinality explosion.</li>
+            <li>Do not store per-request identifiers or unbounded label values in Prometheus; put that detail in OpenTelemetry traces and structured Loki logs.</li>
+            <li>Do not alert on raw cumulative counters without <code>rate()</code>—you will page forever on the first error in history.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Prometheus scrapes instrumented targets, stores time series locally or via remote write, and Grafana renders dashboards and alert rules on top.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     svc["Services /metrics"]
@@ -195,62 +191,66 @@ LONG-TERM STORAGE:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Metrics are the most efficient telemetry type for long-term retention and fast alerting — a counter requires bytes of storage per scrape interval regardless of request volume.</li>
-                <li>Prometheus pull model detects target downtime automatically (missing scrape), providing implicit up/down monitoring for all instrumented services.</li>
-                <li>PromQL is expressive enough to compute complex derived metrics (quantiles, ratios, rates) at query time, without needing to pre-define every possible dashboard query at instrumentation time.</li>
+                <li>Metrics compress enormous traffic into storable time series—ideal for months of retention and sub-second Grafana queries during incidents.</li>
+                <li>Prometheus scrape failures surface missing targets immediately, complementing application-level health checks.</li>
+                <li>PromQL and recording rules express SLIs, error budgets, and SRE burn rates without re-instrumenting applications for every new question.</li>
+                <li>OpenTelemetry metrics export keeps counters and histograms consistent with traces when routed through the Collector.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Prometheus histogram quantile accuracy depends on bucket configuration — poorly configured buckets (too coarse) produce inaccurate percentiles. Native histograms (Prometheus 2.40+) address this.</li>
-                <li>Default Prometheus has no HA or long-term storage — requires Thanos or Grafana Mimir for production-grade deployment at scale.</li>
-                <li>The pull model requires service discovery for dynamic environments; in complex multi-cluster setups, Prometheus federation or remote write becomes necessary and adds operational complexity.</li>
+                <li>Histogram percentiles are only as good as bucket boundaries—misconfigured buckets lie smoothly in dashboards.</li>
+                <li>Single-node Prometheus lacks HA and long retention; production needs Thanos, Mimir, or remote write planning from the start.</li>
+                <li>Pull-based discovery grows complex across many clusters; federation and relabel rules become their own operational domain.</li>
+                <li>Metrics alone cannot explain novel failures—Charity Majors’ observability argument still applies: you need logs and traces after metrics point.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use recording rules for any PromQL expression that is used in dashboards or alerts — recording rules pre-compute the expression on every evaluation, stored as a new time series, making dashboards fast even at high cardinality. Without recording rules, complex dashboard queries at 90-day range scan over millions of samples on every page load. Name recording rules following the convention <code>level:metric:operation</code> — e.g., <code>job:http_requests:rate5m</code>.</p>
-          <p>Manage cardinality explicitly: audit metric cardinality regularly with <code>prometheus_tsdb_head_series</code> and identify the top contributors. Avoid labels whose values are unbounded or proportional to traffic (e.g., user agent strings, full URL paths — use path templates instead like <code>/users/:id</code> not <code>/users/12345</code>). Use Prometheus's <code>metric_relabel_configs</code> to drop high-cardinality labels before they are stored.</p>
+          <p>Instrument HTTP and RPC layers with RED: <code>http_requests_total</code> labeled by coarse route template, status class, and method; histograms for duration with buckets matching your SLO threshold. Export OpenTelemetry metrics to Prometheus via the Collector’s Prometheus remote write or a scrape endpoint. Define recording rules for every alert and heavy dashboard query—name them <code>job:http_requests:rate5m</code> style so dependencies are obvious.</p>
+          <p>Run cardinality reviews weekly: top series by label job, drop toxic labels at scrape time with <code>metric_relabel_configs</code>, and never put user or request IDs on labels. Pair Grafana panels with exemplars linking to Tempo when possible. For long-term trends, remote-write to Mimir or Thanos while keeping local Prometheus for fast alerting. Document Golden Signal dashboards per tier—edge, service, data—and tie pages to user impact, not CPU trivia.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Cardinality explosion</strong>: A single new high-cardinality label (e.g., adding IP address per request) multiplying existing time series by millions, causing Prometheus OOM and query timeouts.</li>
-            <li><strong>Histogram bucket misconfiguration</strong>: Default Prometheus histogram buckets (<code>.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10</code> seconds) are wrong for many services — a service with p99 of 200ms needs finer buckets below 500ms for accurate percentile calculation.</li>
-            <li><strong>No long-term storage</strong>: Default Prometheus 15-day retention means no historical data for capacity planning, trend analysis, or year-over-year comparisons — needs Thanos or Mimir from day one.</li>
-            <li><strong>Alerting on raw counters</strong>: Alerting <code>http_errors_total &gt; 0</code> fires on the first error ever and stays firing forever; always alert on <code>rate()</code> to alert on error rate, not cumulative count.</li>
+            <li><strong>Cardinality explosion</strong>: A new label with unbounded values multiplies series count until Prometheus OOMs—treat it like a production incident prevention task.</li>
+            <li><strong>Wrong histogram buckets</strong>: Default second-scale buckets make sub-200ms APIs look fine while p99 lies; tune per service SLO.</li>
+            <li><strong>Alerting on raw counters</strong>: Pages that never resolve because totals only increase—always use <code>rate()</code> or recording rules.</li>
+            <li><strong>Dashboard-only monitoring</strong>: Charts nobody owns and alerts nobody trusts—violates SRE guidance to automate symptom detection.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are RED metrics (rate, errors, duration) instrumented for all services?</li>
-            <li>Are USE metrics (utilisation, saturation, errors) instrumented for all infrastructure resources?</li>
-            <li>Are cardinality limits defined and enforced (no unbounded labels)?</li>
-            <li>Are recording rules defined for all dashboard and alert queries?</li>
-            <li>Is long-term metric storage configured (Thanos/Mimir/remote write)?</li>
-            <li>Are histogram bucket boundaries appropriate for the expected latency range?</li>
+            <li>Does every service expose RED metrics scraped into Prometheus?</li>
+            <li>Do infrastructure tiers expose USE metrics for compute, storage, and network?</li>
+            <li>Are label cardinality limits documented and enforced at scrape time?</li>
+            <li>Do recording rules back every production alert and heavy Grafana query?</li>
+            <li>Is long-term storage (Thanos/Mimir) configured for capacity and SLO history?</li>
+            <li>Do histogram buckets match each service’s latency SLO and traffic shape?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>API gateway monitoring</strong>: Instrument all routes with <code>http_requests_total{method, status, route}</code> and <code>http_request_duration_seconds{route}</code> histogram; Grafana dashboard shows per-route rate, error %, and p50/p90/p99 latency; alerts fire when error rate exceeds SLO threshold.</li>
-            <li><strong>Database resource monitoring</strong>: USE methodology applied: postgres_exporter provides connection utilisation, replication lag (saturation), and query error rates; alerts on >80% connection pool utilisation and >10s replication lag.</li>
-            <li><strong>SLO burn rate alerting</strong>: Record <code>job:api_availability:ratio1h</code> = 1 - error_rate; alert fires when 1h burn rate × 14.4 > 1 (fast burn) or 6h burn rate × 6 > 1 (slow burn), indicating error budget consumption pace that would exhaust the 30-day budget.</li>
+            <li><strong>Illustrative scenario — API gateway</strong>: RED metrics per route template power a Grafana board; when error ratio crosses an SLO, exemplars jump to Tempo traces while Loki logs supply error codes.</li>
+            <li><strong>Illustrative scenario — datastore saturation</strong>: USE metrics from a database exporter alert on connection pool utilization and replication lag before queries time out in applications.</li>
+            <li><strong>Case study — Google SRE Golden Signals</strong>: Production monitoring at Google popularized latency, traffic, errors, and saturation as the minimal service health vocabulary—mapped directly to Prometheus SLI recording rules today.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="three-pillars.html">Three Pillars of Observability</a> — Metrics in context with logs and traces.</li>
-            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — Metrics as the foundation for SLO measurement.</li>
-            <li><a href="alerting-strategies.html">Alerting Strategies</a> — Building effective alerts on top of metrics.</li>
+            <li><a href="three-pillars.html">Three Pillars of Observability</a> — Metrics with logs and traces.</li>
+            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — SLI metrics and burn-rate alerts.</li>
+            <li><a href="alerting-strategies.html">Alerting Strategies</a> — Symptom- and SLO-based paging.</li>
+            <li><a href="opentelemetry.html">OpenTelemetry</a> — OTLP metrics into Prometheus pipelines.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://prometheus.io/docs/concepts/metric_types/" target="_blank" rel="noopener noreferrer">Prometheus Metric Types</a></li>
-            <li><a href="https://www.brendangregg.com/usemethod.html" target="_blank" rel="noopener noreferrer">Brendan Gregg: USE Method</a></li>
-            <li><a href="https://sre.google/sre-book/monitoring-distributed-systems/#xref_monitoring_golden-signals" target="_blank" rel="noopener noreferrer">Google SRE: Four Golden Signals</a></li>
+            <li><a href="https://sre.google/sre-book/monitoring-distributed-systems/#xref_monitoring_golden-signals" target="_blank" rel="noopener noreferrer">Google SRE Book: Four Golden Signals</a></li>
+            <li><a href="https://grafana.com/docs/grafana/latest/fundamentals/intro-to-prometheus/" target="_blank" rel="noopener noreferrer">Grafana: Introduction to Prometheus</a></li>
+            <li><a href="https://charity.wtf/2020/03/03/observability-is-a-many-splendored-thing/" target="_blank" rel="noopener noreferrer">Charity Majors: Observability Is a Many-Splendored Thing</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

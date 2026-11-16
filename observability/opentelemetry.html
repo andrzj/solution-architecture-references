@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenTelemetry — SA References</title>
-  <meta name="description" content="OpenTelemetry: OTel SDK, Collector pipeline architecture, OTLP protocol, auto vs manual instrumentation, semantic conventions, and vendor-neutral observability.">
+  <meta name="description" content="OpenTelemetry SDK and Collector: OTLP export, W3C Trace Context propagation, auto and manual instrumentation, semantic conventions, tail sampling, and vendor-neutral observability pipelines.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -95,132 +95,63 @@
             <span class="badge badge--primary">Observability &amp; Operations</span>
           </div>
           <h1 class="article-header__title">OpenTelemetry</h1>
-          <p class="article-header__desc">The OTel SDK, Collector pipeline (receivers, processors, exporters), OTLP protocol, auto-instrumentation vs manual instrumentation, semantic conventions, and vendor-neutral observability telemetry.</p>
-          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
+          <p class="article-header__desc">OpenTelemetry — vendor-neutral traces, metrics, and logs with OTLP export, W3C Trace Context propagators, Collector pipelines, and semantic conventions.</p>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>This decouples instrumentation from observability vendor choice.</p>
-          <p>The OTel architecture has three layers: (1) <strong>OTel API</strong> — the application-facing interface for creating spans, recording metrics, and emitting log records. Applications depend on the API. The API is intentionally minimal and stable — it is safe to add as a library dependency. (2) <strong>OTel SDK</strong> — the implementation that processes telemetry.</p>
-          <p>It adds context propagation, sampling decisions, batching, and export. The SDK is configured by operators, not developers. (3) <strong>OTel Collector</strong> — an optional but strongly recommended intermediary between applications and backends. It receives telemetry over OTLP (OTel Protocol), processes it (batching, filtering, enrichment, sampling), and exports to one or more backends.</p>
-          <p>The Collector decouples applications from backend configuration and enables centralised telemetry pipeline management.</p>
-          <p><strong>Auto-instrumentation</strong> adds OTel instrumentation to common libraries (HTTP clients/servers, database clients, message consumers) without requiring application code changes. It works via bytecode manipulation (Java agent), monkey-patching (Python), or LD_PRELOAD (Go). Auto-instrumentation covers the 80% case — standard library calls — and should be combined with <strong>manual instrumentation</strong> for business-level context (adding attributes like <code>user.id</code>, <code>order.amount</code>, <code>payment.method</code> to spans) that automatic instrumentation cannot provide. The combination of auto + manual instrumentation produces traces with both technical (latency, errors, SQL query) and business (user context, operation metadata) dimensions.</p>
+          <p><strong>OpenTelemetry (OTel)</strong> is a CNCF project that standardises how applications produce, enrich, and export telemetry — traces, metrics, and logs — without locking teams to a single observability vendor. Application code depends on the stable <strong>OTel API</strong>; the <strong>SDK</strong> implements sampling, batching, and export; the optional <strong>Collector</strong> receives OTLP (and other formats), processes telemetry centrally, and fans out to backends.</p>
+          <p>For traces, OTel’s default <strong>text map propagator</strong> implements <strong>W3C Trace Context</strong>: inject <code>traceparent</code> and optional <code>tracestate</code> on outbound HTTP/gRPC and extract them on ingress. The same 128-bit trace identifier flows to logs (via log bridges), metric exemplars, and downstream services — one correlation key across signals.</p>
+          <p><strong>Auto-instrumentation</strong> (agents or library hooks) covers common frameworks — HTTP servers and clients, gRPC, JDBC, Redis, message consumers — with minimal code changes. <strong>Manual instrumentation</strong> adds domain spans and attributes (order identifiers, payment state, feature flags) that generic hooks cannot infer. <strong>Semantic conventions</strong> document standard attribute names (<code>http.request.method</code>, <code>db.system</code>, <code>messaging.destination.name</code>) so dashboards and alerts work across services written in different languages.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>OpenTelemetry emerged from the merger of OpenTracing and OpenCensus, two competing vendor-neutral tracing standards. It is now the second-most contributed CNCF project (after Kubernetes). The core problem it solves is vendor lock-in and instrumentation fragmentation: organisations with 100 services using proprietary vendor SDKs face prohibitive switching costs. With OTel, the instrumentation investment (spans, metrics) is portable — changing observability backends requires only Collector configuration changes, not application changes.</p>
-          <p>The OTLP protocol is now natively supported by virtually every observability platform (Datadog, New Relic, Grafana, Honeycomb, Jaeger), making OTel the de facto standard for new observability instrumentation.</p>
+          <p>Before OTel, organisations accumulated incompatible tracing APIs (OpenTracing, OpenCensus, vendor agents) and paid twice: once to instrument, again to switch backends. Merging those efforts produced a single SDK trajectory supported by major vendors. OTLP is now natively accepted by Jaeger, Tempo, Prometheus remote write paths, Datadog, New Relic, Honeycomb, and others — instrumentation becomes a durable asset, not a lease on one vendor.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All new services — OTel should be the default instrumentation choice for any new service requiring observability telemetry.</li>
-            <li>Migrating from proprietary instrumentation — OTel provides a clear migration path with Collector compatibility shims for legacy formats (Jaeger, Zipkin, StatsD).</li>
-            <li>Multi-vendor observability — routing the same telemetry to multiple backends (e.g., traces to both Jaeger and Datadog) is trivial with the Collector.</li>
+            <li>All new services that need production observability — OTel should be the default bootstrap choice.</li>
+            <li>Platform teams standardising propagation, resource attributes, and collector pipelines once for hundreds of microservices.</li>
+            <li>Multi-backend or multi-team routing — one OTLP stream, many exporter targets (security analytics, long-term trace store, metrics TSDB).</li>
+            <li>Migrations from B3, X-Ray, or proprietary agents — collectors translate headers while applications move to W3C-native SDKs.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Services already well-instrumented with a stable vendor SDK where migration cost outweighs portability benefit — evaluate per service rather than mandating immediate migration of all existing instrumentation.</li>
+            <li>Mature services with stable vendor SDKs and no portability requirement — migrate opportunistically, not under arbitrary deadlines.</li>
+            <li>Ultra-constrained embedded firmware with no room for SDKs — use minimal metrics or logs only.</li>
+            <li>When a managed runtime provides sufficient bundled telemetry and export is not negotiable — weigh portability against integration cost.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Applications export OTLP to a nearby Collector (DaemonSet or sidecar). A central Collector tier runs tail sampling, adds Kubernetes metadata, and exports to trace, metric, and log backends.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    app["App with OTel SDK"]
-    coll["OTel Collector"]
-    back["Backends&lt;br/&gt;Jaeger, Prometheus, Loki"]
-    app -->|OTLP| coll --> back</div>
+    app["Apps with OTel SDK"]
+    agent["Collector agent"]
+    central["Collector gateway"]
+    tempo["Traces"]
+    prom["Metrics"]
+    loki["Logs"]
+    app -->|OTLP + W3C headers| agent --> central
+    central --> tempo
+    central --> prom
+    central --> loki</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>OPENTELEMETRY ARCHITECTURE:
+              <pre class="architecture-diagram__canvas"><code>COLLECTOR PIPELINE (simplified):
 
-Application (OTel SDK)
-    ↓ OTLP (gRPC or HTTP)
-OTel Collector (DaemonSet or Sidecar)
-    ↓ OTLP/Jaeger/Prometheus/etc.
-Observability Backends (Jaeger, Prometheus, Loki)
+receivers:  otlp (grpc :4317, http :4318)
+processors: memory_limiter → batch → tail_sampling
+exporters:  otlp/tempo, prometheusremotewrite, loki
 
-COLLECTOR PIPELINE (otel-collector-config.yaml):
-receivers:
-  otlp:
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
-      http:
-        endpoint: 0.0.0.0:4318
+TRACE PROPAGATION:
+  SDK injects W3C traceparent on outbound calls
+  Collector optional: attributes processor adds k8s.pod.name
 
-processors:
-  batch:
-    timeout: 5s
-    send_batch_size: 1000
-  memory_limiter:
-    limit_mib: 512
-    spike_limit_mib: 128
-  resourcedetection:
-    detectors: [env, k8s_node]
-  tail_sampling:
-    decision_wait: 10s
-    policies:
-      - name: errors-policy
-        type: status_code
-        status_code: {status_codes: [ERROR]}
-      - name: slow-policy
-        type: latency
-        latency: {threshold_ms: 1000}
-      - name: sample-10pct
-        type: probabilistic
-        probabilistic: {sampling_percentage: 10}
-
-exporters:
-  otlp:
-    endpoint: tempo:4317
-    tls: {insecure: true}
-  prometheusremotewrite:
-    endpoint: http://prometheus:9090/api/v1/write
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
-
-service:
-  pipelines:
-    traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch, tail_sampling]
-      exporters: [otlp]
-    metrics:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [prometheusremotewrite]
-    logs:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [loki]
-
-MANUAL INSTRUMENTATION (Go):
-  tracer := otel.Tracer("checkout-service")
-  ctx, span := tracer.Start(ctx, "process-payment",
-    trace.WithAttributes(
-      attribute.String("payment.method", "card"),
-      attribute.Float64("payment.amount", order.Total),
-      attribute.String("user.id", userID),
-    ))
-  defer span.End()
-
-AUTO-INSTRUMENTATION (Java agent):
-  java -javaagent:opentelemetry-javaagent.jar \
-       -Dotel.service.name=checkout-api \
-       -Dotel.exporter.otlp.endpoint=http://collector:4317 \
-       -jar app.jar
-
-SEMANTIC CONVENTIONS (standardised attribute names):
-  http.request.method: "GET"
-  http.response.status_code: 200
-  url.path: "/api/orders"
-  db.system: "postgresql"
-  db.statement: "SELECT * FROM orders WHERE id=$1"
-  messaging.system: "kafka"
-  messaging.destination.name: "orders"</code></pre>
+RESOURCE ATTRIBUTES (every signal):
+  service.name, service.version, deployment.environment</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">OpenTelemetry: SDKs export OTLP to a collector that fans out traces, metrics, and logs to backends.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">OTel SDKs emit OTLP locally; gateway collectors sample, enrich, and route traces, metrics, and logs to backends.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -228,67 +159,74 @@ SEMANTIC CONVENTIONS (standardised attribute names):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Vendor neutrality: instrument once, export to any backend. Switching from Jaeger to Tempo requires only Collector exporter configuration changes — no application code changes.</li>
-                <li>The OTel Collector provides a powerful centralised telemetry pipeline with processing capabilities (tail-based sampling, enrichment, filtering, fan-out) that would otherwise require custom per-service implementation.</li>
-                <li>Semantic conventions ensure consistent attribute naming across services and languages, enabling cross-service queries and dashboards without per-service customisation.</li>
+                <li>Vendor-neutral instrumentation — change exporters, not application code.</li>
+                <li>Central Collector handles tail sampling, PII scrubbing, and fan-out once.</li>
+                <li>W3C Trace Context by default improves cross-language and cross-vendor correlation.</li>
+                <li>Semantic conventions reduce bespoke attribute naming per team.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>OTel SDK maturity varies significantly by language — Java and Go SDKs are stable and production-ready; Python, Ruby, and PHP SDKs are stable but have fewer auto-instrumentation libraries; .NET and JavaScript are actively evolving.</li>
-                <li>The Collector adds a hop to the telemetry pipeline that must be sized, monitored, and maintained; a misconfigured Collector can become a single point of failure for telemetry collection.</li>
-                <li>Auto-instrumentation via Java agents or Python monkey-patching can have compatibility issues with specific frameworks or library versions; testing auto-instrumentation in staging before production is important.</li>
+                <li>SDK maturity varies by language; auto-instrumentation coverage differs.</li>
+                <li>Collectors are another tier to size, upgrade, and monitor — misconfiguration can drop telemetry silently.</li>
+                <li>Auto-instrumentation can conflict with exotic frameworks or security agents — validate in staging.</li>
+                <li>Operational learning curve for pipeline YAML, receivers, and processor ordering.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Deploy the OTel Collector as a Kubernetes DaemonSet (one per node) for traces and metrics collection, with a centralised Collector deployment for the Collector tier that handles tail-based sampling, backend routing, and enrichment. This two-tier architecture keeps application-side overhead low (applications send to a local DaemonSet over loopback) while centralising the expensive processing (tail sampling decisions require seeing all spans for a trace). Configure <code>memory_limiter</code> processor as the first processor in every pipeline — this prevents OOM kills under traffic spikes by dropping telemetry when memory pressure is high, which is preferable to the Collector crashing entirely.</p>
-          <p>When adding manual instrumentation, focus on business-level attributes rather than duplicating what auto-instrumentation already captures. Auto-instrumentation covers HTTP request/response, database query, and messaging system attributes. Manual instrumentation should add domain attributes: user identity, business transaction IDs, feature flag states, and domain-specific error categorisation. Use the <code>baggage</code> API to propagate business context across service boundaries automatically — once set in the entry point, baggage values propagate through all downstream spans without requiring explicit passing through function signatures.</p>
+          <p>Deploy agent Collectors per node for low-latency OTLP ingest; gateway Collectors for tail sampling and backend routing. Always place <code>memory_limiter</code> first in processor chains to avoid OOM under spike load.</p>
+          <p>Set resource attributes at startup: <code>service.name</code>, <code>service.version</code>, <code>deployment.environment</code>. Enable the W3C propagator; disable legacy B3-only modes unless required for a specific dependency during migration.</p>
+          <p>Use <strong>baggage</strong> sparingly for cross-cutting business keys — never secrets. Prefer span attributes for data that should land in trace storage. Bridge logs to OTel so log records include trace and span IDs matching W3C values.</p>
+          <p>Configure tail sampling policies: retain errors, high latency, and debug headers; probabilistically sample the remainder. Document sampling rates so on-call engineers know expected trace completeness.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Collector as SPOF</strong>: A single Collector deployment without redundancy becomes a single point of failure for all telemetry; deploy at least 2 Collector replicas behind a service for high availability.</li>
-            <li><strong>Missing resource attributes</strong>: Spans missing <code>service.name</code>, <code>service.version</code>, or <code>deployment.environment</code> are difficult to filter and correlate; configure resource attributes at the SDK level and supplement with Collector resourcedetection processor.</li>
-            <li><strong>No tail sampling</strong>: Exporting 100% of traces at high traffic volumes creates prohibitive storage and cost; configure tail-based sampling in the Collector to retain high-value traces (errors, slow) while sampling the rest.</li>
-            <li><strong>Baggage misuse</strong>: Adding sensitive data (PII, authentication tokens) to OTel baggage propagates them to all downstream services and into trace data; baggage should contain only non-sensitive correlation identifiers.</li>
+            <li><strong>Single-replica Collector</strong> — one pod crash loses telemetry; run HA gateway Collectors behind a service.</li>
+            <li><strong>Missing resource attributes</strong> — traces without <code>service.name</code> are unfilterable in large estates.</li>
+            <li><strong>Propagator mismatch</strong> — SDK configured for B3 while mesh injects W3C only; results in broken parent links.</li>
+            <li><strong>100% trace export</strong> — no tail sampling at high QPS overwhelms backends and budgets.</li>
+            <li><strong>Sensitive baggage</strong> — tokens in baggage propagate to every downstream span and exporter.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the OTel Collector deployed with high availability (at least 2 replicas)?</li>
-            <li>Is <code>memory_limiter</code> processor configured as the first processor in all pipelines?</li>
-            <li>Are tail-based sampling policies configured to retain errors and slow traces?</li>
-            <li>Are semantic convention attribute names used for standard operations (HTTP, DB, messaging)?</li>
-            <li>Are resource attributes (<code>service.name</code>, <code>service.version</code>, environment) set for all services?</li>
-            <li>Is auto-instrumentation combined with manual instrumentation for business context?</li>
+            <li>Are OTel SDKs or agents deployed on all new production services?</li>
+            <li>Is W3C Trace Context the default propagator for HTTP and gRPC?</li>
+            <li>Do Collectors run with HA, memory limits, and monitored export failures?</li>
+            <li>Are tail sampling rules documented and tested for error retention?</li>
+            <li>Do logs, metrics exemplars, and traces share OTel resource attributes?</li>
+            <li>Are semantic conventions used for standard operations instead of custom names?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Vendor migration without re-instrumentation</strong>: Organisation migrates from Datadog to Grafana stack; all services already instrument with OTel SDK; Collector exporter configuration updated to point to Grafana Tempo instead of Datadog; no application code changes required; migration completed in 1 week vs estimated 3 months for re-instrumentation.</li>
-            <li><strong>Centralised tail sampling</strong>: Service handling 50,000 requests/second; 100% trace export is cost-prohibitive at $500K/year; Collector tail sampling configured to retain 100% of error traces, 100% of traces &gt;2s, and 5% of normal traces; trace volume reduces 90%; critical debugging data preserved at $50K/year cost.</li>
-            <li><strong>Multi-backend fan-out</strong>: Security team requires a copy of all spans for security analysis (UEBA); ops team uses Tempo for performance investigation; Collector configured to export to both Tempo and a security SIEM simultaneously; zero application code changes required to add the second destination.</li>
+            <li><strong>Illustrative scenario — backend swap</strong>: Exporters retarget from a commercial APM to Grafana Tempo and Mimir; applications unchanged; only Collector YAML updates.</li>
+            <li><strong>Case study — CNCF OpenTelemetry</strong>: Merger of OpenTracing and OpenCensus created the dominant neutral telemetry standard adopted across cloud providers.</li>
+            <li><strong>Illustrative scenario — dual export</strong>: Security operations receives a filtered OTLP copy of error spans while platform SREs use the full tail-sampled stream in Tempo.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="distributed-tracing.html">Distributed Tracing</a> — OTel is the standard instrumentation layer for distributed traces.</li>
-            <li><a href="metrics-and-monitoring.html">Metrics and Monitoring</a> — OTel metrics API replaces Prometheus client libraries for new services.</li>
-            <li><a href="three-pillars.html">Three Pillars of Observability</a> — OTel covers all three pillars: traces, metrics, and logs.</li>
+            <li><a href="distributed-tracing.html">Distributed Tracing</a> — Span model and W3C propagation semantics.</li>
+            <li><a href="metrics-telemetry.html">Metrics &amp; Telemetry</a> — OTLP metrics and exemplar correlation.</li>
+            <li><a href="three-pillars.html">Three Pillars of Observability</a> — Unified signals through one SDK.</li>
+            <li><a href="logging-architecture.html">Logging Architecture</a> — Log pipelines bridged to OTel.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://opentelemetry.io/docs/" target="_blank" rel="noopener noreferrer">OpenTelemetry Official Documentation</a></li>
-            <li><a href="https://opentelemetry.io/docs/collector/" target="_blank" rel="noopener noreferrer">OTel Collector Documentation</a></li>
-            <li><a href="https://opentelemetry.io/docs/specs/semconv/" target="_blank" rel="noopener noreferrer">OpenTelemetry Semantic Conventions</a></li>
+            <li><a href="https://opentelemetry.io/docs/" target="_blank" rel="noopener noreferrer">OpenTelemetry documentation</a></li>
+            <li><a href="https://www.w3.org/TR/trace-context/" target="_blank" rel="noopener noreferrer">W3C Trace Context</a></li>
+            <li><a href="https://opentelemetry.io/docs/collector/" target="_blank" rel="noopener noreferrer">OpenTelemetry Collector</a></li>
+            <li><a href="https://opentelemetry.io/docs/specs/semconv/" target="_blank" rel="noopener noreferrer">OpenTelemetry semantic conventions</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
-          <a href="profiling.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Continuous Profiling</span></a>
-          <a href="index.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Observability Index</span></a>
+          <a href="distributed-tracing.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Distributed Tracing</span></a>
+          <a href="alerting-strategies.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Alerting Strategies</span></a>
         </nav>
       </div>
       <aside class="article-aside">

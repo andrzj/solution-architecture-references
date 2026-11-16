@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Observability in Chaos Engineering — SA References</title>
-  <meta name="description" content="Observability in chaos engineering: steady-state hypothesis, blast radius observation, GameDays, Gremlin, LitmusChaos, and automating failure experiments in production.">
+  <meta name="description" content="Observability for chaos engineering: Google SRE steady-state SLIs, hypothesis-driven experiments, blast radius control, GameDays, and validating alerts under failure.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,34 +96,36 @@
             <span class="badge badge--muted">Reliability</span>
           </div>
           <h1 class="article-header__title">Observability in Chaos Engineering</h1>
-          <p class="article-header__desc">Hypothesis-driven failure experiments, steady-state baselines, blast radius control, automated GameDays, and using Gremlin and LitmusChaos to validate resilience in production systems.</p>
+          <p class="article-header__desc">Chaos engineering needs SRE-grade observability: define steady state with SLIs, inject controlled failures, prove alerts and dashboards catch user impact, and automate abort when budget burns too fast.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Every chaos experiment follows a structured process: (1) <strong>Hypothesis definition</strong>: "When one availability zone becomes unavailable, checkout success rate will remain above 99%" — a specific, measurable statement about expected system behaviour. (2) <strong>Steady-state baseline</strong>: Measure SLIs (error rate, latency, throughput) before the experiment to establish the baseline for comparison. Observability tooling must be in place before any experiment begins. (3) <strong>Blast radius control</strong>: Start small — inject failures affecting 1% of traffic or 1 instance before scaling.</p>
-          <p>Define stop conditions (if error rate exceeds X, abort automatically). (4) <strong>Inject failure</strong>: Kill an instance, introduce network latency, corrupt a dependency response, exhaust resources. (5) <strong>Observe and measure</strong>: Compare current SLIs against baseline using your distributed tracing, metrics, and logs. (6) <strong>Restore and analyse</strong>: Stop the experiment, verify recovery, document findings and any gaps in observability discovered.</p>
-          <p>The tools used for chaos experiments vary by scope: <strong>Chaos Monkey</strong> (Netflix) randomly terminates EC2 instances in the Auto Scaling Group — simple, production-proven. <strong>Gremlin</strong> is a commercial platform with a rich catalogue of failure types (CPU, memory, network, disk, process, time, DNS), granular blast radius controls, and GameDay scheduling. <strong>LitmusChaos</strong> is a CNCF project that runs chaos experiments as Kubernetes ChaosEngine resources, integrates with Argo Workflows, and has hundreds of pre-built experiment templates for Kubernetes environments.</p>
+          <p><strong>Chaos engineering</strong> is controlled experimentation on production (or production-like) systems: inject faults, compare behaviour against a <strong>steady-state hypothesis</strong>, and learn whether resilience mechanisms and observability actually work. Steady state is defined in the same language as SRE monitoring — SLIs such as success ratio, latency percentiles, and throughput — not “pods are running.”</p>
+          <p>A standard experiment loop: articulate a falsifiable hypothesis (“losing one AZ does not drop checkout SLI below SLO”); record baseline SLIs and error budget; constrain <strong>blast radius</strong> (one pod, one AZ, canary slice); inject fault (kill instance, delay network, fail dependency); observe metrics, traces, logs, synthetic probes, and pages; abort automatically if SLIs cross guardrails; restore and document gaps (missing alerts, no circuit breaker, wrong dashboard).</p>
+          <p>Tooling includes <strong>LitmusChaos</strong> on Kubernetes, commercial suites such as Gremlin, and simpler schedulers — the tools matter less than observability prerequisites and abort hooks tied to SLI burn.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Traditional reliability testing — unit tests, integration tests, load tests — validates that systems work correctly under expected conditions. Chaos engineering validates that systems degrade gracefully under unexpected but inevitable conditions. Production systems experience hardware failures, network partitions, dependency degradation, and resource exhaustion that no test environment perfectly replicates. Netflix found that teams who ran regular chaos experiments had lower mean time to recovery (MTTR) in real incidents because they had practised the failure scenarios and had confidence in their observability.</p>
-          <p>Without chaos engineering, teams often discover their monitoring blind spots and missing circuit breakers during real customer-impacting incidents rather than controlled experiments.</p>
+          <p>Integration tests pass in clean environments; production has partial failures, retries, and skew. The SRE monitoring chapter warns that white-box metrics alone miss user experience — chaos tests whether black-box SLIs, symptom alerts, and runbooks survive real fault modes. Teams that rehearse failures in measured experiments report faster incident response because dashboards, ownership, and mitigation steps were validated before customers paid the tuition.</p>
+          <p>Chaos also audits monitoring: if injecting a pod kill does not move SLI dashboards or fire burn-rate alerts, the gap is visible in a game day instead of during an unplanned outage.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Systems with mature observability — chaos experiments without telemetry are dangerous and unproductive; you cannot observe failure effects you cannot measure.</li>
-            <li>Services with explicit SLOs — experiments validate that SLOs hold under failure conditions.</li>
-            <li>Before major events (Black Friday, product launches) — GameDays verify system readiness.</li>
+            <li>Mature telemetry — Golden Signals, SLI recording rules, tracing, and symptom or burn-rate alerts in place.</li>
+            <li>Defined SLOs — experiments state expected SLI behaviour under fault.</li>
+            <li>Pre-scale events — GameDays before peak traffic or major launches.</li>
+            <li>After architecture changes — new dependencies, mesh, or multi-region cutovers.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Systems without sufficient observability — establish metrics, tracing, and alerting first; running chaos experiments without telemetry means you cannot tell when an experiment has unexpected effects, making it unsafe.</li>
-            <li>Teams in early stages — chaos engineering is a reliability practice for mature systems; premature adoption diverts effort from more impactful reliability investments.</li>
+            <li>No steady-state SLI measurement — you cannot prove the hypothesis or abort safely.</li>
+            <li>No automated halt conditions — manual abort is too slow for customer impact.</li>
+            <li>Immature services still establishing basic monitoring — invest in SLIs and paging first.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Experiments read the same SLI recording rules and OTel-derived metrics production paging uses—baseline snapshot, controlled fault injection, live comparison on SLO dashboards, automated abort when burn exceeds guardrails, then retrospective on alerts that fired (or did not).</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     exp["Chaos experiment"]
@@ -202,63 +204,67 @@ AUTOMATED STOP CONDITIONS (Gremlin):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Chaos experiments proactively discover reliability weaknesses — missing circuit breakers, inadequate retry logic, single points of failure, missing alerting — before they are discovered during real customer-impacting incidents.</li>
-                <li>Repeated experiments build team confidence and familiarity with failure modes; on-call engineers who have seen a failure in a controlled experiment respond faster and more confidently to the same failure in production.</li>
-                <li>Experiments validate observability coverage — if a simulated pod failure does not appear in your dashboards or trigger your alerts, you have a blind spot to fix.</li>
+                <li>Proves whether Prometheus burn rules and symptom alerts actually move when SLIs degrade—not just whether pods restart.</li>
+                <li>Surfaces resilience gaps (timeouts, bulkheads, cache stampedes) under realistic partial failure before peak traffic.</li>
+                <li>Builds muscle memory: on-call has already traced an injected fault with OTel spans tied to experiment metadata.</li>
+                <li>Turns observability investment into an auditable regression test for monitoring and runbooks.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Chaos experiments in production carry real risk — a misconfigured experiment or inadequate blast radius control can cause unintended customer impact; requires careful preparation and strong abort conditions.</li>
-                <li>Building the observability maturity required to safely run chaos experiments is itself a significant investment; the prerequisite work is often underestimated.</li>
-                <li>Requires cultural buy-in; teams unfamiliar with the practice may resist deliberately breaking production systems; executive sponsorship and gradual onboarding are needed.</li>
+                <li>Production experiments without abort hooks tied to SLI queries can spend error budget for no learning.</li>
+                <li>Prerequisites are heavy—recording rules, trace propagation, synthetic journeys—before chaos returns signal.</li>
+                <li>Poor blast-radius discipline or scheduling during change freeze creates avoidable customer impact.</li>
+                <li>Cultural resistance to deliberate failure; without executive cover, experiments stall in staging only.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with a Game Day in staging or pre-production rather than production. This allows the team to practice the experiment workflow, validate observability coverage, and build confidence before experimenting in production. In staging, deliberately misconfigure a circuit breaker or remove a retry policy before the experiment to verify that the experiment correctly surfaces these gaps. If staging experiments pass but production behaves differently, the staging environment fidelity is insufficient for the experiment to be meaningful.</p>
-          <p>Automate abort conditions in your chaos tooling. Gremlin and LitmusChaos both support automated halt criteria. Set these to trigger when SLIs exceed pre-agreed thresholds (typically 2× the normal error rate or 2× the normal p99 latency). Automated abort ensures that an experiment that goes wrong does not cause extended customer impact while the team notices and manually intervenes.</p>
-          <p>Integrate chaos experiment results into a central "reliability scorecard" — which hypotheses passed, which failed, what gaps were found, what was remediated. This creates organisational visibility into reliability investment and progress.</p>
+          <p>Define steady state as the same SLI queries used in SLO dashboards — copy recording rules, do not invent experiment-only metrics. Start in staging with fidelity checks; graduate to production only when abort webhooks halt on burn-rate or synthetic failure within seconds.</p>
+          <p>Wire abort to symptom signals: synthetic journey failure, fast SLO burn, or error ratio &gt;2× baseline. Schedule experiments with on-call aware; mute only cause alerts that chaos intentionally triggers, never symptom pages. Record experiment ID in traces and logs for correlation.</p>
+          <p>Publish a reliability scorecard: hypothesis, blast radius, SLI delta, alerts fired (expected vs missed), remediations. Re-run failed hypotheses after fixes — chaos is a regression test for resilience.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Experiments without baselines</strong>: Running an experiment without first measuring steady-state SLIs means there is no comparison point — you cannot determine whether the experiment affected the system or not.</li>
-            <li><strong>Insufficient blast radius control</strong>: Starting with an experiment that affects 100% of capacity rather than gradually escalating; a well-designed experiment should affect the minimum blast radius needed to test the hypothesis.</li>
-            <li><strong>No observability before chaos</strong>: Running chaos experiments without distributed tracing and metrics means the experiment generates effects that cannot be observed — the experiment produces no actionable information.</li>
-            <li><strong>One-time GameDays</strong>: A single annual GameDay is insufficient; the most value comes from regular, automated, smaller experiments that continuously validate resilience as the system changes.</li>
+            <li><strong>Different metrics than SLOs</strong> — experiment dashboards use ad-hoc CPU graphs while abort should query the same SLI recording rules as paging.</li>
+            <li><strong>Abort only by wall clock</strong> — fixed-duration runs without SLI guardrails continue burning budget after user impact starts.</li>
+            <li><strong>Muted symptom alerts</strong> — silencing all pages during chaos hides whether monitoring would catch a real outage.</li>
+            <li><strong>No trace correlation</strong> — injected faults lack experiment ID in OTel baggage, so postmortems cannot separate chaos from organic errors.</li>
+            <li><strong>One-shot GameDays</strong> — architecture drift between annual events leaves new dependencies untested.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is observability mature enough to safely run experiments (metrics, traces, alerts in place)?</li>
-            <li>Is each experiment preceded by steady-state baseline measurement?</li>
-            <li>Are automated abort conditions configured for all production experiments?</li>
-            <li>Are experiments started at minimum blast radius and escalated gradually?</li>
-            <li>Are hypothesis results tracked and failures used to drive reliability improvements?</li>
-            <li>Is experiment scheduling coordinated with on-call rotation to ensure appropriate coverage?</li>
+            <li>Steady-state hypothesis stated in SLI terms (success rate, latency threshold) with baseline captured?</li>
+            <li>Abort webhooks call the same Prometheus or alertmanager rules as production burn alerts?</li>
+            <li>Blast radius starts minimal (single pod/AZ) with documented escalation ladder?</li>
+            <li>Distributed traces include experiment/run identifiers on fault-injected paths?</li>
+            <li>Expected alerts listed—did symptom pages fire, and were false negatives filed as bugs?</li>
+            <li>On-call and change calendar aware; only cause-level noise muted, not user-impact alerts?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Circuit breaker validation</strong>: Hypothesis: "When the recommendation service returns 100% errors, the homepage continues to load without it." Experiment: inject 100% error responses from recommendation service using Gremlin. Outcome: homepage error rate spikes to 60% — circuit breaker was not configured for this dependency. Fix: add circuit breaker; re-run experiment: homepage error rate 0%, recommendations show fallback content.</li>
-            <li><strong>AZ failure GameDay</strong>: Quarterly exercise simulates complete loss of one AWS availability zone; teams across engineering validate that services with multi-AZ deployment correctly redistribute traffic; discovers that one service's connection pool does not drain failed connections when an AZ goes down, causing 5% error rate for 3 minutes; connection pool configuration fixed before the next real AZ event.</li>
-            <li><strong>Observability gap discovery</strong>: LitmusChaos kills 30% of payment service pods; expected alert (pod count below minimum) does not fire; investigation reveals the alert was misconfigured with wrong label selector; gap found and fixed in a controlled context rather than during a real incident.</li>
+            <li><strong>Illustrative scenario —</strong> Dependency fault injection shows homepage SLI drops despite green pod counts; team adds circuit breaker and re-runs until SLI steady state holds.</li>
+            <li><strong>Illustrative scenario —</strong> AZ loss GameDay reveals connection pools do not shed bad endpoints; fix ships before peak season.</li>
+            <li><strong>Case study —</strong> Netflix’s chaos practice (Chaos Monkey) popularised production fault injection paired with strong observability; Google SRE materials stress measuring user-visible signals during tests.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="three-pillars.html">Three Pillars of Observability</a> — The telemetry prerequisite for safe chaos experiments.</li>
-            <li><a href="alerting-strategies.html">Alerting Strategies</a> — Experiments validate alerting coverage and correctness.</li>
-            <li><a href="../reliability/index.html">Reliability &amp; Resilience</a> — Circuit breakers, bulkheads, and the patterns chaos experiments test.</li>
+            <li><a href="sli-slo-sla.html">SLI / SLO / SLA</a> — Language for steady-state hypotheses and abort thresholds.</li>
+            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — Budget guardrails experiments must respect.</li>
+            <li><a href="synthetic-monitoring.html">Synthetic Monitoring</a> — Black-box SLI signal during injected faults.</li>
+            <li><a href="alerting-strategies.html">Alerting Strategies</a> — Burn-rate and symptom rules chaos is meant to validate.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
+            <li><a href="https://sre.google/sre-book/monitoring-distributed-systems/" target="_blank" rel="noopener noreferrer">Google SRE Book — Monitoring Distributed Systems</a></li>
             <li><a href="https://principlesofchaos.org/" target="_blank" rel="noopener noreferrer">Principles of Chaos Engineering</a></li>
             <li><a href="https://litmuschaos.io/" target="_blank" rel="noopener noreferrer">LitmusChaos Documentation</a></li>
-            <li><a href="https://www.gremlin.com/chaos-engineering/" target="_blank" rel="noopener noreferrer">Gremlin: Chaos Engineering Platform</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

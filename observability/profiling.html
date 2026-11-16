@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Continuous Profiling — SA References</title>
-  <meta name="description" content="Continuous profiling: CPU and memory profiling, Go pprof, Pyroscope, Parca, flamegraph interpretation, and safely running profilers in production systems.">
+  <meta name="description" content="Continuous production profiling: CPU, heap, and contention profiles, flame graphs, Pyroscope and Parca, and correlating hotspots with traces via W3C trace IDs where supported.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,104 +96,56 @@
             <span class="badge badge--warning">Advanced</span>
           </div>
           <h1 class="article-header__title">Continuous Profiling</h1>
-          <p class="article-header__desc">CPU, memory, goroutine, and allocation profiling; Go pprof and Python py-spy; Pyroscope and Parca for always-on continuous profiling; flamegraph interpretation; and safety considerations for profiling in production.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">Continuous profiling in production — CPU, memory, and lock profiles, flame graph interpretation, low-overhead agents, and correlation with traces and metrics.</p>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p><strong>Continuous profiling</strong> (sometimes called "always-on profiling") runs profiling agents at low overhead continuously in production, storing profile data as time-series alongside metrics and traces.</p>
-          <p>This enables engineers to correlate "CPU spiked at 14:32" with "the `JSON.parse()` function in the cache miss path consumed 40% of CPU at 14:32" — connecting the performance signal to the exact code location.</p>
-          <p>The key profile types: <strong>CPU profile</strong> — samples the call stack at regular intervals (e.g., 100Hz) to determine which functions are on-CPU most frequently. The profile shows the percentage of samples in which each function appeared, indicating its relative CPU cost. <strong>Heap/memory profile</strong> — samples memory allocation events to show which functions are allocating the most memory, enabling identification of allocation hotspots, memory leaks, and GC pressure causes. <strong>Goroutine/thread profile</strong> (Go-specific) — shows all goroutines, their current state (running, blocked, waiting), and their call stacks — essential for diagnosing goroutine leaks and deadlocks.</p>
-          <p><strong>Mutex/contention profile</strong> — shows which mutexes are being contended most, identifying synchronisation bottlenecks under concurrent load.</p>
-          <p>A <strong>flamegraph</strong> is the standard visualisation for profile data. The x-axis represents the percentage of samples (wider = more time spent), not time elapsed. The y-axis represents the call stack depth (root at bottom, leaf functions at top). To read a flamegraph: look for wide blocks at the top of the flame — these are the functions consuming the most CPU.</p>
-          <p>Click to zoom into a subtree. Look for plateaus where a parent function is wide but its children are many small slices — this indicates a function spending most of its time in work rather than delegating. A "tall thin spike" indicates a deep but rarely-taken code path.</p>
+          <p><strong>Continuous profiling</strong> samples what code is doing in production over time — which functions consume CPU, allocate heap, or contend on locks — and stores profiles as queryable time series. Unlike one-off <code>pprof</code> captures triggered during incidents, always-on profilers run at low overhead (often 1–3% CPU) so historical profiles exist when regressions appear.</p>
+          <p>Common profile types include <strong>CPU</strong> (stack samples while on-CPU), <strong>heap/allocation</strong> (where bytes are allocated), <strong>goroutine or thread</strong> snapshots (concurrency leaks), and <strong>mutex/block</strong> profiles (lock contention). A <strong>flame graph</strong> visualises stacks: width is sample share, height is stack depth. Hot functions appear as wide plates near the top — the first place to look after a metric or trace says “this service got slower.”</p>
+          <p>Profiling complements traces: a span shows that JSON serialisation took 300ms; a CPU profile shows <code>encoding/json</code> dominates samples during that window. Where platforms support it, linking profiles to <strong>W3C trace IDs</strong> (the same identifier in <code>traceparent</code>) narrows investigation from a slow trace to the functions active in that request class.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Metrics and traces answer "something is slow" and "which request was slow." Profiling answers "why is it slow — which lines of code are responsible." Without profiling, performance investigations rely on guesswork: instrumenting suspected slow functions, redeploying, waiting for the problem to recur, and iterating. Continuous profiling short-circuits this loop by providing always-available code-level performance data. Google's Engineering Productivity Research found that profiling data attached to performance incidents reduced investigation time by 50%. Grafana Pyroscope and Parca (CNCF) have made continuous profiling accessible without significant infrastructure investment, positioning it as the fourth pillar of observability (alongside metrics, logs, and traces).</p>
+          <p>Metrics flag regressions; traces localise slow spans; profiling names the functions and lines responsible. Without continuous data, teams replay incidents under artificial load or add speculative instrumentation. Parca, Pyroscope, and eBPF-based agents reduced the operational cost of keeping profiles always on, making code-level evidence a normal part of observability — sometimes called a “fourth pillar” beside metrics, logs, and traces.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Services with unexplained CPU or memory pressure — continuous profiling identifies the specific code path responsible without requiring an on-demand profiling session to reproduce the issue.</li>
-            <li>Performance regression investigation — correlating a performance metric change with a specific commit's code changes by comparing profiles before and after.</li>
-            <li>Cost optimisation — CPU profiling in cloud environments can identify inefficient code that drives compute costs.</li>
+            <li>Services with rising CPU, memory, or GC pressure without an obvious metric label to blame.</li>
+            <li>Post-deploy performance comparisons — diff profiles by version or commit label.</li>
+            <li>Cost optimisation in cloud environments where inefficient hot paths directly increase compute bills.</li>
+            <li>Concurrency debugging — goroutine or thread profiles exposing leaks and deadlocks.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>High-overhead profilers at full sampling rate on latency-sensitive services — CPU profiling overhead is typically 1-3% with modern profilers (Pyroscope uses 10Hz sampling by default), but some profiling configurations are significantly more expensive and should be load tested before production deployment.</li>
+            <li>Latency-sensitive paths with untested profilers at aggressive sampling rates — validate overhead in staging first.</li>
+            <li>As the only signal for request-level errors — profiles rarely explain business logic failures without traces and logs.</li>
+            <li>When legal or policy constraints prohibit any production code introspection — rare, but verify compliance.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Applications expose profiles via SDK push (Pyroscope) or pull (<code>/debug/pprof</code>, Parca agent scraping). Profiles land in a profiling backend object store and are visualised in Grafana alongside metrics and traces.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    app["Application&lt;br/&gt;pprof / SDK"]
-    prof["Profiling backend&lt;br/&gt;Pyroscope / Parca"]
+    app["Application"]
+    prof["Profiling backend"]
     graf["Grafana"]
     app --> prof --> graf</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>CONTINUOUS PROFILING ARCHITECTURE:
+              <pre class="architecture-diagram__canvas"><code>PUSH (Pyroscope SDK)          PULL (pprof / Parca)
 
-Application → Pyroscope SDK → Pyroscope Server → Grafana
+App --profiles--> Pyroscope     Agent --scrape--> /debug/pprof
+                     |                              |
+                     v                              v
+                 Object store  &lt;------ query ------  Grafana
+                 (labels: service, version, env)
 
-OR (pull-based):
-Application (pprof endpoint) → Parca Agent → Parca Server
-
-GO PPROF INTEGRATION:
-  // Enable pprof HTTP endpoints
-  import _ "net/http/pprof"
-
-  // Exposed at: GET /debug/pprof/
-  // /debug/pprof/profile?seconds=30  (CPU)
-  // /debug/pprof/heap               (memory)
-  // /debug/pprof/goroutine           (goroutines)
-  // /debug/pprof/mutex               (lock contention)
-
-PYROSCOPE SDK (Go):
-  pyroscope.Start(pyroscope.Config{
-      ApplicationName: "checkout-api",
-      ServerAddress:   "http://pyroscope:4040",
-      ProfileTypes: []pyroscope.ProfileType{
-          pyroscope.ProfileCPU,
-          pyroscope.ProfileAllocObjects,
-          pyroscope.ProfileAllocSpace,
-          pyroscope.ProfileInuseObjects,
-          pyroscope.ProfileInuseSpace,
-      },
-      Tags: map[string]string{
-          "version":     os.Getenv("APP_VERSION"),
-          "environment": "production",
-      },
-  })
-
-PYROSCOPE SDK (Python):
-  pyroscope.configure(
-      app_name="ml-inference",
-      server_address="http://pyroscope:4040",
-      tags={"service": "ml-inference", "env": "prod"}
-  )
-
-FLAMEGRAPH READING GUIDE:
-  Wide block = function consumes significant CPU
-  Height = call stack depth
-  Look for: wide top-level blocks (CPU hotspots)
-
-  Example flamegraph analysis:
-  [HTTP handler - 80% of CPU]
-    [JSON deserialise - 55% of CPU]  ← HOTSPOT
-      [encoding/json - 55%]
-    [DB query - 20% of CPU]
-    [response marshal - 5%]
-
-  Finding: replace encoding/json with sonic/jsoniter
-  Result: 55% CPU reduction → 45% overall reduction
-
-PROFILING OVERHEAD:
-  Pyroscope (10Hz sampling): ~1% CPU overhead
-  Go pprof (30s CPU profile): ~2-5% during profile
-  py-spy (Python): ~1% overhead at 100Hz</code></pre>
+CORRELATION:
+  Tag profiles with service.version
+  Join investigation: metric spike → trace_id → profile time window</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Continuous profiling: sample CPU and heap from production workloads and visualize flame graphs in Grafana.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Low-overhead profilers ship stack samples to a backend for flame graphs and version-to-version diffs.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -201,65 +153,73 @@ PROFILING OVERHEAD:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Continuous profiling provides code-level context for performance incidents that metrics and traces cannot — instead of knowing "latency increased," engineers know "the JSON serialisation in the response path is consuming 45% more CPU than last week."</li>
-                <li>Profiles stored as time-series enable before/after comparison across deployments — a performance regression introduced in a specific commit is immediately visible by comparing profiles.</li>
-                <li>Modern continuous profilers (Pyroscope, Parca) have very low overhead (1-3% CPU), making always-on production profiling safe for most services.</li>
+                <li>Code-level root cause for CPU and memory regressions without redeploying debug builds.</li>
+                <li>Historical profiles enable before/after deploy comparison by version labels.</li>
+                <li>Modern agents target ~1% overhead at default sampling, suitable for many production tiers.</li>
+                <li>eBPF cluster profilers can cover workloads you cannot modify with SDKs.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Profiling data volume is significant — storing continuous profiles for many services creates non-trivial storage costs; retention policies and service prioritisation are required.</li>
-                <li>Flamegraph interpretation requires training — engineers unfamiliar with the visualisation often struggle to identify hotspots; team education is needed to make profiling data actionable.</li>
-                <li>Not all runtimes have equally mature continuous profiling support — Go has excellent pprof integration; Python and JVM profiling is supported but with different overhead and accuracy trade-offs.</li>
+                <li>Storage grows with services and retention — prioritise high-value tiers.</li>
+                <li>Flame graphs require training; misreading base blocks wastes time.</li>
+                <li>Inlined or optimised-away symbols can hide true hotspots without frame pointers or eBPF unwinders.</li>
+                <li>Runtime support quality varies — Go pprof is mature; some JVM and Python modes trade accuracy for overhead.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with CPU and heap profiling — these are the most universally useful profile types and have the lowest interpretation barrier. Add goroutine and mutex profiling only when investigating specific concurrency issues. Tag profiles with deployment version, git commit, and environment so that profile comparisons across deployments are possible. When a performance regression occurs, the "compare profiles" view in Pyroscope or Grafana's continuous profiling view shows exactly which functions changed their CPU contribution between versions.</p>
-          <p>For Go services, the <code>net/http/pprof</code> import automatically exposes profiling endpoints — but ensure these endpoints are not exposed publicly; they should be accessible only within the cluster or behind authentication. Use Kubernetes NetworkPolicy to restrict access to <code>/debug/pprof</code>. Pyroscope and Parca both support eBPF-based profiling that works without any application-side SDK changes — this is particularly valuable for services you do not control or cannot modify, allowing cluster-wide continuous profiling with a single agent deployment.</p>
+          <p>Start with CPU and in-use heap profiles on top-traffic services. Tag every profile with <code>service.name</code>, deployment version, and environment — the same resource attributes used in OpenTelemetry traces. When investigating a slow trace, filter profiles to the trace timestamp window and service; emerging OTel profiling signals aim to attach profiles directly to span contexts.</p>
+          <p>Never expose <code>/debug/pprof</code> on public interfaces. Restrict with network policy and authentication. Prefer continuous agents over manual 30-second CPU captures during peak traffic unless on-call explicitly triggers them.</p>
+          <p>For Go, import <code>net/http/pprof</code> only on admin listeners. For Python, pyroscope or py-spy at moderate Hz. Compare profiles in CI smoke tests only when overhead is measured — do not enable full continuous profiling in unit test pipelines by default.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Profiling inlined functions</strong>: Compiler optimisations inline small functions, making them invisible in profiles — the CPU appears to be in the calling function. Disabling inlining for debugging (at the cost of performance) or using frame pointer unwinding with eBPF-based profilers avoids this.</li>
-            <li><strong>Misreading wide base blocks</strong>: Main/root functions appear wide because all paths flow through them — width at the bottom of the flamegraph is not indicative of cost; cost is shown by width at the top of the visible flame (leaf-level functions).</li>
-            <li><strong>Exposing pprof endpoints publicly</strong>: Go pprof endpoints expose internal application details (function names, goroutine states) and allow triggering CPU profiles that consume resources; restrict access to internal networks only.</li>
+            <li><strong>Misreading flame graph bases</strong> — wide roots are expected; focus on wide leaf frames.</li>
+            <li><strong>Public pprof endpoints</strong> — attackers trigger expensive profiles or map internals.</li>
+            <li><strong>Missing version labels</strong> — cannot diff Tuesday’s deploy against Monday’s baseline.</li>
+            <li><strong>Profiling without traces</strong> — optimising the wrong code path that rarely serves user traffic.</li>
+            <li><strong>Inlining blind spots</strong> — hotspot appears inside a generic runtime frame; use alternative unwinders or disable inlining only in staging.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is continuous profiling deployed for CPU and memory on high-traffic services?</li>
-            <li>Are profiles tagged with deployment version and git commit for regression comparison?</li>
-            <li>Is pprof (or equivalent) endpoint access restricted to internal cluster traffic?</li>
-            <li>Are engineers trained on flamegraph interpretation and common hotspot patterns?</li>
-            <li>Is profile data retention policy defined to manage storage costs?</li>
+            <li>Is continuous CPU profiling enabled on top-tier latency-sensitive services?</li>
+            <li>Are profiles labelled with version or git commit for regression diffs?</li>
+            <li>Are admin profile endpoints restricted to internal networks?</li>
+            <li>Can on-call pivot from traces (W3C trace_id) to profile time windows?</li>
+            <li>Is retention and cost reviewed quarterly?</li>
+            <li>Has the team practiced reading flame graphs on a known hotspot?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Identifying JSON serialisation bottleneck</strong>: Service CPU trending up 20% over 3 weeks with no obvious cause; continuous profile comparison shows encoding/json consuming 45% of CPU in response marshalling path; replaced with faster JSON library; CPU returns to baseline; cost reduction of ~$2,000/month in EC2 costs.</li>
-            <li><strong>Go goroutine leak detection</strong>: Service memory grows slowly over days until OOM kill; goroutine profile shows 50,000 goroutines, each blocked on an HTTP client request with no timeout configured; goroutines are never garbage collected; fix: add context with timeout to all outbound HTTP calls; goroutine count stabilises at 200.</li>
-            <li><strong>Regression bisect</strong>: p99 latency increases 40% in Tuesday's deployment; Pyroscope diff view compares Monday vs Tuesday profile; shows a regex compilation that was previously cached is now being compiled on every request due to a subtle caching regression; root cause found in 15 minutes rather than hours of instrumented investigation.</li>
+            <li><strong>Illustrative scenario — JSON hotspot</strong>: CPU climbs after a library upgrade; flame graph shows deserialization dominating samples; revert or swap serializer restores baseline.</li>
+            <li><strong>Illustrative scenario — goroutine leak</strong>: Memory grows over days; goroutine profile shows thousands blocked on HTTP clients without timeouts; adding context deadlines stabilises counts.</li>
+            <li><strong>Case study — Google wide profiling</strong>: Google’s production profiling culture demonstrated that always-on sampling is viable at hyperscale when overhead is controlled.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="distributed-tracing.html">Distributed Tracing</a> — Traces identify slow requests; profiling explains why they are slow.</li>
-            <li><a href="three-pillars.html">Three Pillars of Observability</a> — Profiling is often considered the fourth pillar alongside metrics, logs, and traces.</li>
-            <li><a href="opentelemetry.html">OpenTelemetry</a> — OTel profiling signal specification is under active development.</li>
+            <li><a href="distributed-tracing.html">Distributed Tracing</a> — Spans show slow operations; profiles show why in code.</li>
+            <li><a href="metrics-telemetry.html">Metrics &amp; Telemetry</a> — CPU saturation metrics trigger profile investigation.</li>
+            <li><a href="opentelemetry.html">OpenTelemetry</a> — Emerging profiling signal and shared resource attributes.</li>
+            <li><a href="three-pillars.html">Three Pillars of Observability</a> — Profiling as an extension beyond classic pillars.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://grafana.com/docs/pyroscope/" target="_blank" rel="noopener noreferrer">Grafana Pyroscope Documentation</a></li>
-            <li><a href="https://www.parca.dev/" target="_blank" rel="noopener noreferrer">Parca Continuous Profiling (CNCF)</a></li>
-            <li><a href="https://go.dev/blog/pprof" target="_blank" rel="noopener noreferrer">Go pprof: Profiling Go Programs</a></li>
+            <li><a href="https://grafana.com/docs/pyroscope/" target="_blank" rel="noopener noreferrer">Grafana Pyroscope</a></li>
+            <li><a href="https://www.parca.dev/" target="_blank" rel="noopener noreferrer">Parca continuous profiling</a></li>
+            <li><a href="https://go.dev/blog/pprof" target="_blank" rel="noopener noreferrer">Go blog — Profiling Go programs</a></li>
+            <li><a href="https://opentelemetry.io/docs/specs/otel/profiles/" target="_blank" rel="noopener noreferrer">OpenTelemetry profiling signal (in development)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
           <a href="synthetic-monitoring.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Synthetic Monitoring</span></a>
-          <a href="opentelemetry.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">OpenTelemetry</span></a>
+          <a href="chaos-observability.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Chaos Engineering &amp; Observability</span></a>
         </nav>
       </div>
       <aside class="article-aside">

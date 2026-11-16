@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SLOs and Error Budgets — SA References</title>
-  <meta name="description" content="SLOs and error budgets: SLI/SLO/SLA hierarchy, error budget calculation, fast and slow burn rate alerts, the Google SRE approach to reliability management.">
+  <meta name="description" content="Error budgets and SLO policy in Google SRE: budget calculation, release gates, multi-window burn alerting, and balancing reliability with feature velocity.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -95,30 +95,33 @@
             <span class="badge badge--primary">Observability &amp; Operations</span>
           </div>
           <h1 class="article-header__title">SLOs and Error Budgets</h1>
-          <p class="article-header__desc">SLI/SLO/SLA hierarchy, error budget calculation, multi-window burn rate alerts for fast and slow budget consumption, and the Google SRE approach to balancing reliability with feature velocity.</p>
+          <p class="article-header__desc">Google SRE error budgets: the complement of SLO targets, policies that tie budget remaining to releases and reliability work, multi-window burn detection, and data-driven negotiation between speed and stability.</p>
           <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The SLI/SLO/SLA hierarchy consists of three distinct concepts that are frequently conflated: A <strong>Service Level Indicator (SLI)</strong> is a carefully defined quantitative measure of some aspect of service quality — it is the thing being measured. Examples: ratio of successful requests to total requests; proportion of requests served in under 200ms; successful storage writes.</p>
-          <p>An <strong>SLO</strong> is a target value or range for an SLI: "99.9% of requests in the past 30 days should return 2xx within 300ms." An SLO is an internal target agreed between engineering and product. A <strong>Service Level Agreement (SLA)</strong> is a commercial contract that includes financial penalties for SLO violations — SLAs are typically a subset of SLOs, set lower than internal targets to create a buffer. Breaking an SLO is an engineering signal. Breaking an SLA has business consequences.</p>
-          <p>The <strong>error budget</strong> is the complement of the SLO: if a service has a 99.9% availability SLO, the error budget is 0.1% of requests over 30 days, equivalent to 43.2 minutes of total downtime or 432 failed requests per 100,000. The error budget is not a penalty — it is a budget that can be intentionally spent. Spending error budget on risky deployments is a deliberate engineering decision; spending it unintentionally on incidents is a signal that reliability investment is needed. When error budget is healthy (remaining), teams can invest in feature development.</p>
-          <p>When error budget is nearly exhausted, teams should halt risky changes and invest in reliability improvements. This creates a data-driven mechanism for negotiating between development velocity and reliability.</p>
-          <p><strong>Multi-window burn rate alerting</strong> alerts not on raw error rate but on the rate at which the error budget is being consumed. A burn rate of 1 means budget is being consumed exactly as expected. A burn rate of 14 means budget is being consumed 14× faster than normal — at this rate, the entire 30-day budget would be exhausted in approximately 2 days. The multi-window approach (alert only when both a short window and a long window exceed the threshold) reduces false positives from transient spikes.</p>
+          <p>An <strong>error budget</strong> is the allowed unreliability implied by a service level objective. If availability SLO is 99.9% over a rolling 30-day window, the budget is 0.1% of valid events — roughly 43 minutes of equivalent outage at steady traffic, or the matching proportion of failed requests. The budget is not a failure allowance to waste; it is the negotiated room to ship change, run experiments, and accept known risk without pretending perfection is free.</p>
+          <p>Google SRE pairs each SLO with an <strong>error budget policy</strong>: rules for what happens at healthy, cautionary, critical, and exhausted budget states. Typical policies: plentiful budget permits normal release cadence and optional risky migrations; low budget triggers extra validation, change freezes on critical paths, and prioritisation of reliability backlog; exhausted budget halts non-emergency releases until measurement shows recovery. Policy converts an abstract percentage into behaviour product and engineering can agree on.</p>
+          <p><strong>Burn rate</strong> measures how fast budget is spent: current error ratio divided by the ratio allowed by the SLO. A burn rate of 1 spends budget on pace; 14× means the entire window’s budget would be gone in about two days at the current rate. Multi-window burn alerting (workbook recipes) detects fast and slow burns without paging on every transient spike.</p>
+          <p>Error budgets sit on top of <a href="sli-slo-sla.html">SLIs and SLOs</a> — they do not replace them. SLIs measure user experience; SLOs set targets; budgets and policies govern how teams respond when measurement drifts from target.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Traditional approaches to reliability ("five nines") create perverse incentives: engineers pursue unmeasurable perfection, product managers have no data for release decisions, and incidents are measured inconsistently. SLOs provide a common language between engineering, product, and business: "we have 23 minutes of error budget remaining this month; this risky deployment should wait until next month" is a conversation grounded in data. The Google SRE book introduced error budgets as a tool for managing the tension between "developers want to deploy features" and "SREs want to maintain stability" — the budget is objective, owned by both, and creates aligned incentives.</p>
+          <p>“Five nines” slogans provide no decision criterion: should we ship Friday? The SRE model answers with budget remaining. Product wants velocity; operations wants stability — without a shared number, debates repeat every release. Error budgets give both sides the same ledger: incidents and risky launches spend budget; reliability projects and prudent pacing preserve it. When budget is healthy, teams have explicit permission to move fast; when it is not, data justifies slowing down.</p>
+          <p>This also ends heroic reliability theatre — 100% uptime targets are impossible in distributed systems and incentivise hiding incidents. A finite budget makes trade-offs honest.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Services with user-facing reliability expectations — SLOs make those expectations explicit and measurable.</li>
-            <li>Teams wanting data-driven decisions about release velocity vs reliability investment.</li>
-            <li>Organisations scaling SRE practices — SLOs are the foundation of the SRE model.</li>
+            <li>Customer-facing services with defined SLIs — attach a budget and policy before automating release gates.</li>
+            <li>Teams conflicting over release cadence — publish budget status in planning meetings and incident reviews.</li>
+            <li>Platform teams serving many product teams — shared platform SLOs with budgets clarify when to pause infra changes.</li>
+            <li>Organisations maturing from uptime percentages to SRE practice — budgets operationalise SLOs.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Internal tooling or batch jobs where user impact is indirect — SLOs are most valuable for services where reliability directly affects user experience; for internal tools, simpler availability monitoring may suffice.</li>
+            <li>Before SLIs are trustworthy — policy on bad data freezes the wrong work or green-lights harm.</li>
+            <li>As a bureaucratic gate on every internal tool — reserve budgets for journeys with measurable user impact.</li>
+            <li>With 100% or “zero error” SLO targets — no budget exists; the mechanism cannot function.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -180,7 +183,7 @@ ERROR BUDGET TRACKING DASHBOARD:
   - Historical incidents contributing to budget spend
   - Budget status: HEALTHY / CAUTION / CRITICAL / FROZEN</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Error budgets translate SLO attainment into policy: burn rate guides when to ship features versus invest in reliability.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">SLI measurement feeds SLO comparison; remaining error budget drives release policy and burn-rate alerts.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -188,61 +191,66 @@ ERROR BUDGET TRACKING DASHBOARD:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Error budgets create objective, data-driven conversations about deployment risk — "we have 8% budget remaining" is a harder argument to dismiss than "I feel this is too risky."</li>
-                <li>SLOs align engineering incentives toward user-visible reliability rather than internal metrics that may not correlate with user experience.</li>
-                <li>When error budget is healthy, teams have explicit permission to deploy risky changes and invest in features — this prevents the "always cautious" behaviour that slows development velocity unnecessarily.</li>
+                <li>Objective release conversations — “8% budget left” beats subjective risk debate.</li>
+                <li>Healthy budget explicitly authorises risky launches and tech debt payoff.</li>
+                <li>Burn-rate ties incidents to time-to-exhaustion, prioritising sustained harm over blips.</li>
+                <li>Aligns product and engineering on one reliability ledger.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>SLOs require careful SLI definition — measuring the wrong thing (availability of health endpoint vs availability of business transactions) creates false confidence; SLI definition requires understanding of what users actually care about.</li>
-                <li>Setting initial SLO targets is difficult — too tight and the budget is constantly exhausted; too loose and it provides no signal. Teams should start with data-derived targets (current performance - buffer) and tighten over time.</li>
-                <li>Organisational adoption is challenging; "the budget says we should freeze deployments" requires management buy-in to have teeth rather than becoming a suggestion teams route around under pressure.</li>
+                <li>Policy without enforcement becomes wallpaper — teams override during crunch.</li>
+                <li>Too-tight SLOs exhaust budget constantly, normalising “always red” dashboards.</li>
+                <li>Shared microservice budgets need ownership or teams blame neighbours for spends.</li>
+                <li>Planned maintenance spend must be agreed or budget math feels punitive.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with one or two critical user journeys (checkout, login, core API) rather than defining SLOs for every service simultaneously. For each journey, define the SLI as a ratio of "good events" to "total events" where "good" is defined from the user's perspective (correct response, within latency target). Derive the initial SLO target from historical performance: measure the actual error ratio over the last 90 days, then set the SLO slightly below the observed worst month (e.g., if 30-day error ratio has never exceeded 0.08%, set SLO at 99.9% to start). This prevents a situation where the SLO is breached from day one.</p>
-          <p>Integrate the error budget into the deployment process: add an error budget status check to the CI/CD pipeline or release process. When budget is critical (&lt;10% remaining), automated checks should require explicit override with written justification. This enforcement mechanism is what gives SLOs their value — without it, the SLO is advisory only. Track error budget spend by cause (incidents, planned maintenance, bad deployments) to identify where to invest reliability effort.</p>
+          <p>Pick one or two journeys first. Compute budget remaining as <code>1 − (bad_events / valid_events) / (1 − SLO_target)</code> over the rolling window, or use tooling (Sloth, OpenSLO, commercial SLO products) that encodes the maths. Display budget percent, burn rate, and projected exhaustion date on the same dashboard product sees in reviews.</p>
+          <p>Write policy thresholds: for example green &gt;50%, yellow 25–50%, red &lt;25%, frozen at 0%. Wire CI/CD or release tooling to query budget API — block canary promotion on red unless incident commander override with ticket. Attribute spend in postmortems (bad deploy, dependency, capacity, change failure) to guide investment.</p>
+          <p>Pair policy with <a href="alerting-strategies.html">multi-window burn alerts</a> so teams learn about budget drain before users exhaust patience.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>SLO too tight</strong>: Setting a 99.99% SLO for a service that historically achieves 99.5% means the budget is always exhausted, the signal is meaningless, and teams are always "in crisis" — desensitising them to budget state.</li>
-            <li><strong>Wrong SLI measurement</strong>: Measuring availability of the health check endpoint (which is always up) rather than actual user transaction success rates provides false assurance of reliability.</li>
-            <li><strong>No enforcement</strong>: Error budget exhausted but deployments continue anyway with no consequence — the budget becomes advisory and loses its value as a decision-making tool.</li>
-            <li><strong>100% SLO target</strong>: 100% availability is mathematically impossible; setting a 100% SLO means any incident at all exhausts the budget, creating an incentive to hide or minimise incidents rather than respond to them honestly.</li>
+            <li><strong>Advisory-only budgets</strong>: Exhausted budget but releases continue — credibility lost.</li>
+            <li><strong>Wrong SLI</strong>: Green budget while users fail — measure journeys, not /health alone.</li>
+            <li><strong>Ignoring planned spend</strong>: Maintenance windows not excluded — false freezes or surprise breaches.</li>
+            <li><strong>100% targets</strong>: Any glitch “violates” SLO; teams stop reporting honestly.</li>
+            <li><strong>Budget without alerts</strong>: Product learns about pain from customers, not burn dashboards.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are SLIs defined from the user's perspective (correct, timely responses) not internal metrics?</li>
-            <li>Are initial SLO targets derived from historical performance data?</li>
-            <li>Is the error budget calculated and tracked on a visible dashboard?</li>
-            <li>Are multi-window burn rate alerts configured for P1/P2 thresholds?</li>
-            <li>Is there an enforcement mechanism linking budget state to deployment decisions?</li>
-            <li>Are error budget spend incidents tracked by cause to identify reliability investment priorities?</li>
+            <li>Is error budget remaining calculated from the same SLI as customer-facing reports?</li>
+            <li>Is written policy published for green/yellow/red/frozen states?</li>
+            <li>Do release pipelines enforce or warn on low budget?</li>
+            <li>Are burn-rate alerts configured for fast and slow consumption?</li>
+            <li>Are postmortems tagged with budget spend category?</li>
+            <li>Are SLO targets derived from historical performance with margin?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>SLO-driven release freeze</strong>: Payment service has 99.95% SLO; a production incident consumes 70% of monthly budget; engineering freezes risky deployments for remainder of month; product team accepts the trade-off given objective data rather than ongoing negotiation.</li>
-            <li><strong>Multi-service SLO hierarchy</strong>: Mobile app defines a product-level SLO (user checkout success rate) composed of SLOs for cart, payment, and fulfillment services; each service team owns its contribution to the product SLO; shared visibility creates cross-team alignment on reliability priorities.</li>
-            <li><strong>Healthy budget enables innovation</strong>: Authentication service has 2× the expected error budget remaining through the quarter; team explicitly uses this to justify a risky database migration; migration causes a 30-minute degradation consuming 40% of remaining budget, which was planned and accepted based on the budget state.</li>
+            <li><strong>Illustrative scenario —</strong> After a payment incident consumes 70% of monthly budget, policy triggers a change freeze on payment services; product defers a marketing launch without executive escalation because the dashboard is shared.</li>
+            <li><strong>Illustrative scenario —</strong> Authentication holds 2× expected budget; team schedules a database cutover with pre-approved spend cap; migration uses 35% of remaining budget as planned.</li>
+            <li><strong>Case study —</strong> Google’s SRE book describes pairing error budgets with launch decisions so reliability and development share accountability for unreliability spend.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="alerting-strategies.html">Alerting Strategies</a> — Burn rate alerts built on SLO error budgets.</li>
-            <li><a href="metrics-and-monitoring.html">Metrics and Monitoring</a> — SLI measurement via Prometheus metrics.</li>
+            <li><a href="sli-slo-sla.html">SLI / SLO / SLA</a> — Measurement definitions budgets depend on.</li>
+            <li><a href="alerting-strategies.html">Alerting Strategies</a> — Burn-rate paging.</li>
+            <li><a href="../deployment/canary-releases.html">Canary Releases</a> — Budget-aware progressive delivery.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://sre.google/sre-book/service-level-objectives/" target="_blank" rel="noopener noreferrer">Google SRE Book: Service Level Objectives</a></li>
-            <li><a href="https://sre.google/workbook/implementing-slos/" target="_blank" rel="noopener noreferrer">Google SRE Workbook: Implementing SLOs</a></li>
-            <li><a href="https://slodlc.com/" target="_blank" rel="noopener noreferrer">SLO Development Lifecycle</a></li>
+            <li><a href="https://sre.google/sre-book/service-level-objectives/" target="_blank" rel="noopener noreferrer">Google SRE Book — Service Level Objectives</a></li>
+            <li><a href="https://sre.google/workbook/implementing-slos/" target="_blank" rel="noopener noreferrer">Google SRE Workbook — Implementing SLOs</a></li>
+            <li><a href="https://sre.google/workbook/alerting-on-slos/" target="_blank" rel="noopener noreferrer">Google SRE Workbook — Alerting on SLOs</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
