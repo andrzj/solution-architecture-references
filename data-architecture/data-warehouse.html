@@ -101,31 +101,31 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The dominant modeling approaches are Ralph Kimball's <strong>dimensional modeling</strong> (star and snowflake schemas optimized for query performance and self-service BI) and Bill Inmon's <strong>enterprise data warehouse</strong> (highly normalized 3NF model used as a single source of truth from which data marts are derived). Most modern practitioners use a hybrid: a staging layer in raw format, a transformation layer using dbt producing dimensional models, and presentation-layer data marts for specific business domains.</p>
+          <p>A <strong>data warehouse</strong> is a centralized analytical datastore optimized for read-heavy reporting: large scans, joins across history, and repeatable aggregations that would contend with live transactions on an OLTP database. Data is modeled for business questions—facts and dimensions, conformed keys, and governed metrics—rather than for single-row updates. Cloud warehouses separate storage from elastic compute so many concurrent analysts can query shared history without resizing operational databases.</p>
+          <p>Modeling traditions include Ralph Kimball’s <strong>dimensional modeling</strong> (star and snowflake schemas tuned for BI tools) and Bill Inmon’s <strong>enterprise warehouse</strong> (normalized hub from which subject-area marts derive). Contemporary stacks usually blend both: raw staging replicas, a transformation layer (often dbt) that builds tested models, and presentation marts or a semantic layer where “revenue” means one definition everywhere.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>OLTP databases are optimized for transactional throughput: they use row-oriented storage, B-tree indexes, and normalized schemas to support fast single-row reads and writes. Analytical queries — "total revenue by product category by month for the last 3 years" — require full column scans across billions of rows, which are orders of magnitude slower on OLTP storage. A data warehouse uses columnar storage (where each column is stored contiguously on disk), allowing the query engine to read only the columns needed for an aggregation, achieving 10–100x better performance for analytical workloads. Running heavy analytics on the OLTP database also risks degrading production transaction performance, making the separation architecturally necessary as data volumes and query complexity grow.</p>
+          <p>Row-oriented OLTP engines excel at concurrent short transactions but force aggregation queries to touch many columns stored with each record. Columnar warehouse layouts store each attribute contiguously so a query summing one measure reads only that column and benefits from encodings tuned for repeated values, as Martin Kleppmann describes in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a>. Heavy reporting on the production primary still competes for the same buffer pool and I/O as checkout and billing, which is why mature architectures land operational changes in a dedicated <a href="oltp-vs-olap.html">OLAP</a> tier fed by ELT or streaming loads.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Business intelligence and reporting requiring aggregations across large historical datasets that would degrade OLTP performance.</li>
-            <li>Multi-source analytics: combining data from CRM, ERP, marketing platforms, and operational databases into a single unified view for cross-functional reporting.</li>
-            <li>Regulatory reporting requiring point-in-time historical snapshots and auditability of data lineage.</li>
-            <li>Self-service BI: dimensional models (star schemas) are optimized for BI tools (Tableau, Power BI, Looker) that generate SQL aggregation queries.</li>
-            <li>When data volumes in source systems exceed what OLTP can handle for analytical queries (typically beyond tens of millions of rows for complex aggregations).</li>
-            <li>Training ML models on large historical datasets where the feature engineering queries require full dataset scans.</li>
+            <li>When BI, finance, and operations need governed metrics across large historical datasets that would slow or destabilize OLTP if run in place.</li>
+            <li>When CRM, ERP, product, and marketing sources must conformed into one vocabulary for cross-functional reporting.</li>
+            <li>When regulators or auditors require reproducible numbers, lineage, and point-in-time snapshots of reported figures.</li>
+            <li>When self-service tools generate SQL against star schemas and benefit from a documented semantic layer or metrics catalog.</li>
+            <li>When feature engineering and batch ML training need warehouse-scale scans with SQL ergonomics and role-based access.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>For real-time operational data needs — a data warehouse loaded hourly or daily is not appropriate when sub-minute freshness is required.</li>
-            <li>For transactional workloads — data warehouses are read-optimized; high-frequency INSERT/UPDATE/DELETE operations are poorly suited to columnar storage.</li>
-            <li>For unstructured data (images, video, documents) or semi-structured data with highly variable schemas — a data lake or object storage is more appropriate.</li>
-            <li>When the analytics use case is simple enough to be served by read replicas of the OLTP database — adding a warehouse adds ingestion complexity that may not be justified.</li>
+            <li>Do not rely on a batch-loaded warehouse alone when dashboards require sub-minute freshness without an explicit streaming or CDC path.</li>
+            <li>Do not use a warehouse as the system of record for high-frequency row updates; OLTP or event-sourced write models remain authoritative.</li>
+            <li>Do not store raw unstructured blobs or wildly evolving JSON as the only copy; pair with a <a href="data-lake.html">data lake</a> or lakehouse landing zone.</li>
+            <li>Do not provision a warehouse when bounded reporting on a read replica or embedded OLAP already meets SLAs with less operational surface.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Connectors replicate operational and SaaS sources into staging. SQL transformations (often Git-managed dbt projects) build dimensions and facts. BI tools and semantic layers query marts while pipelines monitor freshness and test keys and relationships.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     src["Operational sources"]
@@ -165,67 +165,68 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>High analytical query performance via columnar storage, compression, and massively parallel query execution.</li>
-                <li>Isolates analytical workloads from OLTP databases, preventing reporting queries from impacting production transaction performance.</li>
-                <li>Single source of truth: a well-modeled warehouse provides consistent, agreed-upon metrics across all BI tools and teams.</li>
-                <li>Cloud warehouses (Snowflake, BigQuery) auto-scale compute on demand and charge per query, eliminating capacity planning.</li>
-                <li>Mature tooling: dbt for transformations, Fivetran/Airbyte for ingestion, and major BI tools all integrate natively.</li>
+                <li>Columnar layouts, compression, and MPP execution align with aggregation-heavy SQL.</li>
+                <li>Isolates analytics from OLTP so reporting does not steal resources from transactional paths.</li>
+                <li>A well-governed model can publish one definition of core metrics across BI tools and APIs.</li>
+                <li>Elastic cloud warehouses scale compute for bursts without resizing operational databases.</li>
+                <li>Mature ingestion, transformation (dbt), and BI integrations reduce bespoke glue code.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Ingestion latency: ETL/ELT pipelines introduce minutes-to-hours of lag between source events and warehouse availability.</li>
-                <li>Schema rigidity: warehouse schemas require upfront design; accommodating new data sources or schema changes requires coordinated migration work.</li>
-                <li>Cost at scale: cloud warehouse query costs can be significant for large datasets with many concurrent users if not optimized with clustering keys and materialized views.</li>
-                <li>Limited to structured/semi-structured data: raw files, images, and unstructured content require a data lake tier.</li>
-                <li>Operational complexity: data quality issues in source systems propagate silently into the warehouse if validation and monitoring are not implemented.</li>
+                <li>Batch or micro-batch loads introduce staleness that must be negotiated with dashboard SLAs.</li>
+                <li>Schema and contract changes require coordinated migrations across facts, dimensions, and downstream dashboards.</li>
+                <li>Scan-heavy queries without partition discipline inflate cost in consumption-priced engines.</li>
+                <li>Unstructured and highly volatile semi-structured sources still need lake or lakehouse landing.</li>
+                <li>Source quality problems propagate unless tests, alerts, and ownership exist on every mart.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use <strong>dbt (data build tool)</strong> for all SQL transformations in the warehouse. dbt enforces software engineering practices (version control, testing, documentation) on warehouse SQL, replacing ad-hoc scripts with a reproducible, testable transformation layer. Define <code>sources</code> for raw ingested tables, <code>staging</code> models for light cleaning and type casting, <code>intermediate</code> models for business logic, and <code>mart</code> models as the presentation layer. Add dbt tests on primary keys (uniqueness, not-null) and referential integrity (foreign key relationships) to catch data quality issues before they reach dashboards.</p>
-          <p>For Slowly Changing Dimensions (SCDs), choose the SCD type based on the business requirement: <strong>SCD Type 1</strong> overwrites the old value (no history), <strong>SCD Type 2</strong> adds a new row with an effective date range (full history), and <strong>SCD Type 3</strong> adds a "previous value" column (limited history). SCD Type 2 is most common for customer and product dimensions where historical accuracy matters. In Snowflake, cluster tables by frequently filtered columns (date, region, customer segment) to minimize data scanned per query. In BigQuery, partition tables by date and cluster by commonly filtered dimensions.</p>
+          <p>Manage transformations as software: versioned SQL in dbt (or equivalent), with <code>sources</code>, staging, intermediate, and mart layers. Test uniqueness, not-null, and relationships before promoting models that power executive metrics. Document grain on every fact table so join errors are obvious during review.</p>
+          <p>Choose slowly changing dimension types deliberately—Type 1 overwrites, Type 2 preserves history with effective dates, Type 3 keeps limited prior values. Match partitioning and clustering (or sort keys) to filters BI actually runs; missing partition predicates on time-series facts is a recurring cost and latency trap. Pair warehouse access with column masking or tokenization where PII appears, and surface freshness in the catalog next to each mart.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Metric inconsistency:</strong> Two BI dashboards show different "total revenue" numbers because they use different transformation logic; there is no single agreed-upon definition of revenue in the warehouse model.</li>
-            <li><strong>Data quality propagation:</strong> A null value in the source CRM propagates through ETL into the fact table; no NOT NULL constraint or dbt test catches it; revenue reports undercount because joins silently drop nulls.</li>
-            <li><strong>SCD Type 2 explosion:</strong> A dimension with high churn (e.g., product price changes) accumulates millions of historical rows; queries join against the dimension and slow dramatically without effective date range filtering.</li>
-            <li><strong>Cost overrun on full table scans:</strong> BigQuery queries scan entire tables because the developer omits a <code>WHERE</code> date partition filter; costs multiply 100x compared to partition-pruned queries.</li>
-            <li><strong>Stale data without alerting:</strong> The nightly ETL pipeline fails silently; BI dashboards show yesterday's data; business users make decisions based on stale data for 24 hours before anyone notices.</li>
+            <li><strong>Metric inconsistency:</strong> Competing SQL snippets or dashboard-specific calculations define revenue differently; executives lose trust in every chart.</li>
+            <li><strong>Data quality propagation:</strong> Nullable keys from a source slip through untested joins and silently drop rows from reported totals.</li>
+            <li><strong>SCD Type 2 explosion:</strong> High-churn dimensions grow unbounded; analysts forget effective-date filters and scans balloon.</li>
+            <li><strong>Unbounded scans:</strong> Ad hoc queries omit date filters on partitioned facts and bill entire history every run.</li>
+            <li><strong>Stale data without alerting:</strong> A failed nightly job leaves dashboards on yesterday’s slice until a human notices during a decision meeting.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have you chosen a dimensional modeling approach (Kimball star schema vs Inmon 3NF vs Data Vault) and documented the rationale?</li>
-            <li>Are dbt tests configured for primary key uniqueness, not-null constraints, and referential integrity on all dimension and fact tables?</li>
-            <li>Is data freshness monitored with alerting when the pipeline has not loaded within the expected window?</li>
-            <li>Are tables partitioned and clustered (Snowflake) or partitioned and clustered (BigQuery) to minimize query costs on large datasets?</li>
-            <li>Have you defined a single, documented business metric layer (dbt metrics, LookML, or semantic layer) to prevent metric inconsistency across dashboards?</li>
-            <li>Is PII masked or tokenized in the warehouse, or is access controlled via column-level security?</li>
+            <li>Is the modeling approach (Kimball, Inmon, Data Vault, or hybrid) chosen and written down with naming standards?</li>
+            <li>Do dbt or equivalent tests guard keys, relationships, and business rules on every production mart?</li>
+            <li>Is freshness monitored with paging when loads miss their SLA window?</li>
+            <li>Do large tables use partitioning and clustering aligned with common filters?</li>
+            <li>Is there a single semantic layer or metrics project for headline KPIs?</li>
+            <li>Is sensitive data masked or restricted with column-level security tied to identity?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce analytics:</strong> A Snowflake data warehouse ingests orders, inventory, and customer data via Fivetran from Shopify and Salesforce. dbt transforms the raw data into a star schema (fact_orders, dim_customers, dim_products, dim_dates). Tableau connects to Snowflake for executive revenue dashboards and marketing attribution analysis.</li>
-            <li><strong>Financial reporting:</strong> A BigQuery warehouse stores 10 years of transactional data partitioned by date. Monthly regulatory reports are generated by SQL queries against materialized fact tables, with dbt tests ensuring no transactions are double-counted.</li>
-            <li><strong>SaaS product analytics:</strong> Mixpanel event data is exported nightly to S3, loaded into Redshift, and transformed by dbt into usage fact tables. Product managers query cohort retention, feature adoption rates, and churn risk signals directly in SQL.</li>
+            <li><strong>Illustrative scenario —</strong> An e-commerce company loads Shopify and CRM replicas into staging, builds a star schema of orders and customers in dbt, and serves executive revenue and attribution dashboards from governed marts.</li>
+            <li><strong>Illustrative scenario —</strong> A bank partitions ledger facts by booking date, materializes regulatory aggregates, and runs dbt tests that block publish when duplicate transaction keys appear.</li>
+            <li><strong>Illustrative scenario —</strong> A SaaS vendor exports product events nightly into the warehouse, models cohort retention facts, and gives product managers SQL access with row filters by tenant.</li>
+            <li><strong>Case study —</strong> Kimball Group’s dimensional techniques remain the reference for star-schema design; teams pairing those ideas with dbt’s software-engineering workflow cite faster iteration without sacrificing testability on warehouse SQL.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="data-lake.html">Data Lake</a> — The complementary pattern for raw, unstructured data storage; often feeds the warehouse via ELT.</li>
-            <li><a href="data-lakehouse.html">Data Lakehouse</a> — Combines lake storage with warehouse semantics; may replace a traditional warehouse tier.</li>
-            <li><a href="oltp-vs-olap.html">OLTP vs OLAP</a> — The fundamental distinction driving the need for a separate analytical store.</li>
+            <li><a href="data-lake.html">Data Lake</a> — Landing and retaining raw sources that feed warehouse staging.</li>
+            <li><a href="data-lakehouse.html">Data Lakehouse</a> — Alternative that colocates warehouse semantics on lake storage.</li>
+            <li><a href="oltp-vs-olap.html">OLTP vs OLAP</a> — Explains why analytical stores split from transactional ones.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/" target="_blank" rel="noopener noreferrer">Kimball Dimensional Modeling Techniques</a></li>
-            <li><a href="https://docs.getdbt.com/docs/introduction" target="_blank" rel="noopener noreferrer">dbt Documentation — Introduction</a></li>
-            <li><a href="https://docs.snowflake.com/en/user-guide/intro-key-concepts" target="_blank" rel="noopener noreferrer">Snowflake Key Concepts &amp; Architecture</a></li>
+            <li><a href="https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/" rel="noopener noreferrer" target="_blank">Kimball Group — dimensional modeling techniques</a></li>
+            <li><a href="https://docs.getdbt.com/docs/introduction" rel="noopener noreferrer" target="_blank">dbt — transformations as versioned, tested SQL</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em> (OLTP vs. analytics, batch-derived data)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
