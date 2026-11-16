@@ -93,12 +93,13 @@
           <p>The <strong>inbox pattern</strong> (closely related to the <strong>idempotent consumer</strong>) makes message handling safe under <strong>at-least-once delivery</strong>. Before applying a business side effect, the consumer records the message’s unique identifier in an <code>inbox</code> or <code>processed_messages</code> table inside the same database transaction as the domain update. A primary-key or unique constraint on that identifier ensures a redelivered message cannot commit its side effect twice—the duplicate insert fails and the handler skips work while still acknowledging the broker.</p>
           <p><a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html" rel="noopener noreferrer" target="_blank">Chris Richardson</a> describes the same idea on microservices.io: persist processed message IDs (optionally scoped by consumer) so duplicate invocations produce the same outcome as a single invocation. The database transaction is the serialization point, which matters when several consumer instances might process the same redelivery concurrently.</p>
           <p>Paired with the <a href="transactional-outbox.html">transactional outbox pattern</a> on the producer, inbox deduplication yields <em>effectively exactly-once processing</em> across the pipeline: at-least-once transport on both legs, with idempotent consumers at the edge of each service’s database.</p>
-          <p>The pattern does not replace domain idempotency where business rules demand it—two different message ids may still describe the same payment—but it eliminates the common transport-driven duplicate where the payload and id are unchanged.</p>
+          <p>The pattern does not replace domain idempotency where business rules demand it—two different message ids may still describe the same business operation—but it eliminates the common transport-driven duplicate where the payload and id are unchanged.</p>
+          <p>Inbox is symmetric to outbox: producers guarantee “committed state implies eventual message”; consumers guarantee “message processed at most once for side effects.” Together they form the practical exactly-once story Kleppmann and Richardson describe without cross-database 2PC—at-least-once transport with deterministic dedupe points at each service boundary.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Brokers and relays deliberately favor durability over suppressing duplicates. Visibility timeouts, consumer crashes after publish but before ack, and outbox relay retries all produce the same logical event more than once. Hand-writing idempotent logic into every handler (ledger entries, stock decrements, “send email” actions) is error-prone.</p>
           <p>The inbox externalizes deduplication: one table, one constraint, one transactional ordering rule (record message id, then mutate domain state, then commit). Richardson’s idempotent consumer pattern is the reference formulation; the inbox name emphasizes the mirror image of the producer’s outbox table.</p>
-          <p>Incident post-mortems on payment or fulfilment pipelines often trace duplicate side effects to a consumer that ACKed the broker outside a transaction or used a redelivery-sensitive id. The inbox turns that class of bug into a deterministic unique-key conflict that is safe to ACK and cheap to log.</p>
+          <p>Incident post-mortems on revenue-critical pipelines often trace duplicate side effects to a consumer that ACKed the broker outside a transaction or used a redelivery-sensitive id. The inbox turns that class of bug into a deterministic unique-key conflict that is safe to ACK and cheap to log.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -133,7 +134,7 @@
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>Consumer receives message:
-  { "messageId": "msg-abc-123", "type": "payment.completed", "orderId": "ord-1" }
+  { "messageId": "msg-abc-123", "type": "entity.lifecycle.updated", "aggregateId": "agg-1" }
 
 BEGIN TX
   -- Attempt deduplication check
@@ -149,7 +150,7 @@ BEGIN TX
     RETURN
 
   -- No conflict: first time processing
-  UPDATE orders SET status = 'paid' WHERE id = 'ord-1'
+  UPDATE entities SET status = 'CONFIRMED' WHERE id = 'agg-1'
   INSERT INTO outbox (...) VALUES (...)  -- optionally publish downstream event
 COMMIT TX
 
@@ -190,6 +191,11 @@ ACK (duplicate, safe to discard)
           <p><strong>Competing consumers:</strong> Two instances racing on the same redelivery resolve via the unique constraint—one wins, one treats as duplicate. Load-test this path; some ORMs hide constraint violations poorly.</p>
           <p><strong>With transactional outbox producers:</strong> Propagate the outbox event id in the message envelope so consumers dedupe on the same id the relay may resend. See Richardson’s <a href="https://microservices.io/patterns/data/transactional-outbox.html" rel="noopener noreferrer" target="_blank">transactional outbox</a> for producer-side guarantees and Debezium’s <a href="https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html" rel="noopener noreferrer" target="_blank">Outbox Event Router</a> when events arrive via CDC.</p>
           <p><strong>Observability:</strong> Count inbox conflicts as a first-class metric (<code>inbox_duplicate_total</code>) rather than treating them as noise. Spikes usually mean broker redelivery storms or producer relay bugs; flat lines on a busy consumer can mean wrong dedupe keys instead.</p>
+          <p><strong>CloudEvents dedupe:</strong> use the CloudEvents <code>id</code> attribute as inbox primary key when producers follow the spec—stable across relay paths and human-grepable in logs. Combine with <code>source</code> when multiple producers might collide on id format.</p>
+          <p><strong>Kafka transactional consume-process-produce:</strong> EOS within one cluster can skip inbox for purely internal topologies, but any external side effect (email, partner API, ledger) still needs inbox or business idempotency because the database transaction cannot roll back HTTP.</p>
+          <p><strong>Load shape:</strong> inbox tables grow with message volume—partition by month and archive cold partitions to object storage for compliance without slowing hot inserts. Index bloat on <code>message_id</code> PK is usually modest; watch table size when message ids are UUIDs from high-QPS topics.</p>
+          <p><strong>ORM and constraint handling:</strong> map unique-violation errors to an explicit “already processed” branch instead of treating every DB error as retry-worthy—otherwise redelivered messages flip between poison loops and duplicate side effects when the ORM surfaces generic exceptions. Use <code>INSERT … ON CONFLICT DO NOTHING</code> with a row-count check, or equivalent, so duplicate detection is deterministic under concurrent consumers.</p>
+          <p><strong>Broker-aligned horizons:</strong> SQS maximum retention is fourteen days; Kafka consumer lag beyond topic retention means the id may never redeliver but audits still need dedupe proof—retain inbox rows at least max(broker redelivery window, compliance retention). Prune jobs should run weekly with dry-run counts; accidental one-day TTL on the inbox table is a classic post-incident root cause for double processing after relay storms.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

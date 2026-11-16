@@ -91,11 +91,12 @@
 
           <h2 id="what-it-is">What it is</h2>
           <p>The <strong>Claim Check</strong> pattern (EIP <em>Store in Library</em>, also called reference-based messaging) stores bulky message bodies in external object storage and sends only a lightweight <em>claim check</em>—URL, object key, or pre-signed token—through the broker. Consumers redeem the check with a GET against S3, Azure Blob, GCS, or similar, then process bytes locally while the broker carries kilobyte-scale routing metadata.</p>
-          <p>The luggage analogy still fits: drop the bag at the counter (blob store), carry the ticket through the trip (queue or topic), and collect the bag at the destination (consumer fetch). Kafka, RabbitMQ, SQS, and NATS all benefit when default message size limits or memory pressure would otherwise block large binaries.</p>
+          <p>The luggage analogy still fits: drop the bag at the counter (blob store), carry the ticket through the trip (queue or topic), and collect the bag at the destination (consumer fetch). Kafka, RabbitMQ, SQS, and NATS all benefit when default message size limits or memory pressure would otherwise block large binaries. The pattern is EIP Store in Library—reference in flight, payload at rest.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Brokers enforce practical size ceilings—SQS caps bodies at 256&nbsp;KB, Kafka often defaults to 1&nbsp;MB per record, and RabbitMQ tolerates larger frames but punishes multi-megabyte bodies with memory pressure and slow replication on shared clusters. Scanned documents, imagery, audio, large JSON reports, and serialised model artifacts either fail publish outright or degrade every tenant on the cluster when inlined.</p>
           <p>Object storage is cheap at scale and built for large sequential reads. Claim check keeps the messaging tier responsible for routing, ordering, and backpressure while bulk bytes live where throughput, encryption, and lifecycle policies belong—without forcing operators to raise broker heap or max-message-size knobs for a handful of fat payloads.</p>
+          <p>In event-carried pipelines, claim check also decouples <em>fan-out cost</em> from payload size:  ten subscribers each pulling a 50&nbsp;MB inline message multiply egress through the broker; one stored object and ten pointer messages keep replication and billing predictable. The trade-off is operational coupling to object-store availability and permission models—monitor GET error rates alongside queue depth because a full broker with empty objects is still a failed pipeline.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -175,6 +176,10 @@ Consumer
           <p><strong>Atomic publish:</strong> Pair PUT plus enqueue with the <a href="transactional-outbox.html">transactional outbox</a> or an idempotent two-phase worker so a crash between storage write and broker publish does not leave orphaned blobs. Schedule periodic orphan sweeps on untagged prefixes as a safety net.</p>
           <p><strong>Security and integrity:</strong> Encrypt at rest (SSE-KMS or SSE-S3), block public ACLs, and validate checksums after GET when tamper detection matters. Treat claim-check messages as sensitive when URLs encode guessable object keys.</p>
           <p><strong>Observability:</strong> Log storage key or URL hash, correlation ID, and outcome at publish, fetch, process, and delete so incident response can stitch broker traces to object-store access logs without pulling payload bytes into log pipelines.</p>
+          <p><strong>Thresholds:</strong> brokers commonly cap near 256&nbsp;KB–1&nbsp;MB per message (SQS 256&nbsp;KB, RabbitMQ configurable, MQTT often far smaller)—claim-check becomes mandatory, not optional, above those sizes. Even when Kafka large records are enabled, cross-team portability usually favors object storage plus reference messages.</p>
+          <p><strong>Integrity failures:</strong> compare checksum after download before ACK; mismatch should nack to DLQ because the object may be truncated or swapped. For regulated payloads, prefer SSE-KMS with bucket policies that deny non-consumer principals.</p>
+          <p><strong>Multi-consumer delete authority:</strong> when several competing consumers process the same claim check, only one should delete the object—or use reference counting and lifecycle rules—otherwise a fast consumer can delete while a slow peer still needs the bytes. For pub/sub fan-out with one blob, delete only after the last subscriber ACKs or rely on TTL expiration instead of eager delete. Emit metrics on claim fetch latency and 403 rate so object-store permission regressions surface before broker lag alarms.</p>
+          <p><strong>Detection runbook:</strong> rising broker publish throughput alongside flat consumer business throughput often means claim tokens are valid but GET latency to object storage dominates—chart p95 fetch time per claim type. Sudden spikes in poison messages (malformed URI, expired presign) show as DLQ growth with small broker depth; distinguish from true backlog where both depth and fetch errors are low but handlers are slow.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -217,7 +222,7 @@ Consumer
             <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/claim-check" rel="noopener noreferrer" target="_blank">Claim-Check Pattern — Azure Architecture Center</a></li>
             <li><a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/ShareObjectPreSignedURL.html" rel="noopener noreferrer" target="_blank">Sharing objects with presigned URLs — Amazon S3 User Guide</a></li>
             <li><a href="https://kafka.apache.org/documentation/#large_records" rel="noopener noreferrer" target="_blank">Large Records — Apache Kafka Documentation</a></li>
-            <li><a href="https://www.rabbitmq.com/docs/maxmessage-size" rel="noopener noreferrer" target="_blank">Maximum Message Size — RabbitMQ Documentation</a></li>
+            <li><a href="https://kafka.apache.org/documentation/#max.message.size" rel="noopener noreferrer" target="_blank">Kafka — max.message.size producer setting</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

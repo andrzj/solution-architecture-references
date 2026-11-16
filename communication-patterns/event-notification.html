@@ -97,6 +97,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Broadcasting “fat” events forces every publisher to freeze a public projection of its entire domain model. Notification events shrink that commitment to “this entity changed” plus stable identifiers, which makes refactors inside the producer safer and keeps broker storage and fan-out bandwidth lower than shipping full aggregates on every change.</p>
           <p>When consumers must reflect authoritative state, a follow-up read from the producer (or a cached replica fed by the same source) avoids embedding stale snapshots in messages that may be processed minutes or hours later. The trade-off is extra read traffic and a runtime dependency on the producer’s query availability—acceptable when change volume is moderate and the producer’s API is engineered for consumer fetch patterns.</p>
+          <p>Choose notifications when encapsulation and schema stability matter more than offline autonomy. Choose event-carried state transfer when consumers must progress during producer outages or when fetch storms would overwhelm read APIs. Hybrid designs emit thin notifications for most subscribers and full payloads on dedicated changelog topics for analytics—do not force one style globally.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -136,7 +137,7 @@
   │    "specversion": "1.0",
   │    "id": "evt-uuid",
   │    "source": "/orders",
-  │    "type": "com.example.order.placed",
+  │    "type": "com.example.entity.created",
   │    "subject": "order/4291",
   │    "time": "2026-05-07T10:00:00Z",
   │    "data": { "orderId": "4291" }   ← minimal
@@ -181,6 +182,11 @@ Topic: "order-events"
           <p><strong>Governance:</strong> Register each <code>type</code> in AsyncAPI with owning team, compatibility mode, and example payloads. Enforce BACKWARD or FULL compatibility in the schema registry before production publishes.</p>
           <p><strong>Fetch path:</strong> Wrap producer reads with timeouts, circuit breakers, and bulkhead limits. Consider a short-lived read-through cache keyed by entity ID when many subscribers fetch the same object after one notification.</p>
           <p><strong>Reliable publish:</strong> Pair domain writes with the <a href="transactional-outbox.html">transactional outbox</a> pattern so notifications are not lost when the broker is temporarily unavailable.</p>
+          <p><strong>Notification versus carried state:</strong> Martin Fowler’s event-driven taxonomy separates <em>event notification</em> (pointer to fetch state) from <em>event-carried state transfer</em> (payload already sufficient). Notifications shrink Kafka bandwidth and publisher coupling but multiply read load on the producer API—size gateways and caches for fan-out fetch, or graduate hot paths to richer events when fetch storms dominate.</p>
+          <p><strong>Envelope size targets:</strong> keep notifications under a few kilobytes—identifiers, <code>type</code>, correlation, optional changed-field list. Large binaries belong in <a href="claim-check.html">claim check</a> with a fetch URL in <code>data</code>. MQTT and AMQP brokers also punish multi-megabyte frames; notifications should not be dump trucks.</p>
+          <p><strong>Detection:</strong> alert on producer API QPS correlated with notification publish rate—slope above 1:1 per subscriber signals missing cache or ECST where notifications suffice. Schema registry rejections should block deploy; runtime deserialization errors without registry blocks indicate shadow producers.</p>
+          <p><strong>Versioning:</strong> notification contracts should evolve by adding optional fields, not renaming types—subscribers that only need ids tolerate small envelope changes. Breaking <code>type</code> renames require dual-publish periods or consumer feature flags because many subscribers filter on type alone.</p>
+          <p><strong>Payload discipline:</strong> notifications carry identifiers and scalar deltas, not full aggregate snapshots—subscribers that need rich state issue a follow-up query or subscribe to a separate projection stream. Oversized notification payloads force every subscriber to deserialize megabytes for events they may ignore, defeating the pattern’s purpose. CloudEvents <code>dataschema</code> and AsyncAPI documents make “thin envelope” contracts reviewable in CI before deploy.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

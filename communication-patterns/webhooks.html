@@ -97,6 +97,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Polling an upstream API on a fixed schedule wastes quota when nothing changed and adds latency bounded by the poll interval. Webhooks invert control flow so integrators react soon after the provider commits the business event, while the provider scales fan-out by enqueueing HTTP delivery work rather than serving repeated “any updates?” queries.</p>
           <p>For platform vendors, webhooks lower the cost of bespoke per-customer integrations: subscribers bring their own HTTPS endpoint and shared secret (or OAuth), and the vendor ships one delivery pipeline. That aligns with how external developers expect to wire CRM, fulfilment, analytics, and custom automation without VPNs into the vendor’s private cloud.</p>
+          <p>Unlike broker consumers, webhook subscribers control neither retry timing nor ingress capacity—a viral customer can DDoS their own endpoint through legitimate provider retries. Providers should offer per-endpoint rate limits and backoff; subscribers should always ACK fast and process async. Treat webhook delivery as at-least-once HTTP: identical <code>event_id</code> fields must dedupe across days-long retry windows.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -104,7 +105,7 @@
             <li>Event volume is moderate, payloads are kilobyte-scale JSON documents, and near-real-time reaction matters more than streaming throughput.</li>
             <li>You expose a product API where customers or partners register their own callback URLs for lifecycle events (signup, billing, shipment).</li>
             <li>Your provider documents signed payloads and retry behavior, and you can make consumer processing idempotent.</li>
-            <li>Internal staff or partners already consume the vendor’s reference webhook documentation (Stripe, GitHub, and similar guides are the de facto patterns).</li>
+            <li>Partners expect HTTP POST callbacks with documented signature headers rather than broker credentials on their side.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -172,11 +173,15 @@ Retry schedule (on non-2xx or timeout):
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Verification:</strong> Recompute the signature over the raw request body bytes using the vendor’s documented algorithm and headers (Stripe and GitHub publish canonical examples). Compare digests in constant time and reject replays when the vendor supplies signed timestamps or nonces.</p>
+          <p><strong>Verification:</strong> Recompute the signature over the raw request body bytes using the vendor’s documented algorithm and headers—common patterns are HMAC-SHA256 over the raw body with a shared secret carried in a dedicated header. Compare digests in constant time and reject replays when the vendor supplies signed timestamps or nonces.</p>
           <p><strong>Ack-then-process:</strong> Return an HTTP success response after validation and persistence to your ingress queue, not after downstream side effects complete. Match your internal SLA to the provider’s documented acknowledgement window.</p>
           <p><strong>Idempotency:</strong> Key on the provider’s stable event identifier (or a composite of type plus id). Use the <a href="inbox-pattern.html">inbox pattern</a> or <a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html" rel="noopener noreferrer" target="_blank">idempotent consumer</a> guidance from microservices.io so retries do not duplicate financial or fulfilment effects.</p>
           <p><strong>As a provider:</strong> Document event catalogs (AsyncAPI or OpenAPI webhooks where appropriate), sign outbound bodies, expose delivery logs, and offer CLI or dashboard tools to replay test events. Rate-limit per endpoint to protect both your workers and customer infrastructure.</p>
           <p><strong>Secrets:</strong> Rotate signing secrets with overlapping validity, audit who can read them, and never log raw payloads containing PCI or PII in clear text.</p>
+          <p><strong>HTTP contract:</strong> webhooks are ordinary HTTP requests—RFC 9110 status codes govern retry semantics. Return <code>2xx</code> only after the event is durably queued; use <code>4xx</code> for permanent rejection (bad signature) so providers stop retrying poison payloads; use <code>5xx</code> or timeouts sparingly because they trigger exponential backoff storms. Many providers abandon after 24–72&nbsp;hours of failures—export metrics on abandoned deliveries if you operate the provider side.</p>
+          <p><strong>Provider-side pacing:</strong> cap concurrent deliveries per subscriber URL (often tens to low hundreds). Queue dispatch workers and respect HTTP client timeouts (commonly 5–30&nbsp;s). Offer signed replay APIs so subscribers backfill after outages without polling every object.</p>
+          <p><strong>Ingress hardening:</strong> terminate TLS at a edge that enforces request size limits (commonly 256&nbsp;KB–1&nbsp;MB) and rate limits per subscriber API key before application code runs—webhook bursts look like miniature DDoS when a provider retries thousands of tenants simultaneously. Persist raw body bytes for signature verification before JSON parse; re-serialized JSON breaks HMAC comparisons. Store dedupe keys in the same transaction as queue enqueue so a crash after HTTP 200 still replays safely without double-processing.</p>
+          <p><strong>Clock skew:</strong> when providers sign timestamps, reject events older than five to fifteen minutes unless operating in a documented replay mode—stale replays after key rotation are a common confused-deputy class of bug.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -220,6 +225,7 @@ Retry schedule (on non-2xx or timeout):
             <li><a href="https://docs.svix.com/receiving/verifying-payloads/why" rel="noopener noreferrer" target="_blank">Why verify webhook signatures — Svix Docs</a></li>
             <li><a href="https://hookdeck.com/docs" rel="noopener noreferrer" target="_blank">Hookdeck Documentation — webhook reliability gateway</a></li>
             <li><a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html" rel="noopener noreferrer" target="_blank">Idempotent Consumer — microservices.io (Chris Richardson)</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc9110" rel="noopener noreferrer" target="_blank">RFC 9110 — HTTP semantics (status codes and caching)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

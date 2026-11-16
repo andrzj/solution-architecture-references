@@ -99,6 +99,7 @@
           <p>Synchronous calls force producers to wait for downstream capacity and availability. A queue inserts buffering and temporal decoupling: spikes land in the queue while consumers drain at a sustainable rate, which protects fragile or expensive workers (rendering, enrichment, third-party API calls) from overload.</p>
           <p>Queues also define a clear ownership boundary between teams: the contract is the queue name and message schema, not a live HTTP endpoint that must be up when the producer fires.</p>
           <p>Temporal decoupling helps during deploys and incidents: producers keep enqueueing while consumers roll out or while a fragile downstream is throttled, as long as depth and oldest-message age stay within SLO-backed limits.</p>
+          <p>Queues also isolate failure domains: a poison consumer in one service does not exhaust threads in the producer; the broker holds work until ops fix or DLQ the bad message. That buffering has a cost—unbounded depth masks downstream outage until recovery requires draining days of backlog—so producers should shed load when depth crosses negotiated thresholds.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -172,7 +173,7 @@ Queue ──► Dead Letter Queue (DLQ)
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Size Amazon SQS visibility timeout longer than worst-case handler duration; use <code>ChangeMessageVisibility</code> for long jobs (<a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html" target="_blank" rel="noopener noreferrer">SQS visibility timeout</a>). In RabbitMQ, ack after successful work with manual acknowledgment (<a href="https://www.rabbitmq.com/docs/confirms" target="_blank" rel="noopener noreferrer">consumer acknowledgments</a>).</p>
+          <p>Size Amazon SQS visibility timeout longer than worst-case handler duration; use <code>ChangeMessageVisibility</code> for long jobs (<a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html" target="_blank" rel="noopener noreferrer">SQS visibility timeout</a>). In RabbitMQ, ack after successful work with manual acknowledgment (<a href="https://www.rabbitmq.com/tutorials/tutorial-two-java" target="_blank" rel="noopener noreferrer">consumer acknowledgments</a>).</p>
           <p>Configure a dead-letter queue on every workload queue and alert when DLQ depth is non-zero. Include correlation IDs and source timestamps in payloads to support triage.</p>
           <p>Scale consumers from queue depth or oldest-message age (KEDA, AWS Application Auto Scaling). Cap producer ingress when depth exceeds policy so back pressure propagates upstream.</p>
           <p><strong>Standard vs FIFO:</strong> Standard queues maximize throughput and tolerate best-effort ordering. FIFO queues (or Kafka single-partition lanes) trade throughput for strict sequence—plan group IDs and document TPS ceilings before committing. Mixing both in one product is fine when interactive and batch lanes have different ordering needs.</p>
@@ -180,6 +181,10 @@ Queue ──► Dead Letter Queue (DLQ)
           <p>When payloads exceed broker limits (for example the maximum message size documented for SQS), store the body in object storage and pass a reference using the Claim Check pattern.</p>
           <p>Pair queue consumers with the <a href="inbox-pattern.html">inbox pattern</a> when handlers are not naturally idempotent, so visibility-timeout duplicates do not double-charge or double-ship.</p>
           <p>Document queue contracts in AsyncAPI or internal schema registries so version changes do not break consumers silently.</p>
+          <p><strong>AMQP 0-9-1 (RabbitMQ):</strong> point-to-point maps to queues bound to direct or topic exchanges with a routing key. Consumers set <code>basic.qos</code> prefetch (often 10–50 unacked messages) so one slow worker does not hoard the queue; manual <code>ack</code>/<code>nack</code> after success controls requeue versus dead-letter routing. Publisher confirms (<code>confirm.select</code>) let producers detect broker persistence failures without guessing from silent drops—pair with mandatory publish flags when messages must land in a bound queue.</p>
+          <p><strong>AMQP 1.0 vs 0-9-1:</strong> AMQP 1.0 is an ISO standard wire protocol implemented by Azure Service Bus, Qpid, and others; semantically it is still message transfer with credits and settlement (accepted/rejected/released). RabbitMQ speaks 0-9-1 natively; teams on Azure often learn settlement states rather than Rabbit’s exchange taxonomy—both still require idempotent consumers under at-least-once settlement.</p>
+          <p><strong>Operational numbers:</strong> size SQS visibility timeout to roughly 1.5–3× p99 handler duration; tune long polls toward 20 seconds on empty receive to cut empty charges while keeping latency acceptable. Page when oldest-message age exceeds minutes for interactive lanes or when DLQ depth is non-zero for more than a few minutes without owner ack.</p>
+          <p><strong>Protocol choice:</strong> AMQP 0-9-1 (RabbitMQ) excels at complex routing and per-consumer QoS; AMQP 1.0 and cloud-native queues trade some routing flexibility for uniform semantics across vendors. Pick point-to-point queues when exactly one worker must succeed—never as a broadcast bus.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -225,6 +230,8 @@ Queue ──► Dead Letter Queue (DLQ)
             <li><a href="https://www.rabbitmq.com/tutorials/tutorial-two-java" rel="noopener noreferrer" target="_blank">RabbitMQ — Work queues tutorial</a></li>
             <li><a href="https://microservices.io/patterns/data/transactional-outbox.html" rel="noopener noreferrer" target="_blank">microservices.io — Transactional outbox</a></li>
             <li><a href="https://docs.nats.io/nats-concepts/core-nats/queue" rel="noopener noreferrer" target="_blank">NATS — Queue groups</a></li>
+            <li><a href="https://www.rabbitmq.com/tutorials/tutorial-two-java" rel="noopener noreferrer" target="_blank">RabbitMQ — Work queues and acknowledgments</a></li>
+            <li><a href="https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-overview-v1.0-os.html" rel="noopener noreferrer" target="_blank">OASIS AMQP 1.0 — Core overview</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
