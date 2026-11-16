@@ -53,6 +53,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "integration",
         "iot-edge",
         "mobile",
+        "observability",
     }
 )
 
