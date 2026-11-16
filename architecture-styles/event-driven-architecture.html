@@ -125,6 +125,7 @@
  <p>In <strong>event-driven architecture (EDA)</strong>, a service publishes a <em>domain event</em> when something meaningful happens instead of calling the next service synchronously and waiting.</p>
  <p>Events flow through a message broker — often <strong>Apache Kafka</strong> — that durably stores and fans out messages. Producers append to topics such as <code>order.placed</code> and <code>shipment.delivered</code>; consumers in billing, notification, and analytics read at their own pace.</p>
  <p>EDA is a family of patterns, not one design. Martin Fowler distinguishes <em>event notification</em> (signal only), <em>event-carried state transfer</em> (payload carries enough data to act without a callback), and <em>event sourcing</em> (the event log is the system of record). Many dispatch pipelines use notification and state transfer on a log; a separate order bounded context may source state from events — see <a href="event-sourcing.html">Event Sourcing</a>.</p>
+ <p>Ordering is always scoped to a partition key such as an <code>aggregate_id</code>: brokers guarantee sequence within a partition, not globally across topics. Architects choose that key so all lifecycle events for one aggregate serialize on one consumer instance; cross-aggregate timelines still need explicit correlation identifiers in the envelope.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
  <p>A dispatch service that called billing, routing, and a driver app over HTTP inside one request learned the cost of coupling: when billing slowed during month-end, loads stalled in the yard and drivers saw timeouts.</p>
@@ -207,11 +208,9 @@
  </div>
 
  <h2 id="implementation-notes">Implementation notes</h2>
- <p><strong>Envelope:</strong> Every event should carry <code>correlationId</code>, domain identifiers such as <code>loadId</code>, and CloudEvents-style metadata so support can follow one shipment across dispatch, billing, and notify.</p>
- <p><strong>Idempotency:</strong> Billing stores processed <code>eventId</code> keys — at-least-once delivery must not double-invoice the same <code>ShipmentDelivered</code>.</p>
- <p><strong>Schema Registry:</strong> <code>LoadAssigned</code> and <code>ShipmentDispatched</code> use Avro with backward-compatible evolution; producers register schemas before deploy.</p>
- <p><strong>Choreography vs orchestration:</strong> Load-to-delivery is often choreographed off broker events. Reserve workflow-engine orchestration for rare compensation flows (cancel after partial billing).</p>
- <p><strong>Dead letters:</strong> Poison messages on the billing consumer go to a DLQ topic with alerts — one bad payload must not stall the partition.</p>
+ <p>Publish with a standard envelope: correlation identifiers, a stable business key such as an <code>aggregate_id</code>, a unique <code>event_id</code>, schema version, and CloudEvents-compatible metadata. That metadata is how operations reconstruct a workflow across producers without relying on shared mutable tables. Register Avro, JSON Schema, or Protobuf in a schema registry with backward-compatible evolution rules enforced in CI—breaking consumer deploys are a top failure mode.</p>
+ <p>Commit local state and the outbound message in one transaction using a transactional outbox (poller or change-data-capture relay). Writing to the database and the broker in the same handler without outbox is the dominant production bug class: one side succeeds and the other rolls back, producing silent data loss or duplicate side effects. Consumers must assume at-least-once delivery and dedupe on <code>event_id</code> or natural keys before irreversible side effects such as billing captures or outbound notifications.</p>
+ <p>Partition the event log by <code>aggregate_id</code> (or another stable shard key) so all events for one aggregate stay ordered on a single partition. Global ordering does not exist across partitions—cross-aggregate workflows need sagas with timeouts, dead-letter queues for poison messages, and alerts on consumer lag. Tune <code>max.poll.interval</code> and batch size before blindly adding partitions; slow handlers trigger rebalance storms. Document channels and delivery semantics in AsyncAPI alongside HTTP OpenAPI. Prefer choreography for many reacting services; reserve orchestration engines for rare compensation paths.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
@@ -225,7 +224,7 @@
  <h2 id="decision-checklist">Decision checklist</h2>
  <ul class="checklist">
  <li>Does every consumer dedupe or otherwise handle at-least-once delivery safely?</li>
- <li>Does every published event include <code>correlationId</code> and domain identifiers such as <code>loadId</code>?</li>
+ <li>Does every published event include <code>correlationId</code>, a unique <code>event_id</code>, and a stable business key such as an <code>aggregate_id</code>?</li>
  <li>Are Avro schemas registered with backward-compatible evolution rules?</li>
  <li>Do critical consumer groups have DLQs and paging when messages land there?</li>
  <li>Are consumer lag and topic retention monitored against replay and compliance needs?</li>
@@ -252,6 +251,9 @@
             <li><a href="https://martinfowler.com/articles/201701-event-driven.html" rel="noopener noreferrer" target="_blank">What do you mean by "Event-Driven"?</a> — Martin Fowler's taxonomy of EDA patterns.</li>
             <li><a href="https://kafka.apache.org/documentation/" rel="noopener noreferrer" target="_blank">Apache Kafka Documentation</a> — streaming platform reference for event logs and consumers.</li>
             <li><a href="https://www.asyncapi.com/docs" rel="noopener noreferrer" target="_blank">AsyncAPI Specification</a> — Standard for documenting event-driven APIs.</li>
+            <li><a href="https://cloudevents.io/" rel="noopener noreferrer" target="_blank">CloudEvents</a> — CNCF specification for interoperable event metadata.</li>
+            <li><a href="https://microservices.io/patterns/data/transactional-outbox.html" rel="noopener noreferrer" target="_blank">Transactional Outbox</a> — Chris Richardson pattern for publish-after-commit.</li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageBroker.html" rel="noopener noreferrer" target="_blank">Message Broker</a> — Enterprise Integration Patterns (Hohpe &amp; Woolf).</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

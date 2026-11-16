@@ -130,6 +130,7 @@
  <p>Catalog search often joined six tables on every browse request. Merchandisers adding attributes slowed checkout-style admin writes, and tuning indexes for search polluted the write schema.</p>
  <p>CQRS lets the catalog team keep a strict <code>Product</code> aggregate for commands while search owns denormalized documents with synonyms, facets, and ranking boosts. Each side scales and deploys on its own cadence.</p>
  <p>When catalog pairs CQRS with event sourcing for orders (see <a href="event-sourcing.html">Event Sourcing</a>), the same domain events feed both search projections and fulfillment read models — one write path, many read shapes.</p>
+ <p>CQRS does not require two databases on day one. Many teams begin with segregated command and query handlers against one Postgres schema until search QPS or mapping churn forces a dedicated read store. The expensive part is operational: lag SLOs, projector idempotency, and rebuild runbooks—not the interface split itself.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
@@ -208,6 +209,8 @@
  <p><strong>Projection timing:</strong> Async projectors on a broker feed search; admin screens that need read-your-writes poll the write API or use synchronous projection to a small Redis cache for SKU detail.</p>
  <p><strong>Rebuild path:</strong> A <code>RebuildCatalogSearch</code> job replays <code>ProductPublished</code> and <code>PriceChanged</code> from the outbox into a fresh OpenSearch index, then aliases cutover.</p>
  <p><strong>Write concurrency:</strong> <code>Product</code> aggregates carry version numbers; conflicting <code>UpdatePrice</code> commands fail fast instead of silently overwriting.</p>
+ <p>Define projection lag as a product-facing SLO, not a hidden broker metric. Many catalog teams target one to five seconds from command commit to searchable documents; analytics may tolerate minutes. Admin UIs should show “last synced” timestamps or use optimistic updates so operators know when they are looking at stale denormalized data. When a screen must be read-your-writes, narrow synchronous projection to that view or route the query back through the write API instead of pretending the index is authoritative.</p>
+ <p>Projectors must be idempotent under at-least-once delivery: record <code>event_id</code> or <code>(aggregate_id, sequence)</code> in a processed table before mutating the read model. Publish changes through a transactional outbox—never dual-write Postgres and a search index in one handler. CQRS is frequently paired with event sourcing because domain events feed projections naturally, but logical CQRS (separate handlers, one database) is common and often the right first step. Full physical split is overkill when read and write shapes, security models, and scale profiles are identical—reserve the operational tax for places where search ranking, facets, or read replicas genuinely diverge from the write schema.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
@@ -248,6 +251,8 @@
             <li><a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">CQRS</a> — Martin Fowler's concise overview of the pattern.</li>
             <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs" rel="noopener noreferrer" target="_blank">CQRS Pattern</a> — Microsoft Azure Architecture Center.</li>
             <li><a href="https://cqrs.files.wordpress.com/2010/11/cqrs_documents.pdf" rel="noopener noreferrer" target="_blank">CQRS Documents</a> — Greg Young's original CQRS documentation.</li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing" rel="noopener noreferrer" target="_blank">Event Sourcing pattern</a> — Microsoft guidance on pairing ES with CQRS projections.</li>
+            <li><a href="https://learn.microsoft.com/en-us/previous-versions/msp-n-p/jj554200(v=pandp.10)" rel="noopener noreferrer" target="_blank">CQRS Journey</a> — Microsoft patterns &amp; practices reference implementation.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

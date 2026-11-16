@@ -130,6 +130,7 @@
  <p>Early surge engines often live on a small container cluster that runs 24/7 to survive Friday peaks. Most hours the cluster idles, yet the organization still pays for it.</p>
  <p>Serverless bills only when a function runs. EventBridge schedules and Kinesis or SQS bursts invoke functions for surge math and payment webhook validation — no capacity planning when a concert lets out downtown.</p>
  <p>The trade-off is control: typical FaaS timeouts, cold starts, and cloud-specific triggers are constraints teams accept on bursty, event-shaped work, not on always-hot matching APIs (those often stay on containers).</p>
+ <p>Mike Roberts’s serverless framing separates reduced operational responsibility from reduced *architectural* responsibility—you still own idempotency, back-pressure, data consistency, and observability, just on shorter-lived units of compute.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
@@ -196,6 +197,7 @@
  </ul>
  </div>
  </div>
+ <p>Lock-in and cost trade-offs belong in architecture review, not year-end surprise. Compare per-request billing against always-on CPU for your actual curve; document which workflows are portable (plain HTTP + queue semantics) versus which depend on a vendor workflow engine.</p>
 
  <h2 id="implementation-notes">Implementation notes</h2>
  <p><strong>Runtime choice:</strong> A surge worker might use Node 20 with minimal dependencies to keep cold starts short on bursty invocations; JVM functions can use SnapStart only where the team accepts AWS-specific tuning.</p>
@@ -203,6 +205,8 @@
  <p><strong>Orchestration:</strong> Payout flows use Step Functions instead of Lambda→Lambda chains so failures surface in one workflow history.</p>
  <p><strong>State externalization:</strong> Zone multipliers and webhook dedupe keys live in DynamoDB; nothing critical sits in <code>/tmp</code> or static fields.</p>
  <p><strong>Observability:</strong> Each function exports p99 duration, error rate, and cold-start metrics per alias — aggregate dashboards hide surge regressions.</p>
+ <p>Cold starts dominate latency-sensitive paths: the runtime must download configuration, initialize the language VM, and sometimes attach ENIs before your handler runs. Mitigations include smaller dependency footprints on Node and Python, provisioned concurrency on AWS to keep warm execution environments, and Lambda SnapStart for Java to snapshot initialized JVM state. Account-level concurrency limits (commonly 1,000 concurrent executions per Region until raised) interact with API Gateway throttles—reserve concurrency on payment or auth webhooks so bulk jobs cannot starve them. Platform timeouts (15 minutes on AWS Lambda) bound maximum work; longer jobs belong on batch or container platforms.</p>
+ <p>Cost crosses over with containers on sustained QPS: finance should plot monthly invocations × duration against Fargate or Kubernetes reserved capacity. Vendor lock-in appears in IAM models, event source mappings, Step Functions states, and proprietary orchestration—not only syntax—so keep domain logic in portable modules and isolate cloud SDKs in thin handlers. Use partial batch failure reporting for SQS and Kinesis mappings so one poison record does not fail an entire batch. One function per least-privilege IAM role; scan layers and dependencies like any deployable artifact.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
@@ -243,6 +247,9 @@
             <li><a href="https://martinfowler.com/articles/serverless.html" rel="noopener noreferrer" target="_blank">Serverless Architectures</a> — Mike Roberts on Serverless at martinfowler.com.</li>
             <li><a href="https://aws.amazon.com/lambda/serverless-architectures-learn-more/" rel="noopener noreferrer" target="_blank">AWS Serverless Architecture Patterns</a> — AWS documentation on serverless application patterns.</li>
             <li><a href="https://learn.microsoft.com/en-us/azure/architecture/serverless-quest/serverless-overview" rel="noopener noreferrer" target="_blank">Azure Serverless Overview</a> — Microsoft Azure Architecture documentation.</li>
+            <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/provisioned-concurrency.html" rel="noopener noreferrer" target="_blank">AWS Lambda provisioned concurrency</a> — AWS documentation on warm capacity.</li>
+            <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html" rel="noopener noreferrer" target="_blank">Lambda SnapStart for Java</a> — AWS documentation on reducing Java cold starts.</li>
+            <li><a href="https://cloud.google.com/functions/docs" rel="noopener noreferrer" target="_blank">Google Cloud Functions documentation</a> — GCP FaaS reference.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
