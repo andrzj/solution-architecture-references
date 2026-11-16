@@ -107,11 +107,13 @@
           <p><strong>Platform security</strong> is the set of controls the internal developer platform applies so every team inherits baseline posture—identity, secrets, network boundaries, and artifact trust—without reimplementing them in each repository.</p>
           <p>On Kubernetes, admission is the primary enforcement point: <strong>OPA Gatekeeper</strong> and <strong>Kyverno</strong> evaluate create/update requests against versioned policies (non-root containers, required labels, approved registries, signed images). Gatekeeper runs Rego via ConstraintTemplates; Kyverno uses Kubernetes-native YAML rules and can mutate resources (for example inject labels or sidecars). For infrastructure-as-code, <strong>Open Policy Agent</strong> in CI or <strong>HashiCorp Sentinel</strong> in Terraform Cloud/HCP Terraform blocks plans that violate tagging, encryption, or network rules before apply.</p>
           <p>Around the workload lifecycle, <strong>Cosign</strong> (Sigstore) signs images in CI; admission verifies signatures. The <strong>External Secrets Operator</strong> syncs secrets from Vault or cloud secret managers into namespaces on a schedule. Templated <strong>RBAC</strong> and <strong>NetworkPolicy</strong> bundles ship with each namespace. <strong>Backstage</strong> can surface security ownership, plugin links to vulnerability data, and catalog annotations that tie components to compliance scope.</p>
+          <p>Platform security is not a separate programme sitting beside the <a href="internal-developer-platform.html">IDP</a>: it is how paved roads enforce posture. Golden-path workflows should fail closed when scans, signatures, or policy checks do not pass, and namespace provisioning should attach the same RBAC and network defaults whether teams click “Create Service” in Backstage or call a platform API. That coupling is what turns “security guidelines” into measurable compliance signals auditors can sample from Git, registry metadata, and admission audit logs rather than slide decks.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Distributed ownership of security defaults produces predictable gaps: privileged pods, secrets in git, wide-open security groups, unsigned images. Central security teams cannot review every manifest at scale; admission and pipeline policy convert standards into automatic deny/warn decisions with an audit log.</p>
           <p>Embedding controls in golden paths and platform APIs shifts effort from education to mechanics. A developer using a Backstage template or namespace provisioner receives IRSA bindings, default-deny network policy, and ESO-backed secrets whether or not they read the hardening guide.</p>
           <p>Regulators and customers increasingly expect continuous evidence—SBOMs, signature provenance, policy reports—not quarterly attestations. Platform security generates that evidence as a side effect of delivery.</p>
+          <p>The economic argument matters too. When every squad rebuilds scanning, signing, and secrets plumbing, security cost scales linearly with team count and platform engineers become reviewers of endless one-off manifests. Centralising those capabilities behind self-service interfaces lets stream-aligned teams spend cognitive budget on product risk—fraud rules, data handling, customer trust—while the platform owns undifferentiated hardening that should not vary by repository.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -120,6 +122,7 @@
             <li>Organisations standardising on Vault, Secrets Manager, or similar—ESO or equivalent as the only path for runtime secrets.</li>
             <li>Terraform or OpenTofu at scale—OPA <code>conftest</code> or Sentinel policies on plans alongside Kubernetes admission.</li>
             <li>Namespace-per-team models where RBAC and network policy must be provisioned atomically with the namespace.</li>
+            <li>Post-incident mandates to prove images were built internally and have not been tampered with in transit—signature verification at admission is the enforcement hinge.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -210,6 +213,9 @@
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Roll out <a href="https://open-policy-agent.github.io/gatekeeper/website/docs/" target="_blank" rel="noopener noreferrer">OPA Gatekeeper</a> or Kyverno in audit mode across representative clusters, export violations to the same backlog rhythm as other platform defects, then enforce pod security baselines before cosmetic label rules. Store ConstraintTemplates in git and deploy them with the same GitOps pipeline that applies application manifests. Mirror critical policies in CI with <code>conftest</code> on rendered Helm or Kustomize output so pull requests catch issues before they reach the API server.</p>
+          <p>Treat the audit window as a remediation sprint, not a reporting exercise. Tag each violation with owning team, severity, and whether the workload is customer-facing. Enforce in waves: block privileged and hostPath patterns first, then unsigned images, then metadata hygiene. Pair each new constraint with a paved-road fix—Helm chart defaults, template parameters, or a documented exception workflow—so developers know how to pass policy without filing platform tickets.</p>
+          <p>For image trust, standardise on organisation-scoped registries and CI identities that can sign. Pin base-image digests in templates, attach CycloneDX or SPDX SBOMs as OCI artifacts, and verify signatures in admission with a policy that trusts only your internal issuers. Rehearse break-glass: annotated deploy requests, secondary signing keys, and time-bounded waiver CRDs should be documented in the runbook before the first production outage blocks a hotfix.</p>
+          <p>For External Secrets Operator, provision a ClusterSecretStore per environment with least-privilege IAM or Vault policies—not a single god-role for every namespace. Automate ExternalSecret creation in the same transaction as namespace creation; use path conventions like <code>/platform/{team}/{env}/{secret}</code> and reject hand-applied Secrets labelled otherwise. Run quarterly rotation drills: rotate upstream credentials, confirm ESO refreshes Kubernetes Secrets within the configured interval, and validate that applications reload without manual pod deletion unless a sidecar reloader is part of the golden path.</p>
           <p>Wire image signing in shared golden-path workflows: build, scan, generate SBOM, sign with Cosign, and verify at admission. Document break-glass annotations that require on-call approval. Provision namespaces through Backstage or platform APIs so ExternalSecret objects, network policies, and RBAC bindings are created atomically. Surface ownership and compliance tags in the catalog so security champions know which components inherit which controls.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -219,6 +225,7 @@
             <li><strong>Over-scoped secret access:</strong> One ClusterSecretStore IAM role can read every environment’s passwords, so a single ESO bug becomes org-wide credential exposure.</li>
             <li><strong>CI with cluster-admin:</strong> Pipeline tokens bound too broadly let a compromised workflow rewrite any namespace, undoing namespace isolation goals.</li>
             <li><strong>Network policy late binding:</strong> Services start under default-deny without egress to their database because dependency edges were never captured in the golden path template.</li>
+            <li><strong>Policy drift between CI and cluster:</strong> Teams pass <code>conftest</code> locally but production clusters run an older ConstraintTemplate revision until GitOps sync fails silently; treat policy repos as production dependencies with the same deployment alarms as application charts.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -233,8 +240,9 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario — admission hardening:</strong> Kyverno policies in audit mode surface privileged pods and missing resource limits; after remediation, enforce mode blocks regressions; SOC auditors receive monthly policy compliance exports.</li>
-            <li><strong>Illustrative scenario — signed images only:</strong> CI signs release images with Cosign; Kyverno or Gatekeeper verifies signatures at admission; break-glass annotations require on-call approval for emergency unsigned deploys.</li>
+            <li><strong>Illustrative scenario — admission hardening:</strong> A forty-person product org runs Kyverno in audit for three weeks against staging and production; the platform exports a CSV of privileged workloads and unbounded CPU pods. Streams fix chart defaults, then enforce mode flips on; regressions fail pull-request previews before they hit shared clusters. Monthly Gatekeeper or Kyverno compliance snapshots feed SOC evidence packs without manual screenshot hunts.</li>
+            <li><strong>Illustrative scenario — signed images only:</strong> After a compromised public image appears in a sandbox cluster, leadership mandates internal-only base layers. Shared CI emits Cosign signatures bound to the build pipeline identity; admission rejects unknown digests. On-call carries a rehearsed waiver path for break-glass deploys, but every exception is logged to the transparency log for later review.</li>
+            <li><strong>Illustrative scenario — secrets hygiene at scale:</strong> An audit finds database passwords embedded in Deployment YAML across dozens of repos. Over two quarters the platform migrates workloads to External Secrets Operator golden paths, purges history with approved git tooling, and blocks new plaintext secrets via pre-commit hooks plus admission denial of unlabelled Secret objects.</li>
             <li><strong>Case study — Shopify:</strong> Public engineering writing on bootstrapping security with policy-as-code and hardened supply chains informed many IDP teams’ sequencing of scan-then-sign-then-admit pipelines.</li>
           </ul>
 
