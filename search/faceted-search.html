@@ -100,28 +100,30 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Shoppers typing “laptop” then narrowing by brand and price band need counts that update as filters stack — faceted search runs the keyword query and parallel aggregations so each facet value shows how many results remain if selected.</p>
-          <p>Under the hood, facets are implemented as <strong>aggregations</strong> in Elasticsearch and OpenSearch. A <code>terms</code> aggregation groups documents by a keyword field and counts occurrences; a <code>range</code> aggregation buckets numeric or date fields into user-defined intervals; a <code>histogram</code> aggregation produces uniform-width buckets. The critical UX distinction is that facet counts reflect the results <em>after</em> all active filters are applied, except for the facet being counted itself (a technique called <strong>post-filter</strong> or multi-select faceting), so users always see non-zero counts for available refinements.</p>
+          <p><strong>Faceted search</strong> combines ranked full-text retrieval with dynamic attribute filters whose bucket counts update as users refine a query. A keyword clause (often BM25 over <code>text</code> fields) selects a candidate document set; parallel aggregations on <code>keyword</code> or numeric fields return value distributions so the UI can show how many results remain if another filter is applied. Elasticsearch and OpenSearch implement facets as aggregations atop Lucene doc values, computed in the same distributed search request as the hit list.</p>
+          <p>IIR separates ad hoc search from browsable structured refinement; faceted navigation is the UI pattern that makes high-dimensional catalogs explorable without forcing users to memorize taxonomies. <code>terms</code> aggregations group by discrete labels, <code>range</code> and <code>date_histogram</code> bucket continuous attributes, and nested or filter aggregations scope counts when multiple selections on the same facet must stay mutually visible—patterns documented in the Elasticsearch aggregations reference and mirrored in OpenSearch.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Users rarely know exactly what they want when they start browsing. Faceted search exploits this by guiding discovery: rather than requiring users to write precise queries, they can start broad and iteratively narrow. This is especially valuable in e-commerce, where a shopper might start with "laptop" and then filter by brand, screen size, price range, and in-stock status without ever reformulating their query. The live facet counts act as a map of the result space, preventing dead-end selections.</p>
-          <p>From a technical perspective, faceted search emerged because databases cannot efficiently perform simultaneous GROUP BY operations across multiple high-cardinality columns on large datasets within a latency budget acceptable for interactive use. Search engines pre-build data structures (doc values, field data) that make these aggregations fast — typically under 100ms for millions of documents — enabling the real-time count updates that make the UX compelling.</p>
+          <p>Interactive shoppers and analysts rarely start with a perfect keyword. Facets turn a broad hit set into a navigable map: each count signals whether a refinement is productive before the user clicks. Relational <code>GROUP BY</code> across many high-cardinality dimensions on large tables struggles to meet sub-100ms UX budgets, especially when combined with lexical predicates the database does not optimise.</p>
+          <p>Search engines materialise columnar doc values beside the inverted index so shard-local aggregation trees merge quickly at the coordinator. That co-location is why marketplace and knowledge-base products implement faceted browse in OpenSearch rather than issuing separate SQL analytics queries per keystroke. The pattern also yields implicit catalogue analytics: facet distributions expose skew, missing metadata, and seasonal shifts without a separate BI export.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>E-commerce product listings where users need to filter by brand, price, rating, colour, size, and availability simultaneously.</li>
-            <li>Job boards where candidates filter by location, salary range, remote/on-site, contract type, and required skills.</li>
-            <li>Real estate search with facets for price bracket, property type, bedrooms, and neighbourhood.</li>
-            <li>Media libraries (images, videos, documents) with metadata facets like format, date, author, and licence type.</li>
-            <li>Enterprise knowledge bases where documents are tagged with department, document type, date range, and author.</li>
+            <li>Listings mix keyword discovery with structured metadata such as brand, price band, rating, region, or compliance label.</li>
+            <li>Users iteratively narrow results and expect non-zero counts on remaining facet values after each click.</li>
+            <li>Multiple independent facets must be combinable in one round trip without custom rollup tables per combination.</li>
+            <li>Product data already lands in Elasticsearch or OpenSearch for BM25, so facets reuse the same index and ACL filters.</li>
+            <li>Support or content portals expose department, format, and date facets alongside article search.</li>
+            <li>Merchandising teams need near-real-time visibility into how keyword traffic distributes across attributes without exporting to a warehouse.</li>
+            <li>Mobile layouts rely on drill-down filters because screen space cannot show every attribute at once.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>High-cardinality unique fields</strong>: Running a terms aggregation on a user ID or UUID field that has millions of unique values wastes heap and produces useless facet counts.</li>
-            <li><strong>Real-time data with write-heavy workloads</strong>: Aggregations are expensive on indices that are constantly being updated; consider a separate analytics index refreshed periodically.</li>
-            <li><strong>Pure full-text discovery</strong>: If the query domain is long-form documents without structured metadata, facets have nothing useful to aggregate on; use categories and taxonomy tagging first.</li>
-            <li><strong>Very small result sets</strong>: When a query already returns fewer than 10 results, facets with counts of 1–2 add visual noise rather than help.</li>
+            <li>Attributes lack stable categorical values or every field is unique (UUID-per-row), producing useless one-count buckets.</li>
+            <li>Result sets are always tiny, so facet chrome adds noise without navigation benefit.</li>
+            <li>Write-heavy streams need second-level facet freshness but you cannot afford frequent refresh or dedicated analytics indices.</li>
+            <li>Corpus is purely unstructured narrative with no trustworthy taxonomy—tagging must come first.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -171,7 +173,7 @@
 │    screen_size: [{15":14},{13":9}...]   │
 └─────────────────────────────────────────┘</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Faceted search: keyword retrieval plus parallel aggregations return products and filter counts in one response.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">One search request runs BM25 retrieval and shard-local aggregations, then merges facet buckets with the hit page.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -179,68 +181,75 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Dramatically improves discovery UX — users can explore without knowing precise terminology.</li>
-                <li>Live document counts prevent dead-end filter combinations, reducing frustration.</li>
-                <li>Composable: any combination of facet values can be applied without re-architecting the query.</li>
-                <li>Elasticsearch aggregations are highly optimised using doc_values (columnar storage), keeping latency low.</li>
-                <li>Provides implicit analytics: aggregation results reveal the shape of your data over time.</li>
+                <li>Guides discovery without expert vocabulary; facet counts communicate feasible next steps.</li>
+                <li>Single request returns hits and aggregations, reducing chattiness versus database plus BI services.</li>
+                <li>Composable bool queries let product teams add facets without schema migrations in the OLTP store.</li>
+                <li>Doc-values-backed aggs scale with shard count and benefit from request cache for repeated filter sets.</li>
+                <li>Facet telemetry informs data quality and merchandising decisions.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Aggregations add latency and memory pressure proportional to the number of buckets and result cardinality.</li>
-                <li>Multi-select faceting (post_filter) adds complexity: different parts of the query must be scoped differently.</li>
-                <li>Nested facets (e.g., faceting on nested objects) require nested aggregations, which are much more expensive.</li>
-                <li>Facet ordering (by count vs. alphabetical vs. curated) is a UI/UX decision that requires product input.</li>
-                <li>Caching invalidation is tricky: facet counts change whenever documents are indexed or updated.</li>
+                <li>Many large bucket aggregations increase heap pressure and tail latency on data nodes.</li>
+                <li>Multi-select faceting needs <code>post_filter</code> or per-facet filter aggregations—easy to get wrong in the DSL.</li>
+                <li>Nested object facets require nested mappings and expensive nested aggs.</li>
+                <li>Facet ordering (count, alphabetical, curated) is a product decision that engineering cannot guess.</li>
+                <li>Counts drift until refresh intervals elapse unless you accept near-real-time indexing costs.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Always map facet fields as <code>keyword</code> type (or <code>integer</code>/<code>float</code> for numeric facets) with <code>doc_values: true</code> (the default). Never run terms aggregations on <code>text</code> fields — this requires loading field data into heap, which is slow and memory-intensive. For fields that need both full-text search and faceting (e.g., product category), use Elasticsearch's <strong>multi-field</strong> mapping: a <code>text</code> sub-field for search and a <code>keyword</code> sub-field for aggregations. Control the number of buckets returned per aggregation with the <code>size</code> parameter; returning thousands of buckets per request is a common source of performance problems.</p>
-          <p>For multi-select faceting (where selecting one brand value should not filter out other brands from the brand facet), use the <strong>post_filter</strong> pattern: compute all aggregations on the unfiltered query, then apply the brand filter as a post_filter that affects only the returned hits. Alternatively, use a <code>filter</code> aggregation as a parent per facet to exclude that facet's own filter from its count computation. Cache aggressively: Elasticsearch's shard request cache stores aggregation results keyed by the query hash; set <code>size: 0</code> if you only need aggregations with no hits to maximise cache hit rates.</p>
+          <p>Map facet fields as <code>keyword</code>, <code>integer</code>, <code>float</code>, or <code>date</code> with doc values enabled (default on keyword). For fields that need both BM25 and faceting, use multi-fields: analysed <code>text</code> for <code>multi_match</code> and a <code>keyword</code> sub-field for <code>terms</code> aggs. Never aggregate analysed <code>text</code>; that forces fielddata into heap and violates Elastic and OpenSearch best-practice guidance.</p>
+          <p>Cap <code>terms</code> aggregation <code>size</code> to the UI limit (often 10–30). Use <code>post_filter</code> or sibling filter aggregations so selecting one brand does not zero out sibling brands in the brand facet. Set <code>size: 0</code> on count-only requests to improve shard request cache hits. Align BM25 query clauses in <code>must</code> with structured filters in <code>filter</code> context so scoring stays stable while filters benefit from caching.</p>
+          <p>For range facets on price or age, prefer explicit <code>range</code> buckets aligned with UI sliders rather than auto histograms unless product requires uniform bin widths. Use <code>composite</code> aggregations for export or admin consoles that page through high-cardinality facet keys; reserve unconstrained <code>terms</code> aggs for the storefront top-N view. Document which facets participate in multi-select versus exclusive modes so API gateways validate filter cardinality correctly.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>fielddata enabled on text fields</strong>: Loading field data for text aggregations causes heap exhaustion under load; always use keyword sub-fields instead.</li>
-            <li><strong>Too many buckets</strong>: Setting <code>size: 10000</code> on a terms aggregation forces the engine to collect 10,000 buckets per shard, multiplied across all shards.</li>
-            <li><strong>Nested aggregation explosion</strong>: Deeply nested aggregations (terms inside terms inside nested) scale multiplicatively and quickly exceed memory limits.</li>
-            <li><strong>Stale facet counts</strong>: Without <code>refresh: true</code> (not recommended in production) or sufficient <code>refresh_interval</code>, facet counts lag behind document ingestion.</li>
-            <li><strong>UI dead ends from missing post_filter</strong>: Without post_filter for multi-select, selecting two values for the same facet shows zero results because both filters apply simultaneously via AND logic.</li>
+            <li><strong>Text field aggregations</strong> trigger fielddata loads and OOM incidents under concurrent facet traffic.</li>
+            <li><strong>Oversized bucket counts</strong> (<code>size</code> in the thousands) multiply work across every shard copy.</li>
+            <li><strong>Missing post_filter</strong> on multi-select facets ANDs incompatible values and yields empty pages users blame on search quality.</li>
+            <li><strong>Nested facet explosions</strong> from deeply nested aggs exceed memory limits on modest clusters.</li>
+            <li><strong>Stale counts</strong> when ingest pipelines fail silently while the UI still renders optimistic filters.</li>
+            <li><strong>Security filter drift</strong> when aggregation scopes omit tenant filters present on the hit query, leaking cross-customer counts.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are all facet fields mapped as keyword (or numeric) with doc_values enabled?</li>
-            <li>Have you determined which facets need multi-select and implemented post_filter accordingly?</li>
-            <li>Have you capped aggregation bucket sizes to a reasonable limit (e.g., top 20)?</li>
-            <li>Have you considered aggregation caching and set size: 0 for count-only requests?</li>
-            <li>Have you validated that facet counts remain accurate after document updates?</li>
-            <li>Is the facet order (by count vs. alphabetical vs. manual) defined by product requirements?</li>
+            <li>Does every facet field have a keyword or numeric mapping suitable for doc values?</li>
+            <li>Are multi-select facets scoped with post_filter or filter aggregations and covered by integration tests?</li>
+            <li>Are bucket sizes capped to what the UI actually renders?</li>
+            <li>Is request cache behaviour understood for high-cardinality filter hashes?</li>
+            <li>Do facet counts respect tenancy and security filters applied to hits?</li>
+            <li>Has product signed off facet order and empty-state behaviour?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce marketplace</strong>: Brand, price range, customer rating, shipping speed, and seller facets on a product search page; multi-select brand facet allows comparing Apple and Samsung simultaneously.</li>
-            <li><strong>B2B parts catalogue</strong>: Facets on specification attributes (voltage, current rating, tolerance) derived from structured product data; range facets for dimensional attributes.</li>
-            <li><strong>Legal document repository</strong>: Facets on practice area, jurisdiction, document type, date range, and author; helps lawyers narrow thousands of precedents to relevant cases.</li>
+            <li><strong>Illustrative scenario — Northwind Commerce:</strong> Shoppers query "laptop" then stack brand, price range, and in-stock facets; post_filter keeps alternate brands visible while Dell remains selected.</li>
+            <li><strong>Illustrative scenario — RideRelay Parts:</strong> B2B buyers filter voltage and tolerance facets on BM25-ranked SKUs drawn from structured ERP attributes ingested nightly.</li>
+            <li><strong>Case study — Elastic aggregations docs:</strong> Elasticsearch documents terms, range, and filter aggregations as the supported building blocks for faceted navigation at scale.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="full-text-search.html">Full-Text Search</a> — The query layer that facets are applied on top of.</li>
-            <li><a href="autocomplete.html">Autocomplete &amp; Suggestions</a> — Complementary feature for guiding users to valid filter values.</li>
-            <li><a href="search-relevance-tuning.html">Search Relevance Tuning</a> — Optimising the ranked results within each faceted filter set.</li>
+            <li><a href="full-text-search.html">Full-Text Search</a> — BM25 retrieval that facets refine.</li>
+            <li><a href="autocomplete.html">Autocomplete &amp; Suggestions</a> — Guides users toward facet-friendly vocabulary.</li>
+            <li><a href="search-relevance-tuning.html">Search Relevance Tuning</a> — Keeps ranked hits strong inside each facet slice.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-aggregations.html" target="_blank" rel="noopener noreferrer">Elasticsearch Aggregations Reference</a></li>
-            <li><a href="https://www.algolia.com/doc/guides/managing-results/refine-results/faceting/" target="_blank" rel="noopener noreferrer">Algolia — Faceting guide</a></li>
-            <li><a href="https://www.nngroup.com/articles/applying-filters/" target="_blank" rel="noopener noreferrer">Filters vs. Facets: Definitions (Nielsen Norman Group)</a></li>
+            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-aggregations.html" target="_blank" rel="noopener noreferrer">Elasticsearch — Aggregations reference</a></li>
+            <li><a href="https://opensearch.org/docs/latest/aggregations/index/" target="_blank" rel="noopener noreferrer">OpenSearch — Aggregations</a></li>
+            <li><a href="https://nlp.stanford.edu/IR-book/html/htmledition/faceted-search-1.html" target="_blank" rel="noopener noreferrer">Manning et al. — IIR (faceted search overview)</a></li>
+            <li><a href="https://www.nngroup.com/articles/applying-filters/" target="_blank" rel="noopener noreferrer">Nielsen Norman Group — Filters vs. facets</a></li>
           </ul>
+
+
+
+
         </div>
         <nav class="article-nav" aria-label="Article navigation">
           <a href="full-text-search.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Full-Text Search</span></a>

@@ -57,6 +57,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "platform-engineering",
         "reliability",
         "scalability",
+        "search",
     }
 )
 
