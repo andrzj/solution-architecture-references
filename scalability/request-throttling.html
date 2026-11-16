@@ -102,7 +102,7 @@
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
           <p><strong>Request throttling</strong> is server-side admission control that limits how much work enters the process at once—usually with semaphores, bounded queues, or backpressure—not how many requests a client may attempt over time. Where rate limiting returns 429 when a counter overflows, throttling may queue a request briefly, delay acceptance, or shed low-priority traffic so concurrency stays within what threads, memory, and downstream dependencies can sustain.</p>
-          <p>Common building blocks include <strong>concurrency caps</strong> (maximum in-flight requests), <strong>priority queues</strong> (serve health checks and interactive reads before bulk exports), <strong>edge shaping</strong> (NGINX <code>limit_req</code>, API gateway quotas with burst), and <strong>adaptive client throttling</strong> (Google SRE-style probabilities that tell callers to slow down when the server is already rejecting). The goal is to keep Little’s Law bounded: if arrivals exceed service capacity, queue depth and latency grow until something breaks—throttling caps that growth before OOM or thread starvation.</p>
+          <p>Common building blocks include <strong>concurrency caps</strong> (maximum in-flight requests), <strong>priority queues</strong> (serve health checks and interactive reads before bulk exports), <strong>edge shaping</strong> (NGINX <code>limit_req</code>, API gateway quotas with burst), and <strong>adaptive client throttling</strong> (Google SRE-style probabilities that tell callers to slow down when the server is already rejecting). The goal is to cap in-flight work before queue depth, memory, or thread pools hit hard failure modes.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Every process has a finite concurrency budget—threads, goroutines, event-loop turns. Admitting unbounded in-flight work drives context-switch storms, heap growth, and thread pool starvation. A bounded queue trades some wait time for predictable failure instead of melting down every dependent.</p>
@@ -221,6 +221,7 @@
           <p><strong>Queue depth and timeout:</strong> Start with queue depth around 2× max concurrency. Set max wait to client timeout minus expected service time—if clients time out after 5 seconds and processing takes 1 second, queue timeout should be about 4 seconds. Completing work the caller already abandoned wastes capacity and poisons latency histograms.</p>
           <p><strong>Priority and shedding:</strong> Classify traffic (health, interactive, bulk) into lanes; drain high priority first during overload. NGINX <code>limit_req</code> with <code>burst</code> and <code>nodelay</code> offers edge shaping; inside the process, prefer semaphores with timed <code>tryAcquire</code> over unbounded blocking queues.</p>
           <p>Expose queue depth, wait time, and reject counts as first-class metrics; tune from load tests rather than defaults copied from blog posts. Adaptive client throttling (Google SRE) can complement server queues when mobile or browser clients can honor overload signals.</p>
+          <p><strong>Correlated slowdowns:</strong> “The Tail at Scale” shows that parallel stages inherit the slowest shard’s latency. Deep queues amplify that effect—requests wait behind one stuck dependency, then release together and stampede the next hop. Shed load early with bounded queues and 503 responses instead of hoping backlog drains gracefully.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -264,6 +265,7 @@
             <li><a href="https://sre.google/sre-book/handling-overload/" target="_blank" rel="noopener noreferrer">Google SRE Book — handling overload (Chapter 21)</a></li>
             <li><a href="https://nginx.org/en/docs/http/ngx_http_limit_req_module.html" target="_blank" rel="noopener noreferrer">NGINX — <code>limit_req</code> module reference</a></li>
             <li><a href="https://grpc.io/docs/guides/flow-control/" target="_blank" rel="noopener noreferrer">gRPC — Flow Control</a></li>
+            <li><a href="https://research.google/pubs/pub43438/" rel="noopener noreferrer" target="_blank">The Tail at Scale — Dean &amp; Barroso</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
