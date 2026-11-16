@@ -106,12 +106,13 @@
           <h2 id="what-it-is">What it is</h2>
           <p><strong>Platform observability</strong> is how the platform team measures its own product: uptime and latency of shared services (CI, developer portal, GitOps, operators) and downstream effects on engineering outcomes (deploy cadence, lead time, reliability, developer satisfaction).</p>
           <p>Two metric families usually run in parallel. <strong>Platform health</strong> uses SLIs and SLOs on components product teams depend on—Backstage availability, CI success rate and duration, operator reconciliation errors, environment provisioning time. Instrument these with <strong>OpenTelemetry</strong>: OTLP metrics and traces from portal backends, workflow runners, and controllers, exported through a collector to the same backends used for application telemetry so on-call engineers see one pane of glass.</p>
-          <p><strong>Platform impact</strong> uses the four <strong>DORA metrics</strong>—deployment frequency, lead time for changes, change failure rate, and mean time to restore—plus adoption signals from <strong>Backstage Analytics</strong> (template usage, catalog coverage) and periodic DX surveys. The goal is evidence for prioritization and executive communication, not vanity dashboards.</p>
+          <p><strong>Platform impact</strong> uses the four <strong>DORA metrics</strong>—deployment frequency, lead time for changes, change failure rate, and mean time to restore—plus adoption signals from <strong>Backstage Analytics</strong> (template usage, catalog coverage) and periodic DX surveys. Complement delivery metrics with qualitative instruments such as the SPACE framework (satisfaction, performance, activity, communication, efficiency) so a rising deploy count is not mistaken for sustainable throughput when survey scores show burnout or tooling distrust.</p>
+          <p>The goal is evidence for prioritization and executive communication, not vanity dashboards. Every chart should map to an owner, a review cadence, and a backlog item when the trend moves the wrong way for two consecutive intervals.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Platform teams rarely ship customer-facing features; their value shows up as reduced friction across many squads. Without baselines and trends, leadership sees cost centers, not accelerators. DORA and adoption data connect platform investments to delivery speed and stability.</p>
           <p>Shared services fail quietly. A broken CI template or flapping operator blocks dozens of pipelines before anyone pages platform on-call. SLOs and OTel alerts on platform components shrink mean time to detect for infrastructure that is “everyone’s dependency.”</p>
-          <p>Product management discipline—backlogs, OKRs, error budgets—requires measurable SLIs. Platform observability supplies the same rigor internal product teams expect from external SaaS vendors.</p>
+          <p>Product management discipline—backlogs, OKRs, error budgets—requires measurable SLIs. Platform observability supplies the same rigor internal product teams expect from external SaaS vendors: an SLO breach on Backstage or CI is a platform incident with defined severity, customer impact, and time-to-mitigate expectations, not an internal inconvenience.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -211,10 +212,11 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For DORA: instrument deploy workflows to emit structured events (service, commit SHA, environment, timestamp). Join with VCS timestamps for lead time. Google's Four Keys or equivalent warehouses accelerate setup; validate definitions with one pilot team before org-wide rollups.</p>
-          <p>For platform health: add OpenTelemetry to Backstage backends, workflow engines, and operators—resource attributes such as <code>service.name</code> and <code>deployment.environment</code> distinguish platform tier from app tier in the same backend. Use RED/USE metrics for HTTP APIs and reconciliation latency histograms for controllers.</p>
-          <p>Define SLOs per dependency class: portal (availability and catalog API latency), CI (success rate and p50 duration), provisioning (time-to-ready for environment CRDs). Page platform on-call on error budget burn; keep Slack notifications non-blocking unless tied to paging policy.</p>
-          <p>Export Backstage Analytics or template audit logs into the same data store as DORA metrics so low golden-path adoption triggers investigation alongside rising lead time.</p>
+          <p>For DORA: instrument deploy workflows to emit structured events (service, commit SHA, environment, timestamp). Join with VCS timestamps for lead time. Google's Four Keys or equivalent warehouses accelerate setup; validate definitions with one pilot team before org-wide rollups. Tag failures with deploy correlation IDs in incident tooling so change failure rate denominators stay honest when rollbacks happen without a formal ticket.</p>
+          <p>For platform health: add OpenTelemetry to Backstage backends, workflow engines, and operators—resource attributes such as <code>service.name</code> and <code>deployment.environment</code> distinguish platform tier from app tier in the same backend. Use RED/USE metrics for HTTP APIs and reconciliation latency histograms for controllers. Propagate trace context from portal template runs through to operator reconcile spans so long environment stalls show up as one trace instead of disconnected log grepping.</p>
+          <p>Define SLOs per dependency class: portal (availability and catalog API latency), CI (success rate and p50 duration), provisioning (time-to-ready for environment CRDs). Adopt a simple severity taxonomy—S1 when self-service is unusable org-wide, S2 when a golden path is broken for a major language stack, S3 when a single operator lags—and wire burn-rate alerts to the platform on-call rotation, not only to a low-traffic Slack channel.</p>
+          <p>Export Backstage Analytics or template audit logs into the same data store as DORA metrics so low golden-path adoption triggers investigation alongside rising lead time. Run a weekly or bi-weekly metrics review that converts dashboard signals into sprint commitments: if CI p95 duration regresses after a shared workflow change, that regression owns the next platform iteration.</p>
+          <p>Pair quantitative reviews with short qualitative interviews when adoption splits by stack—high template usage with flat lead time often means teams adopt the UI but still bypass the slowest step manually.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -223,6 +225,8 @@
             <li><strong>SLOs that do not page:</strong> Backstage latency breaches sit in a chat channel engineers mute, and customer-facing teams become the alerting system.</li>
             <li><strong>Adoption vanity:</strong> High template usage hides a cohort blocked on an unsupported runtime until qualitative interviews surface the gap.</li>
             <li><strong>Comparative league tables:</strong> Public ranking of team DORA scores punishes regulated or data-heavy squads whose release cadence is structurally slower.</li>
+            <li><strong>Context-free frequency:</strong> A team ships many tiny config toggles to inflate deployment counts while outages cluster around risky schema migrations that never appear in the same review.</li>
+            <li><strong>Template celebration bias:</strong> Leadership spotlights adoption percentage while qualitative interviews reveal the template omits the runtime version half the org standardised on last quarter.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -237,8 +241,9 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario — ROI narrative:</strong> Six-month DORA baseline precedes a shared CI template launch; deployment frequency and lead time improve while change failure rate stays flat—data supports headcount for platform engineering in planning cycles.</li>
-            <li><strong>Illustrative scenario — operator SLO:</strong> OTel metrics on reconciliation duration spike after a controller upgrade; error budget burn pages platform on-call; rollback completes before self-service database requests queue up.</li>
+            <li><strong>Illustrative scenario — ROI narrative:</strong> Six-month DORA baseline precedes a shared CI template launch; deployment frequency and lead time improve across participating squads while change failure rate stays flat—leadership uses the trend in planning cycles to fund additional paved-road authors instead of one-off integration consultants.</li>
+            <li><strong>Illustrative scenario — operator SLO:</strong> OTel metrics on reconciliation duration spike after a controller upgrade; error budget burn pages platform on-call; rollback completes before self-service database requests queue up and before customer-facing teams open duplicate infra tickets.</li>
+            <li><strong>Illustrative scenario — adoption-led fix:</strong> Analytics show one golden path at half the adoption of its peers; office hours surface a missing buildpack pin; after the template update, adoption and lead time converge within two release trains.</li>
             <li><strong>Case study — Google Four Keys:</strong> The open-source Four Keys project demonstrated wiring CI events to BigQuery for DORA dashboards—a pattern many IDPs adapted to their warehouse and Grafana stack.</li>
           </ul>
 
@@ -257,6 +262,8 @@
             <li><a href="https://github.com/GoogleCloudPlatform/fourkeys" target="_blank" rel="noopener noreferrer">Four Keys — Google Cloud Platform (GitHub)</a></li>
             <li><a href="https://backstage.io/docs/plugins/analytics" target="_blank" rel="noopener noreferrer">Backstage Analytics — Backstage Docs</a></li>
             <li><a href="../observability/opentelemetry.html">OpenTelemetry</a> — OTLP instrumentation patterns used for platform services</li>
+            <li><a href="../observability/sli-slo-sla.html">SLI, SLO &amp; SLA</a> — defining error budgets and burn-rate alerts for platform dependencies</li>
+            <li><a href="https://tag-app-delivery.cncf.io/whitepapers/platforms/" target="_blank" rel="noopener noreferrer">CNCF Platforms White Paper — TAG App Delivery</a></li>
           </ul>
 
         </div>
