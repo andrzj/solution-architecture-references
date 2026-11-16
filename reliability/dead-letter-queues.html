@@ -106,25 +106,30 @@
 <h2 id="what-it-is">What it is</h2>
           <p>A dead letter queue (DLQ) is a dedicated queue or topic that holds messages a consumer could not process successfully after a bounded number of delivery attempts. Instead of infinite retries blocking the pipeline—or silent drops—the broker or application routes exhausted messages to the DLQ with their payload and metadata intact. Operators inspect, fix root cause, replay with idempotency, or deliberately discard with audit.</p>
           <p>Most managed brokers expose DLQ mechanics: Amazon SQS redrive policies, Azure Service Bus dead-letter sub-queues, RabbitMQ dead-letter exchanges, ActiveMQ <code>DLQ.*</code> destinations. Apache Kafka has no broker-native DLQ; teams implement error topics and consumer-side routing instead.</p>
+          <p>Without a DLQ, a repeatedly failing message has two bad outcomes: infinite retries that block forward progress, or silent discard after max attempts with no forensic trail. The DLQ quarantines the failure—preserving payload and headers for investigation, replay, or audited discard while healthy messages keep flowing.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>At-least-once messaging guarantees redelivery when consumers crash or ACKs are lost. Without a quarantine path, a permanently bad message either spins forever—consuming CPU and starving healthy traffic—or disappears after max retries with no forensic trail. DLQs provide a third outcome: isolate the failure, keep the main queue moving, and preserve evidence for engineering and compliance.</p>
           <p>DLQ depth is also an operational metric. A steady-state empty DLQ with alarms on any message signals processing health; sustained depth points to schema drift, poison payloads, or downstream outages faster than reconciling downstream warehouses.</p>
+          <p>DLQs matter most where message loss is unacceptable—financial transactions, order events, audit logs—and where the root cause may require a code fix or manual inspection before safe replay. They turn “something is wrong in processing” into an actionable queue depth alert instead of a mysterious gap in downstream data.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Business-critical async workflows where message loss is unacceptable (orders, payments, audit events).</li>
-            <li>Pipelines where failures may be fixed in software and messages safely replayed.</li>
-            <li>Multi-producer environments with heterogeneous schemas needing manual inspection.</li>
-            <li>Integrations with flaky third parties where transient outages should not erase work.</li>
-            <li>Regulated domains requiring retained failure artefacts.</li>
+            <li>Any message-driven system where message loss is unacceptable and failed messages need recovery capability.</li>
+            <li>Business-critical async workflows (orders, payments, audit events) where quarantine beats silent drop.</li>
+            <li>Pipelines where failures may be fixed in software and messages safely replayed after deploy.</li>
+            <li>Multi-producer environments with heterogeneous schemas where occasionally malformed messages need manual inspection.</li>
+            <li>Event-driven architectures needing an audit trail of every failed event for compliance or debugging.</li>
+            <li>Workflows with flaky third parties—messages that fail when a downstream is temporarily down can replay after recovery.</li>
+            <li>Regulated domains requiring retained failure artefacts with retention longer than typical incident cycles.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Fire-and-forget telemetry where volume is huge and loss is acceptable—log and sample instead.</li>
-            <li>Failures that are always permanent with no replay value (known deleted entities)—structured discard may suffice.</li>
-            <li>Teams with no process to monitor, triage, and drain DLQs—they become unbounded landfills.</li>
+            <li>When every failure indicates a permanent, unrecoverable condition (message refers to a resource permanently deleted)—log and discard with audit instead.</li>
+            <li>Extremely high-throughput, low-value streams where DLQ management cost exceeds message value (raw telemetry where loss is acceptable).</li>
+            <li>Fire-and-forget analytics where sampling and logging replace quarantine.</li>
+            <li>Teams with no process to monitor, triage, and drain DLQs—they become unbounded landfills that provide false safety.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -161,53 +166,59 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Prevents one bad message from blocking the entire consumer fleet indefinitely.</li>
-                <li>Retains payloads and headers for debugging without silent data loss.</li>
-                <li>Enables governed replay after deploys fix parsing or business rules.</li>
-                <li>Native broker support lowers bespoke error-handling code.</li>
-                <li>DLQ alarms integrate cleanly with on-call and SLO dashboards.</li>
+                <li>Prevents poison messages from blocking queue processing indefinitely without discarding them.</li>
+                <li>Preserves failed messages for root cause analysis, replay, and audit—no silent data loss.</li>
+                <li>DLQ depth is an actionable operational metric that provides early warning of processing problems.</li>
+                <li>Enables safe replay workflows: fix the bug, replay from DLQ, verify results with idempotency guards.</li>
+                <li>Native support in SQS, Azure Service Bus, RabbitMQ, and ActiveMQ reduces bespoke error-handling code.</li>
+                <li>DLQ alarms integrate cleanly with on-call, SLO dashboards, and compliance evidence.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Requires ongoing operational ownership—DLQs do not self-heal.</li>
-                <li>Replay without idempotency duplicates side effects.</li>
-                <li>Large backlogs replayed too fast can re-overload consumers.</li>
-                <li>Kafka teams must build DLQ topics and routing conventions themselves.</li>
-                <li>Retention misconfiguration can expire messages before triage completes.</li>
+                <li>DLQ messages require operational attention—they do not self-resolve without triage and replay or discard runbooks.</li>
+                <li>Replay can cause duplicate processing if the original failure was partial (side effects applied before the exception).</li>
+                <li>Large backlogs replayed too fast can overload consumers—rate-limit replay utilities.</li>
+                <li>Kafka DLQs require custom implementation—no native broker-level support.</li>
+                <li>Retention misconfiguration can expire messages before investigation completes despite DLQ existing.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Name DLQs predictably: <code>{source-queue}-dlq</code> so on-call instantly knows the pairing. Tune <code>maxReceiveCount</code> to observed transient failure windows—three to five attempts for fast-moving APIs; higher only when outages are long and consumers pause via circuit breakers instead of burning attempts.</p>
-          <p>Alert on any non-zero DLQ depth in steady state. Enrich messages with failure reason, exception type, and attempt count in headers or a sidecar metadata blob. Build a rate-limited replay utility that republishes to the source queue after the fix ships, with dashboards watching for secondary DLQ growth. Document discard procedures with audit logs when replay is impossible.</p>
+          <p>Name DLQs consistently: use <code>{source-queue-name}-dlq</code> (or <code>-DLQ</code>) so the relationship is obvious in dashboards and IaC. For SQS, set <code>maxReceiveCount</code> from failure type: three attempts suits transient faults; higher counts (five to ten) only when occasional dependency hiccups resolve within minutes—not when poison payloads will never succeed.</p>
+          <p>Set DLQ message retention long enough for investigation—14 days is the SQS maximum and a reasonable default. Pair each source queue with a redrive policy or equivalent in infrastructure-as-code so new environments never ship without a DLQ.</p>
+          <p>Implement a CloudWatch alarm (or equivalent) on <code>ApproximateNumberOfMessagesVisible</code> for the DLQ, alerting on any count greater than zero. A DLQ should be empty in steady state—any depth is an anomaly. Alert on any non-zero DLQ depth in steady state even during low-traffic weekends.</p>
+          <p>Enrich messages with failure reason, exception type, and attempt count in headers or a sidecar metadata blob so operators need not correlate only through raw logs. Build a rate-limited replay utility that republishes to the source queue after the fix ships; verify idempotency and monitor for secondary DLQ growth during replay. Document discard procedures with audit logs when replay is impossible.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Unmonitored DLQs:</strong> messages age until downstream reconciliation finds gaps.</li>
-            <li><strong>maxReceiveCount too high:</strong> poison messages waste worker cycles before quarantine.</li>
-            <li><strong>No replay path:</strong> engineers manually copy payloads from consoles.</li>
-            <li><strong>Partial success + replay:</strong> business logic committed before exception; replay doubles charges.</li>
-            <li><strong>Short retention:</strong> evidence expires during a long incident.</li>
+            <li><strong>Unmonitored DLQ:</strong> messages accumulate silently for days or weeks until a downstream data inconsistency reveals the problem.</li>
+            <li><strong>maxReceiveCount too high:</strong> a genuinely poison message retries dozens of times before routing to the DLQ, consuming consumer resources and delaying healthy traffic.</li>
+            <li><strong>No replay tooling:</strong> messages are visible in the DLQ but there is no mechanism to replay after a fix, requiring manual re-injection of each message.</li>
+            <li><strong>Non-idempotent replay:</strong> replaying a message that partially succeeded causes duplicate payments, inserts, or notifications.</li>
+            <li><strong>DLQ retention too short:</strong> messages expire before the team investigates, causing data loss despite the DLQ existing.</li>
+            <li><strong>Missing metadata:</strong> operators cannot tell whether failure was schema, business rule, or downstream timeout without log archaeology.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does every critical queue have a paired DLQ and consistent naming?</li>
-            <li>Are alarms wired to page when DLQ depth &gt; 0?</li>
-            <li>Is <code>maxReceiveCount</code> justified by measured transient failure duration?</li>
-            <li>Is replay idempotent and rate-limited with runbook steps?</li>
-            <li>Do DLQ messages carry enough context to debug without log archaeology?</li>
-            <li>Is retention longer than typical time-to-mitigate for your team?</li>
+            <li>Is every source queue paired with a DLQ, and is the naming convention consistent?</li>
+            <li>Is a CloudWatch alarm (or equivalent) set to alert on any non-zero DLQ depth?</li>
+            <li>Is <code>maxReceiveCount</code> tuned to the expected transient failure rate (typically 3–5, not greater than 10 without justification)?</li>
+            <li>Is there a documented and tested replay process for re-processing DLQ messages after a fix?</li>
+            <li>Is replay designed to be idempotent to prevent duplicate side effects?</li>
+            <li>Is the DLQ message retention period long enough for the team’s typical incident investigation cycle?</li>
+            <li>Are DLQ messages enriched with metadata (original failure reason, timestamp, attempt count) to facilitate diagnosis?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario — order pipeline:</strong> Deserialization failures after a schema deploy route to DLQ until the consumer upgrade ships and events replay successfully.</li>
-            <li><strong>Illustrative scenario — payment events:</strong> Gateway outage fills DLQ; after recovery, idempotency keys let replay settle charges exactly once.</li>
+            <li><strong>Illustrative scenario — order pipeline:</strong> An SQS-based order pipeline routes orders that fail to deserialise (due to a schema change) to a DLQ until the consumer is updated and then replayed successfully.</li>
+            <li><strong>Illustrative scenario — payment events:</strong> A payment event consumer that fails when the gateway is down routes events to a DLQ; after recovery, replay with idempotency keys prevents duplicate charges.</li>
             <li><strong>Illustrative scenario — notification fan-out:</strong> Messages for deleted accounts accumulate for periodic review and audited discard.</li>
+            <li><strong>Illustrative scenario — inventory sync:</strong> Poison SKU payloads from a bad supplier feed land in DLQ; analysts fix mapping rules and replay without blocking the main inventory queue.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

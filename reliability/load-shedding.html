@@ -105,19 +105,22 @@
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
           <p>Load shedding is intentional overload protection: when a service measures that it is at or beyond safe capacity, it refuses some incoming work immediately instead of accepting everything and collapsing. Refusals are usually fast errors (often HTTP 503 with <code>Retry-After</code>) so threads, memory, and connection pools stay available for higher-priority traffic. Shedding is a server-side admission decision based on global health, distinct from per-client rate limits that police fairness.</p>
-          <p>Effective shedding requires classifying work by priority, watching multiple saturation signals, and cooperating with clients that backoff when told. The goal is not zero errors—it is preventing total failure where every request times out and no critical path succeeds.</p>
+          <p>Effective shedding requires classifying work by priority, watching multiple saturation signals, and cooperating with clients that backoff when told. The goal is not zero errors—it is preventing total failure where every request times out and no critical path succeeds. Shedding complements per-client rate limiting: rate limits enforce fairness; shedding protects the fleet when aggregate demand exceeds safe capacity.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Under overload, systems that accept unbounded work build queues. Latency rises for all callers, retries amplify load, and eventually the process OOMs or the kernel thrashes. High-priority transactions (payments, auth, health checks) wait behind bulk exports or analytics traffic unless something actively refuses low-value work.</p>
+          <p>A system that accepts every request under overload will queue them, consuming memory, threads, and CPU for work that may time out before completion. As the queue grows, latency for all requests increases—including high-priority ones—until the fleet enters collapse: fully occupied timing out low-value work while critical requests cannot get service at all.</p>
           <p>Shedding converts uncontrolled meltdown into a controlled trade-off: some callers receive explicit “try later” signals while the service preserves correct behaviour and SLOs for the workloads that matter most. It is a last-resort layer after autoscaling and queueing have been exhausted or cannot react quickly enough.</p>
+          <p>Google’s SRE guidance on handling overload treats shedding as a deliberate product decision: you choose which traffic to sacrifice so survival traffic keeps meeting its SLO. Without that choice, retry storms and queue growth can take down otherwise healthy tiers.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>User-facing APIs with mixed criticality (reads vs batch, premium vs free tenants).</li>
-            <li>Burst-prone systems where horizontal scale lags demand (viral events, flash sales, DDoS).</li>
-            <li>Shared pools where background jobs compete with synchronous traffic on the same fleet.</li>
-            <li>Services where a partial error rate is acceptable if core journeys keep succeeding.</li>
-            <li>Gateways or meshes that can classify requests from path, header, or identity metadata.</li>
+            <li>User-facing APIs with mixed criticality (reads versus batch, premium versus free tenants, checkout versus analytics).</li>
+            <li>Burst-prone systems where horizontal scale lags demand (viral events, flash sales, coordinated traffic spikes, DDoS).</li>
+            <li>Shared pools where background jobs, exports, and webhooks compete with synchronous user traffic on the same fleet.</li>
+            <li>Services where a partial error rate is acceptable if core journeys keep succeeding and stakeholders understand the trade-off.</li>
+            <li>Gateways or meshes that can classify requests from path, header, JWT claims, or tenant metadata before work reaches application threads.</li>
+            <li>Microservices behind a BFF where the BFF can shed optional aggregation calls while preserving thin critical endpoints.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -125,7 +128,8 @@
             <li>When every request is equally critical and no priority order exists—fix capacity or partition workloads instead.</li>
             <li>When clients cannot honour 503/backoff and will retry-storm the service harder.</li>
             <li>When queueing with SLA-aware delay delivers better UX than hard failure (and backlog is bounded).</li>
-            <li>When shedding would mask chronic under-provisioning—metrics should drive capacity fixes, not permanent shedding.</li>
+            <li>When shedding would mask chronic under-provisioning—shed counters should drive capacity fixes, not permanent high refusal rates.</li>
+            <li>Single-tenant dedicated capacity where every request is P0 and isolation is already guaranteed by partitioning.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -161,11 +165,12 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Protects tail latency and success rate for prioritized traffic during spikes.</li>
-                <li>Surfaces overload explicitly—503 semantics are machine-actionable for well-behaved clients.</li>
-                <li>Cheaper than runaway retry loops that amplify outages across tiers.</li>
-                <li>Composable with autoscaling: shed while scale-out catches up.</li>
-                <li>Metrics on shed volume explain incident impact to stakeholders.</li>
+                <li>Protects tail latency and success rate for prioritized traffic during spikes instead of universal timeouts.</li>
+                <li>Surfaces overload explicitly—HTTP 503 with <code>Retry-After</code> semantics are machine-actionable for well-behaved clients.</li>
+                <li>Cheaper than runaway retry loops that amplify outages across tiers and dependent services.</li>
+                <li>Composable with autoscaling: shed while scale-out catches up without melting the current fleet.</li>
+                <li>Metrics on shed volume per priority explain incident impact to stakeholders and product owners.</li>
+                <li>Bounds memory and thread usage—rejected work never enters the application queue.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -181,8 +186,10 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Combine signals: queue depth and in-flight counts often lead CPU for I/O-bound services. Use hysteresis—open shedding at 85% saturation, close at 70%—to stop flapping. Implement admission at the API gateway, service mesh, or a sidecar so classification uses stable metadata (route, JWT claim, tenant tier).</p>
-          <p>Return consistent refusal bodies: HTTP 503, meaningful <code>Retry-After</code>, and optional headers such as <code>X-Reason: load-shedding</code> for client telemetry. Emit counters per priority tier and alert when P0 shed count is non-zero—that usually indicates misconfiguration or true hard limit. Load-test shedding paths: clients must parse 503 and jitter retries; document behaviour in public API guides.</p>
+          <p>Combine signals: queue depth and in-flight counts often lead CPU for I/O-bound services. Use hysteresis—open shedding at 85% saturation, close at 70%—to stop flapping. Implement admission at the API gateway, service mesh, or a sidecar so classification uses stable metadata (route, JWT claim, tenant tier) before requests acquire locks or database connections.</p>
+          <p>Define an explicit priority matrix with product and SRE sign-off, then encode it in configuration rather than ad hoc incident toggles. Revisit the matrix when new endpoints ship—unlabeled routes default to low priority and get shed first unless you fix the taxonomy.</p>
+          <p>Return consistent refusal bodies: HTTP 503, meaningful <code>Retry-After</code>, and optional headers such as <code>X-Reason: load-shedding</code> for client telemetry. Emit counters per priority tier and alert when P0 shed count is non-zero—that usually indicates misconfiguration or a true hard limit. Load-test shedding paths: clients must parse 503 and jitter retries; document behaviour in public API guides and SDK defaults.</p>
+          <p>During incidents, coordinate shedding with graceful degradation and circuit breakers: shedding refuses work at the edge; degradation trims features for admitted requests; breakers stop callers from hammering unhealthy downstreams.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -191,6 +198,7 @@
             <li><strong>Single-metric triggers:</strong> CPU low while every thread blocks on a slow database.</li>
             <li><strong>Missing Retry-After:</strong> clients pick arbitrary delays and re-hit overload.</li>
             <li><strong>Shedding without observability:</strong> incidents look like mysterious 5xx with no priority breakdown.</li>
+            <li><strong>Chronic shedding as capacity plan:</strong> refusal rate stays high because autoscaling or right-sizing never catches up—shedding hides under-provisioning.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -208,6 +216,7 @@
             <li><strong>Case study — Google:</strong> Production systems described in the SRE book shed non-critical background work to protect user-facing search under extreme load.</li>
             <li><strong>Illustrative scenario — API gateway:</strong> Webhook delivery (P3) and CSV exports (P2) receive 503 while synchronous JSON APIs (P1) and payment callbacks (P0) continue.</li>
             <li><strong>Illustrative scenario — stream processing:</strong> A consumer pauses analytics partition consumption during payment backlog while keeping fraud-scoring partitions fully staffed.</li>
+            <li><strong>Illustrative scenario — flash sale:</strong> Read-only catalogue endpoints stay admitted at 90% CPU while write-heavy wishlist sync and recommendation prefetch receive 503 with five-second <code>Retry-After</code>.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
