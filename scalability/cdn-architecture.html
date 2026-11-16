@@ -105,39 +105,36 @@
           <p>Providers such as Cloudflare, Fastly, and Amazon CloudFront extend beyond static files: they terminate TLS, cache selective API responses, run edge functions (Cloudflare Workers, Fastly Compute@Edge, Lambda@Edge), enforce WAF rules, and ride private backbones to reduce last-mile latency to origin. CDNs complement application caches like Redis—Redis holds hot dynamic fragments; the CDN absorbs geographic fan-out and volumetric traffic.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Network latency scales with physical distance. A user in Tokyo hitting an origin server in Virginia experiences 180–220ms of round-trip latency purely from the speed of light, before any server processing time. A CDN PoP in Tokyo reduces that to under 5ms. For web applications, this difference is the gap between a responsive application and an unusable one.</p>
-          <p>Studies consistently show that every 100ms of additional latency reduces conversion rates by 1–7%.</p>
-          <p>CDNs also act as a traffic multiplier for origin capacity. A single origin server that can handle 1,000 requests/second can effectively serve millions of requests/second if 99.9% are served from CDN cache. This is especially critical for viral traffic spikes (product launches, news events) where traffic can increase 1,000× in minutes — no amount of auto-scaling could respond fast enough, but CDN cache absorbs the load immediately. CDN infrastructure also provides inherent DDoS resilience: a globally distributed network with hundreds of Tbps of capacity can absorb volumetric attacks that would overwhelm any origin infrastructure.</p>
+          <p>Physics sets a floor on round-trip time between a browser in Asia and an origin in North America. DDIA’s latency numbers are blunt: long distances dominate p95 before your application does any work. Cloudflare and Fastly place PoPs in hundreds of cities so the first byte often travels kilometers, not continents, which is why edge hits routinely land in single-digit milliseconds where cross-ocean routes cost hundreds.</p>
+          <p>Product teams track that gap in revenue. Extra latency correlates with lower conversion and higher bounce on mobile networks, so shaving tens of milliseconds at the edge is a business lever, not only an infrastructure preference.</p>
+          <p>CDNs also multiply origin throughput. When Fastly or Cloudflare serves 99.9% of requests from edge SSD, a modest origin fleet survives flash crowds that would swamp auto-scaling groups still booting instances. The same anycast footprint that accelerates static assets absorbs volumetric attacks before they reach your VPC, which is why public sites treat CDN as mandatory perimeter capacity rather than an optional accelerator.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Your users are geographically distributed and latency to a centralized origin is a concern.</li>
-            <li>You serve static or semi-static content (images, JS, CSS, fonts, API responses) that can be cached at the edge.</li>
-            <li>Your application must handle traffic spikes that exceed origin capacity (product launches, viral content).</li>
-            <li>You need DDoS mitigation and a security perimeter between the public internet and your origin servers.</li>
-            <li>Origin bandwidth costs are significant — CDN cache offloads origin egress, which can reduce cloud egress bills substantially.</li>
-            <li>You want to run lightweight application logic at the edge (A/B testing, auth token validation, geolocation-based redirects).</li>
+            <li>Customers spread across regions and origin RTT materially affects UX or API SLAs.</li>
+            <li>Responses are cacheable by URL, surrogate key, or cache tag—assets, public JSON, SSR pages with shared fragments.</li>
+            <li>Marketing or news events can spike QPS far beyond origin autoscaling limits within minutes.</li>
+            <li>You want WAF, bot management, and DDoS scrubbing in front of origins without building your own global network.</li>
+            <li>Cloud egress fees dominate cost at scale and edge hits reduce bytes pulled from the data center.</li>
+            <li>Workers or Compute@Edge can run auth, redirects, or experiments without a full round trip to origin Redis or databases.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Purely private internal APIs where all clients are co-located with the origin — CDN adds cost and complexity with no latency benefit.</li>
-            <li>All responses are highly personalized and vary per user/session with no shared cacheable fragments — CDN cache hit rate will be near zero.</li>
-            <li>Your application handles highly sensitive data that must not be stored at third-party CDN infrastructure for compliance reasons.</li>
-            <li>Real-time bidirectional communication (WebSockets, gRPC streaming) that cannot be meaningfully cached.</li>
+            <li>Traffic stays inside a private network colocated with origin; a CDN hop adds cost without latency win.</li>
+            <li>Every response is unique per session cookie or auth header, so edge hit ratio stays near zero.</li>
+            <li>Data residency or contractual terms forbid caching payload bytes on third-party edge disks.</li>
+            <li>The workload is long-lived duplex streams (WebSockets, gRPC bidi) where HTTP caching semantics do not apply.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Users hit the nearest PoP; misses collapse at an origin shield before a single fetch reaches the application tier.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    user["End user"]
-    user --> pop["Edge PoP"]
-    pop -->|HIT| cached["Cached response"]
-    pop -->|MISS| shield["Origin shield PoP"]
-    shield --> origin["Origin load balancer"]
-    origin --> app["App and Redis"]
-    pop --> workers["Edge worker optional auth rewrite"]</div>
+    user["User at edge PoP"] -->|hit| edge["Serve from edge cache"]
+    user -->|miss| shield["Origin shield"]
+    shield --> origin["Origin servers"]
+    edge --> workers["Edge functions auth A/B bot checks"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -189,21 +186,21 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Dramatically reduces latency for geographically distributed users; sub-10ms responses from edge PoPs.</li>
-                <li>Absorbs massive traffic spikes without origin scaling — CDN serves cached content regardless of origin capacity.</li>
-                <li>Reduces origin egress bandwidth costs by serving content from CDN cache instead of origin servers.</li>
-                <li>Provides DDoS protection and a security perimeter between the internet and origin infrastructure.</li>
-                <li>Edge computing capabilities allow lightweight logic to run globally at PoPs without round-tripping to origin.</li>
+                <li>Edge PoPs shrink time-to-first-byte for global audiences compared with always reaching centralized origins.</li>
+                <li>Cached responses decouple user-visible capacity from origin replica count during spikes and flash sales.</li>
+                <li>Bytes served from Fastly or Cloudflare edge reduce origin egress charges and cross-region transfer on cloud bills.</li>
+                <li>Managed scrubbing and rate limits absorb abuse before it consumes application CPU or Redis connection pools.</li>
+                <li>Edge compute runs token checks, header normalization, and experiments close to users with bounded cold-start cost.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Cache invalidation (purging) is asynchronous and can take 5–30 seconds to propagate globally across all PoPs.</li>
-                <li>Adds cost — CDN pricing is based on egress bandwidth and request volume, which can be significant at scale.</li>
-                <li>Dynamic, personalized content has low cache hit rates; CDN becomes a pass-through with added latency.</li>
-                <li>Edge function cold starts and execution limits constrain complexity of edge logic.</li>
-                <li>Data residency and privacy: content is cached in third-party infrastructure globally; may violate compliance requirements for sensitive data.</li>
+                <li>Purge and surrogate-key invalidation propagate asynchronously; DDIA-style eventual consistency applies worldwide.</li>
+                <li>Request and egress pricing accumulates at scale and must be modeled against origin-only alternatives.</li>
+                <li>Highly personalized HTML or APIs see poor hit rates and may add an extra hop without caching benefit.</li>
+                <li>Edge runtimes impose CPU, memory, and duration ceilings that rule out heavy aggregation or database access.</li>
+                <li>Global edge storage complicates GDPR, HIPAA, or sovereign-cloud requirements unless you restrict cacheable content classes.</li>
               </ul>
             </div>
           </div>
@@ -216,22 +213,22 @@
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Caching private user data:</strong> Missing or incorrect <code>Cache-Control: private</code> headers cause CDN to cache user-specific responses and serve one user's data to another. Always explicitly mark private responses; this is a critical security vulnerability.</li>
-            <li><strong>Query string cache key misses:</strong> CDN includes query strings in cache keys by default; <code>/api/products?sort=price</code> and <code>/api/products?sort=price&amp;page=1</code> are separate cache entries. Normalize or strip irrelevant query parameters from cache keys to improve hit rates.</li>
-            <li><strong>Stale content after purge failure:</strong> Purge API rate limits (CloudFront: 3,000 paths/second) exceeded during mass invalidation; some PoPs continue serving stale content. Use surrogate keys / cache tags for bulk invalidation.</li>
-            <li><strong>Origin overwhelmed on CDN bypass:</strong> If CDN is bypassed (e.g., via direct origin IP), origin receives full traffic it was never sized to handle. Restrict origin access to CDN IP ranges only.</li>
-            <li><strong>Vary header fragmentation:</strong> <code>Vary: Accept-Encoding</code> causes CDN to store separate cache entries for gzip and brotli versions; <code>Vary: User-Agent</code> can fragment the cache into thousands of variants. Be deliberate about which Vary headers are necessary.</li>
+            <li><strong>Cross-user cache leakage:</strong> Omitting <code>Cache-Control: private</code> or caching on session cookies stores authenticated JSON at the edge; the next client may receive the wrong body. Mark sensitive routes non-cacheable and test with two accounts.</li>
+            <li><strong>Cache key fragmentation:</strong> Unsorted query strings and tracking parameters explode variants of the same resource. Normalize cache keys in Fastly VCL or Cloudflare rules and strip marketing params.</li>
+            <li><strong>Purge throttle during launch:</strong> Bulk URL purges hit provider rate limits; some PoPs serve stale marketing pages for minutes. Prefer cache tags or surrogate keys and rehearse purge runbooks.</li>
+            <li><strong>Origin bypass attack or misconfiguration:</strong> DNS or firewall rules expose origin directly; traffic bypasses shielding and DDoS protection. Allow-list only CDN egress IPs on origin load balancers.</li>
+            <li><strong>Over-broad <code>Vary</code>:</strong> Including <code>User-Agent</code> or uncommon headers multiplies stored objects and destroys hit ratio. Limit <code>Vary</code> to encoding negotiation where required.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Cache-Control headers are set correctly on all origin responses: public/private, appropriate max-age per content type.</li>
-            <li>Static assets use content-addressed URLs (hashed filenames) enabling long TTLs without invalidation complexity.</li>
-            <li>Origin shield is enabled to protect origin from miss storms and reduce origin request volume.</li>
-            <li>Cache key configuration (query parameters, headers, cookies) is reviewed to maximize hit rate without leaking private data.</li>
-            <li>Cache purge/invalidation strategy is defined and tested for content update workflows.</li>
-            <li>Origin access is restricted to CDN egress IP ranges to prevent direct origin bypass.</li>
-            <li>Edge computing use cases (auth, redirects, A/B testing) have been evaluated for suitability vs. added CDN cost and complexity.</li>
+            <li>Every response class has explicit <code>Cache-Control</code>, optional <code>CDN-Cache-Control</code>, and documented browser vs edge TTL intent.</li>
+            <li>Fingerprinted static assets use immutable long TTL; mutable HTML uses shorter edge TTL plus purge hooks.</li>
+            <li>Origin shield or tiered caching is on for high-traffic properties to collapse concurrent misses.</li>
+            <li>Cache key recipes (query allow lists, cookie ignore lists) are reviewed in security and performance review.</li>
+            <li>Purge paths for CMS, pricing, and legal holds are automated and load-tested, including Fastly soft purge and Cloudflare tag purge.</li>
+            <li>Origins reject traffic not from known CDN address ranges; monitoring alerts on direct-to-origin spikes.</li>
+            <li>Edge Worker or Compute scope is bounded: no secret DB credentials at PoP, clear fallback to origin on failure.</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -244,9 +241,10 @@
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="caching-strategies.html">Caching Strategies</a> — CDN is a specialized form of cache; the same read-through pattern applies at network scale.</li>
-            <li><a href="cache-invalidation.html">Cache Invalidation</a> — CDN cache purging is a specialized, globally-distributed invalidation challenge.</li>
-            <li><a href="rate-limiting.html">Rate Limiting</a> — CDNs provide edge rate limiting to protect origins from abuse before requests reach the application.</li>
+            <li><a href="caching-strategies.html">Caching Strategies</a> — treat the CDN as L3 in a multi-tier cache stack above Redis and in-process stores.</li>
+            <li><a href="cache-invalidation.html">Cache Invalidation</a> — edge purges are the hardest invalidation problem because propagation is global and eventually consistent.</li>
+            <li><a href="rate-limiting.html">Rate Limiting</a> — enforce coarse per-IP and per-path limits at the edge before requests hit application Redis counters.</li>
+            <li><a href="../reliability/circuit-breaker.html">Circuit Breaker</a> — pair origin shield with breaker semantics when upstream health degrades during miss storms.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
