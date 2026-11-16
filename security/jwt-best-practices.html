@@ -153,46 +153,54 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Edge validation reduces central session store load.</li>
-            <li>Standard claims interoperate across services.</li>
-            <li>JWKS rotation supported by major IdPs.</li>
-            <li>Can embed authorization hints for caching.</li>
+                <li>Stateless verification scales horizontally at gateways and mesh proxies.</li>
+                <li>Standard claims (<code>sub</code>, <code>scope</code>, <code>groups</code>) interoperate across polyglot stacks.</li>
+                <li>JWKS rotation and multiple active keys are well supported by major IdPs.</li>
+                <li>Short TTL tokens limit blast radius when leakage occurs.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Revocation is hard without short TTL or introspection.</li>
-            <li>Tokens in logs if teams log headers carelessly.</li>
-            <li>Large claims increase latency.</li>
-            <li>Symmetric secrets scale poorly across services.</li>
+                <li>No built-in revocation — compromised tokens work until expiry unless extra controls exist.</li>
+                <li>Verbose tokens increase latency and may exceed header size limits.</li>
+                <li>Symmetric secrets do not scale across many verifying services.</li>
+                <li>Developers may treat decoded payloads as trusted without verifying signatures.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Allowlist algorithms; reject <code>none</code>. Use asymmetric keys; pin issuer and audience per API. Keep access token TTL minutes, refresh with rotation.</p>
-          <p>Never store JWTs in localStorage for browser apps. Propagate only derived session or opaque tokens internally.</p>
+          <p>Use a maintained JWT library; never implement signature verification by hand. Allowlist algorithms explicitly; reject <code>none</code> and unexpected <code>HS256</code> on APIs that should only accept asymmetric keys from the IdP. Pin expected <code>iss</code> to the discovery document URL or canonical issuer string; pin <code>aud</code> (or resource-specific audience) to <em>this</em> API resource — tokens minted for another API must fail closed.</p>
+          <p>Cache JWKS with TTL aligned to <code>Cache-Control</code> from the issuer, but refresh on unknown <code>kid</code> to handle key rotation without downtime. Keep access token lifetime in the low minutes; pair with refresh token rotation and reuse detection at the authorization server. For browsers, avoid storing JWTs in JavaScript-accessible storage; a BFF holds tokens server-side.</p>
+          <p>When logs need correlation, log <code>jti</code> or a hash prefix — never the full bearer token. If using JWE, remember encryption does not replace signature validation on nested signed JWTs. Prefer opaque access tokens plus introspection when clients cannot be trusted to keep JWTs confidential.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Skipping audience validation</strong> enables cross-API token reuse.</li>
-            <li><strong>Trusting unsigned JWE without care</strong>.</li>
-            <li><strong>Logging bearer tokens</strong> in APM tools.</li>
-            <li><strong>Embedding secrets in claims</strong>.</li>
+            <li><strong>Algorithm confusion</strong>: accepting <code>HS256</code> with the public key mistakenly used as HMAC secret.</li>
+            <li><strong>Skipped audience validation</strong>: API accepts tokens intended for a different resource server.</li>
+            <li><strong>Stale JWKS after rotation</strong>: validators cache only the old <code>kid</code> and reject valid tokens or, worse, disable verification temporarily.</li>
+            <li><strong>Logging bearer tokens</strong> in APM, ingress logs, or error reports.</li>
+            <li><strong>Embedding secrets or PII</strong> in claims that traverse browsers or third-party analytics.</li>
+            <li><strong>Treating scopes as authorisation</strong> without server-side checks on object ownership.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Algorithms allowlisted?</li>
-            <li>iss/aud/exp validated on every request?</li>
-            <li>JWKS cache handles key rotation?</li>
-            <li>TTL under 15 minutes for access tokens?</li>
-            <li>Refresh tokens rotated and bound?</li>
-            <li>No JWT in URLs or analytics beacons?</li>
+            <li>Are allowed signing algorithms explicitly allowlisted?</li>
+            <li>Are <code>iss</code>, <code>aud</code>, <code>exp</code>, and <code>nbf</code> validated on every request?</li>
+            <li>Does JWKS fetching handle key rotation (unknown <code>kid</code> refresh)?</li>
+            <li>Are access token TTLs under 15 minutes for internet-facing APIs?</li>
+            <li>Are refresh tokens rotated with reuse detection at the authorization server?</li>
+            <li>Are JWTs excluded from URLs, analytics, and client-side persistent storage?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>API mesh</strong>: Envoy JWT filter with per-route audiences.</li>
-            <li><strong>Microservices</strong>: internal mTLS plus short-lived SPIFFE JWT-SVID.</li>
-            <li><strong>Webhooks</strong>: HMAC or JWT with narrow audience.</li>
+            <li><strong>Illustrative scenario — API mesh:</strong> Envoy JWT filter validates per-route audiences; upstream pods trust only mTLS peer identity and normalised claim headers.</li>
+            <li><strong>Illustrative scenario — internal microservices:</strong> SPIFFE JWT-SVIDs with five-minute TTL authenticate east-west calls; SPIRE rotates keys automatically.</li>
+            <li><strong>Case study — Stripe Connect:</strong> Partners verify Stripe-signed JWTs on Connect webhooks using published keys and narrow claim semantics.</li>
+            <li><strong>Illustrative scenario — partner webhook:</strong> HMAC or JWT with fixed <code>aud</code> and <code>iss</code>; receiver rejects replays via <code>jti</code> idempotency store.</li>
           </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
@@ -204,7 +212,7 @@
           <ul>
             <li><a href="https://datatracker.ietf.org/doc/html/rfc8725" target="_blank" rel="noopener noreferrer">RFC 8725 — JWT Best Current Practices</a></li>
             <li><a href="https://cheatsheetseries.owasp.org/cheatsheets/JSON_Web_Token_Cheat_Sheet.html" target="_blank" rel="noopener noreferrer">OWASP JWT Cheat Sheet</a></li>
-            <li><a href="https://auth0.com/docs/secure/tokens/json-web-tokens" target="_blank" rel="noopener noreferrer">Auth0 JWT Guidance</a></li>
+            <li><a href="https://datatracker.ietf.org/doc/html/rfc7519" target="_blank" rel="noopener noreferrer">RFC 7519 — JSON Web Token (JWT)</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
