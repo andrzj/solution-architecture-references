@@ -111,6 +111,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Distributed systems routinely see failures that disappear in seconds: connection resets during rollouts, brief DNS saturation, managed-database failovers, or upstream 503 responses while autoscaling adds capacity. Without retries, those events burn error budget and page humans for problems that self-heal. SRE practice assumes partial failure is normal; callers should absorb transients when doing so is safe and within latency budgets.</p>
           <p>Without classification, caps, and backoff, retries do the opposite of help. Every caller hammering a struggling dependency extends the outage—exactly the retry-storm dynamic Nygard and AWS document. A mature retry policy is selective (retry only what can succeed), bounded (attempt limit plus overall deadline), and observable (metrics on retry rate and retry success).</p>
+          <p>Retries are also a contract between teams: the caller signals tolerance for brief unavailability, and the dependency team publishes which status codes and rate-limit headers are safe to honor. When that contract is explicit in runbooks and SDK defaults, retries reduce pager noise without hiding chronic dependency debt.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -119,6 +120,8 @@
             <li>The caller has <strong>latency headroom</strong> in its SLO—total time including retries stays within the user-facing budget.</li>
             <li>SDK or platform defaults exist (AWS/GCP/Azure clients) and you are tuning them to match your SLOs, not disabling safety limits.</li>
             <li>Retries are composed with <strong>circuit breakers</strong> and <strong>fallbacks</strong> so sustained outages fail fast instead of looping.</li>
+            <li>Read paths where a slightly stale second attempt (after a cache miss or routing blip) still satisfies the SLO better than surfacing an error immediately.</li>
+            <li>Platform-managed clients already expose tunable <code>maxAttempts</code> aligned with their backing service’s retry guidance—your job is to align service deadlines with those defaults.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -128,6 +131,9 @@
             <li>The dependency is in <strong>sustained outage</strong>—open the circuit breaker and route to fallback instead of retrying.</li>
             <li>Your deadline is tighter than one retry plus backoff—<strong>fail fast</strong> and surface the error.</li>
             <li>Message brokers already redeliver—stacking application retries on broker retries without understanding combined semantics.</li>
+            <li>Highly contended resources where each retry competes for the same lock or reservation slot and almost always fails again (prefer queuing or a different strategy).</li>
+            <li>Health-critical or safety-adjacent operations where repeating without human confirmation is unacceptable, even if technically idempotent on the server.</li>
+            <li>Global retry policies copied from another service without measuring that dependency’s error taxonomy—429 on one API may mean quota, on another may mean permanent ban.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -149,15 +155,28 @@
               <pre class="architecture-diagram__canvas"><code>Retry Flow with Exponential Backoff
 ═════════════════════════════════════════════════════
 
-Client → Retry wrapper → Downstream
-  attempt 1 → 503 (transient)
-  wait: base × 2^n + jitter
-  attempt 2 → 200 OK → success
+Client                   Retry Wrapper              Downstream
+  │                           │                          │
+  │──── call() ──────────────►│                          │
+  │                           │──── attempt 1 ──────────►│
+  │                           │◄─── 503 ─────────────────│
+  │                           │                          │
+  │                           │  [transient? YES]        │
+  │                           │  [attempt ≤ maxRetries?] │
+  │                           │  wait: base * 2^0 + jitter│
+  │                           │                          │
+  │                           │──── attempt 2 ──────────►│
+  │                           │◄─── 503 ─────────────────│
+  │                           │  wait: base * 2^1 + jitter│
+  │                           │                          │
+  │                           │──── attempt 3 ──────────►│
+  │                           │◄─── 200 OK ──────────────│
+  │◄── success ───────────────│                          │
 
-Retryable: 429, 503, 504, timeouts, connection errors
-No retry: 400, 401, 403, 404, 422, business rule violations
-
-Stack: timeout → retry (cap) → circuit breaker → fallback</code></pre>
+Error Classification
+────────────────────
+  Retry    → 429, 503, 504, connection timeout, DNS error
+  No Retry → 400, 401, 403, 404, 422, business logic errors</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Bounded retry with jittered backoff on transient errors; permanent 4xx and business faults fail immediately.</figcaption>
           </figure>
@@ -172,6 +191,7 @@ Stack: timeout → retry (cap) → circuit breaker → fallback</code></pre>
                 <li>Reduces noise in on-call when paired with proper error taxonomy and SLO budgets.</li>
                 <li>Composable first layer in Azure’s recommended resilience pipeline (retry → breaker → bulkhead).</li>
                 <li>Respects platform hints when <code>Retry-After</code> headers are honored.</li>
+                <li>Moves transient failure handling closer to the call site, where status codes and timeouts are known, instead of masking everything as a generic 500 upstream.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -182,6 +202,7 @@ Stack: timeout → retry (cap) → circuit breaker → fallback</code></pre>
                 <li>Masks chronic dependency degradation if retry metrics are not monitored.</li>
                 <li>Retry storms synchronize with fixed or un-jittered backoff schedules.</li>
                 <li>Does not replace fixing root causes or designing for overload (SRE handling-overload guidance).</li>
+                <li>Duplicate attempts can confuse tracing unless spans or logs annotate each try with attempt number and outcome.</li>
               </ul>
             </div>
           </div>
@@ -189,7 +210,9 @@ Stack: timeout → retry (cap) → circuit breaker → fallback</code></pre>
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Maintain two explicit exception or status-code sets: <strong>retryable</strong> and <strong>non-retryable</strong>. In HTTP, treat 429/503 as retryable only when the operation is idempotent; never retry most 4xx. Configure <strong>per-attempt timeouts</strong> shorter than the end-to-end deadline (AWS Builders Library: timeouts are not optional decoration—they define worst-case resource holding time).</p>
           <p>Cap attempts (often three to five on synchronous paths) and enforce an <strong>overall deadline</strong>. Use exponential backoff with jitter between attempts; see the dedicated backoff article. Consider a <strong>retry budget</strong> (limit fraction of outbound traffic that may be retries) to protect shared dependencies during incidents.</p>
+          <p>For gRPC, map <code>UNAVAILABLE</code>, <code>DEADLINE_EXCEEDED</code> (when the server may not have processed work), and certain <code>ABORTED</code> cases to retryable sets; never retry <code>INVALID_ARGUMENT</code> or <code>PERMISSION_DENIED</code>. Azure’s resiliency guidance recommends documenting these sets per integration in the same repository as client configuration.</p>
           <p>Resilience4j <code>Retry</code> and Polly <code>WaitAndRetryAsync</code> support predicates, backoff suppliers, and event callbacks for metrics. Wire retries <em>before</em> circuit breakers in the decoration order so breakers see aggregated failure rates. Export <code>retries_total</code>, <code>retry_success_total</code>, and latency histograms including retry attempts.</p>
+          <p>Load-test with retries enabled: chaos or fault injection should confirm that peak retry rate stays below the dependency’s published RPS ceiling and that thread pools do not fill when timeouts are misconfigured.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -198,6 +221,8 @@ Stack: timeout → retry (cap) → circuit breaker → fallback</code></pre>
             <li><strong>Retrying permanent errors</strong> — 400/401/404 loops waste budget and hide bugs.</li>
             <li><strong>Ignoring Retry-After</strong> — violates upstream throttle contract and deepens overload.</li>
             <li><strong>No breaker or budget</strong> — retries continue through prolonged outages, amplifying failure.</li>
+            <li><strong>Nested retries</strong> — mobile client, API gateway, and microservice each retry the same call, multiplying attempts without coordination.</li>
+            <li><strong>Logging only final failure</strong> — operators cannot distinguish “failed once” from “failed on attempt five,” slowing incident triage.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -209,13 +234,15 @@ Stack: timeout → retry (cap) → circuit breaker → fallback</code></pre>
             <li>Does a circuit breaker halt retries during sustained failure?</li>
             <li>Are retry rate and retry-success metrics dashboards and alerts in place?</li>
             <li>Does the policy respect <code>Retry-After</code> on 429/503 responses?</li>
+            <li>Have you verified combined retry depth across gateways, mesh sidecars, and application code?</li>
+            <li>Do distributed traces or structured logs include attempt index and retryable classification?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
             <li><strong>Case study — AWS SDK defaults:</strong> Service clients ship adaptive retry modes that combine attempt caps with backoff; teams tune mode and max attempts to match service SLOs rather than disabling retries entirely.</li>
-            <li><strong>Illustrative scenario — payment authorization:</strong> Checkout retries a 503 from a card processor using an idempotency key; after three attempts the circuit opens and the UI offers “try again later” without double-charging.</li>
-            <li><strong>Illustrative scenario — mesh egress:</strong> A gRPC client retries <code>UNAVAILABLE</code> during a rolling pod restart, then stops when the breaker records sustained failures from the target cluster.</li>
+            <li><strong>Illustrative scenario — Nordac Retail checkout:</strong> The order service retries a 503 from the PayForge processor using an idempotency key on authorize; after three attempts the circuit opens and the storefront shows “payment paused—cart saved” without double-charging.</li>
+            <li><strong>Illustrative scenario — Fleetline mesh egress:</strong> A gRPC client in the dispatch service retries <code>UNAVAILABLE</code> during a rolling restart of the RouteMap cluster, then stops when the breaker records sustained failures from that dependency.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

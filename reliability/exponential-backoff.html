@@ -107,10 +107,13 @@
           <p><strong>Exponential backoff with jitter</strong> is the delay schedule used between retry attempts: wait time grows roughly as <code>base × 2<sup>attempt</sup></code> up to a <code>max_delay</code> cap, plus randomization (<strong>jitter</strong>) so concurrent clients do not realign on the same future timestamps. It is not a separate user-facing pattern from retry—it is how responsible retry policies space work in time.</p>
           <p>Marc Brooker’s AWS Architecture Blog treatment (cited across AWS Builders Library) distinguishes <strong>full jitter</strong>, <strong>equal jitter</strong>, and <strong>decorrelated jitter</strong> by how much they spread retry times under high concurrency. Azure’s retry guidance recommends backoff with randomization for the same reason: protect recovering servers from synchronized retry bursts.</p>
           <p>Backoff without jitter still produces <strong>thundering herd</strong> checkpoints—every client that failed together retries together. Jitter converts lockstep spikes into load spread across the backoff window, giving dependencies time to drain queues and complete failovers.</p>
+          <p>The schedule lives inside the retry policy object, not in ad hoc <code>Thread.sleep</code> scattered through handlers. Centralizing backoff keeps behavior consistent across languages and makes it auditable in code review and configuration repos.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>When many clients fail at once—region blip, database restart, deploy cutover—fixed-interval retries keep the target under continuous pressure. Pure exponential spacing reduces average rate but leaves deterministic retry instants; simulated load tests in AWS’s write-up show jittered strategies achieve higher successful completion rates at the same attempt budgets.</p>
           <p>SRE overload guidance assumes clients will back off; exponential schedules implement that contract numerically. Combined with attempt caps and circuit breakers (<em>Release It!</em>), backoff is how callers participate in cluster-wide recovery instead of fighting it.</p>
+          <p>Server-side rate limiters and load balancers often assume client cooperation: HTTP 429 with <code>Retry-After</code> is an explicit invitation to wait. Exponential backoff with jitter on the client mirrors that signal even when the header is absent, reducing accidental DDoS of a dependency the entire fleet shares.</p>
+          <p>Without spacing, recovery windows shrink: a dependency that needs thirty seconds to rebalance connections may never get them if every failed caller reconnects in the same second.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -119,6 +122,8 @@
             <li>SDK configuration for cloud APIs (AWS adaptive mode, GCS retry strategy, Azure client policies).</li>
             <li>Job/worker reschedule after transient failure—avoid aligning all workers to the same cron boundary.</li>
             <li>Together with <code>Retry-After</code>—use the larger of server hint and computed backoff when rate-limited.</li>
+            <li>Bulkhead or queue consumers that reschedule work after a poison-message-style transient failure without hammering the head of the queue.</li>
+            <li>Leader election or distributed lock clients that back off claim attempts to avoid split-brain retry storms.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -127,6 +132,8 @@
             <li>When total user deadline is smaller than the first backoff interval.</li>
             <li>As the only response to <strong>prolonged outage</strong>—open circuit breakers; backoff does not stop infinite retries, it only spaces them.</li>
             <li>On permanent errors—backoff before re-throwing a 400 wastes time without benefit.</li>
+            <li>Single-threaded batch jobs where concurrency is one—jitter still helps fleet-wide but adds little locally; fixed short delay may suffice.</li>
+            <li>When the dependency publishes a mandatory minimum wait (compliance or contractual API rules)—honor that value as a floor instead of guessing.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -141,14 +148,35 @@
     jitter --> good["Server can recover between attempts"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Backoff comparison (many clients, shared failure time)
+              <pre class="architecture-diagram__canvas"><code>Backoff Strategy Comparison — 4 Clients, 3 Retry Attempts
+══════════════════════════════════════════════════════════
 
-Fixed 100ms: retries align every 100ms → thundering herd
-Exponential, no jitter: retries align at 100, 300, 700ms → herd at checkpoints
-Full jitter: sleep ∈ [0, min(cap, base×2^n)] → spread load
+Fixed Interval (100ms) — all clients fire in lockstep
+Time(ms):  0    100   200   300   400
+Client A:  ×    ×     ×     ×     ✓
+Client B:  ×    ×     ×     ×     ✓
+Client C:  ×    ×     ×     ×     ✓
+Client D:  ×    ×     ×     ×     ✓
+           ↑ server hit by 4 simultaneous retries every 100ms
 
-Decorrelated (AWS SDK style):
-  sleep = min(cap, random(base, previous_sleep × 3))</code></pre>
+Exponential No Jitter — still synchronised
+Time(ms):  0   100   300   700  1500
+Client A:  ×    ×     ×     ×    ✓
+Client B:  ×    ×     ×     ×    ✓
+Client C:  ×    ×     ×     ×    ✓
+           ↑ all arrive at same checkpoints
+
+Full Jitter: sleep = random(0, min(cap, base * 2^attempt))
+Time(ms):  0   ~80  ~230  ~650
+Client A:  ×    ×     ×     ✓
+Client B:  ×         ×      ×    ✓
+Client C:  ×    ×          ×     ✓
+Client D:  ×         ×           ✓
+           ↑ spread across window — server recovers
+
+Decorrelated Jitter (AWS):
+  sleep = min(cap, random(base, prev_sleep * 3))
+  - Further desynchronises by using previous sleep as seed</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Full jitter spreads attempts across the backoff window; fixed and non-jittered exponential schedules stay synchronized.</figcaption>
           </figure>
@@ -163,6 +191,7 @@ Decorrelated (AWS SDK style):
                 <li><code>max_delay</code> cap bounds worst-case wait per attempt.</li>
                 <li>Improves downstream stability, indirectly protecting caller error budgets.</li>
                 <li>Composable with any retry predicate and circuit breaker.</li>
+                <li>Well-known formulas make capacity planning possible: expected attempts and wait contribute directly to tail-latency models.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -172,6 +201,7 @@ Decorrelated (AWS SDK style):
                 <li>Non-deterministic delays complicate integration tests unless randomness is seeded.</li>
                 <li>Wrong cap/base pairing can re-synchronize clients or add excessive latency.</li>
                 <li>Does not replace breaker, bulkhead, or server-side throttling.</li>
+                <li>Misconfigured <code>base</code> relative to dependency recovery time can still synchronize large fleets when caps are hit together.</li>
               </ul>
             </div>
           </div>
@@ -179,7 +209,9 @@ Decorrelated (AWS SDK style):
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Choose an algorithm explicitly. <strong>Full jitter</strong> minimizes peak load on the server. <strong>Decorrelated jitter</strong> is common in AWS SDKs and behaves well at very high concurrency. <strong>Equal jitter</strong> guarantees a minimum delay while still randomizing the upper half of the interval.</p>
           <p>Starting points: <code>base=100ms</code>, <code>cap=30s</code> for synchronous microservice HTTP; longer caps for background workers. Always set <code>max_attempts</code> independent of backoff—unbounded attempts with capped delay still retry forever.</p>
+          <p>When a response includes <code>Retry-After</code> (seconds or HTTP-date), compute <code>sleep = max(parsed_hint, scheduled_backoff)</code> so you never retry sooner than the dependency requested. Azure client libraries expose hooks for this merge step—use them instead of duplicating parsing in every service.</p>
           <p>Resilience4j <code>IntervalFunction</code> and Polly backoff types accept custom factories. Log chosen sleep duration at debug/trace for incident forensics. Pair with client timeouts so a single attempt cannot block the whole backoff sequence unexpectedly long.</p>
+          <p>Property-based or seeded-random tests can assert invariants: sleep is never negative, never exceeds <code>max_delay</code>, and grows monotonically in expectation across attempts for non-jittered baselines.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -188,6 +220,8 @@ Decorrelated (AWS SDK style):
             <li><strong>Ignoring Retry-After</strong> — fights upstream rate limiter intent.</li>
             <li><strong>Backoff on non-retryable errors</strong> — adds delay before inevitable failure.</li>
             <li><strong>Backoff without breaker</strong> — prolonged outage becomes low-rate infinite retry traffic.</li>
+            <li><strong>Clock skew</strong> — parsing <code>Retry-After</code> as HTTP-date fails when client and server clocks diverge; prefer delta-second form when available.</li>
+            <li><strong>Shared random seed</strong> — test environments that seed RNG identically across pods accidentally re-synchronize “random” jitter.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -198,13 +232,16 @@ Decorrelated (AWS SDK style):
             <li>Is backoff applied only after retryable classification?</li>
             <li>Is a circuit breaker configured to end retry loops on sustained failure?</li>
             <li>Are backoff parameters configurable without redeploying all services?</li>
+            <li>Does telemetry include histogram of actual sleep durations per dependency?</li>
+            <li>Have you simulated a full-region blip to validate peak retry RPS against downstream capacity?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
             <li><strong>Case study — AWS SDK:</strong> Decorrelated jitter is the default retry timing in many AWS client configurations, spreading recovery load after regional incidents.</li>
-            <li><strong>Illustrative scenario — fleet reconnect:</strong> Thousands of Kubernetes pods reconnect to PostgreSQL after failover; per-pod full jitter prevents a single-second connection stampede.</li>
-            <li><strong>Illustrative scenario — mobile clients:</strong> After a brief API outage, decorrelated backoff spreads device retries so the API tier can scale before the next wave.</li>
+            <li><strong>Illustrative scenario — Helios Analytics warehouse:</strong> Thousands of ETL workers reconnect to the warehouse catalog after a managed failover; per-worker full jitter prevents a single-second connection stampede on the catalog primary.</li>
+            <li><strong>Illustrative scenario — Lumina Health mobile:</strong> After a brief API outage, decorrelated backoff on patient device clients spreads retries so the CareBridge API tier can scale out before the next wave.</li>
+            <li><strong>Illustrative scenario — Harborline Shipping:</strong> Vessel telemetry agents use capped exponential backoff when shore APIs return 503 during a cutover, respecting <code>Retry-After</code> when present.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

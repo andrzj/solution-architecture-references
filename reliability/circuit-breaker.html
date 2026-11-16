@@ -111,6 +111,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Without fast failure, each call to a sick dependency holds a thread, connection, or servlet until timeout. Under load, the caller’s pool fills with blocked operations that are not doing useful work—classic cascading failure. Google’s SRE guidance on overload emphasizes failing quickly and shedding work; an open breaker is application-level load shedding targeted at one dependency.</p>
           <p>Breakers also protect the downstream: zero new traffic during open state is often what allows a overloaded database or third-party API to drain queues and recover. Pairing breakers with fallbacks preserves partial user experience while the dependency heals.</p>
+          <p>In mature systems, breaker state is a first-class signal: an open circuit on a payment adapter is often more actionable than a generic elevated 5xx rate, because it names the failing edge in the call graph.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -119,6 +120,8 @@
             <li>When a defined <strong>fallback</strong> or degraded response exists for open-circuit periods.</li>
             <li>Per-dependency configuration—never one global breaker for all outbound calls.</li>
             <li>Together with explicit client timeouts and retry caps (breaker observes aggregated outcomes after retries).</li>
+            <li>Third-party SaaS integrations where you cannot fix their overload but can degrade your product experience deliberately.</li>
+            <li>Sidecar or mesh deployments where outlier detection complements app-level breakers—align thresholds so operators see one coherent story.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -127,6 +130,8 @@
             <li>In-process calls with no resource contention—breaker overhead exceeds benefit.</li>
             <li>When any failure must propagate immediately with no alternate path (rare, critical writes).</li>
             <li>As a substitute for fixing chronic dependency performance—chronic open state is an incident, not a steady state.</li>
+            <li>Ultra-low-latency paths where even half-open probe delay violates hard real-time constraints and no fallback exists.</li>
+            <li>Batch pipelines that can pause for minutes without user impact—simple pause/resume may be cheaper than per-call breaker state.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -142,17 +147,34 @@
     Closed --> Closed: calls stay healthy</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Circuit Breaker States (Resilience4j-style)
+              <pre class="architecture-diagram__canvas"><code>Circuit Breaker State Machine
+══════════════════════════════════════════════════════
 
-CLOSED → normal calls; track failures in sliding window
-  if failureRate &gt; threshold OR slowCallRate &gt; threshold → OPEN
+              failure rate &gt; threshold
+  ┌──────┐   OR slow call rate &gt; threshold   ┌──────┐
+  │      │ ──────────────────────────────────►      │
+  │CLOSED│                                   │ OPEN │
+  │      │◄──────────────────────────────────       │
+  └──────┘   success count &gt; threshold       └──┬───┘
+     ▲        (from Half-Open)                  │
+     │                                          │ wait_duration_in_open_state
+     │                                          ▼ (e.g. 60 seconds)
+     │                                      ┌───────────┐
+     │   failure in probe                   │           │
+     └──────────────────────────────────────│ HALF-OPEN │
+         success in probe ──────────────────│           │
+                              (closes)      └───────────┘
 
-OPEN → fail fast / fallback; no outbound calls
-  after waitDuration → HALF-OPEN
-
-HALF-OPEN → limited probe calls
-  probes succeed → CLOSED
-  probe fails → OPEN</code></pre>
+Resilience4j Configuration Example:
+────────────────────────────────────
+  slidingWindowType: COUNT_BASED
+  slidingWindowSize: 10
+  failureRateThreshold: 50        # 50% failure rate trips breaker
+  slowCallRateThreshold: 100      # 100% of calls taking &gt; slowCallDurationThreshold
+  slowCallDurationThreshold: 2s
+  waitDurationInOpenState: 60s
+  permittedNumberOfCallsInHalfOpenState: 3
+  automaticTransitionFromOpenToHalfOpenEnabled: true</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Closed passes traffic; Open fails fast; Half-Open admits probe traffic before closing or reopening.</figcaption>
           </figure>
@@ -167,6 +189,8 @@ HALF-OPEN → limited probe calls
                 <li>Explicit signal for monitoring and incident response (state gauge per dependency).</li>
                 <li>Enables predictable fallback activation at the call site.</li>
                 <li>Supported in Resilience4j, Polly, Envoy/Istio outlier detection, Azure guidance.</li>
+                <li>Half-open probing provides automatic recovery validation without a manual “flip traffic back” runbook step.</li>
+                <li>Breaker trips act as coarse-grained health signal for dependency dashboards independent of their own health endpoints.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -177,6 +201,8 @@ HALF-OPEN → limited probe calls
                 <li>Without fallback, open circuit is still user-visible failure—just faster.</li>
                 <li>Operational burden: per-dependency policies, dashboards, and runbooks.</li>
                 <li>Slow-call detection needed—200 OK at 30s is still a breaker trip candidate.</li>
+                <li>State per dependency increases configuration drift unless managed through shared libraries or platform defaults.</li>
+                <li>Callers must handle open-circuit exceptions consistently—uncaught <code>CallNotPermittedException</code> becomes user-facing 500 noise.</li>
               </ul>
             </div>
           </div>
@@ -184,6 +210,8 @@ HALF-OPEN → limited probe calls
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Configure one breaker instance per downstream dependency. Resilience4j supports count- and time-based sliding windows, <code>failureRateThreshold</code>, <code>slowCallRateThreshold</code>, and <code>slowCallDurationThreshold</code>. Polly’s circuit breaker exposes similar thresholds with <code>onBreak</code>/<code>onReset</code> callbacks.</p>
           <p>Decoration order: timeout → retry (bounded) → circuit breaker → bulkhead → primary call; fallback executes when breaker is open or call fails. Export state transitions to metrics (Prometheus <code>circuitbreaker_state</code>) and alert on open events—they are symptom alerts worth a runbook link.</p>
+          <p>Tune window size to traffic: count-based windows of ten calls suit medium RPS; high-throughput services may need time-based windows so a burst of errors trips before millions of calls dilute the rate. <em>Release It!</em> emphasizes measuring production failure modes rather than copying demo thresholds.</p>
+          <p>Record why the circuit opened in structured logs (failure rate vs slow-call rate) so post-incident reviews can distinguish dependency outages from client timeout misconfiguration.</p>
           <p>Service meshes (Envoy outlier detection, Istio destination rules) can enforce outlier ejection without app code; align app-level breakers with mesh policy so behavior is explainable. AWS Builders Library articles on avoiding overload often assume breakers or equivalents at the edge of synchronous call graphs.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -193,6 +221,8 @@ HALF-OPEN → limited probe calls
             <li><strong>No slow-call rule</strong> — dependency “succeeds” but is effectively unavailable.</li>
             <li><strong>No fallback</strong> — users see hard errors with no degraded path.</li>
             <li><strong>Unmonitored open state</strong> — silent partial outage for hours.</li>
+            <li><strong>Breaker after unbounded retry</strong> — window fills slowly while threads are already exhausted upstream of the breaker.</li>
+            <li><strong>Half-open success on atypical traffic</strong> — probes hit a warm cache path and close the circuit while the real failure mode persists on uncached requests.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -204,13 +234,16 @@ HALF-OPEN → limited probe calls
             <li>Metrics and alerts on state transitions?</li>
             <li>Half-open probe count and open-state wait duration tuned for dependency recovery time?</li>
             <li>Retry policy bounded so breaker sees representative failure signal?</li>
+            <li>Runbook linked from alerts when any production breaker stays open longer than one recovery interval?</li>
+            <li>Half-open probes use the same authentication, payload shape, and routing labels as production traffic?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario — checkout:</strong> Payment gateway latency spikes; breaker opens after slow-call threshold; checkout completes with “pay later” queue using cached cart state.</li>
-            <li><strong>Illustrative scenario — recommendations:</strong> ML service errors exceed 50% in a ten-call window; breaker opens; product page loads with an empty recommendations block from fallback cache.</li>
+            <li><strong>Illustrative scenario — Nordac Retail checkout:</strong> PayForge latency spikes; the breaker opens after the slow-call threshold; checkout completes with a “pay later” queue using cached cart state.</li>
+            <li><strong>Illustrative scenario — BrightShelf catalog:</strong> The RecoLift ML service errors exceed fifty percent in a ten-call window; the breaker opens and product pages load with an empty recommendations block from fallback cache.</li>
             <li><strong>Case study — service mesh:</strong> Envoy outlier detection ejects unhealthy endpoints from load balancing, analogous to half-open probing at the data plane.</li>
+            <li><strong>Illustrative scenario — CivicWorks permits:</strong> When the municipal API stays open-circuited, the portal serves last-known permit status from a read replica instead of timing out on every page view.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

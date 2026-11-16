@@ -107,10 +107,13 @@
           <p><strong>The Bulkhead pattern</strong> partitions shared resources—thread pools, connection pools, semaphores, queue depth, or even infrastructure pools—so excessive use by one workload or dependency cannot exhaust capacity needed by another. Nygard’s <em>Release It!</em> metaphor is the ship hull: a flooded compartment must not sink the vessel. Azure’s bulkhead pattern applies the same idea to cloud services: isolate instances, pools, or deployments by criticality.</p>
           <p>Common application forms: <strong>per-dependency thread pools</strong> (Hystrix-style, now Resilience4j <code>ThreadPoolBulkhead</code>), <strong>semaphore bulkheads</strong> for reactive stacks, and <strong>separate connection pools</strong> for OLTP versus reporting on one database cluster. Polly provides bulkhead isolation with <code>MaxParallelization</code> and queue limits.</p>
           <p>Bulkheads limit <em>concurrency</em>; they do not fix a slow dependency. They ensure one slow neighbor cannot capture every thread and cause unrelated code paths to fail—containing blast radius inside the process or pool boundary.</p>
+          <p>Unlike a circuit breaker, which stops calling entirely, a bulkhead may still allow work up to the configured limit—the goal is fair sharing of finite capacity, not zero traffic.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Cascading failure often starts with resource starvation, not logic bugs: one downstream slows, all shared worker threads block in I/O, and healthy calls cannot obtain a thread. SRE overload handling recommends limiting work in progress; bulkheads are a concrete per-dependency WIP cap at the caller.</p>
+          <p>Google’s overload guidance and Azure’s resiliency patterns both treat admission control as a shared responsibility between caller and callee; bulkheads are the caller’s half of that bargain.</p>
           <p>Combined with circuit breakers (stop calling) and timeouts (bound wait), bulkheads ensure that even before the breaker opens, a runaway dependency consumes at most its allocated slice of concurrency—payment can still proceed while notifications are slow.</p>
+          <p>Platform engineering teams often mirror bulkheads in infrastructure: separate node pools, databases, or queue shards for batch versus interactive traffic. The application pattern and the infrastructure pattern reinforce each other when failure domains are designed end to end.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -119,6 +122,8 @@
             <li>Database access where long reports must not starve short transactions—separate pools or roles.</li>
             <li>Platform isolation (Kubernetes node pools, noisy-neighbor batch versus latency-sensitive API tiers).</li>
             <li>After incident postmortems citing thread or connection pool exhaustion from one dependency.</li>
+            <li>Serverless with per-invocation concurrency limits—bulkhead semantics may be expressed as reserved concurrency per trigger instead of thread pools.</li>
+            <li>GraphQL or BFF layers fanning out to many resolvers, each mapped to a distinct downstream bulkhead so one slow field cannot block the entire response assembly.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -127,6 +132,8 @@
             <li>Total thread budget so small that per-pool slices are unusably tiny.</li>
             <li>As excuse to avoid fixing a chronically slow dependency.</li>
             <li>CPU/memory-bound overload without I/O blocking—bulkheads target contention for waitable resources.</li>
+            <li>When a single global pool is already tiny and splitting it yields pools of one or two threads—prefer fixing the dependency or reducing fan-out first.</li>
+            <li>Prototype services with negligible traffic, where operational tuning cost outweighs isolation benefit.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -144,16 +151,30 @@
     end</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Bulkhead isolation
+              <pre class="architecture-diagram__canvas"><code>Bulkhead: Thread Pool Isolation Per Downstream
+═══════════════════════════════════════════════════════
 
-Without: 50-thread shared pool → notification slowness fills pool → payment starves
+Without Bulkhead                With Bulkhead
+──────────────────────          ────────────────────────────
+ Shared Thread Pool (50t)        Payment Pool   (10t)
+ ┌──────────────────────┐        ┌───────────┐
+ │XXXXXXXXXXXXXXXXXXXXXX│        │XX         │ ← 2 in-flight
+ │XXXXXXXXXXXXXXXXXXXXXX│        └───────────┘ ← 8 free
+ │XXXXXXXXXXXXXXXXXXXXXX│
+ │XXXXXXXXXXXX          │        Inventory Pool (10t)
+ │  (all 38 filled by   │        ┌───────────┐
+ │   Notification calls)│        │           │ ← all 10 free
+ └──────────────────────┘        └───────────┘
+   Payment calls queuing/failing
+                                 Notification Pool (10t)
+                                 ┌───────────┐
+                                 │XXXXXXXXXX │ ← pool full
+                                 └───────────┘
+                                  ↑ rejects quickly; others unaffected
 
-With:
-  Payment pool (10) — independent
-  Inventory pool (10) — independent
-  Notification pool (10) — saturates locally, rejects fast
-
-Resilience4j: maxConcurrentCalls, maxWaitDuration=0 for fail-fast</code></pre>
+Resilience4j BulkheadConfig:
+  maxConcurrentCalls: 10
+  maxWaitDuration: 0ms  (reject immediately when full)</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Without bulkheads one slow dependency saturates a shared pool; with bulkheads other pools stay available and full pools reject fast.</figcaption>
           </figure>
@@ -168,6 +189,7 @@ Resilience4j: maxConcurrentCalls, maxWaitDuration=0 for fail-fast</code></pre>
                 <li>Per-dependency metrics clarify which neighbor is under pressure.</li>
                 <li>Complements circuit breakers and fallbacks in Azure’s resilience stack.</li>
                 <li>Maps to organizational failure-domain thinking at runtime.</li>
+                <li>Rejection under load is immediate and measurable—easier to alert on than gradual thread-pool starvation.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -177,6 +199,7 @@ Resilience4j: maxConcurrentCalls, maxWaitDuration=0 for fail-fast</code></pre>
                 <li>Semaphore bulkheads do not isolate blocked threads—wrong choice for blocking I/O.</li>
                 <li>Incorrect sizing causes false rejections or ineffective isolation.</li>
                 <li>Does not cap CPU, heap, or network—only configured resource type.</li>
+                <li>Developers may misread “bulkhead full” as dependency outage when the neighbor is healthy but locally saturated—clear user messaging matters.</li>
               </ul>
             </div>
           </div>
@@ -184,6 +207,8 @@ Resilience4j: maxConcurrentCalls, maxWaitDuration=0 for fail-fast</code></pre>
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Use <code>ThreadPoolBulkhead</code> for blocking calls; <code>SemaphoreBulkhead</code> for non-blocking pipelines. Prefer <code>maxWaitDuration=0</code> (or minimal queue) so saturation fails fast—unbounded queues hide overload until global collapse.</p>
           <p>Size pools with Little’s Law intuition: <code>concurrency ≈ throughput × latency</code>. Example: 100 RPS × 50ms p99 ≈ 5 concurrent calls—pool of 10 adds headroom. Revisit sizes after dependency latency shifts.</p>
+          <p>Polly’s bulkhead exposes <code>MaxParallelization</code> and optional queuing depth; Azure’s guidance recommends rejecting when the queue is full rather than letting unbounded wait times propagate. Document per-dependency pool sizes in the service catalog so reviewers can spot dangerous defaults during design review.</p>
+          <p>When mixing virtual threads or reactive runtimes with blocking clients, ensure bulkhead type matches the blocking model—virtual threads reduce thread count but not socket or connection consumption, so connection-pool bulkheads may still be required.</p>
           <p>Handle <code>BulkheadFullException</code> (Resilience4j) or Polly bulkhead rejections with fallback or explicit errors. Alert on sustained rejections—they often precede breaker trips. Kubernetes bulkheads at the platform layer (separate node pools, resource quotas) mirror the same pattern above the process.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -193,6 +218,8 @@ Resilience4j: maxConcurrentCalls, maxWaitDuration=0 for fail-fast</code></pre>
             <li><strong>Semaphore on blocking I/O</strong> — threads still blocked; only new starts limited.</li>
             <li><strong>Unbounded queue on bulkhead</strong> — delays instead of isolating.</li>
             <li><strong>No handling of rejections</strong> — exceptions bubble as 500s without fallback.</li>
+            <li><strong>Shared pool for admin and API</strong> — a heavy internal report blocks customer traffic on the same JVM.</li>
+            <li><strong>Ignoring connection pool limits</strong> — thread bulkhead allows fifty parallel calls but the DB pool allows ten, so bulkhead rejections never trigger and connections queue instead.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -203,13 +230,16 @@ Resilience4j: maxConcurrentCalls, maxWaitDuration=0 for fail-fast</code></pre>
             <li>Are available capacity and rejection metrics exported?</li>
             <li>Load tests deliberately saturate one bulkhead—others stay healthy?</li>
             <li>Blocking vs reactive stack—correct bulkhead type chosen?</li>
+            <li>Connection-pool limits aligned with thread or semaphore bulkhead limits for each datastore?</li>
+            <li>Game-day exercises prove one saturated bulkhead does not increase error rate on unrelated dependencies?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario — API gateway:</strong> Payment, inventory, and notification clients each use a ten-thread bulkhead; notification provider slowdown fills only its pool; checkout payment path remains responsive.</li>
-            <li><strong>Illustrative scenario — database:</strong> OLTP microservice uses a ten-connection pool; reporting jobs use five connections on the same cluster—long queries cannot exhaust OLTP connections.</li>
-            <li><strong>Illustrative scenario — Kubernetes:</strong> Production API and batch workloads land on separate node pools so batch CPU spikes do not evict latency-sensitive pods.</li>
+            <li><strong>Illustrative scenario — Harborline gateway:</strong> Payment, inventory, and notification clients each use a ten-thread bulkhead; a NotifyWave provider slowdown fills only its pool while checkout payment stays responsive.</li>
+            <li><strong>Illustrative scenario — Ledgerstone database:</strong> The OLTP microservice uses a ten-connection pool while reporting jobs use five connections on the same cluster, so long analytics queries cannot exhaust OLTP connections.</li>
+            <li><strong>Illustrative scenario — SummitGrid Kubernetes:</strong> Production API and batch workloads land on separate node pools so batch CPU spikes do not evict latency-sensitive pods.</li>
+            <li><strong>Illustrative scenario — CivicWorks BFF:</strong> Each GraphQL resolver field talks to a downstream with its own bulkhead, so a slow permits lookup does not block identity resolution for the rest of the page.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
