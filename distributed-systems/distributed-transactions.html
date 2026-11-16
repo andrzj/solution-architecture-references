@@ -106,6 +106,7 @@
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>On a single machine, the database enforces atomicity with a local write-ahead log and lock manager. After you shard state across nodes—or split ownership across microservices—there is no shared log to roll back together. A crash between two local commits can leave one ledger updated and another untouched, which is unacceptable for settlement, inventory invariants, or paired publish-and-write operations. Distributed transactions answer that gap by externalizing the decision to a coordinator so all participants move forward or backward in lockstep, preserving the mental model of monolithic ACID even when data is physically distributed.</p>
+          <p>Kleppmann contrasts this with application-level patterns: a saga can restore business invariants but not hidden global isolation; Spanner-style Paxos per shard restores strong transactions inside one system’s replication groups, not arbitrary JDBC URLs wired through XA. The architectural question is whether atomicity must span operational boundaries you control, or whether semantic undo and idempotent messaging suffices.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -164,6 +165,8 @@
 
           <p>The <strong>XA</strong> specification maps this protocol onto concrete resource managers through interfaces such as JTA in Java. A transaction manager drives prepare and commit, writes a durable coordinator log, and replays in-doubt branches after restart. Application servers typically embed managers such as Narayana or Atomikos; Spring’s <code>JtaTransactionManager</code> delegates to the same infrastructure.</p>
 
+          <p>Lock hold time under 2PC grows with the slowest participant: a contended row on database A stays locked from prepare until global commit, even while database B performs unrelated I/O. DDIA’s blocking argument is quantitative—throughput on hot keys falls with coordinator RTT and participant fan-out. That is why many teams re-home coupled updates into one Raft group or one database schema instead of enlarging the XA boundary.</p>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
@@ -191,6 +194,9 @@
           <p>Treat the coordinator log as part of your availability story: replicate it, back it up, and practice recovery of in-doubt transactions before production traffic depends on it. Participants need explicit XA timeouts aligned with client SLAs—factory defaults are often far longer than interactive callers tolerate. Heuristic outcomes (a participant committing or aborting alone after a timeout) should surface as critical alerts because they may diverge from the coordinator’s recorded decision.</p>
           <p>Before adopting 2PC between services, compare against a <a href="saga-pattern.html">saga</a> with idempotent steps, a transactional <a href="../communication-patterns/transactional-outbox.html">outbox</a> for reliable publish, or a single consensus group (Raft/etcd) that owns the coupled state. Google’s <a href="https://research.google/pubs/pub39966/" rel="noopener noreferrer" target="_blank">Spanner</a> paper illustrates a different axis: externally consistent transactions backed by Paxos replication and a globally synchronized clock—not classic cross-database XA, but the same architectural question of when to pay for strong atomicity.</p>
           <p>Chaos and partition testing (including analyses published by <a href="https://jepsen.io/" rel="noopener noreferrer" target="_blank">Jepsen</a> / Kyle Kingsbury) are worth running against any stack that claims transparent distributed transactions.</p>
+          <p><strong>XA recovery:</strong> participants log <code>PREPARED</code> state to their own WAL; after coordinator crash, recovery scans in-doubt branches and either commits or rolls back when the coordinator log becomes available. Transaction managers (Narayana, Atomikos) expose admin APIs and JMX counters for in-doubt counts—zero is the steady-state SLO. Heuristic completion (forcing one side without coordinator agreement) breaks atomicity and should trigger severity-1 incident response.</p>
+          <p><strong>3PC sketch:</strong> three-phase commit adds a <code>pre-commit</code> stage so participants know whether the coordinator decided commit before applying—reduces some blocking windows but still fails under partitions and sees little production adoption compared with 2PC plus operational recovery discipline.</p>
+          <p>Typical XA transaction timeouts fall in the tens of seconds for interactive applications—longer than user-facing SLAs but shorter than batch windows. Prepared locks held after coordinator loss can block contended rows until an operator or recovery tool runs manual completion; measure in-doubt counts after chaos drills. Microservice architectures rarely justify cross-service 2PC; Kleppmann’s DDIA treatment recommends <a href="saga-pattern.html">sagas</a>, idempotency, and outbox publication instead of pretending independent databases share one atomic commit.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -234,6 +240,7 @@
             <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Saga — microservices.io (Chris Richardson)</a> — the usual application-level alternative when XA cannot span services.</li>
             <li><a href="https://research.google/pubs/pub39966/" rel="noopener noreferrer" target="_blank">Spanner: Google’s Globally-Distributed Database</a> — strong distributed transactions without classical cross-vendor 2PC.</li>
             <li><a href="https://jepsen.io/" rel="noopener noreferrer" target="_blank">Jepsen</a> — empirical fault-injection analyses of databases and coordination products (Aphyr).</li>
+            <li><a href="https://publications.opengroup.org/c112" rel="noopener noreferrer" target="_blank">XA — Open Group DTP specification</a> — formal two-phase commit participant contract.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

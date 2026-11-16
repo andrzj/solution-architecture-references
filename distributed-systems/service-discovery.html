@@ -103,11 +103,12 @@
           <h2 id="what-it-is">What it is</h2>
           <p><strong>Service discovery</strong> maintains a live directory from service name (and optional metadata) to network locations of healthy instances. Producers <strong>register</strong> on startup; the registry <strong>deregisters</strong> on graceful shutdown or failed health checks; consumers <strong>resolve</strong> names before opening connections.</p>
           <p>Patterns fall into <strong>client-side</strong> discovery (the caller queries Eureka/Consul, caches endpoints, load-balances in-process—Netflix Ribbon style) and <strong>server-side</strong> discovery (the caller hits a stable virtual IP or DNS name; a load balancer or kube-proxy chooses the backend). Kubernetes <code>Service</code> objects plus CoreDNS are the canonical managed-platform version; Consul couples DNS, HTTP, and Connect sidecars with <a href="gossip-protocols.html">Serf gossip</a> for failure awareness.</p>
-          <p>Checkout pods might scale on Kubernetes while warehouse jobs on another orchestrator register into a shared Consul catalog—clients resolve logical service names to healthy endpoints regardless of which control plane launched the instance.</p>
+          <p>Stateless API tiers on one orchestrator may register alongside batch workers on another; consumers resolve logical names to healthy endpoints regardless of which control plane launched the instance.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Microservice and container schedulers recycle IP addresses continuously. Static config files and manual load-balancer edits cannot keep pace with rolling deploys, autoscaling, and multi-version canaries. Discovery automates that mapping and ties it to health so traffic does not land on processes still starting or already drained.</p>
           <p>Kleppmann’s network and unbundling themes in <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer">DDIA</a> apply: discovery is infrastructure that lets application code speak in service names while the platform tracks where instances actually run.</p>
+          <p>The registry itself is a distributed system with its own consistency trade-off. Strong catalogs (Consul server Raft) favour linearisable reads of metadata; AP registries (classic Eureka) accept briefly stale instance lists in exchange for higher availability during partitions. Client caches amplify whichever choice you make—defaults such as 30-second Eureka refresh intervals or DNS TTLs of 30–300 seconds mean operators must size connection timeouts and retry policies for stale routes, not pretend lookups are always fresh.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -185,17 +186,17 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Consul:</strong> Agents register local services; servers replicate catalog via Raft; Serf propagates node health. DNS (<code>.service.consul</code>) offers L4-friendly discovery; Connect injects Envoy for L7 policies. Tag prepared queries for nearest healthy payment instance.</p>
-          <p><strong>Kubernetes:</strong> <code>Endpoints</code>/<code>EndpointSlice</code> objects track ready Pods; kube-proxy or CNI datapaths program rules. Use <code>readinessProbe</code> before marking ready; <code>preStop</code> sleeps while Endpoint removal propagates. Headless services expose per-Pod A records for stateful workloads while ClusterIP fronts stateless HTTP.</p>
-          <p><strong>Eureka pattern:</strong> Registry replicates in AP style; clients refresh on a schedule and apply client-side load balancing—acceptable when brief staleness is tolerated and the registry avoids strong global consistency costs.</p>
-          <p><strong>Graceful deploy:</strong> Register only after dependencies connect; deregister before SIGKILL; align <code>terminationGracePeriodSeconds</code> with longest in-flight checkout RPC.</p>
+          <p>Consul agents register local services; server state replicates through Raft while Serf gossip spreads node health. DNS under <code>.service.consul</code> suits L4 clients; prepared queries can bias toward the nearest healthy zone. Kubernetes tracks ready backends in <code>EndpointSlice</code> objects—kube-proxy or CNI datapaths programme rules from there. Register only after dependencies connect; use <code>readinessProbe</code> to keep starting Pods off the data path; sleep in <code>preStop</code> while slice removal propagates. Align <code>terminationGracePeriodSeconds</code> with your longest acceptable in-flight RPC so draining completes before SIGKILL.</p>
+          <p>Eureka-style AP registries replicate in memory and rely on scheduled client refresh plus client-side load balancing—acceptable when brief staleness is tolerable. Mesh control planes (xDS) reuse the same catalog for mTLS identities, avoiding per-language discovery SDKs. Watch registry quorum health on Raft-backed stores: losing server majority blocks registration updates even when application Pods are healthy. Alert on catalog sync lag and on spike rates of “no healthy upstream” errors, which often indicate readiness gaps rather than discovery bugs.</p>
+          <p><strong>DNS semantics:</strong> SRV records expose port and weight for polyglot clients; Kubernetes headless services publish A/AAAA per ready endpoint when you need pod-level affinity (stateful workloads, peered databases). TTL interacts badly with JVM and Go DNS caches—tuning <code>networkaddress.cache.ttl</code> or using cluster-first CoreDNS without excessive caching reduces post-deploy incidents. Server-side discovery (NLB, Ingress controller) hides churn from callers; client-side discovery exposes metadata (weights, zones) for custom retry but duplicates logic per language.</p>
+          <p><strong>Health dimensions:</strong> distinguish liveness (restart) from readiness (receive traffic). Register only when dependencies succeed; 5–10&nbsp;s probe intervals are common—shorter probes reduce false ready time but amplify control-plane load on large fleets. <code>preStop</code> sleep should exceed the sum of probe interval and endpoint propagation delay so load balancers stop sending requests before the process exits.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
             <li><strong>Thundering herd on cold cache:</strong> registry flap causes every client to refresh simultaneously—rate-limit lookups and use watch/long-poll APIs.</li>
-            <li><strong>Liveness-only probes:</strong> JVM up but not accepting traffic—route payment failures until readiness fails.</li>
+            <li><strong>Liveness-only probes:</strong> process up but not accepting traffic—clients see connection resets until readiness fails.</li>
             <li><strong>Stale DNS in Java:</strong> <code>InetAddress</code> caching keeps dead Pod IPs—set <code>networkaddress.cache.ttl</code> consciously or bypass DNS with mesh xDS.</li>
-            <li><strong>Cross-DC catalog drift:</strong> WAN federated Consul sees different health—prefer local prepared queries for latency-sensitive checkout.</li>
+            <li><strong>Cross-DC catalog drift:</strong> WAN federated Consul sees different health—prefer local prepared queries for latency-sensitive paths.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -228,6 +229,8 @@
             <li><a href="https://developer.hashicorp.com/consul/docs/concepts/service-discovery" rel="noopener noreferrer" target="_blank">Consul Service Discovery</a></li>
             <li><a href="https://kubernetes.io/docs/concepts/services-networking/service/" rel="noopener noreferrer" target="_blank">Kubernetes Service — Kubernetes Docs</a></li>
             <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> (unreliable networks and service integration)</li>
+            <li><a href="https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/" rel="noopener noreferrer" target="_blank">Kubernetes EndpointSlices</a> — how the control plane publishes ready backends.</li>
+            <li><a href="https://docs.aws.amazon.com/cloud-map/latest/dg/what-is-cloud-map.html" rel="noopener noreferrer" target="_blank">AWS Cloud Map</a> — managed discovery for ECS, EKS, and hybrid workloads.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

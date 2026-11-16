@@ -108,6 +108,8 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Multicast and master/worker broadcast do not survive cloud VPCs and large N. Flooding all-to-all is O(N²). Gossip gives decentralized propagation with bandwidth that grows gently and tolerates arbitrary node loss—only convergence time stretches. That profile matches membership tables, failure suspicion, and eventually consistent metadata more than it matches financial ledger commits.</p>
           <p>Kleppmann discusses epidemic dissemination alongside logs and replication in <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer">DDIA</a>; gossip is the transport layer under many anti-entropy and CRDT merge strategies.</p>
+          <p>SWIM’s indirect probes target false positives that plague naive heartbeats: a single dropped UDP packet should not evict a healthy node. Das et al. report sub-linear bandwidth per member at large N; convergence time still scales with diameter, so plan for seconds to tens of seconds before every peer learns a failure—not milliseconds.</p>
+          <p>Epidemic push-pull with random peer selection needs on the order of <code>O(log N)</code> rounds for a rumor to reach all members with high probability—each round touches a constant fan-out, so bandwidth per rumor grows slowly even when <code>N</code> reaches thousands. That bound is probabilistic, not deterministic: partitions temporarily split the epidemic graph and delay convergence until healing restores cross-edge gossips.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -187,7 +189,10 @@
           <p><strong>Cassandra gossip:</strong> Each node runs a gossiper thread (~1&nbsp;s period), picks 1–3 live peers, and performs push-pull on <code>GossipDigest</code> plus delta states. Heartbeat and load states carry generation and version; <code>nodetool gossipinfo</code> inspects the table. Schema migrations propagate as versioned <code>ApplicationState</code>—operators watch for stuck versions during upgrades.</p>
           <p><strong>Serf / Consul:</strong> UDP memberlist with suspicion timeouts, retransmits, and optional encryption. Consul servers still use Raft for consistent service catalog writes; gossip carries failure knowledge and WAN federation hints—do not confuse the two planes.</p>
           <p><strong>CRDT transport:</strong> State-based merges over gossip rounds converge because join is commutative; <strong>delta-CRDTs</strong> ship only recent mutations to shrink packets.</p>
+          <p><strong>Phi accrual failure detection:</strong> Akka Cluster and related systems track inter-arrival statistics of heartbeats and raise suspicion when the observed gap exceeds a statistical threshold (φ) rather than a fixed timeout. Fixed timeouts misbehave when GC pauses or cross-AZ RTT widen; φ-accrual adapts to measured delay distributions. Pair accrual suspicion with indirect probes when a single missed heartbeat should not evict a node.</p>
+          <p><strong>Anti-entropy with Merkle trees:</strong> gossip carries digests of key ranges; peers compare subtree hashes and descend only where hashes differ—Cassandra <code>repair</code> and Riak vclock repair use Merkle or hash comparisons to limit bytes shipped during divergence recovery. Gossip spreads *that repair is needed*; Merkle walks ship *what* differs.</p>
           <p><strong>Tuning:</strong> Increase fan-out when membership must converge faster than default; lengthen suspicion when GC pauses exceed probe RTT. Document expected convergence seconds for on-call.</p>
+          <p>Do not conflate gossip membership with consensus configuration: Consul servers still commit catalog writes through Raft while Serf only propagates failure hints. After incidents, verify seed lists span availability zones and that suspicion timeouts exceed worst-case stop-the-world pause on your heap (often hundreds of milliseconds on JVM data nodes). Dashboard gossip round-trip time and count of <code>UNREACHABLE</code> transitions; sudden spikes during GC-heavy compactions point at probe tuning, not network partition.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -224,9 +229,11 @@
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf" rel="noopener noreferrer" target="_blank">SWIM: Scalable Weakly-consistent Infection-style Process Group Membership — Das et al.</a></li>
-            <li><a href="https://cassandra.apache.org/doc/latest/cassandra/architecture/gossip.html" rel="noopener noreferrer" target="_blank">Cassandra Architecture: Gossip</a></li>
+            <li><a href="https://cassandra.apache.org/doc/4.1/cassandra/architecture/dynamo.html#gossip-protocol" rel="noopener noreferrer" target="_blank">Cassandra Architecture: Gossip</a></li>
             <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/gossip-dissemination.html" rel="noopener noreferrer" target="_blank">Gossip Dissemination — Martin Fowler</a></li>
             <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> (replication, membership, and unreliable networks)</li>
+            <li><a href="https://developer.hashicorp.com/consul/docs/architecture/gossip" rel="noopener noreferrer" target="_blank">Consul gossip architecture</a> — Serf membership beside Raft servers.</li>
+            <li><a href="https://doc.akka.io/docs/akka/current/cluster-usage.html#phi-accrual-failure-detector" rel="noopener noreferrer" target="_blank">Akka — Phi accrual failure detector</a> — adaptive suspicion thresholds.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

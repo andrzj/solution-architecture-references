@@ -103,11 +103,11 @@
           <h2 id="what-it-is">What it is</h2>
           <p>A <strong>vector clock</strong> is an array (or map) of counters—one component per participating node—where component <em>i</em> counts events known from node <em>i</em>. Lamport’s paper established happens-before; vector clocks (Fidge, Mattern, and follow-on work) make <strong>concurrency</strong> observable: if neither vector is component-wise ≤ the other, the events are concurrent and may conflict.</p>
           <p>In storage systems the same idea often appears as <strong>version vectors</strong> attached to objects (Dynamo, Riak, early Cassandra patterns). Kleppmann distinguishes object-level version metadata from pure event clocking in <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer"><em>Designing Data-Intensive Applications</em></a>: version vectors tell a coordinator whether one write causally descends from another or whether the application must merge <strong>siblings</strong>.</p>
-          <p>Imagine two stateless services updating the same shopping-cart document without coordination: one applies a promotion in us-east, another changes quantity in eu-west. Without vectors, LWW silently drops one edit; with version vectors, the read returns both versions and the API merges or asks the shopper to choose.</p>
+          <p>Imagine two stateless services updating the same replicated document without coordination: one applies a field change in one region, another applies a conflicting field in another. Without vectors, LWW silently drops one edit; with version vectors, the read returns both versions and the API merges or asks the client to reconcile.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Partial orders from Lamport timestamps cannot answer “were these writes independent?”—a higher Lamport value does not imply causality. Multi-leader and leaderless replication need that answer to implement causal+ consistency, sibling detection, and read repair that does not discard legitimate branches.</p>
-          <p>Vector metadata also powers anti-entropy: peers compare vectors to learn which object versions they are missing before shipping deltas over <a href="gossip-protocols.html">gossip</a> or repair sessions.</p>
+          <p>Vector metadata also powers anti-entropy: peers compare vectors to learn which object versions they are missing before shipping deltas over <a href="gossip-protocols.html">gossip</a> or repair sessions. The formal relation is <strong>happens-before</strong>: if event <em>a</em> causally precedes <em>b</em>, then <em>V(a) &lt; V(b)</em> component-wise; if neither vector dominates the other, the updates are concurrent and require merge or sibling surfacing.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -125,7 +125,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>On write, increment this node’s component; on receive, pointwise-max then increment. Comparison rules: <code>V ≤ W</code> if every component of <code>V</code> is ≤ <code>W</code>; strict inequality implies causality; incomparable vectors imply concurrency.</p>
+          <p>On write, increment this node’s component; on receive, pointwise-max then increment. Comparison rules: <code>V ≤ W</code> if every component of <code>V</code> is ≤ <code>W</code>; strict inequality with at least one strict edge implies causality (one version happened-before the other); incomparable vectors imply concurrency. Version vectors track per-replica or per-daemon counters on the object itself rather than per-event Lamport clocks—HASLab’s note that “version vectors are not vector clocks” warns against mixing metaphors when debugging storage bugs.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     A["Node A VC 2,0,0"] 
@@ -175,7 +175,7 @@
               <h3>Cons</h3>
               <ul>
                 <li>Metadata grows with the number of logical writers—per-client vectors spiraled in early Dynamo deployments.</li>
-                <li>Application teams must implement merge semantics; “take max per field” is often wrong for carts and inventory.</li>
+                <li>Application teams must implement merge semantics; “take max per field” is often wrong for counters and inventory.</li>
                 <li>Storage and RPC payloads swell when siblings accumulate unread.</li>
                 <li>Operators need training—on-call pages look like “mysterious duplicate objects.”</li>
               </ul>
@@ -187,6 +187,8 @@
           <p><strong>Dynamo pattern:</strong> coordinator gathers versions from quorum replicas; if vectors diverge without dominance, return siblings. <a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" target="_blank" rel="noopener noreferrer">Amazon’s Dynamo paper</a> documents this read path and hinted handoff interaction.</p>
           <p><strong>Dotted version vectors:</strong> attach unique dots per write so a delete marks causality through tombstones—Riak 2.x adopted this to stop delete/recreate from looking concurrent.</p>
           <p><strong>Practical DynamoDB:</strong> many teams use conditional writes and server timestamps for hot keys; vectors remain the conceptual backbone for understanding what conditional expressions are defending.</p>
+          <p>Production systems prune vector components when replica identities leave the ring; Riak’s dotted version vectors and periodic pruning jobs prevent unbounded growth when nodes join and leave frequently. Riak documented pruning trade-offs: aggressive pruning risks false concurrency detection if removed components still matter—operators balance object size against correctness. Expose sibling counts and unresolved conflicts as metrics—Jepsen histories of Riak and Cassandra frequently show repair and vector handling bugs that integration tests miss.</p>
+          <p><strong>Hybrid logical clocks (HLC)</strong> combine physical time with logical counters for transaction ordering when you need timestamps resembling UTC but must respect causality—CockroachDB uses HLC for serializable isolation without full per-key version vectors. HLC does not replace sibling detection on concurrent multi-writer keys; it serializes commits on a well-behaved log path. Choose vectors when the product must return conflicts; choose HLC or Raft when a single order is assigned before write visibility.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -226,6 +228,9 @@
             <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> (causal consistency, version stamps, multi-leader replication)</li>
             <li><a href="https://haslab.wordpress.com/2011/07/08/version-vectors-are-not-vector-clocks/" rel="noopener noreferrer" target="_blank">Version Vectors are not Vector Clocks — HASLab</a></li>
             <li><a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" rel="noopener noreferrer" target="_blank">Dynamo: Amazon's Highly Available Key-value Store — DeCandia et al.</a></li>
+            <li><a href="https://jepsen.io/analyses" rel="noopener noreferrer" target="_blank">Jepsen Analyses</a> — partition tests surfacing sibling and stale-read bugs.</li>
+            <li><a href="https://www.riak.com/product/technicalwhitepapers/dvv.html" rel="noopener noreferrer" target="_blank">Dotted Version Vectors in Riak</a> — delete/recreate causality and pruning.</li>
+            <li><a href="https://www.usenix.org/system/files/conference/nsdi12/nsdi12-final138.pdf" rel="noopener noreferrer" target="_blank">Logical Physical Clocks and Consistent Snapshots in Globally Distributed Databases</a> — Kulkarni, Demirbas &amp; Madeppa; HLC foundation.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
