@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Distributed Scheduling — SA References</title>
-  <meta name="description" content="Work distribution models, fair scheduling algorithms, Kubernetes scheduler architecture, Apache Mesos, Nomad, distributed cron, job deduplication, and priority queues.">
+  <meta name="description" content="Placing work on a cluster: Kubernetes filter-score-bind scheduling, queue pull and work stealing, fair-share and preemption, distributed cron with coordination stores, and failure modes at scale.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -95,140 +95,156 @@
             <span class="badge badge--primary">Distributed Systems</span>
           </div>
           <h1 class="article-header__title">Distributed Scheduling</h1>
-          <p class="article-header__desc">Assigning work to nodes across a cluster — centralised schedulers, work stealing, distributed queues, fair-share algorithms, Kubernetes scheduler, distributed cron, and job deduplication.</p>
-          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
+          <p class="article-header__desc">Matching pending work to capacity across machines — from the Kubernetes scheduler’s global placement loop to pull-based queues, work stealing, and HA cron guarded by etcd or ZooKeeper.</p>
+          <div class="article-header__meta"><span>⏱ 14 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-
-          <p>Distributed scheduling decides which worker runs which task across a pool of machines. Kubernetes schedules pods centrally; SQS consumers pull work; work-stealing balances load across threads. Cron jobs in multiple datacenters need leader election so only one node fires each schedule.</p>
+          <p><strong>Distributed scheduling</strong> is the decision process that maps pending units of work—Pods, batch tasks, queue messages, workflow activities—to workers with enough capacity and the right constraints. The pattern spans several architectures: a <strong>central scheduler</strong> with global cluster view (Kubernetes <code>kube-scheduler</code>, Google Borg), <strong>pull-based queues</strong> where workers claim tasks (SQS, Redis streams, Kafka consumers), <strong>work stealing</strong> across local deques (ForkJoin, Go scheduler, Rayon), and <strong>time-driven</strong> firing guarded by leader election so only one node runs a cron tick.</p>
+          <p>Kleppmann’s <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a> separates batch from stream processing and stresses idempotent, restartable workers—schedulers assume <strong>at-least-once</strong> delivery and design for retries after node loss. Kubernetes makes that concrete: the scheduler binds a Pod to a node; the kubelet starts it; on failure the control plane may reschedule elsewhere—placement is continuous reconciliation, not a one-shot assignment.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>As workloads outgrow a single machine, work must be distributed across multiple nodes. Without a scheduler, work distribution is manual — engineers assign tasks to specific machines, which doesn't scale and cannot adapt to failures. A distributed scheduler automates placement decisions, handles node failures by rescheduling work, enforces resource limits to prevent noisy neighbours, and optimises cluster utilisation. Modern schedulers also manage priorities, preemption, quotas, and affinity rules, making them central to multi-tenant cluster management.</p>
+          <p>Manual placement does not survive elastic fleets, rolling upgrades, or spot instance preemption. A scheduler encodes policy—CPU and memory requests, affinity, priorities, quotas—and reacts when nodes join, drain, or disappear. Without it, teams over-provision dedicated machines, fight noisy neighbours, and rediscover the same bin-packing puzzles every outage.</p>
+          <p>At warehouse scale, scheduling also enforces <strong>multi-tenancy</strong>: fair-share between teams, preemption for critical jobs, and isolation between batch analytics and latency-sensitive services. Borg and its descendants treat the scheduler as a control-plane bottleneck worth optimising—filtering fast, scoring in parallel, and binding asynchronously—because every second of scheduling delay is a second a workload waits for capacity.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Running heterogeneous workloads (batch, streaming, services) on shared infrastructure.</li>
-            <li>Auto-scaling where the number of workers changes dynamically based on queue depth or load.</li>
-            <li>Multi-tenant environments where fair resource allocation between teams or applications is required.</li>
-            <li>Recurring jobs (cron-like) that must run at scheduled intervals across a distributed cluster.</li>
+            <li>Shared clusters running mixed services, batch jobs, and system daemons where placement rules change with load and maintenance windows.</li>
+            <li>Autoscaling groups or HPA-driven fleets where worker count fluctuates and work must land on healthy nodes automatically.</li>
+            <li>Multi-tenant platforms that need quotas, priority classes, or fair-share between cost centres.</li>
+            <li>Recurring or delayed work (cron, CronJob, delayed queues) where exactly-one <em>trigger</em> per interval matters even if execution is at-least-once.</li>
+            <li>Data-parallel frameworks (Spark, MapReduce) where the driver schedules stages toward data-local executors.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Single-machine workloads where OS process scheduling suffices.</li>
-            <li>Purely event-driven architectures where a message queue directly drives workers — the queue IS the scheduler.</li>
-            <li>When work units are not decomposable or must run on specific dedicated hardware.</li>
+            <li>Single-host parallelism where the OS scheduler and thread pool are enough.</li>
+            <li>Pure queue consumers when the broker’s partition assignment already defines placement and no cluster-wide constraints exist.</li>
+            <li>Work that must stay on fixed hardware (licensed appliances, GPU racks with manual cabling)—policy may forbid automatic relocation.</li>
+            <li>Extremely high fan-in submission rates on one scheduler process without sharding or second-level frameworks—central loops become the bottleneck Borg mitigated with cells.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-                      <div class="architecture-diagram__render mermaid">flowchart TB
-    CENT["Central scheduler assigns pods to nodes"]
-    QUEUE["Work queue workers pull tasks"]
-    STEAL["Work stealing from peer deques"]
-    CRON["Distributed cron with leader election"]</div>
-                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Scheduling Architectures
+          <p>Kubernetes exemplifies centralised placement: informers cache cluster state; the scheduler extension framework runs filter and score plugins; binding is asynchronous so the loop stays responsive under load.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart TB
+    subgraph k8s["Kubernetes control plane"]
+      API["API server"]
+      SCH["kube-scheduler"]
+      API <--> SCH
+    end
+    subgraph nodes["Worker nodes"]
+      N1["Node A kubelet"]
+      N2["Node B kubelet"]
+    end
+    P["Pending Pod"] --> SCH
+    SCH -->|"Filter + Score"| N1
+    SCH -->|"Binding"| API
+    API --> N1
+    API --> N2
+    Q["Task queue"] --> W1["Worker pull"]
+    Q --> W2["Worker pull"]</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>Kubernetes kube-scheduler loop
           ════════════════════════════
-          Centralised Scheduler (Kubernetes-style):
-            Jobs/Pods ──► Scheduler (single process, HA replica)
-            Scheduler reads: node capacity, pod resource requests,
-                             affinity/anti-affinity, taints/tolerations
-            Scheduler writes: Pod.Spec.NodeName = "node-4"
-            Kubelet on node-4 reads binding, starts container.
-          
-          Work Queue (Pull-based):
-            Producers ──► Queue (SQS, Kafka, Redis)
-                         ▲   ▲   ▲
-                        W1   W2   W3  (workers pull and process)
-            Worker polls, claims task, processes, acks.
-            Dead-letter queue for failed tasks after N retries.
-          
-          Work Stealing:
-            Each worker has a local deque of tasks.
-            Worker with empty deque steals from the back
-            of a random peer's deque.
-            Minimises contention vs. shared central queue.
-          
-          Distributed Cron (HA):
-            Multiple cron-runner instances + leader election (etcd/ZK).
-            Only elected leader fires scheduled jobs.
-            On leader failure: follower acquires lock → resumes cron.
-            Job deduplication: idempotency key or DB unique constraint
-            prevents double-execution during leader failover window.</code></pre></details>
-                      <figcaption id="typical-architecture-caption">Scheduling patterns: centralized placement, pull-based queues, work stealing, and HA cron via elected leader.</figcaption>
-                    </figure>
+            1. Watch unscheduled Pods (spec.nodeName empty)
+            2. Filtering: NodeResourcesFit, taints/tolerations, affinity rules
+            3. Scoring: spread, image locality, custom plugins
+            4. Bind Pod to Node (async) → kubelet starts containers
 
+          Pull-based queue scheduling
+          ═════════════════════════════
+            Producer → durable queue → workers long-poll / consumer group
+            Visibility timeout + DLQ for poison messages
+            Autoscale workers on queue depth (KEDA, custom metrics)
+
+          Work stealing (in-process or cluster)
+          ═══════════════════════════════════
+            Each worker owns a deque; idle workers steal from peer tail
+            Lower contention than one global lock on a central queue
+
+          HA distributed cron
+          ═══════════════════
+            N replicas compete for etcd/ZooKeeper leader lock
+            Leader alone triggers schedule; followers standby
+            Idempotency keys survive failover window</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Central schedulers bind work after filter and score; queues and work stealing spread load when global placement is unnecessary.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Centralised schedulers make globally optimal placement decisions with full cluster visibility.</li>
-                <li>Work stealing minimises coordination overhead while maintaining high utilisation.</li>
-                <li>Queue-based scheduling decouples producers from consumers and provides natural backpressure.</li>
-                <li>Kubernetes scheduler extensibility (custom plugins, scheduler profiles) supports diverse workloads on shared infrastructure.</li>
+                <li>Global policies—affinity, topology spread, priority, preemption—apply consistently across the fleet.</li>
+                <li>Automatic recovery: failed nodes trigger rescheduling without operator spreadsheets.</li>
+                <li>Queues decouple producers from consumer speed and absorb burst traffic with backpressure.</li>
+                <li>Extensible frameworks (Kubernetes Scheduling Framework, Nomad drivers, Mesos frameworks) specialise placement without forking the core.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Centralised scheduler is a bottleneck at very high job submission rates — Google Borg addresses this with cell-based scheduling.</li>
-                <li>Optimistic concurrency in two-level schedulers (Mesos) can cause contention when multiple frameworks compete for the same resources.</li>
-                <li>Distributed cron requires careful deduplication logic — the failover window can cause double-execution without it.</li>
-                <li>Scheduler complexity grows with constraint types (affinity, topology spread, custom resources) creating scheduling latency for large clusters.</li>
+                <li>Central schedulers contend at high Pod churn—large clusters need tuning, multiple profiles, or hierarchical cells.</li>
+                <li>Two-level designs (Mesos) expose resource offer races between frameworks.</li>
+                <li>Distributed cron and delayed jobs default to at-least-once unless applications deduplicate.</li>
+                <li>Constraint sprawl increases scheduling latency and debugging cost—every new label rule is a new failure mode.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Kubernetes scheduler architecture</strong> uses a two-phase approach: filtering removes nodes that don't satisfy hard constraints (insufficient CPU/memory, taints, affinity rules), then scoring ranks remaining nodes by soft preferences (spread, balanced resource utilisation, image locality). The highest-scoring node wins. The scheduler is a single elected leader but processes bindings asynchronously. Scheduling throughput is ~100 pods/sec for a typical cluster; at very large scale, multiple scheduler profiles or virtual clusters can parallelize scheduling.</p>
-          <p><strong>Fair-share scheduling</strong> (used in Hadoop YARN, Spark, Kubernetes ResourceQuotas + LimitRanges) ensures each tenant receives a fair share of cluster resources proportional to their configured weight. Dominant Resource Fairness (DRF) extends this to multi-dimensional resources (CPU, memory, GPU) by maximising the minimum dominant resource share across tenants. Preemption allows high-priority workloads to evict lower-priority pods when cluster capacity is exhausted.</p>
-          <p><strong>Distributed cron</strong> in a microservices environment is commonly implemented using leader election: all instances of a cron service compete for a distributed lock (etcd Lease, ZooKeeper ephemeral node); only the leader fires jobs. The key challenge is the failover window — if the leader fires a job and then loses leadership before recording completion, the new leader may fire the same job again. Solutions include: writing a "job started" record with an idempotency key before firing, checking for in-flight jobs on leader acquisition, and making jobs themselves idempotent.</p>
-          <p><strong>Apache Nomad</strong> provides a two-level scheduler (plan queue + eval broker) with support for services, batch jobs, system jobs, and parameterised jobs across heterogeneous workloads including VMs, containers, and raw executables — without requiring all workloads to be containerised as Kubernetes does.</p>
+          <p><strong>Kubernetes scheduling</strong> follows a predictable pipeline documented in the <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/" rel="noopener noreferrer" target="_blank">kube-scheduler</a> guide: <em>filtering</em> removes nodes that violate hard constraints (resource requests/limits, <code>nodeSelector</code>, taints, pod affinity/anti-affinity, volume topology); <em>scoring</em> ranks survivors with plugins such as <code>NodeResourcesBalancedAllocation</code> and <code>InterPodAffinity</code>; <em>binding</em> writes <code>spec.nodeName</code> via the API server while the kubelet admits the Pod. Only one scheduler instance is active via <a href="https://kubernetes.io/docs/concepts/architecture/leases/" rel="noopener noreferrer" target="_blank">leader election</a> on a Lease. Customise behaviour with <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/scheduling-framework/" rel="noopener noreferrer" target="_blank">Scheduling Framework</a> plugins and separate <code>SchedulerProfile</code>s for system versus batch tiers. Expect on the order of 100 Pod binds per second per scheduler without aggressive optimisation—plan for <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#pod-topology-spread-constraints" rel="noopener noreferrer" target="_blank">topology spread</a> and descheduler tooling when fragmentation appears.</p>
+          <p><strong>Fairness and tenancy:</strong> Kubernetes combines <code>ResourceQuota</code>, <code>LimitRange</code>, <code>PriorityClass</code>, and preemption policies; batch systems often implement Dominant Resource Fairness (DRF) across CPU, memory, and accelerators. Borg’s lessons—reserve headroom, avoid all-or-nothing placement, separate prod from batch cells—still apply when mixing latency-sensitive services with backfill jobs.</p>
+          <p><strong>Queue-native scheduling:</strong> When work already lives in Kafka partitions or SQS queues, consumer group rebalancing <em>is</em> placement. Tune partition count, visibility timeouts, and idempotent handlers per DDIA’s guidance on stream consumers. Add a central scheduler only when cross-partition constraints (GPU type, AZ locality) exceed what the broker assigns.</p>
+          <p><strong>Distributed cron:</strong> Run multiple cron-runner replicas but elect one leader through etcd or ZooKeeper (see <a href="distributed-coordination.html">Distributed Coordination</a>). On tick, persist a deduplication record—database unique key, object-store conditional write, or lease-scoped job ID—before executing side effects. Prefer <a href="https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/" rel="noopener noreferrer" target="_blank">CronJob</a> for cluster-native schedules; pair with <code>startingDeadlineSeconds</code> and concurrency policies to bound missed runs.</p>
+          <p><strong>Alternatives:</strong> <a href="https://www.nomadproject.io/docs/scheduling" rel="noopener noreferrer" target="_blank">Nomad</a> schedules VMs, binaries, and containers via a single binary; Apache Mesos offers two-level scheduling for Mesos frameworks; Spark and YARN embed their own intra-job schedulers with locality preferences.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Scheduler backlog:</strong> high job submission rates overwhelm the scheduler's processing capacity, causing scheduling latency spikes and job starvation.</li>
-            <li><strong>Resource fragmentation:</strong> many nodes with small resource remnants that don't fit any pending job — the cluster appears full but is underutilised. Bin-packing heuristics and descheduler components address this.</li>
-            <li><strong>Distributed cron double-execution:</strong> leader failover window fires the same job twice if deduplication is not implemented at the application level.</li>
-            <li><strong>Priority inversion:</strong> high-priority jobs waiting for preemption of lower-priority jobs that are themselves waiting for external resources (e.g., database I/O), causing high-priority work to be effectively blocked.</li>
-            <li><strong>Thundering herd on worker pool:</strong> all workers simultaneously becoming available and contending on a shared task queue, causing lock contention. Jitter and exponential backoff in polling reduces this.</li>
+            <li><strong>Scheduling queue backlog:</strong> Pod creation storms outpace the scheduler; pending Pods accumulate until plugins or API latency are tuned.</li>
+            <li><strong>Fragmentation:</strong> many nodes hold slivers of CPU/memory that satisfy no pending Pod—use descheduler, reduce over-requesting, or right-size requests.</li>
+            <li><strong>Affinity traps:</strong> hard anti-affinity or zone rules leave Pods unschedulable with obscure events—validate constraints in CI.</li>
+            <li><strong>Cron double fire:</strong> leader failover between tick and bookkeeping runs the job twice without idempotency keys.</li>
+            <li><strong>Thundering herd on empty queues:</strong> workers wake together and hammer Redis or SQS—add jittered backoff to poll intervals.</li>
+            <li><strong>Preemption storms:</strong> aggressive priority classes evict large batches repeatedly, thrashing cache and slowing everyone.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are workloads containerised? If so, Kubernetes is the de facto standard scheduler.</li>
-            <li>Do you need to schedule non-container workloads (VMs, binaries)? Consider Nomad.</li>
-            <li>Is fair resource sharing between teams required? Configure ResourceQuotas and LimitRanges.</li>
-            <li>Do recurring jobs need exactly-once semantics? Implement idempotency keys and deduplication.</li>
-            <li>What is the expected job submission rate? Validate scheduler throughput against your peak rate.</li>
-            <li>Is work stealing appropriate for CPU-bound parallelism? Consider Golang, Java fork-join, or Rayon (Rust) thread pool implementations.</li>
+            <li>Are workloads containerised on Kubernetes? Start with kube-scheduler profiles before adopting a second scheduler product.</li>
+            <li>Do tasks need GPUs, bare metal, or legacy binaries? Evaluate Nomad or Mesos instead of forcing containers.</li>
+            <li>Is placement already handled by queue partitions? Avoid duplicating scheduling logic in a central service.</li>
+            <li>Are jobs idempotent and keyed so at-least-once execution is safe under reschedule and cron failover?</li>
+            <li>What peak submission rate (Pods/sec or tasks/sec) must the scheduler sustain—measured, not guessed?</li>
+            <li>Are quotas and priority classes defined per tenant before production batch jobs land?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Kubernetes scheduling microservice Pods across a cluster with node affinity for data-locality-sensitive workloads.</li>
-            <li>Celery with Redis as a work queue for distributed background job processing in a Python web application.</li>
-            <li>Apache Spark using its internal task scheduler to assign map/reduce tasks to executor slots with data locality preferences.</li>
-            <li>Temporal.io as a distributed workflow orchestrator, scheduling activity tasks to workers with durable state and exactly-once execution guarantees.</li>
-            <li>Kubernetes CronJob + job deduplication for daily ETL pipelines that must not run twice even during scheduler failover.</li>
+            <li><strong>Case study —</strong> Google Borg schedules millions of jobs across cells; Verma et al. describe priority, preemption, and resource reclamation that influenced Kubernetes design.</li>
+            <li><strong>Case study —</strong> Kubernetes schedules microservice Pods with pod anti-affinity for HA and topology spread across availability zones.</li>
+            <li><strong>Case study —</strong> Celery workers pull tasks from Redis or RabbitMQ for asynchronous web job processing with horizontal scale-out.</li>
+            <li><strong>Case study —</strong> Apache Spark’s DAGScheduler places stages on executors preferring HDFS block locality.</li>
+            <li><strong>Case study —</strong> Temporal dispatches workflow activities to workers with durable task queues and deterministic retry semantics.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="leader-election.html">Leader Election</a> — distributed cron requires a leader election mechanism to ensure only one scheduler fires jobs at a given time.</li>
-            <li><a href="distributed-locking.html">Distributed Locking</a> — job deduplication and exclusive job execution use distributed locks to prevent concurrent runs.</li>
-            <li><a href="../foundations/idempotency.html">Idempotency</a> — distributed jobs must be idempotent to be safely retried or executed at-least-once by a distributed scheduler.</li>
+            <li><a href="leader-election.html">Leader Election</a> — HA cron and single-active schedulers depend on one elected leader.</li>
+            <li><a href="distributed-coordination.html">Distributed Coordination</a> — etcd and ZooKeeper back scheduler leadership and cron locks.</li>
+            <li><a href="distributed-locking.html">Distributed Locking</a> — exclusive job execution and deduplication windows use lease-backed locks.</li>
+            <li><a href="../foundations/idempotency.html">Idempotency</a> — schedulers retry; workers must tolerate duplicate delivery.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/" rel="noopener noreferrer" target="_blank">Kubernetes Scheduler — Kubernetes Docs</a> — official documentation on filter, score, and binding phases.</li>
-            <li><a href="https://research.google/pubs/pub43438/" rel="noopener noreferrer" target="_blank">Large-scale cluster management at Google with Borg — Verma et al.</a> — Google's internal cluster scheduler that inspired Kubernetes.</li>
-            <li><a href="https://www.usenix.org/conference/nsdi11/mesos-platform-fine-grained-resource-sharing-data-center" rel="noopener noreferrer" target="_blank">Mesos: A Platform for Fine-Grained Resource Sharing — Hindman et al.</a> — the two-level scheduling architecture paper.</li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> — batch vs. stream processing, fault-tolerant workers, and exactly-once versus end-to-end reasoning.</li>
+            <li><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/" rel="noopener noreferrer" target="_blank">Kubernetes Scheduler — Kubernetes Docs</a> — filtering, scoring, binding, and framework extension points.</li>
+            <li><a href="https://research.google/pubs/pub43438/" rel="noopener noreferrer" target="_blank">Large-scale cluster management at Google with Borg — Verma et al.</a> — precursor architecture to Kubernetes scheduling.</li>
+            <li><a href="https://www.usenix.org/conference/nsdi11/mesos-platform-fine-grained-resource-sharing-data-center" rel="noopener noreferrer" target="_blank">Mesos: A Platform for Fine-Grained Resource Sharing — Hindman et al.</a> — two-level scheduling and resource offers.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
