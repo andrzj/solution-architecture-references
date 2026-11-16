@@ -49,6 +49,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "data-architecture",
         "deployment",
         "distributed-systems",
+        "governance",
     }
 )
 
