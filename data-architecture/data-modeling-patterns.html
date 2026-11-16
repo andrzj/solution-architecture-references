@@ -100,33 +100,35 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The most common patterns span five database model categories: <strong>Relational</strong> (PostgreSQL, MySQL) — normalized tables with foreign keys, optimized for ACID transactions and flexible querying; <strong>Document</strong> (MongoDB, DynamoDB) — embedded sub-documents, optimized for entity-centric reads; <strong>Key-Value</strong> (Redis, DynamoDB) — hash-keyed record access, optimized for single-record reads at scale; <strong>Wide-Column</strong> (Cassandra, HBase) — partition key + clustering key, optimized for time-series and high-write workloads;</p>
-          <p><strong>Graph</strong> (Neo4j, Neptune) — nodes and edges, optimized for relationship traversal.</p>
-          <p>Within relational databases, structural patterns for complex data shapes include: <strong>Adjacency List</strong> (parent_id foreign key) and <strong>Nested Set</strong> (left/right boundary integers) for tree/hierarchy storage; <strong>Entity-Attribute-Value (EAV)</strong> for sparse, user-defined attributes; <strong>JSONB hybrid</strong> for mixing structured columns with schemaless payloads; <strong>Polymorphic association</strong> for single-table entities with varying types.</p>
+          <p><strong>Data modeling patterns</strong> name recurring ways to map domain concepts onto physical storage: how you represent trees, sparse attributes, time-ordered events, or polymorphic entities when a single normalized table is awkward. The choice is not cosmetic—it fixes which queries stay index-friendly and which paths pay join or scan penalties at scale.</p>
+          <p>Kleppmann’s <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer"><em>Designing Data-Intensive Applications</em></a> frames the trade space across relational rows, documents, wide partitions, and graphs; Fowler’s <a href="https://martinfowler.com/bliki/PolyglotPersistence.html" target="_blank" rel="noopener noreferrer">polyglot persistence</a> explains why production stacks often mix engines rather than stretch one model to every bounded context. In practice you still pick a <em>pattern</em> per access path: adjacency lists versus nested sets for hierarchies, EAV or JSONB for variable attributes, Cassandra-style partition keys for entity-scoped timelines, and MongoDB’s <a href="https://www.mongodb.com/docs/manual/core/data-model-design/" target="_blank" rel="noopener noreferrer">embed-versus-reference</a> guidance for document shape.</p>
+          <p>Relational databases remain the default OLTP backbone; patterns such as <strong>adjacency list</strong>, <strong>nested set</strong>, <strong>materialized path</strong> (<code>ltree</code>), <strong>EAV</strong>, <strong>JSONB hybrid</strong>, and <strong>single/class table inheritance</strong> let you stay in SQL while matching domain geometry. When a pattern fights the engine—unbounded recursion, fan-out updates, or partition hotspots—it is a signal to adopt a different store or denormalize deliberately, aligned with <a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">database per service</a> boundaries.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Domain data rarely fits cleanly into flat tables with fixed columns. Organizational hierarchies are trees. Product catalogs have varying attributes per category. Access logs are time-series with high write volume.</p>
-          <p>Social connections are graphs. Using the wrong structural pattern produces schemas that require expensive query rewrites, cause join explosions, resist indexing, or require application-level workarounds that shift complexity out of the database into code. Each pattern exists because it solves a specific structural mismatch between domain shape and relational (or other) model constraints.</p>
+          <p>Schemas encode assumptions about read and write shape. A catalog modeled as fifty nullable columns wastes space and indexing budget; EAV without pivot discipline turns filters into self-join nightmares. Trees stored only as <code>parent_id</code> make subtree reads expensive until you add nested sets, paths, or a graph sidecar. Telemetry stuffed into generic relational tables hits B-tree write amplification long before business logic does.</p>
+          <p>Patterns exist so teams can name these mismatches early and pick structures whose hot paths are first-class in the storage engine—GIN containment on JSONB, range scans on nested-set boundaries, partition-local time ordering in Cassandra—rather than reimplementing traversal and compression in application code. Fowler’s data-model guidance and Kleppmann’s comparison of storage engines both stress that there is no universal winner, only fit to measured access patterns.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Adjacency List:</strong> Use for tree structures (org charts, comment threads, categories) where you need to find a node's immediate parent or children, and tree depth is bounded and shallow (&lt;10 levels); simple to update (change parent_id on reparent).</li>
-            <li><strong>Nested Set:</strong> Use for trees where you frequently query all descendants of a node (entire subtree) and updates are infrequent — subtree read is a single range scan, not a recursive join.</li>
-            <li><strong>EAV (Entity-Attribute-Value):</strong> Use for truly sparse, user-defined attributes where the set of attributes per entity varies widely and is not known at schema design time — product catalogs with 200+ configurable attribute types where each product has 5–20.</li>
-            <li><strong>JSONB hybrid:</strong> Use in PostgreSQL when most attributes are structured and queryable, but a subset of fields are genuinely schemaless or variable — store the structured fields as columns (indexed, typed) and the variable payload as a JSONB column (GIN-indexed for containment queries).</li>
-            <li><strong>Wide-column (Cassandra) for time-series:</strong> Use when the primary access pattern is "all events for entity X in time range T1–T2" at high write volume — partition by entity_id, cluster by timestamp for efficient range scans per entity.</li>
+            <li><strong>Adjacency list</strong> when hierarchies change often (reorgs, moved categories) and queries focus on direct parent/child or shallow depth; PostgreSQL recursive CTEs or <code>ltree</code> extend this when subtree reads matter.</li>
+            <li><strong>Nested set or materialized path</strong> when read-heavy subtree queries dominate and reparenting is rare—or use <code>ltree</code> as a compromise with path-prefix reads and localized updates.</li>
+            <li><strong>JSONB hybrid</strong> when a stable core of columns needs indexes and constraints, while extension attributes vary by tenant or category; pair with GIN and explicit validation in app or JSON Schema checks.</li>
+            <li><strong>EAV</strong> only for genuinely user-defined attribute dictionaries with extreme sparsity; plan pivot views or search indexes if filters must stay SQL-friendly.</li>
+            <li><strong>Wide-column time ordering</strong> when ingest is append-mostly per entity and queries are “latest N” or “range for device X,” following Cassandra’s <a href="https://cassandra.apache.org/doc/stable/cassandra/developing/data_modeling.html" target="_blank" rel="noopener noreferrer">query-first modeling</a> rules.</li>
+            <li><strong>Document embedding</strong> when MongoDB’s one-to-few pattern holds: children are always read with the parent and seldom updated independently.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Don't use EAV for well-known, fixed attribute sets — it sacrifices type safety, indexing, and query clarity for schema flexibility that isn't needed; use typed columns instead.</li>
-            <li>Don't use Nested Set for frequently updated hierarchies — every insert or move requires updating left/right values for potentially all nodes in the tree, causing write amplification and lock contention.</li>
-            <li>Don't default to document embedding just because the data is related — deeply nested documents in MongoDB become problematic when sub-documents need to be updated independently or queried in isolation without fetching the parent.</li>
-            <li>Don't model many-to-many in a document database by embedding arrays of IDs — querying from either direction requires loading the owning document and filtering in the application, or creating redundant indexes that must be kept synchronized.</li>
+            <li>Avoid EAV when attribute names and types are known at design time—typed columns, CTI, or JSONB with a schema contract preserve integrity and simpler EXPLAIN plans.</li>
+            <li>Avoid nested sets on volatile trees; each move renumbers large subtrees and contends under concurrent edits.</li>
+            <li>Avoid deep MongoDB embeds when shared sub-documents update often (addresses, product copy)—fan-out writes across parents violate DRY and consistency windows.</li>
+            <li>Avoid using document arrays as the only edge representation for many-to-many graphs unless you accept bidirectional denormalization and sync logic.</li>
+            <li>Avoid Cassandra partitions that grow without time bucketing; Kleppmann’s discussion of partition size and compaction applies directly to “one partition per device forever” designs.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Bounded contexts usually land on different shapes: relational core for money and identity, document or JSONB facet for catalogs, wide-column or TSDB for telemetry, graph for recommendations, vector index for semantic recall. Services own their schema per microservices.io database-per-service guidance; integration happens through APIs and events, not shared mutable tables. The diagram below is a capability map, not a single database.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     rel["Relational OLTP"]
@@ -192,67 +194,73 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Pattern match: choosing the right structural pattern for the domain shape avoids query rewrites, index gaps, and application-level compensations that erode over time.</li>
-                <li>JSONB hybrid flexibility: PostgreSQL JSONB lets you add new attributes to specific records without schema migrations, while keeping structured columns for known, indexed fields — the best of both worlds within one database.</li>
-                <li>Nested Set subtree reads: retrieving all descendants is a single range scan with no recursion — orders of magnitude faster than recursive CTE for deep trees with many reads.</li>
-                <li>Cassandra partition design: partitioning by entity ID and clustering by timestamp enables high-write, low-read-latency time-series at scale with predictable performance.</li>
-                <li>Document embedding: co-locating frequently accessed related data in a single document eliminates join overhead for entity-centric reads — a product with its variants and images in one document is read in a single I/O.</li>
+                <li>Explicit pattern choice documents which queries are cheap, reducing “surprise slow reports” after data volume grows.</li>
+                <li>JSONB hybrid preserves migration-free extension fields while keeping fiscal and identity columns strongly typed and indexable in PostgreSQL.</li>
+                <li>Materialized paths and nested sets turn subtree membership into range or prefix predicates—friendly to covering indexes and read replicas.</li>
+                <li>Query-first Cassandra keys align with DDIA’s emphasis on partitioning by known access paths, yielding predictable ingest on commodity clusters.</li>
+                <li>MongoDB embedding matches Fowler’s aggregate-root thinking for entity-local reads without cross-shard joins on every page view.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>EAV query complexity: querying EAV data for multiple attributes requires self-joins or pivot operations that are verbose, slow, and hard to type-check or index effectively.</li>
-                <li>Nested Set write complexity: any insert, move, or delete in the tree requires recalculating left/right values for a potentially large portion of the table — high write amplification under concurrent modification.</li>
-                <li>Document embedding update anomalies: updating a shared sub-document embedded in multiple parent documents (e.g., a shared address) requires updating all parent documents — violating DRY and risking inconsistency.</li>
-                <li>Wide-column partition design lock-in: Cassandra's primary key determines all possible query patterns; adding a new access pattern that doesn't match the partition key requires a new table or materialized view — no ad-hoc querying.</li>
-                <li>JSONB maintenance: application code must handle versioning of the JSONB payload structure manually — there's no schema enforcement within the JSONB column; structural validation must be implemented in the application or via PostgreSQL CHECK constraints with JSON Schema.</li>
+                <li>EAV and polymorphic tables push integrity and reporting complexity into views, ETL, or search indexes—not into the declarative schema.</li>
+                <li>Nested sets and some path models penalize frequent structural edits; operational org charts may thrash under concurrent moves.</li>
+                <li>Hybrid polyglot stacks multiply backup, versioning, and transactional boundaries—exactly the cost Fowler warns about under polyglot persistence.</li>
+                <li>Cassandra and similar stores forbid ad hoc analytics on the hot path; new questions often mean new tables or pipeline exports.</li>
+                <li>JSONB and document payloads need contract tests or catalog metadata; without them, producers ship incompatible shapes silently.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For hierarchical data in PostgreSQL, prefer <strong>Adjacency List with recursive CTEs</strong> as the default — it's simple, easy to update (reparenting is a single UPDATE), and PostgreSQL's recursive CTE performance is acceptable for trees up to a few thousand nodes. Switch to Nested Set only when you have a proven performance bottleneck on subtree reads and updates are infrequent. A practical middle ground is <strong>ltree extension</strong> (PostgreSQL) — stores materialized path as a text label tree (e.g., <code>1.4.7.12</code>), enabling both subtree queries (ancestor-match via <code>@&gt;</code> operator) and efficient updates (only the moved node's path changes, not the entire tree).</p>
-          <p>For the <strong>polymorphic entity problem</strong> (multiple entity types in one table, e.g., products with different attribute sets per category), evaluate three approaches: <strong>Single Table Inheritance (STI)</strong> — one table with a type discriminator column and many nullable columns for type-specific attributes (simple queries, wasteful columns); <strong>Class Table Inheritance (CTI)</strong> — base entity table plus type-specific child tables joined by FK (normalized, complex joins); <strong>JSONB hybrid</strong> — base columns for shared attributes, JSONB for type-specific fields (flexible, no joins, GIN-indexed). CTI is typically cleanest when type-specific attributes are well-known; JSONB is better when attributes are user-configurable or highly variable.</p>
+          <p>Start hierarchy work with <strong>adjacency list + constraints</strong> (<code>CHECK (parent_id &lt;&gt; id)</code>, optional closure detection in migrations). Add <a href="https://www.postgresql.org/docs/current/ltree.html" target="_blank" rel="noopener noreferrer"><code>ltree</code></a> when prefix subtree reads appear in SLIs; refresh paths in the same transaction as <code>parent_id</code> updates. Reserve nested sets for read-mostly taxonomies with measured recursive-CTE pain.</p>
+          <p>For polymorphic products or multi-type entities, document the choice among STI, CTI, and JSONB in an ADR; CTI fits fixed per-type columns, JSONB fits tenant-specific facets with GIN on containment keys you actually filter. In MongoDB, follow the manual’s one-to-few versus one-to-many guidance: reference when children have independent lifecycles or high cardinality.</p>
+          <p>Cassandra tables should be designed from stated queries, not ER diagrams—define partition width targets (for example monthly buckets per device) before production ingest. Pair JSONB producers with <a href="data-contracts.html">data contracts</a> or JSON Schema validation at the write boundary so analytics and search consumers do not parse ambiguous blobs.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>EAV for known attributes:</strong> A team uses EAV for a product catalog with a defined attribute taxonomy; 40 attributes per product require 40 rows in the attribute table per product; queries that filter on 3 attributes need 3 self-joins; performance degrades to seconds per query on 10M products.</li>
-            <li><strong>Adjacency list unbounded recursion:</strong> A tree with cycles (a → b → a due to a bug) causes a recursive CTE to loop infinitely; PostgreSQL's default recursion limit prevents infinite loops but the query errors rather than returning results.</li>
-            <li><strong>Cassandra partition size explosion:</strong> An IoT events table partitioned by device_id with no time-bucketing; a high-frequency device generates millions of rows per partition; Cassandra's compaction and read performance degrade for partitions exceeding a few hundred MB.</li>
-            <li><strong>JSONB without GIN index:</strong> A team stores filter attributes in JSONB and queries with <code>attributes @&gt; '{"color": "red"}'</code>; without a GIN index, this performs a full sequential scan; the query goes from &lt;10ms to 30 seconds on 1M rows.</li>
-            <li><strong>Deep document embedding:</strong> An order document embeds the customer profile, shipping address, and all line items with product details; when a product description changes, all order documents containing that product must be updated — creating a fan-out update problem across millions of orders.</li>
+            <li><strong>EAV as default catalog:</strong> Faceted filters devolve into multi-way self-joins; teams bolt on Elasticsearch instead of admitting typed or JSONB facets were the right fit.</li>
+            <li><strong>Cycle-blind trees:</strong> Bugs or imports create loops; recursive SQL hits depth limits or spins until cancelled—add cycle detection or materialized path invariants in tests.</li>
+            <li><strong>Hot Cassandra partitions:</strong> Single-key partitions absorb unbounded history; compaction debt and read latency spike on noisy neighbors.</li>
+            <li><strong>Unindexed JSONB filters:</strong> Containment predicates without <code>jsonb_path_ops</code> GIN behave like sequential scans at million-row scale.</li>
+            <li><strong>Historical orders with live product embeds:</strong> Denormalized product text inside order documents forces impossible fan-out when marketing updates copy—snapshot product fields at purchase time instead.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>For hierarchical data: is the tree read-heavy (Nested Set) or write-heavy (Adjacency List)? Is tree depth bounded? Is ltree a simpler middle ground?</li>
-            <li>For variable attributes: are the attribute names fixed and well-known (typed columns or CTI), user-configurable (JSONB hybrid), or truly sparse with hundreds of possible types (EAV)?</li>
-            <li>For document databases: are related entities read together as a unit (embed) or accessed independently and updated separately (reference with ID)?</li>
-            <li>For wide-column (Cassandra): is the primary access pattern known and fixed? Are all future query patterns served by the partition + clustering key combination?</li>
-            <li>Are all JSONB containment queries backed by a GIN index (using jsonb_path_ops for containment-only queries, or generic_jsonb_ops for key existence)?</li>
-            <li>For Cassandra time-series: is the partition key time-bucketed (e.g., by month) to prevent unbounded partition growth for high-frequency data sources?</li>
+            <li>Have you listed the top five queries and writes per aggregate and matched each to a pattern (not merely a database brand)?</li>
+            <li>For trees: what is the ratio of subtree reads to reparents, and is depth bounded in production data?</li>
+            <li>For variable attributes: are names/types stable (columns/CTI), configurable per tenant (JSONB + contracts), or unbounded sparse (EAV with search backing)?</li>
+            <li>For documents: does MongoDB’s cardinality guidance classify the relationship as embed, reference, or subset pattern?</li>
+            <li>For Cassandra: does every query include partition key equality, and are buckets sized for retention and compaction?</li>
+            <li>Are JSONB/GIN or GiST indexes aligned to real predicates in EXPLAIN, not hypothetical filters?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce product catalog (JSONB hybrid):</strong> Products have 10 fixed attributes (name, price, SKU, category, weight) stored as typed PostgreSQL columns with standard B-tree indexes. Category-specific attributes (clothing: size, color, material; electronics: voltage, wattage, connector) are stored in a JSONB column with a GIN index. Faceted search filters on both fixed and JSONB attributes in a single query: <code>WHERE category_id = 12 AND attributes @&gt; '{"size": "M", "color": "blue"}'</code>.</li>
-            <li><strong>Organizational hierarchy (Adjacency List + ltree):</strong> An HR system stores 50,000 employees with manager relationships as an adjacency list. The ltree path (<code>1.234.5678.90123</code>) is materialized on write. Org chart reads use ltree path prefix matching for subtree queries. Reparenting (manager change) updates only the moved employee's ltree path — not the entire subtree. Subtree queries run in &lt;5ms vs. 300ms for recursive CTE on the same data.</li>
-            <li><strong>IoT telemetry (Cassandra wide-column):</strong> 50,000 sensors each emit readings every 10 seconds. Partition key: <code>(sensor_id, month)</code> — bucketing by month prevents unbounded partition growth. Clustering key: <code>timestamp DESC</code> — most recent readings are at the top of the partition for fast "last N readings" queries. Daily retention policy: time-based compaction discards partitions older than 90 days with no row-level deletes needed.</li>
+            <li><strong>Illustrative scenario —</strong> A marketplace stores SKU, price, and inventory in relational tables, pushes category facets into JSONB with GIN, and publishes change events so search indexes stay eventually consistent with the OLTP source.</li>
+            <li><strong>Illustrative scenario —</strong> A content hierarchy uses adjacency for edits and <code>ltree</code> for menu rendering; nightly jobs verify path consistency against <code>parent_id</code> before cache warming.</li>
+            <li><strong>Case study —</strong> Operators at Netflix-scale have published Cassandra models that shard viewing events by profile and time bucket—useful reference when modeling high-volume per-user timelines without relational bloat.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="normalization-vs-denormalization.html">Normalization vs Denormalization</a> — Data modeling patterns operate within the normalization/denormalization tradeoff space.</li>
-            <li><a href="polyglot-persistence.html">Polyglot Persistence</a> — Different modeling patterns often lead to different database technology choices per domain.</li>
-            <li><a href="database-indexing.html">Database Indexing</a> — Each modeling pattern has specific indexing requirements: GIN for JSONB, ltree GiST for path queries, composite indexes for Cassandra-like access patterns.</li>
+            <li><a href="normalization-vs-denormalization.html">Normalization vs Denormalization</a> — Patterns often imply deliberate denormalization or controlled redundancy.</li>
+            <li><a href="polyglot-persistence.html">Polyglot Persistence</a> — Different patterns frequently justify separate stores per service boundary.</li>
+            <li><a href="database-indexing.html">Database Indexing</a> — Pattern choice dictates index families (B-tree, GIN, GiST, composite partition keys).</li>
+            <li><a href="time-series-databases.html">Time-Series Databases</a> — When timelines dominate, a TSDB may replace hand-rolled Cassandra or relational partitioning.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.postgresql.org/docs/current/ltree.html" target="_blank" rel="noopener noreferrer">PostgreSQL ltree Extension Documentation</a></li>
-            <li><a href="https://cassandra.apache.org/doc/stable/" target="_blank" rel="noopener noreferrer">Apache Cassandra Documentation</a></li>
-            <li><a href="https://www.mongodb.com/docs/manual/core/data-model-design/" target="_blank" rel="noopener noreferrer">MongoDB Data Model Design — Embedded vs References</a></li>
+            <li><a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer">Designing Data-Intensive Applications — Martin Kleppmann</a></li>
+            <li><a href="https://martinfowler.com/bliki/PolyglotPersistence.html" target="_blank" rel="noopener noreferrer">Polyglot Persistence — Martin Fowler</a></li>
+            <li><a href="https://martinfowler.com/eaaCatalog/activeRecord.html" target="_blank" rel="noopener noreferrer">Patterns of Enterprise Application Architecture (data mapping context) — Martin Fowler</a></li>
+            <li><a href="https://www.mongodb.com/docs/manual/core/data-model-design/" target="_blank" rel="noopener noreferrer">MongoDB Data Model Design</a></li>
+            <li><a href="https://cassandra.apache.org/doc/stable/cassandra/developing/data_modeling.html" target="_blank" rel="noopener noreferrer">Apache Cassandra — Data Modeling</a></li>
+            <li><a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">Database per Service — microservices.io</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/ltree.html" target="_blank" rel="noopener noreferrer">PostgreSQL <code>ltree</code> Extension</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

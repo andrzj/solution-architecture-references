@@ -101,32 +101,32 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>, the current balance of a bank account), the event store records every event that changed that entity's state (<code>AccountOpened</code>, <code>MoneyDeposited(100)</code>, <code>MoneyWithdrawn(30)</code>, <code>MoneyDeposited(50)</code>). Current state is derived by replaying events from the beginning (or from a snapshot).</p>
-          <p>This is the storage mechanism that implements the <strong>Event Sourcing</strong> pattern.</p>
-          <p>Dedicated event store databases include <strong>EventStoreDB</strong> (Greg Young's purpose-built event database), which organizes events into named streams (one stream per aggregate instance, e.g., <code>Order-42</code>). Event stores can also be implemented on top of PostgreSQL (append-only table with stream ID and sequence number), Apache Kafka (partitioned log with event retention), or DynamoDB (partition key = stream ID, sort key = sequence number).</p>
-          <p>Key concepts: <strong>Stream</strong> — a sequence of events for one aggregate instance; <strong>Event</strong> — an immutable fact that something happened, with a type, payload, and metadata; <strong>Projection</strong> — a read model built by replaying events and applying them to an in-memory or persisted state; <strong>Snapshot</strong> — a point-in-time capture of aggregate state to avoid replaying all events from the beginning.</p>
+          <p>An <strong>event store</strong> is an append-only persistence layer that records every domain event affecting an entity’s lifecycle instead of overwriting current state in place. Where a CRUD row might hold only the latest account balance, the store holds an ordered stream such as <code>AccountOpened</code>, <code>MoneyDeposited</code>, and <code>MoneyWithdrawn</code>; present state is derived by replaying those events from the start of the stream or from a stored snapshot.</p>
+          <p>It is the storage backbone of <strong>event sourcing</strong>, which Martin Fowler describes as persisting state changes as a sequence of events rather than as mutable rows (<a href="https://martinfowler.com/eaaDev/EventSourcing.html" rel="noopener noreferrer" target="_blank">Event Sourcing</a>). Events are grouped into <strong>streams</strong> (often one per aggregate instance), each carrying an immutable sequence number. <strong>Projections</strong> consume streams to build query-optimized read models; <strong>snapshots</strong> cache aggregate state so replay does not always begin at event zero.</p>
+          <p>Implementations range from purpose-built databases such as EventStoreDB to append-only tables in PostgreSQL, partitioned logs in Kafka used with disciplined retention, or key-ordered stores in DynamoDB. The interface matters more than the brand: atomic appends per stream, optimistic concurrency on expected version, and subscriptions for catch-up or live projection processing.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Traditional CRUD databases discard history — an UPDATE overwrites the previous value; a DELETE removes the record. Event sourcing preserves the complete history of every change, which is fundamentally valuable for: financial audit trails (regulatory compliance requires every change to account balances to be permanently recorded), debugging production issues (replay events to reproduce the exact state at the time of a bug), temporal queries ("what was the state of this order at 3pm yesterday?"), and building new read models from history (replay all events from the past 5 years to populate a new analytics view). Event stores also decouple the write model (events) from read models (projections), making it straightforward to build multiple different views of the same data.</p>
+          <p>Mutable tables discard history by default, yet audits, disputes, and post-incident analysis need to know how state evolved. Event stores make change the primary artifact: compliance can trace balance adjustments, engineers can reproduce pre-bug state by replay, and new read models can bootstrap from historical events without backfilling from opaque nightly dumps. Paired with <a href="../architecture-styles/cqrs.html">CQRS</a>, the write side stays event-centric while read sides optimize for each query pattern, as summarized on <a href="https://microservices.io/patterns/data/event-sourcing.html" rel="noopener noreferrer" target="_blank">microservices.io</a>.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>When audit trails are a regulatory or business requirement — financial services, healthcare, and compliance-heavy domains require complete, tamper-evident change history.</li>
-            <li>When you need temporal queries — "show me the state of this entity at any point in its history" is trivially answered by replaying to that point.</li>
-            <li>When the domain is complex and event-rich — domains like order management, trading, workflow orchestration, and collaborative editing naturally model as sequences of events.</li>
-            <li>When you want to build new read models from historical data — replay all past events against a new projection to bootstrap a new view without ETL pipelines.</li>
-            <li>When you're implementing Event Sourcing with CQRS — the event store is the canonical write-side storage for event-sourced aggregates.</li>
+            <li>When regulations or contracts require tamper-evident, chronological evidence of how business state changed.</li>
+            <li>When you must answer “what did we know at time T?” by replaying to a timestamp or version.</li>
+            <li>When the domain is naturally workflow- or transaction-centric (orders, payments, policies, collaborative documents).</li>
+            <li>When you anticipate new read models and want to rebuild them from the canonical event log instead of one-off migrations.</li>
+            <li>When CQRS separates command processing from queries and the write model is event-sourced.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Don't use event sourcing (and thus an event store) for simple CRUD domains — user profile management, product listings, and configuration storage have no meaningful event history; the added complexity is unjustified.</li>
-            <li>Don't use it if the team lacks familiarity with the event sourcing pattern — event stores have a steep learning curve; incorrect aggregate design (too-large aggregates, wrong event granularity) is hard to fix after events have been written.</li>
-            <li>Don't expect an event store to replace a query-optimized database — querying an event store for business data requires projections; direct event queries are not how the pattern is meant to be used.</li>
-            <li>Don't use it if GDPR right-to-erasure is a hard requirement without a plan — immutable event logs are at odds with the right to be forgotten; address this with event encryption-at-rest and key deletion, or crypto-shredding patterns.</li>
+            <li>Do not event-source simple CRUD settings or catalogs where history adds little value and consistency can live in a relational row.</li>
+            <li>Do not adopt without training: aggregate boundaries and event granularity are expensive to fix after production traffic appends immutably.</li>
+            <li>Do not query the store like a reporting database; business questions go through projections, materialized views, or warehouse exports.</li>
+            <li>Do not ignore erasure law: plan crypto-shredding, retention, or legal holds before writing irrecoverable PII into immutable streams.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Command handlers load an aggregate by replaying its stream (or snapshot plus tail), enforce invariants, append new events with expected-version checks, and publish to subscribers. Projectors maintain SQL, search, or cache read models asynchronously; UI reads those models and tolerates brief eventual consistency unless you add synchronous read-your-writes paths.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     cmd["Command handler"]
@@ -171,69 +171,70 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Complete audit trail: every state change is permanently recorded with who made it, when, and what the change was — regulatory compliance without additional instrumentation.</li>
-                <li>Temporal queries: derive the state of any aggregate at any point in its history by replaying events to that timestamp.</li>
-                <li>Multiple projections: the same event stream can be replayed against any number of read models — add a new read model at any time by replaying historical events.</li>
-                <li>Debugging: reproduce production bugs exactly by replaying the event stream that preceded the failure in a test environment.</li>
-                <li>Natural event publishing: events stored in the event store are also the domain events that drive integration — no dual-write problem between the write model and event bus.</li>
+                <li>Append-only streams provide a durable audit trail without bolting change-data capture onto CRUD tables after the fact.</li>
+                <li>Replay enables temporal reasoning and deterministic reproduction of past aggregate state.</li>
+                <li>Multiple projections can subscribe to the same streams, enabling new views without rewriting the write model.</li>
+                <li>Stored domain events can feed integration when outbox or log-based publishing is designed carefully.</li>
+                <li>Debugging benefits from replaying the exact event sequence that preceded a failure.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>High complexity: event sourcing requires deep understanding of aggregates, projections, eventual consistency, and snapshot strategies — not suitable for teams new to the pattern.</li>
-                <li>Query patterns limited: current state queries require reading projections (read models), not the event store itself — adds operational overhead of maintaining projections in sync.</li>
-                <li>Event versioning complexity: when events must change (schema evolution), upcasting strategies are required to handle old events read back from the store.</li>
-                <li>Snapshot management: aggregates with thousands of events require periodic snapshots to avoid full stream replay on every command — snapshot lifecycle must be managed.</li>
-                <li>GDPR/right-to-erasure conflict: immutable event logs cannot be easily erased; crypto-shredding (encrypting PII in events, then deleting the key) adds complexity.</li>
+                <li>Event sourcing, snapshots, and upcasting demand sustained design discipline and on-call familiarity.</li>
+                <li>Business queries depend on projection health; lag or bugs in projectors surface as “data loss” to users.</li>
+                <li>Schema evolution requires versioned events and upcasters before deploying breaking changes.</li>
+                <li>Long-lived aggregates need snapshot policies or replay cost dominates command latency.</li>
+                <li>Immutability complicates privacy erasure unless encryption and key destruction are planned up front.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Optimistic concurrency control</strong> is fundamental to event stores. When appending events, specify the expected stream version (the version number of the last event read when loading the aggregate). If the stream has been written to by another process since loading, the append fails with a concurrency conflict, and the command must be retried by reloading the aggregate and re-executing the business logic. EventStoreDB's append API accepts an <code>expectedRevision</code> parameter for this.</p>
-          <p>This prevents the lost-update problem without pessimistic locking.</p>
-          <p><strong>Event versioning and upcasting</strong>: domain events are serialized to JSON/Avro/Protobuf and stored. When the event schema must evolve (adding a field, renaming a field, splitting an event into two), old events in the store still use the old schema. An <em>upcaster</em> transforms old event versions into the current version during deserialization, before the aggregate processes them. Store the event type name and version (<code>OrderCreated_v2</code>) in the event metadata to route to the correct upcaster.</p>
-          <p>Design events for immutability: instead of changing events, create new event types when business semantics change significantly.</p>
+          <p>Use <strong>optimistic concurrency</strong> on append: pass the stream version observed at load time; reject conflicting writes so callers reload and retry. EventStoreDB exposes this as <code>expectedRevision</code>; relational implementations use unique constraints on (stream_id, sequence).</p>
+          <p>Version events explicitly (<code>OrderCreated_v2</code> metadata) and implement <strong>upcasters</strong> that translate older payloads during replay. Prefer additive evolution and new event types over mutating semantics of historical types. Schedule snapshot creation for hot aggregates and document retention for snapshots separately from events.</p>
+          <p>Connect projectors with idempotent handlers and monitor lag. For cross-service integration, pair the store with outbox or log publishing patterns described in Kleppmann’s treatment of logs and derived data in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a>.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Aggregate too large / stream too long:</strong> An aggregate that processes thousands of events per day accumulates millions of events; without snapshots, loading the aggregate requires replaying all events — latency grows unboundedly over time.</li>
-            <li><strong>Projection lag causing stale reads:</strong> A projection is built asynchronously from the event store; a client writes a command and immediately queries the read model; the projection hasn't caught up yet; the client sees stale state and reports a bug that isn't a bug.</li>
-            <li><strong>Upcaster not implemented for schema change:</strong> An event type is changed in a new deployment; old events in the store are deserialized with the new schema; missing fields cause null pointer exceptions or incorrect behavior during aggregate replay.</li>
-            <li><strong>Forgotten snapshot cleanup:</strong> Snapshots accumulate indefinitely; the snapshot store grows to hundreds of gigabytes; old snapshots are never cleaned up because there's no snapshot lifecycle management policy.</li>
-            <li><strong>Accidental event store mutation:</strong> A developer corrects a production bug by directly modifying event data in the event store; the immutability guarantee is broken; audit trail integrity is compromised.</li>
+            <li><strong>Aggregate too large / stream too long:</strong> Commands replay unbounded history because snapshots are missing or misconfigured.</li>
+            <li><strong>Projection lag causing stale reads:</strong> Users read query models before projectors catch up and file defects against eventual consistency.</li>
+            <li><strong>Upcaster not implemented for schema change:</strong> Deployments deserialize legacy events with new code and crash mid-replay.</li>
+            <li><strong>Forgotten snapshot cleanup:</strong> Snapshot storage grows without lifecycle rules while events remain the legal source of truth.</li>
+            <li><strong>Accidental event store mutation:</strong> Manual edits to stored events break audit guarantees and invalidate projections.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does the domain have genuine audit, temporal query, or event history requirements that justify the added complexity over CRUD with a change log?</li>
-            <li>Is the team experienced with event sourcing, or is there a training plan before adopting an event store in production?</li>
-            <li>Is an optimistic concurrency control strategy defined for all aggregate write operations?</li>
-            <li>Is an event versioning and upcasting strategy defined before the first event schema changes occur in production?</li>
-            <li>Is there a snapshot strategy (snapshot every N events, or on idle) for aggregates that accumulate many events?</li>
-            <li>Is there a GDPR/right-to-erasure compliance strategy (crypto-shredding for PII in events) if required by regulation?</li>
+            <li>Are audit, temporal, or multi-projection requirements real—not hypothetical convenience?</li>
+            <li>Does the team have a learning path for aggregates, CQRS, and projection operations before production cutover?</li>
+            <li>Is expected-version checking mandatory on every append?</li>
+            <li>Are upcasting rules defined and tested before the first incompatible event change ships?</li>
+            <li>Is there a snapshot cadence for long-lived aggregates?</li>
+            <li>Is erasure or retention for PII in events documented with legal review?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Banking core ledger:</strong> Every debit and credit to an account is stored as an immutable event. Account balance is derived by summing all events. Complete transaction history is available by definition. Regulatory audits can replay any account's full history.</li>
-            <li><strong>Order management system:</strong> OrderCreated, ItemAdded, CouponApplied, PaymentReceived, Shipped, Returned events for each order. New "order analytics" read model built by replaying all historical order events against a new projection. Customer service can see exactly what happened to any order.</li>
-            <li><strong>Collaborative document editing:</strong> Every text insertion, deletion, and formatting change is an event. The document at any revision is produced by replaying events. Collaborative conflict resolution applies operational transforms over the event stream.</li>
+            <li><strong>Illustrative scenario —</strong> A ledger records credits and debits as events; balance is a fold over the stream; auditors replay any account to the end of a reporting period.</li>
+            <li><strong>Illustrative scenario —</strong> An order service appends lifecycle events; customer support projections show the exact sequence that led to a failed shipment.</li>
+            <li><strong>Illustrative scenario —</strong> A collaborative editor stores operations as events and rebuilds document revisions by replay for conflict diagnosis.</li>
+            <li><strong>Case study —</strong> Fowler’s <a href="https://martinfowler.com/eaaDev/EventSourcing.html" rel="noopener noreferrer" target="_blank">Event Sourcing</a> essay and the <a href="https://microservices.io/patterns/data/event-sourcing.html" rel="noopener noreferrer" target="_blank">microservices.io</a> pattern page remain the common references for when to persist events as the system of record; Kleppmann’s log-oriented discussion in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">DDIA</a> connects the idea to stream processing and derived views.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="../architecture-styles/event-sourcing.html">Event Sourcing</a> — The architectural pattern that an event store implements as its storage layer.</li>
-            <li><a href="../architecture-styles/cqrs.html">CQRS</a> — Always paired with event sourcing: event store as write side, projections as read side.</li>
-            <li><a href="../communication-patterns/event-streaming.html">Event Streaming</a> — Event store events can be streamed to Kafka for integration with other services.</li>
+            <li><a href="../architecture-styles/event-sourcing.html">Event Sourcing</a> — Pattern the event store implements on the write path.</li>
+            <li><a href="../architecture-styles/cqrs.html">CQRS</a> — Separates command-side events from query-side projections.</li>
+            <li><a href="../communication-patterns/event-streaming.html">Event Streaming</a> — Integrates persisted events with brokers for cross-service consumers.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.eventstore.com/blog/what-is-event-sourcing" target="_blank" rel="noopener noreferrer">What is Event Sourcing? — EventStore</a></li>
-            <li><a href="https://www.eventstore.com/docs" target="_blank" rel="noopener noreferrer">EventStoreDB Documentation</a></li>
-            <li><a href="https://gregoryyoung.wordpress.com/2010/04/02/doing-cqrs-for-the-wrong-reasons/" target="_blank" rel="noopener noreferrer">Doing CQRS for the Wrong Reasons — Greg Young</a></li>
+            <li><a href="https://martinfowler.com/eaaDev/EventSourcing.html" rel="noopener noreferrer" target="_blank">Martin Fowler — Event Sourcing</a></li>
+            <li><a href="https://microservices.io/patterns/data/event-sourcing.html" rel="noopener noreferrer" target="_blank">microservices.io — Event sourcing pattern</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em> (logs, streams, derived data)</a></li>
+            <li><a href="https://www.eventstore.com/docs" rel="noopener noreferrer" target="_blank">EventStoreDB — streams, subscriptions, and concurrency</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

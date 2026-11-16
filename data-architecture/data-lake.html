@@ -101,31 +101,32 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Modern data lakes use open table formats — <strong>Delta Lake</strong> (Databricks), <strong>Apache Iceberg</strong> (Netflix, Apple), and <strong>Apache Hudi</strong> (Uber) — layered on top of Parquet/ORC files in object storage. These formats add ACID transactions, schema evolution, time travel (query historical snapshots), and incremental processing capabilities to raw object storage, addressing the reliability and consistency problems of the original "raw files on S3" data lake approach. They are a key enabler of the data lakehouse architecture.</p>
+          <p>A <strong>data lake</strong> is a centralized repository that stores raw, semi-structured, and structured data in native formats at scale, usually on object storage, and interprets schema at read time rather than at ingest (<em>schema-on-read</em>). Teams land events, files, database extracts, and model outputs in one durable tier so exploration, archival, and downstream modeling can proceed without forcing every source into a single warehouse schema first.</p>
+          <p>Mature lakes layer <strong>open table formats</strong>—<a href="https://docs.delta.io/latest/index.html" rel="noopener noreferrer" target="_blank">Delta Lake</a>, <a href="https://iceberg.apache.org/docs/latest/" rel="noopener noreferrer" target="_blank">Apache Iceberg</a>, and <a href="https://hudi.apache.org/docs/overview/" rel="noopener noreferrer" target="_blank">Apache Hudi</a>—over columnar files such as Parquet. Those formats add transaction logs, schema evolution, snapshot history, and safer concurrent writes than ad hoc file drops alone. Organizing data into zones (for example bronze raw, silver cleaned, gold curated in a <strong>medallion</strong> layout) keeps provenance clear and supports governance without abandoning cheap scale-out storage.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Traditional data warehouses require schema design before data can be ingested. In fast-moving environments where data scientists need to explore raw event logs, clickstream data, IoT sensor feeds, and semi-structured JSON before knowing what questions to ask, the schema-on-write model is a bottleneck. A data lake accepts any data in any format immediately, making it available for exploration while transformation and modeling work proceeds in parallel. Object storage also provides virtually unlimited capacity at very low cost ($0.02–0.025/GB/month for S3 Standard), far cheaper than cloud warehouse storage, making it practical to retain years of raw data that would be cost-prohibitive in a warehouse.</p>
+          <p>Warehouses and OLTP systems expect schemas and contracts before load. Product and data science teams often need months of raw clickstream, logs, sensor readings, and JSON exports to discover what to model. A lake absorbs that heterogeneity immediately while ELT, feature engineering, and warehouse loading catch up in parallel.</p>
+          <p>Object storage decouples capacity from database licensing and fits long retention of immutable history. Without catalogs, lineage, and quality gates, the same flexibility produces a <em>data swamp</em>—hence table formats, zone policies, and catalog integration as standard practice. The <a href="data-lakehouse.html">lakehouse</a> pattern extends these ideas by running warehouse-style SQL and ACID semantics directly on lake storage.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Storing raw event logs, clickstream data, IoT sensor readings, and semi-structured data (JSON, Avro) that may not have a defined schema at ingestion time.</li>
-            <li>As the raw ingestion layer feeding a downstream data warehouse — a "landing zone" that preserves the original data before transformation.</li>
-            <li>Machine learning model training where data scientists need access to full raw datasets to experiment with feature engineering.</li>
-            <li>Long-term archival of data that must be retained for compliance but is rarely queried and would be expensive to store in a warehouse.</li>
-            <li>Multi-modal data storage: combining structured tables, JSON documents, images, audio, and video in a single storage tier.</li>
-            <li>Ad-hoc, exploratory analysis by data scientists using Spark or Jupyter notebooks before productionizing queries.</li>
+            <li>When you must retain raw event logs, clickstream, IoT readings, or semi-structured payloads whose shape is still evolving at ingest time.</li>
+            <li>When the lake is the landing zone that preserves source fidelity before warehouse or lakehouse transformations run.</li>
+            <li>When ML and experimentation need full historical extracts and feature engineers work in Spark, notebooks, or SQL engines over the same files BI will eventually govern.</li>
+            <li>When compliance or science requires long archival of immutable raw data that is queried infrequently compared with curated marts.</li>
+            <li>When one storage tier must hold tables, documents, and large binary assets without forcing everything through a single relational schema.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>As a replacement for a data warehouse for structured BI reporting — without dimensional modeling and a semantic layer, query performance and metric consistency suffer.</li>
-            <li>When governance and access control are critical — a raw, unorganized data lake with no catalog or lineage tracking quickly becomes a data swamp where no one knows what data exists or whether it is trustworthy.</li>
-            <li>For operational transactional workloads — object storage has high per-operation latency and is not suitable for OLTP access patterns.</li>
-            <li>When all your data is structured and already modeled — the added complexity of a data lake is not justified if a data warehouse meets all requirements.</li>
+            <li>Do not treat an unmodeled lake as the sole BI platform; governed metrics and dimensional models still live in a <a href="data-warehouse.html">warehouse</a> or curated gold zone unless a lakehouse path is explicitly designed.</li>
+            <li>Do not skip catalog, ownership, and quality standards when access control and trust are non-negotiable.</li>
+            <li>Do not use object storage as an OLTP system of record; per-object latency and consistency models suit analytics and batch, not interactive row updates.</li>
+            <li>Do not add lake infrastructure when every workload is already well served by a warehouse and sources are stable, structured, and contract-bound.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Sources land in a bronze zone; silver applies validation and conformed schemas; gold exposes business-ready datasets for BI, ML, or warehouse load. Open table formats sit between raw files and query engines so compaction, partitioning, and ACID commits are explicit operations rather than tribal conventions.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     src["Sources"]
@@ -162,68 +163,70 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Accepts any data format without upfront schema design — ingest first, model later.</li>
-                <li>Extremely low storage cost: object storage is 10–50x cheaper per GB than cloud data warehouse storage.</li>
-                <li>Virtually unlimited scale with no capacity planning.</li>
-                <li>Compute/storage separation: run any query engine (Spark, Trino, Athena, Flink) against the same data without moving it.</li>
-                <li>Open formats (Parquet + Iceberg) avoid vendor lock-in; data is queryable by any engine that supports the format.</li>
+                <li>Ingest-first flexibility accepts diverse formats and defers modeling until consumption patterns are clear.</li>
+                <li>Object storage plus open file formats typically cost less per retained terabyte than keeping all history in warehouse-native storage.</li>
+                <li>Capacity grows with usage instead of upfront database sizing.</li>
+                <li>Compute and storage separate so Spark, Trino, Flink, and warehouse external tables can share one canonical copy of data.</li>
+                <li>Iceberg, Delta, and Hudi reduce lock-in because multiple engines read the same table metadata and Parquet payloads.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Data swamp risk: without a catalog, lineage, and quality standards, data becomes undiscoverable and untrustworthy.</li>
-                <li>Query performance is lower than a purpose-built warehouse without careful partitioning, file size optimization, and clustering.</li>
-                <li>Governance complexity: access control at file/object level is less fine-grained than table/column-level permissions in a warehouse.</li>
-                <li>Operational overhead: managing Spark clusters, table compaction, and file size optimization requires specialized expertise.</li>
-                <li>Consistency challenges: without open table formats, concurrent writers produce partially written datasets that corrupt downstream queries.</li>
+                <li>Without <a href="data-cataloging.html">catalogs</a>, lineage, and stewards, lakes become swamps where trust erodes faster than data accumulates.</li>
+                <li>Interactive BI latency usually trails purpose-built warehouses until partitioning, compaction, and caching are disciplined.</li>
+                <li>Fine-grained column security and row filters are harder to enforce consistently across engines than in a single warehouse RBAC model.</li>
+                <li>Operating distributed compute, compaction jobs, and format-specific maintenance requires platform skills beyond SQL-only teams.</li>
+                <li>Raw file writes without table formats risk partial outputs and conflicting writers corrupting downstream reads.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Adopt the <strong>Medallion architecture</strong> (Bronze/Silver/Gold) to organize lake data into quality tiers. Bronze contains raw ingested data in its original format, archived immutably. Silver applies validation, deduplication, and light transformations. Gold is curated, aggregated data ready for BI consumption or warehouse loading.</p>
-          <p>Use <strong>Apache Iceberg</strong> for new data lake tables due to its broad engine support (Spark, Flink, Trino, DuckDB, Snowflake external tables) and strong schema evolution. Iceberg's hidden partitioning avoids the common mistake of encoding partition columns into file paths (which requires rewriting all data to change partitioning).</p>
-          <p>File size management is critical for query performance: aim for Parquet files between 128MB and 512MB. Small files (many files under 1MB) degrade both write and query performance. Use Iceberg's <code>rewrite_data_files</code> procedure or Delta Lake's <code>OPTIMIZE</code> command to periodically compact small files. For GDPR right-to-erasure, use Iceberg's row-level delete capability to delete specific rows without rewriting entire partitions, then run <code>expire_snapshots</code> to remove old versions that contained the deleted rows.</p>
+          <p>Adopt <strong>medallion</strong> zones or an equivalent quality ladder: bronze keeps immutable landing copies, silver enforces contracts and deduplication, gold publishes curated datasets for BI and ML. Document promotion rules so consumers know which zone is authoritative for which metric.</p>
+          <p>Pick a table format deliberately. Iceberg emphasizes multi-engine catalogs and hidden partitioning; Delta integrates tightly with Databricks workflows; Hudi optimizes upserts and incremental pipelines. See the official guides for write semantics, compaction, and snapshot retention in <a href="https://iceberg.apache.org/docs/latest/" rel="noopener noreferrer" target="_blank">Iceberg</a>, <a href="https://docs.delta.io/latest/index.html" rel="noopener noreferrer" target="_blank">Delta Lake</a>, and <a href="https://hudi.apache.org/docs/overview/" rel="noopener noreferrer" target="_blank">Hudi</a>.</p>
+          <p>Schedule compaction and monitor file counts and average object size; streaming micro-batches often create small files that dominate metadata overhead. Register tables in a shared catalog, wire <a href="data-contracts.html">data contracts</a> at silver promotion, and classify PII before wide internal access. For erasure requests, combine row-level deletes supported by the format with snapshot expiration policies documented with legal retention limits.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Data swamp:</strong> Hundreds of datasets land in the lake with no catalog entries, no owners, and no quality documentation; data scientists spend more time finding and validating data than analyzing it.</li>
-            <li><strong>Small file problem:</strong> A streaming pipeline writes one Parquet file per event or per minute; after months, a table contains millions of tiny files; every query takes minutes just for file listing before any data is read.</li>
-            <li><strong>Concurrent writer corruption:</strong> Two Spark jobs write to the same S3 prefix simultaneously without using an open table format; one job overwrites the other's output, silently losing data.</li>
-            <li><strong>Uncontrolled PII ingestion:</strong> Raw data from production databases is ingested into the Bronze zone without PII masking; a data scientist with lake access inadvertently exposes customer data in a notebook exported to a shared drive.</li>
-            <li><strong>Schema drift:</strong> The source application adds a new JSON field or renames an existing one; the Spark job that reads the schema fails silently or loses the new field because the schema is hardcoded rather than inferred from the data catalog.</li>
+            <li><strong>Data swamp:</strong> Datasets accumulate without owners, descriptions, or quality checks, so every project rediscovers the same tables via Slack instead of the catalog.</li>
+            <li><strong>Small file problem:</strong> High-frequency writers emit tiny objects; planners spend disproportionate time listing metadata before reading data.</li>
+            <li><strong>Concurrent writer corruption:</strong> Jobs write to the same prefix without transactional table semantics and clobber each other's outputs.</li>
+            <li><strong>Uncontrolled PII ingestion:</strong> Production replicas land in bronze without classification; notebook exports leak sensitive columns because access was file-granular only.</li>
+            <li><strong>Schema drift:</strong> Hardcoded schemas in jobs ignore new JSON fields that the catalog already documents, silently dropping business-critical attributes.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have you adopted an open table format (Iceberg, Delta, Hudi) for ACID transactions and schema evolution rather than raw file writes?</li>
-            <li>Is the Medallion architecture (Bronze/Silver/Gold) or equivalent zone structure defined with clear data quality standards per zone?</li>
-            <li>Is a data catalog (AWS Glue Catalog, Apache Atlas, DataHub) populated with metadata for all datasets in the lake?</li>
-            <li>Is PII classified and masked at Bronze ingestion, or is column-level access control enforced?</li>
-            <li>Do you have a file compaction strategy to prevent small file accumulation?</li>
-            <li>Are data quality checks (row counts, null rates, freshness) automated and monitored?</li>
+            <li>Are new datasets written through Iceberg, Delta, or Hudi rather than unmanaged object prefixes?</li>
+            <li>Are bronze, silver, and gold (or equivalent) quality standards documented and enforced in CI?</li>
+            <li>Does every production table have a catalog entry, owner, and freshness expectation?</li>
+            <li>Is PII classified at or before silver, with access policies tied to classification?</li>
+            <li>Are compaction and snapshot maintenance jobs scheduled and alerted on failure?</li>
+            <li>Do automated checks cover row counts, null rates, and contract violations on promotion?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Media streaming analytics:</strong> A streaming service ingests 500GB/day of clickstream events as JSON into S3 Bronze. Spark ETL converts events to Parquet in Silver, partitioned by date and event type. Data scientists query Silver in Jupyter notebooks using PySpark to build recommendation model features.</li>
-            <li><strong>IoT platform:</strong> An industrial IoT platform ingests sensor readings from 100,000 devices into ADLS Gen2 using Event Hubs Capture (Avro format). Azure Databricks Delta Lake pipelines transform readings into curated Gold tables. Power BI connects to Gold for operational dashboards.</li>
-            <li><strong>Compliance archive:</strong> All application logs, audit trails, and transaction records are retained in immutable S3 Bronze for 7 years at $0.004/GB/month (Glacier). Queries for compliance investigations use Athena with Iceberg time travel to reconstruct the exact state of data at any point in the past.</li>
+            <li><strong>Illustrative scenario —</strong> A video platform lands raw clickstream JSON in bronze, converts to partitioned Parquet in silver with schema tests, and exposes session aggregates in gold for recommendation features and BI.</li>
+            <li><strong>Illustrative scenario —</strong> An industrial operator streams sensor Avro captures into a lake, normalizes readings in silver Delta tables, and serves operational dashboards from gold while ML retrains on the same history.</li>
+            <li><strong>Illustrative scenario —</strong> A regulated enterprise retains immutable log and audit bronze copies for years on cold storage tiers and uses Iceberg time travel during investigations to reproduce table state at a past timestamp.</li>
+            <li><strong>Case study —</strong> Netflix’s open sourcing of <a href="https://iceberg.apache.org/docs/latest/" rel="noopener noreferrer" target="_blank">Apache Iceberg</a> and Uber’s <a href="https://hudi.apache.org/docs/overview/" rel="noopener noreferrer" target="_blank">Apache Hudi</a> popularized table formats that brought warehouse-style reliability to object storage; Databricks’s <a href="https://docs.delta.io/latest/index.html" rel="noopener noreferrer" target="_blank">Delta Lake</a> followed a similar path for Spark-centric estates.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="data-warehouse.html">Data Warehouse</a> — Often co-exists with the data lake in a two-tier architecture where the lake feeds the warehouse.</li>
-            <li><a href="data-lakehouse.html">Data Lakehouse</a> — The architectural evolution that adds warehouse-like ACID semantics directly on the lake storage layer.</li>
-            <li><a href="data-cataloging.html">Data Cataloging</a> — Essential companion to prevent the data lake becoming a data swamp.</li>
+            <li><a href="data-warehouse.html">Data Warehouse</a> — Curated dimensional models and semantic layers often consume gold-zone lake outputs.</li>
+            <li><a href="data-lakehouse.html">Data Lakehouse</a> — Runs governed SQL and ACID semantics directly on lake storage.</li>
+            <li><a href="data-cataloging.html">Data Cataloging</a> — Discovery and lineage that keep lakes governable instead of opaque.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://iceberg.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Iceberg Documentation</a></li>
-            <li><a href="https://docs.delta.io/latest/index.html" target="_blank" rel="noopener noreferrer">Delta Lake Documentation</a></li>
-            <li><a href="https://www.databricks.com/glossary/medallion-architecture" target="_blank" rel="noopener noreferrer">Medallion Architecture — Databricks</a></li>
+            <li><a href="https://iceberg.apache.org/docs/latest/" rel="noopener noreferrer" target="_blank">Apache Iceberg — table spec, partitioning, and maintenance</a></li>
+            <li><a href="https://docs.delta.io/latest/index.html" rel="noopener noreferrer" target="_blank">Delta Lake — ACID tables on object storage</a></li>
+            <li><a href="https://hudi.apache.org/docs/overview/" rel="noopener noreferrer" target="_blank">Apache Hudi — incremental processing and upserts</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em> (batch analytics, derived data, storage engines)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

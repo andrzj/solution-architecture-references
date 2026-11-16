@@ -101,31 +101,34 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Major time-series databases by category: <strong>InfluxDB</strong> (purpose-built TSDB, InfluxQL + Flux query languages, line protocol ingestion); <strong>TimescaleDB</strong> (PostgreSQL extension — hypertables, continuous aggregates, native SQL); <strong>Prometheus</strong> (pull-based metrics collection for monitoring, PromQL, short retention, federation); <strong>VictoriaMetrics</strong> (Prometheus-compatible, high compression, long-term storage);</p>
-          <p><strong>Amazon Timestream</strong> (serverless managed TSDB); <strong>OpenTSDB</strong> (HBase-backed, for Hadoop ecosystems); <strong>QuestDB</strong> (high-performance columnar TSDB with SQL).</p>
+          <p>A <strong>time-series database (TSDB)</strong> optimizes for measurements stamped with time: values (fields) plus identifying dimensions (tags or labels). Workloads are dominated by sequential append, time-windowed aggregation, and downsampling—not by arbitrary many-to-many joins across business entities.</p>
+          <p>Kleppmann’s <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer"><em>Designing Data-Intensive Applications</em></a> explains why columnar, partitioned, and log-structured layouts win when reads scan ordered time ranges and writes arrive in bursts. Engines differ by protocol and ops model: <strong>Prometheus</strong> pull metrics with PromQL; <strong>InfluxDB</strong> line protocol ingest; <strong>TimescaleDB</strong> hypertables on PostgreSQL for SQL joins; <strong>VictoriaMetrics</strong>/<strong>Thanos</strong> for long-term Prometheus storage; <strong>Timestream</strong> managed; Cassandra-style partition+time clustering for DIY telemetry at extreme ingest.</p>
+          <p>Cardinality—the number of distinct series—is the hidden schema. Prometheus naming guides and Influx schema docs treat labels/tags as part of the physical model; mis-labeled dimensions explode memory and index size faster than raw point volume.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>General-purpose relational databases degrade badly on time-series workloads. A table receiving 1 million inserts per second from IoT sensors creates severe write amplification on B-tree indexes. Queries like "average CPU usage per 5-minute bucket for the last 24 hours across 10,000 hosts" require scanning billions of rows with GROUP BY on timestamp ranges — a pattern that relational databases handle poorly without specialized partitioning and columnar storage. Time-series databases solve this by: (1) organizing data in time-ordered chunks/shards that can be compressed and evicted independently, (2) maintaining time-indexed column stores that enable vectorized time-range scans, (3) providing native time-bucket aggregation functions, (4) automating data lifecycle (retention policies, downsampling older data).</p>
+          <p>Relational row stores treat each insert as index maintenance across multiple B-trees; million-points-per-second telemetry turns compaction and WAL pressure into operational incidents. Ad hoc <code>GROUP BY time_bucket</code> over billions of rows without chunking, compression, and retention policies yields unpredictable dashboard latency.</p>
+          <p>TSDBs encode lifecycle as product features: roll raw data to coarser resolutions, drop chunks past legal retention, compress cold segments, and answer “last hour” vs “last year” with different physical paths. That separation matches Fowler’s polyglot persistence story—metrics are not orders—and keeps OLTP schemas free of append-only noise.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Infrastructure and application monitoring: CPU, memory, request rate, error rate, latency percentiles — all time-series data generated continuously by every service.</li>
-            <li>IoT sensor data: temperature, pressure, vibration, power consumption from thousands or millions of devices writing data every second.</li>
-            <li>Financial market data: stock prices, order book updates, trade executions — high-frequency tick data that must be stored and queried by time range.</li>
-            <li>User behavior analytics: page views, click streams, funnel events where time-windowed aggregations (sessions per hour, conversion rate per day) are the primary query pattern.</li>
-            <li>When data retention policies and automatic downsampling of old data are important — storing raw sensor data at 1-second resolution forever is impractical; TSDBs automate rollup to 1-minute, then 1-hour resolution as data ages.</li>
+            <li>Service and infrastructure observability: histograms, counters, gauges scraped on intervals.</li>
+            <li>Industrial IoT and fleet telemetry with clear tag sets and range queries per device or site.</li>
+            <li>Market ticks and operational “event timelines” queried primarily by timestamp windows.</li>
+            <li>Product analytics where session metrics are pre-aggregated per minute/hour bucket—not row-level user CRUD.</li>
+            <li>Environments that require automated retention and tiered precision without bespoke cron DELETE jobs.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Don't use a TSDB for general application data — user accounts, orders, and relationships are not time-series data and the TSDB data model is a poor fit.</li>
-            <li>Don't use Prometheus for long-term storage — Prometheus has a local retention window (typically 15 days) and is designed for real-time monitoring, not historical analysis; use VictoriaMetrics, Thanos, or Cortex for long-term storage of Prometheus metrics.</li>
-            <li>Don't store high-cardinality labels in Prometheus — each unique combination of label values creates a new time series; 10 million unique user IDs as a label creates 10 million series, exhausting memory and causing OOM crashes.</li>
-            <li>Don't use a TSDB if your time-series queries need to JOIN with non-time-series data from a relational database — the data models don't compose; consider TimescaleDB (PostgreSQL-based) which allows standard SQL JOINs across hypertables and regular tables.</li>
+            <li>Authoritative business entities (users, contracts, inventory)—keep them relational; emit metrics separately.</li>
+            <li>Prometheus as multi-year archive without remote write/read—plan Thanos, Cortex, or VictoriaMetrics up front.</li>
+            <li>High-cardinality dimensions as labels (user ID, request ID, trace ID) in Prometheus or Influx tags.</li>
+            <li>Heavy cross-domain joins on every dashboard tile—TimescaleDB can join hypertables to SQL tables, but do not overload the metrics cluster with BI.</li>
+            <li>Strong cross-record ACID workflows—TSDBs favor idempotent writes and eventual consistency on rollups.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Agents and services expose metrics endpoints or push gateways; scrapers or collectors batch writes into the TSDB. Recording rules, continuous aggregates, or stream processors maintain coarser series; Grafana or alert managers read hot windows. Cold tiers may land in object storage via Thanos/Cortex sidecars. The diagram is the control loop; the fallback sketches Influx measurements versus Timescale hypertables.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     metrics["Metrics source"]
@@ -176,69 +179,72 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Write throughput: TSDBs handle millions of data points per second on commodity hardware via sequential disk writes and batch compression.</li>
-                <li>Query performance: time-range scans with aggregations that would take minutes in a relational DB execute in sub-seconds via columnar chunk storage and vectorized execution.</li>
-                <li>Compression: time-ordered numeric data compresses 10–100x better than general-purpose storage via delta encoding, gorilla compression (for floating-point time-series), and run-length encoding.</li>
-                <li>Automated data lifecycle: retention policies and continuous aggregates handle the full data lifecycle — raw precision for recent data, downsampled for historical — without application logic.</li>
-                <li>Native time functions: time-bucket aggregations, interpolation, rate of change, moving averages are built-in, avoiding verbose SQL constructs.</li>
+                <li>Ingest paths favor sequential I/O and batching—suitable for fleet-wide telemetry without rewriting OLTP schemas.</li>
+                <li>Chunk-level compression and encoding exploit temporal locality—often an order-of-magnitude space savings vs naive relational storage.</li>
+                <li>Built-in rollups and retention encode SLO vs cost tradeoffs explicitly in the datastore.</li>
+                <li>Query languages expose rates, histograms, and windows tuned for operators—not ad hoc SQL gymnastics.</li>
+                <li>Timescale and SQL hybrids allow guarded joins to registry tables when enrichment is occasional, not per-scrape.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Limited data model: primarily useful for numeric measurements with metadata tags; complex relationships, non-time queries, and general CRUD are unsupported or awkward.</li>
-                <li>Cardinality limits: high-cardinality tag combinations (e.g., per-user metrics) can exhaust TSDB index structures, causing severe performance degradation or OOM.</li>
-                <li>Late-arriving data: TSDBs are optimized for in-order writes; late-arriving data (out of order by more than the ingestion window) may be rejected or degrade performance.</li>
-                <li>Operational complexity: specialized systems require dedicated expertise; backup/restore, high availability, and clustering configurations differ from familiar relational patterns.</li>
-                <li>Limited ecosystem: fewer ORM integrations, BI tools, and query interfaces compared to SQL-based systems; queries require learning PromQL, InfluxQL, or Flux.</li>
+                <li>Data model rigidity: tags define identity; retroactive label changes effectively create new series.</li>
+                <li>Cardinality mistakes are painful to unwind—relabeling history is hard once indexes balloon.</li>
+                <li>Late or out-of-order points may be dropped or expensive depending on engine tuning.</li>
+                <li>Another cluster to secure, upgrade, and restore—with different HA patterns than PostgreSQL alone.</li>
+                <li>PromQL/Flux learning curve and fewer transactional semantics than mature OLTP engines.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>In InfluxDB, use the <strong>line protocol</strong> for bulk ingestion — it's significantly more efficient than JSON over HTTP. Line protocol format: <code>measurement[,tag_key=tag_value]... field_key=field_value[,field_key2=field_value2]... [unix_nanosecond_timestamp]</code>.</p>
-          <p>Example: <code>cpu_usage,host=web-01,env=prod usage_percent=72.4,load_avg=2.1 1705312800000000000</code>. Batch writes (1000+ points per HTTP request) and use of the <code>/api/v2/write</code> endpoint significantly increase throughput compared to single-point writes.</p>
-          <p>Keep tag cardinality below 100,000 unique combinations per measurement to avoid index memory exhaustion.</p>
-          <p>For <strong>TimescaleDB</strong>, enable chunk compression for chunks older than your query hot window: <code>ALTER TABLE metrics SET (timescaledb.compress, timescaledb.compress_segmentby = 'host')</code> and <code>SELECT add_compression_policy('metrics', INTERVAL '7 days')</code>. Compression typically achieves 90–95% space reduction for time-series numeric data. Continuous aggregates handle the downsampling lifecycle: define a 1-minute aggregate from the raw data and a 1-hour aggregate from the 1-minute aggregate; set refresh policies to keep each materialized view up to date automatically.</p>
+          <p>Design Prometheus labels before code merge: follow <a href="https://prometheus.io/docs/practices/naming/" target="_blank" rel="noopener noreferrer">metric and label naming</a> guidance—bounded labels like <code>service</code>, <code>env</code>, <code>region</code>; never unbounded <code>user_id</code> on hot paths. Use recording rules to pre-aggregate expensive queries.</p>
+          <p>Influx ingest should prefer line protocol batches on <code>/api/v2/write</code>; separate high-cardinality identifiers into fields if they must be stored, not tags, per Influx <a href="https://docs.influxdata.com/influxdb/v2/write-data/best-practices/schema-design/" target="_blank" rel="noopener noreferrer">schema design</a> documentation.</p>
+          <p>On TimescaleDB, set chunk intervals to match query windows, enable compression with segment-by columns that match filters, and schedule continuous aggregate refresh policies in infrastructure-as-code. For DIY Cassandra telemetry, pair time bucketing in the partition key with Cassandra’s time-ordered clustering guidance to avoid wide partitions.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Prometheus cardinality explosion:</strong> A developer adds a <code>user_id</code> label to a business metric; with 1 million users, Prometheus creates 1 million time series; memory usage spikes from 4GB to 40GB; Prometheus crashes with OOM.</li>
-            <li><strong>InfluxDB series cardinality:</strong> Similar to Prometheus — using high-cardinality values (request IDs, session IDs) as tags creates unbounded series cardinality; the inverted index for tags exhausts memory.</li>
-            <li><strong>Prometheus long-term storage gap:</strong> The team uses Prometheus for 2 years with 15-day retention; they realize they need 1-year trend analysis; the data doesn't exist; no long-term storage solution (Thanos/Cortex/VictoriaMetrics) was configured.</li>
-            <li><strong>Late data write failure:</strong> An IoT gateway buffers data during a network outage and retries; the 6-hour-old data is outside InfluxDB's default write consistency window; the data is rejected silently or causes shard write failures.</li>
-            <li><strong>Missing continuous aggregate refresh:</strong> A continuous aggregate refresh policy is not set; the materialized view becomes hours or days stale; dashboards show outdated data; the issue is only noticed when someone manually inspects refresh lag.</li>
+            <li><strong>Label explosion:</strong> Shipping per-tenant IDs as Prometheus labels during a feature flag experiment OOMs scrapers overnight.</li>
+            <li><strong>Retention amnesia:</strong> Teams discover year-over-year trends are impossible because remote write was never configured.</li>
+            <li><strong>Tag/field inversion:</strong> Storing floats as tags or IDs as tags in Influx multiplies series count without analytics benefit.</li>
+            <li><strong>Stale rollups:</strong> Continuous aggregates without refresh policies silently age; alerts fire on old p95 values.</li>
+            <li><strong>Backfill storms:</strong> Buffer flushes after outages write hours of out-of-order points, triggering rejections or compaction stalls.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the primary workload time-stamped sequential writes with time-range aggregation queries? If yes, a TSDB is appropriate.</li>
-            <li>What is the expected write throughput and cardinality? Ensure the chosen TSDB can handle the series cardinality without memory issues.</li>
-            <li>Is long-term storage needed beyond Prometheus's local retention window? Configure Thanos, VictoriaMetrics, or Cortex for remote write/read.</li>
-            <li>Are retention policies and downsampling schedules defined for each data stream to control storage growth?</li>
-            <li>Are all labels/tags in Prometheus kept to bounded cardinality (no per-request, per-user, or per-session labels)?</li>
-            <li>If using TimescaleDB, are chunk compression and continuous aggregate refresh policies configured and monitored?</li>
+            <li>Is every metric’s cardinality estimated with labels counted as schema columns?</li>
+            <li>Are retention tiers defined (raw, 5m, 1h) with owners and legal hold exceptions documented?</li>
+            <li>For Prometheus, is long-term storage architected before production—not after the first audit request?</li>
+            <li>Do dashboards query rollups for wide windows and raw series only for narrow incidents?</li>
+            <li>If using TimescaleDB, are compression lag and continuous aggregate freshness on-call monitors?</li>
+            <li>Are alerts defined on recording rules resilient to scrape gaps and label changes?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Infrastructure monitoring stack:</strong> Prometheus scrapes Kubernetes node and pod metrics every 15 seconds. Grafana dashboards query Prometheus for real-time metrics. VictoriaMetrics receives remote writes from Prometheus and stores 12 months of downsampled history for trend analysis and capacity planning.</li>
-            <li><strong>Industrial IoT platform:</strong> 50,000 sensors send temperature and vibration readings every second (50M data points/sec total). InfluxDB ingests via line protocol, retains 30 days of raw data, downsample to 1-minute averages retained for 1 year, and 1-hour averages retained permanently. Alerts trigger when temperature exceeds thresholds.</li>
-            <li><strong>Application performance monitoring:</strong> TimescaleDB stores request latency, error counts, and throughput for 200 microservices, partitioned by service and time. Continuous aggregates provide pre-computed p50/p95/p99 latency per 5-minute window. SQL JOINs with the service registry table enable context-enriched queries impossible in InfluxDB.</li>
+            <li><strong>Case study —</strong> The Prometheus ecosystem became the default Kubernetes metrics spine: short local retention, remote write to durable backends, Grafana for visualization.</li>
+            <li><strong>Illustrative scenario —</strong> A factory floor streams vibration and temperature via Influx line protocol, retains 30-day high resolution, and pages maintenance when rolling variance crosses thresholds.</li>
+            <li><strong>Illustrative scenario —</strong> An SRE team stores latency histograms in Timescale, maintains five-minute continuous aggregates, and joins service names from PostgreSQL only for executive dashboards.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="polyglot-persistence.html">Polyglot Persistence</a> — Time-series databases are typically one component in a polyglot persistence architecture.</li>
-            <li><a href="graph-databases.html">Graph Databases</a> — Another specialized database type for relationship-heavy data, contrasting with time-series' sequential access pattern.</li>
-            <li><a href="../observability/index.html">Observability &amp; Operations</a> — Time-series databases are the storage layer for metrics in the observability stack.</li>
+            <li><a href="polyglot-persistence.html">Polyglot Persistence</a> — Metrics storage sits beside OLTP, not inside it.</li>
+            <li><a href="data-modeling-patterns.html">Data Modeling Patterns</a> — Wide-column time ordering is the DIY alternative before adopting a TSDB.</li>
+            <li><a href="event-store.html">Event Store</a> — Domain events complement metrics for incident timelines.</li>
+            <li><a href="../observability/index.html">Observability &amp; Operations</a> — TSDBs anchor the metrics leg of observability.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
+            <li><a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer">Designing Data-Intensive Applications — Martin Kleppmann</a></li>
+            <li><a href="https://prometheus.io/docs/introduction/overview/" target="_blank" rel="noopener noreferrer">Prometheus — Overview</a></li>
+            <li><a href="https://prometheus.io/docs/practices/naming/" target="_blank" rel="noopener noreferrer">Prometheus Metric and Label Naming</a></li>
             <li><a href="https://docs.influxdata.com/influxdb/v2/write-data/best-practices/schema-design/" target="_blank" rel="noopener noreferrer">InfluxDB Schema Design Best Practices</a></li>
-            <li><a href="https://docs.timescale.com/use-timescale/latest/compression/" target="_blank" rel="noopener noreferrer">TimescaleDB Compression Documentation</a></li>
-            <li><a href="https://prometheus.io/docs/practices/naming/" target="_blank" rel="noopener noreferrer">Prometheus Metric and Label Naming Best Practices</a></li>
+            <li><a href="https://docs.timescale.com/use-timescale/latest/compression/" target="_blank" rel="noopener noreferrer">TimescaleDB Compression</a></li>
+            <li><a href="https://cassandra.apache.org/doc/stable/cassandra/developing/data_modeling.html" target="_blank" rel="noopener noreferrer">Apache Cassandra — Data Modeling</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
