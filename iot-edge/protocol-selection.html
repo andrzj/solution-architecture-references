@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Protocol Selection — SA References</title>
-  <meta name="description" content="MQTT, AMQP, CoAP, HTTP, and WebSocket — choosing the right IoT protocol.">
+  <meta name="description" content="IoT protocol selection: match MQTT, CoAP, AMQP, and HTTP/WebSocket to bandwidth, power, QoS, and gateway constraints for device-to-cloud messaging.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -88,7 +88,7 @@
     <nav class="breadcrumb" aria-label="Breadcrumb">
       <a href="../index.html">Home</a>
       <span class="breadcrumb__sep" aria-hidden="true">›</span>
-      <a href="index.html">IoT & Edge</a>
+      <a href="index.html">IoT &amp; Edge</a>
       <span class="breadcrumb__sep" aria-hidden="true">›</span>
       <span class="breadcrumb__current">Protocol Selection</span>
     </nav>
@@ -96,98 +96,136 @@
       <div class="article-body">
         <div class="article-header">
           <div class="article-header__tags">
-            <span class="badge badge--primary">IoT & Edge</span>
+            <span class="badge badge--primary">IoT &amp; Edge</span>
+            <span class="badge badge--muted">Connectivity</span>
           </div>
           <h1 class="article-header__title">Protocol Selection</h1>
-          <p class="article-header__desc">MQTT, AMQP, CoAP, HTTP, and WebSocket — choosing the right IoT protocol.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">Choose MQTT, CoAP, AMQP, or HTTP/WebSocket based on link budget, power, firewall rules, and how gateways bridge legacy plant-floor protocols.</p>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Matches transport to device constraints: <strong>MQTT</strong> for pub/sub over unreliable links, <strong>CoAP</strong> for UDP-constrained devices, <strong>AMQP</strong> for enterprise messaging, <strong>HTTP/WebSocket</strong> for firewall-friendly or browser-adjacent clients.</p>
-          <p>Choice affects broker design, QoS, power use, and firmware complexity.</p>
+          <p><strong>IoT protocol selection</strong> is the practice of matching a device-to-cloud (or device-to-gateway) transport to link characteristics: bandwidth, latency, power budget, packet loss, firewall traversal, and payload shape. Common choices include <strong>MQTT</strong> for lightweight publish/subscribe over TCP, <strong>CoAP</strong> for REST-like UDP exchanges on constrained radios, <strong>AMQP</strong> for enterprise messaging with rich reliability semantics, and <strong>HTTP/WebSocket</strong> where HTTPS-only egress or browser-adjacent clients dominate.</p>
+          <p>Protocol choice is not merely a library import—it fixes topic or URI conventions, quality-of-service behavior, reconnect storms, TLS handshake cost, and how gateways translate between plant-floor buses (Modbus, OPC UA) and cloud ingest. Teams standardize per product line but often operate protocol gateways at the edge when legacy devices cannot change stacks.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Wrong protocol drains battery or exceeds MTU on LPWAN.</p>
-          <p>Operators need predictable behavior under packet loss.</p>
+          <p>A protocol designed for a wired LAN will drain batteries on NB-IoT or LoRaWAN. Oversized JSON over a 512-byte MTU fragments, retries, and amplifies cost on cellular. Conversely, forcing every camera and gateway through bespoke UDP when HTTPS and WebSockets already pass corporate firewalls adds needless integration tax.</p>
+          <p>Operators need predictable behavior under intermittent connectivity: session persistence, retained messages, at-most-once versus at-least-once delivery, and how the cloud deduplicates duplicate sensor readings. Selecting the wrong default QoS or keep-alive interval shows up months later as broker CPU saturation or billion-row duplicate tables.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Battery sensors on cellular → MQTT QoS1 with small payloads.</li>
-            <li>Industrial PLC integration → OPC UA or AMQP bridges.</li>
-            <li>Firmware OTA control → MQTT or HTTP with resumable downloads.</li>
+            <li>Battery-powered sensors on cellular or LPWAN where small headers and configurable MQTT keep-alives preserve power.</li>
+            <li>Fan-in telemetry from thousands of devices to a central broker benefiting from MQTT topic hierarchies and QoS 1 defaults.</li>
+            <li>UDP-capable mesh or 6LoWPAN fabrics where CoAP observe/notify and blockwise transfers fit MTU limits.</li>
+            <li>Integration with existing AMQP or RabbitMQ enterprise buses requiring transactions or complex routing.</li>
+            <li>OTA manifests, REST configuration, or mobile companion apps where HTTPS and occasional WebSocket push are already standardized.</li>
+            <li>Industrial brownfield where an edge gateway translates OPC UA or Modbus to MQTT without retooling every PLC.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Greenfield REST-only when devices already speak MQTT fleet-wide.</li>
+            <li><strong>MQTT for large file transfer</strong> when resumable HTTP range downloads or dedicated blob protocols are simpler and cheaper.</li>
+            <li><strong>CoAP across the public internet</strong> without DTLS and congestion control when TCP-based MQTT over TLS already works on the same radio.</li>
+            <li><strong>HTTP polling</strong> for sub-second control loops when persistent MQTT or WebSocket subscriptions cut latency and header overhead.</li>
+            <li><strong>Introducing a second protocol</strong> because one team prefers REST while the fleet already speaks MQTT—prefer gateways or a single cloud ingress contract.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Constrained devices publish over MQTT or CoAP to a field gateway or directly to a managed IoT endpoint. The gateway terminates TLS, enforces topic namespaces, and may aggregate or compress payloads before cloud ingest. Richer edge nodes and mobile clients may use HTTPS for provisioning and WebSockets for command channels. Enterprise integrations consume the same event stream through AMQP bridges from the cloud bus.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    bw["Low bandwidth / lossy"]
-    lan["LAN / gateway"]
-    cloudpath["Cloud telemetry"]
-    mqtt["MQTT / CoAP"]
-    http["HTTP / WebSocket"]
-    bw --> mqtt
-    lan --> mqtt
-    cloudpath --> http</div>
+    sensor["Constrained sensor&lt;br/&gt;MQTT QoS1"]
+    mesh["Mesh node&lt;br/&gt;CoAP + DTLS"]
+    gw["Edge gateway&lt;br/&gt;protocol bridge"]
+    cloud["Cloud IoT endpoint"]
+    ent["Enterprise&lt;br/&gt;AMQP consumer"]
+    sensor --> gw
+    mesh --> gw
+    gw -->|MQTT mTLS| cloud
+    cloud --> ent</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>PROTOCOL FIT
-────────────────────────────────────────────
-  Constraint          Often choose
-  ─────────────────────────────────
-  Low power / lossy   MQTT (QoS1)
-  UDP / mesh          CoAP
-  Enterprise bus      AMQP
-  Simple firewall     HTTPS + WebSocket</code></pre>
+              <pre class="architecture-diagram__canvas"><code>Sensor (MQTT) ──┐
+Mesh (CoAP)   ──┼──► Edge gateway ──mTLS MQTT──► Cloud broker / IoT hub
+HTTP client   ──┘         │                              │
+                            └── optional AMQP bridge ─────► Enterprise bus</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Protocol fit: constrained links favor MQTT/CoAP; richer cloud paths may use HTTP or WebSockets.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Protocol selection: constrained links terminate on a gateway or IoT hub; enterprise systems may consume bridged AMQP feeds.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Right-sized wire overhead.</li>
-            <li>Ecosystem maturity (brokers, SDKs).</li>
+                <li>Right-sized protocols reduce bytes per reading and extend battery life on LPWAN.</li>
+                <li>Mature brokers and cloud IoT hubs provide auth, ACLs, and observability per protocol.</li>
+                <li>MQTT topic trees enable fleet-wide subscriptions without per-device coupling.</li>
+                <li>HTTP familiarity lowers onboarding for mobile and web configuration surfaces.</li>
+                <li>Gateways let you phase migrations without forklift firmware upgrades.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Multiple protocols need gateways.</li>
-            <li>MQTT topic design errors are hard to fix later.</li>
+                <li>Multiple protocols multiply SDKs, certificates, and on-call expertise.</li>
+                <li>MQTT topic mistakes (deep wildcards, tenant leakage) are costly to fix post-fleet.</li>
+                <li>CoAP and UDP stacks need careful DTLS session reuse to avoid handshake storms.</li>
+                <li>AMQP client libraries are heavier than MQTT on small MCUs.</li>
+                <li>Bridging layers add latency and another failure domain at the gateway.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Prototype with worst-case network simulator. Document topic namespace and payload schema version field.</p>
-          <p>See capability matrix with ops team before standardising.</p>
+          <p>Model worst-case links (high loss, 2G latency) in CI with network emulators before picking QoS defaults. Document a versioned payload schema with a <code>schemaVersion</code> field in every message body.</p>
+          <p>Prefer MQTT QoS 1 for telemetry unless you have idempotent processing and can afford QoS 0 loss. Reserve QoS 2 for rare control planes—its four-step handshake does not scale on massive fan-in.</p>
+          <p>Size payloads to radio MTU: binary encodings (Protobuf, CBOR) often beat JSON above a few hundred bytes. Split large diagnostics across chunked topics or HTTPS side channels.</p>
+          <p>Align keep-alive and session expiry with carrier NAT timeouts; stagger reconnect with jitter after outages to avoid broker thundering herds.</p>
+          <p>Run a capability matrix workshop with firmware, cloud, and ops: who owns topic design, cert rotation, and gateway firmware updates.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>QoS misuse:</strong> QoS2 everywhere overloads broker — use QoS1 default.</li>
-            <li><strong>Giant JSON:</strong> Payloads exceed radio MTU — binary or CBOR.</li>
+            <li><strong>QoS 2 everywhere</strong> saturating broker CPU while applications still lack idempotent writes.</li>
+            <li><strong>Oversized JSON blobs</strong> exceeding link MTU and silently dropping on UDP paths.</li>
+            <li><strong>Implicit last-will misuse</strong> marking thousands of devices offline on brief DNS blips.</li>
+            <li><strong>Topic wildcards granting tenants</strong> visibility into neighbor devices' command topics.</li>
+            <li><strong>Unbounded retained messages</strong> on dynamic topics filling broker storage.</li>
+            <li><strong>Protocol gateways without backpressure</strong> buffering indefinitely when cloud ingest lags.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are max payload size and frequency modeled against link budget?</li>
-            <li>Is TLS mandatory on every protocol path?</li>
+            <li>Are payload size, interval, and QoS modeled against link budget and carrier cost?</li>
+            <li>Is TLS mandatory on every protocol path (including CoAP DTLS)?</li>
+            <li>Is there a single documented topic or URI namespace with tenant isolation rules?</li>
+            <li>Do reconnect and keep-alive settings include jitter after fleet-wide events?</li>
+            <li>Can the stack be tested under simulated packet loss and high latency?</li>
+            <li>Is there a gateway fallback plan for legacy devices that cannot adopt the primary protocol?</li>
+            <li>Are schema versions and compatibility rules enforced at ingest?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Smart building:</strong> MQTT to cloud; BACnet gateway translates; CoAP on BLE mesh.</li>
+            <li><strong>Illustrative scenario —</strong> A smart-building vendor uses CoAP on a BLE mesh for room sensors, aggregates at a floor gateway, and publishes MQTT with QoS 1 to a cloud BACnet analytics pipeline.</li>
+            <li><strong>Illustrative scenario —</strong> Agricultural soil probes on NB-IoT send 40-byte CBOR readings over MQTT every six hours; configuration uses HTTPS because operators already have a mobile web console.</li>
+            <li><strong>Case study —</strong> The OASIS MQTT specification defines QoS levels and session semantics widely implemented by HiveMQ, EMQX, and managed cloud IoT services.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="iot-architecture.html">IoT Architecture</a> — Reference layers.</li>
-            <li><a href="telemetry-ingestion.html">Telemetry Ingestion</a> — Cloud ingest side.</li>
-            <li><a href="../communication-patterns/pub-sub.html">Pub/Sub</a> — Messaging pattern.</li>
+            <li><a href="iot-architecture.html">IoT Architecture</a> — Reference layers where transport choices slot in.</li>
+            <li><a href="telemetry-ingestion.html">Telemetry Ingestion</a> — Cloud-side scaling once devices publish.</li>
+            <li><a href="iot-security.html">IoT Security</a> — mTLS and ACL design per protocol endpoint.</li>
+            <li><a href="../communication-patterns/pub-sub.html">Publish/Subscribe</a> — Messaging pattern underlying MQTT fan-out.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://mqtt.org/mqtt-specification/" target="_blank" rel="noopener noreferrer">MQTT Specification</a></li>
+            <li><a href="https://mqtt.org/mqtt-specification/" target="_blank" rel="noopener noreferrer">MQTT — OASIS standard</a></li>
             <li><a href="https://datatracker.ietf.org/doc/html/rfc7252" target="_blank" rel="noopener noreferrer">CoAP — RFC 7252</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/iot/" target="_blank" rel="noopener noreferrer">Azure IoT architecture guide</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/iot/" target="_blank" rel="noopener noreferrer">Azure Architecture Center — IoT guide</a></li>
+            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/iot-lens/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected — IoT Lens</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IoT Security — SA References</title>
-  <meta name="description" content="IoT security architecture: per-device X.509 identity, mutual TLS, TPM/secure element, secure boot, OTA signing, certificate rotation, MQTT broker ACLs, and IoT network segmentation.">
+  <meta name="description" content="IoT security architecture layers device identity, mutual TLS, secure boot, signed OTA, broker ACLs, and network segmentation to protect fleets and block lateral movement.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -98,140 +98,61 @@
             <span class="badge badge--muted">Security</span>
           </div>
           <h1 class="article-header__title">IoT Security</h1>
-          <p class="article-header__desc">Security architecture for IoT systems: per-device X.509 identity, mutual TLS, TPM and secure elements, secure boot, OTA firmware signing, certificate rotation at scale, MQTT broker authentication, ACL design, and network segmentation.</p>
+          <p class="article-header__desc">IoT security architecture layers device identity, encrypted transport, trusted firmware, and network isolation so compromised sensors cannot pivot into IT or OT environments.</p>
           <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Core IoT security controls include: strong per-device identity using X.509 certificates (not shared passwords), mutual TLS (mTLS) for transport-layer authentication, hardware-backed secure storage (TPM 2.0 or discrete secure element) for private keys, cryptographically signed OTA firmware updates to prevent malicious firmware injection, and network segmentation to limit lateral movement from compromised devices.</p>
+          <p><strong>IoT security architecture</strong> is the set of controls that protect connected devices, gateways, and their cloud backends across the full lifecycle: factory provisioning, field operation, firmware updates, and decommissioning. It treats each device as an autonomous endpoint with its own cryptographic identity (typically an X.509 certificate), encrypts traffic with mutual TLS where feasible, stores private keys in hardware when risk warrants it, verifies every firmware image before execution, and confines device traffic to purpose-built network zones.</p>
+          <p>The pattern differs from securing traditional servers: devices are numerous, often unattended, run minimal operating systems without endpoint detection agents, and may remain in service for a decade. Security must therefore be baked into the product design—secure boot roots, signed OTA channels, broker policies bound to certificate subjects—rather than bolted on through fleet-wide password resets after deployment.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>IoT devices have been the entry point for some of the largest attacks in computing history. The Mirai botnet (2016) compromised 600,000+ IoT devices using default credentials and used them to launch the largest DDoS attack seen at the time. IoT devices are attractive targets because they are numerous, long-lived, have constrained OS images without EDR tooling, and are often forgotten once deployed. A compromised IoT device can exfiltrate data, serve as a pivot point for lateral movement onto OT or IT networks, or be enlisted in a botnet.</p>
+          <p>Large-scale attacks have repeatedly used IoT devices as entry points. Botnets built from cameras and routers with default credentials have generated record DDoS volumes. A single compromised gateway on a flat corporate LAN can expose billing systems, patient records, or factory controllers. Regulators and buyers now expect baseline device cybersecurity aligned with frameworks such as ETSI EN 303 645 and NIST IR 8259.</p>
+          <p>Cloud-centric IAM does not map directly onto microcontrollers: OAuth token exchanges and heavyweight SDKs exceed RAM and battery budgets. IoT security adapts enterprise ideas—unique identities, least-privilege access, signed artifacts—to constrained hardware and intermittent connectivity.</p>
 
           <h2 id="when-to-use">When to use</h2>
-          <p>All IoT systems require baseline security controls. The depth of controls should match the risk profile: a home smart bulb requires less security than a device on a hospital OT network or a device with physical access to safety controls. Use the PSA Certified framework, ETSI EN 303 645 (consumer IoT), or NIST IR 8259 (IoT security baseline) to calibrate control depth to device risk category.</p>
-
-                    <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Lab-only prototypes</strong> on isolated VLANs — defer fleet-grade PKI until production scale, but document the security gap.</li>
-            <li><strong>Applying cloud IAM patterns verbatim</strong> without adapting to device CPU and RAM limits — use device-appropriate lightweight auth.</li>
-            <li><strong>Security theatre controls</strong> (obfuscation only) without device identity, signed updates, and encrypted transport.</li>
+            <li>Production fleets where devices connect to shared brokers or cloud endpoints reachable from the public internet.</li>
+            <li>Products subject to consumer IoT regulations, medical device rules, or utility critical-infrastructure audits.</li>
+            <li>Deployments that bridge IT and OT networks (building automation, industrial gateways, smart grid collectors).</li>
+            <li>Any system where false telemetry or remote command injection could cause safety, financial, or privacy harm.</li>
+            <li>Firmware delivered over the air to devices you cannot physically re-flash after a compromise.</li>
           </ul>
 
-<h2 id="typical-architecture">Typical architecture</h2>
+          <h2 id="when-not-to-use">When not to use</h2>
+          <ul>
+            <li><strong>Disposable lab prototypes</strong> on air-gapped benches may defer full PKI until pilot scale—provided the gap is documented and production builds never reuse development credentials.</li>
+            <li><strong>Copying cloud service IAM verbatim</strong> onto devices without trimming token size, refresh logic, and crypto libraries for MCU constraints.</li>
+            <li><strong>Obfuscation or security-through-secrecy</strong> instead of device identity, signed updates, and encrypted transport—these fail once firmware is extracted.</li>
+            <li><strong>Uniform “maximum” controls</strong> on every SKU when a low-risk accessory does not justify TPM cost; calibrate depth to a documented risk tier instead.</li>
+          </ul>
+
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Identity anchors the stack: each device holds a unique certificate whose subject maps to registry metadata. The device presents that certificate during mutual TLS to a message broker or HTTP ingress. The broker (or cloud IoT hub) evaluates an attachable policy—allowed topics, client ID binding, connect rate—before accepting publishes. Parallel layers include secure boot and signed OTA, optional remote attestation from a TPM, and VLAN or micro-segmentation between device, gateway, and corporate networks. Security operations subscribe to connection and publish anomalies for revoked or cloned devices.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    cert["Per-device X.509 cert"]
-    tls["Mutual TLS to broker"]
-    policy["IoT policy&lt;br/&gt;topic ACL"]
-    monitor["Anomaly detection"]
-    cert --> tls --> policy --> monitor</div>
+    factory["Factory / HSM&lt;br/&gt;key + cert issue"]
+    device["Device&lt;br/&gt;TPM or secure element"]
+    broker["MQTT broker / IoT hub&lt;br/&gt;mTLS + ACL"]
+    cloud["Cloud services&lt;br/&gt;registry + OTA"]
+    iotvlan["IoT VLAN / segment"]
+    factory --> device
+    device -->|mTLS| broker
+    broker --> cloud
+    device --- iotvlan</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>
-PER-DEVICE X.509 IDENTITY
-──────────────────────────
-  Each device has a unique X.509 certificate signed by your root CA
-  Private key NEVER leaves the device (generated on-device or in factory HSM)
-  Certificate includes: deviceId (CN), device type (OU), manufacturer (O)
-  Certificate stored in: TPM 2.0 key slot, secure element, or eFuse-protected flash
+              <pre class="architecture-diagram__canvas"><code>Factory PKI / HSM ──► unique device cert + private key in secure storage
+                              │
+Device (secure boot) ──mTLS──► Broker / IoT hub (per-cert topic ACL)
+                              │
+                              ▼
+                    Registry, OTA signing service, anomaly monitoring
 
-  Why unique certs (not shared):
-  - Single compromised cert revocation does not affect other devices
-  - Enables per-device access control policies
-  - Audit trail: which device published what telemetry
-
-MUTUAL TLS (mTLS)
-──────────────────
-  Standard TLS: client validates server certificate
-  mTLS: server ALSO validates client certificate (device cert)
-  → Device is cryptographically authenticated at the transport layer
-  → Prevents spoofed devices from injecting false telemetry
-  → MQTT over mTLS: port 8883; AWS IoT Core, HiveMQ, EMQX
-
-  Policy attached to certificate (AWS IoT example):
-  Allow:  iot:Connect (clientId = ${iot:Certificate.Subject.CommonName})
-  Allow:  iot:Publish (topic = "acme/devices/${iot:Certificate.Subject.CommonName}/telemetry")
-  Allow:  iot:Subscribe (topic = "acme/devices/${iot:Certificate.Subject.CommonName}/commands")
-  → Device can ONLY publish to its own topic, not other devices' topics
-
-TPM 2.0 AND SECURE ELEMENTS
-─────────────────────────────
-  TPM 2.0 (Trusted Platform Module):
-  - Discrete chip (or firmware TPM on modern ARM SoCs)
-  - Hardware random number generator
-  - Key storage: private keys generated inside, never exportable
-  - PCR (Platform Configuration Registers): measure boot firmware, OS
-  - Remote attestation: prove to cloud that device booted known-good software
-
-  Secure Element (SE) / eSIM-style chips:
-  - OPTIGA Trust M (Infineon), ATECC608 (Microchip)
-  - Tamper-resistant hardware; physical attack detection
-  - Pre-provisioned at factory with device unique certificate
-  - I2C/SPI interface; suitable for resource-constrained MCUs
-
-SECURE BOOT
-────────────
-  Bootloader verifies firmware binary before executing it
-  Chain of trust:
-  ROM → immutable bootloader (root of trust)
-       → signed bootloader stage 2 (manufacturer key)
-       → signed application firmware (manufacturer key)
-  Any step with invalid signature: boot halts
-
-  Public key burned into eFuse or OTP flash at manufacturing (immutable)
-  Firmware signed with manufacturer private key (stored in offline HSM)
-
-OTA FIRMWARE SIGNING
-─────────────────────
-  Firmware binary signed with manufacturer private key before release
-  Device verifies signature before writing to flash or executing
-  Hash: SHA-256 of firmware binary
-  Signature: ECDSA-P256 (preferred; smaller than RSA for constrained devices)
-
-  Full verification flow:
-  1. Download firmware from CDN
-  2. Compute SHA-256 of downloaded binary
-  3. Verify ECDSA signature against manufacturer public key (stored in device)
-  4. Verify version > current version (prevent downgrade attacks)
-  5. Write to inactive partition
-  6. Bootloader re-verifies on next boot before executing
-
-CERTIFICATE ROTATION AT SCALE
-───────────────────────────────
-  Problem: 100k devices, certs expire in 3 years; rotate before expiry
-
-  Rotation flow:
-  1. Cloud generates new cert for device, stores as "pending" in registry
-  2. Cloud pushes new cert to device via shadow desired state or MQTT message
-  3. Device stores new cert in secure storage alongside old cert
-  4. Device reconnects using NEW cert, reports success via shadow
-  5. Cloud marks rotation complete, deactivates old cert
-  6. Cloud revokes old cert (adds to CRL / OCSP)
-
-  Automation: AWS IoT Device Advisor, custom Lambda + IoT Jobs
-
-MQTT BROKER AUTH & ACLs
-─────────────────────────
-  Authentication: mTLS (preferred) or username/password with JWT
-  Authorisation (ACL policy per cert):
-  - Publish: device can only publish to its own topic namespace
-  - Subscribe: device can only subscribe to its own command topic
-  - Connect: clientId must match certificate CN (prevents impersonation)
-
-IOT NETWORK SEGMENTATION
-──────────────────────────
-  IoT VLAN: segregate IoT devices from corporate LAN and OT network
-  Firewall rules:
-    IoT VLAN → IoT broker (port 8883): ALLOW
-    IoT VLAN → corporate LAN:          DENY
-    IoT VLAN → Internet (HTTPS/443):   ALLOW (for OTA downloads)
-    Corporate LAN → IoT VLAN:          DENY (manage via cloud, not direct)
-  → A compromised IoT device cannot reach internal services or pivot to IT/OT
-</code></pre>
+Network: IoT segment ──allow──► broker :8883, OTA CDN :443
+        IoT segment ──deny──► corporate LAN / OT controllers</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">IoT security: unique device certificates enable mutual TLS, fine-grained policies, and anomaly monitoring.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Layered IoT security: factory-rooted identity, mutual TLS to the broker, policy-bound topics, and segmented device networks.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -239,63 +160,75 @@ IOT NETWORK SEGMENTATION
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Per-device X.509 certs with mTLS provide strong cryptographic device identity — far more secure than username/password authentication.</li>
-                <li>TPM/secure element ensures private keys are never extractable from the device even with physical access.</li>
-                <li>Secure boot with OTA firmware signing prevents malicious firmware from being installed, even by an attacker with physical access.</li>
-                <li>Network segmentation limits blast radius: a compromised device is isolated from IT and OT networks.</li>
+                <li>Per-device certificates with mTLS authenticate endpoints at the transport layer—stronger than shared MQTT passwords.</li>
+                <li>Hardware-backed keys resist extraction even when an attacker has physical access to the board.</li>
+                <li>Signed secure boot and OTA block installation of unsigned or downgraded firmware.</li>
+                <li>Broker ACLs tied to certificate identity enforce least privilege on publish and subscribe paths.</li>
+                <li>Network segmentation confines a compromised sensor so it cannot scan internal servers.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>TPM 2.0 and discrete secure elements add component cost (~$0.50–$2 per device) — significant at scale for low-margin consumer IoT.</li>
-                <li>PKI management (CA, certificate issuance, rotation, CRL) adds significant operational overhead and is a potential single point of failure.</li>
-                <li>Certificate rotation at scale requires careful orchestration; a rotation failure can leave devices unable to connect.</li>
-                <li>Network segmentation requires VLAN-capable networking infrastructure, which may not be present in simple deployments.</li>
+                <li>Secure elements and TPMs add BOM cost and board complexity on price-sensitive consumer hardware.</li>
+                <li>Fleet PKI (issuance, rotation, revocation, CRL/OCSP) requires dedicated platform engineering.</li>
+                <li>Botched certificate rotation can disconnect large device cohorts until rollback or truck rolls complete.</li>
+                <li>Segmentation demands switch and firewall capabilities absent in simple home or SMB installs.</li>
+                <li>Attestation and OTA verification increase boot time and firmware size on the smallest MCUs.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Factory provisioning:</strong> The most secure approach is to generate the device private key inside the secure element or TPM at the factory, create a Certificate Signing Request (CSR), and have your PKI sign it — the private key never leaves the hardware. If using a factory HSM to pre-inject keys, ensure the HSM generates unique keys per device and that the provisioning line network is isolated. Audit the provisioning process as it is the root of your entire device identity chain.</p>
-          <p><strong>Downgrade attack prevention:</strong> OTA signature verification is necessary but not sufficient — an attacker could replay a legitimately signed but vulnerable old firmware version. Embed a monotonic version counter (ratchet) in firmware or in TPM NV storage; refuse to install any firmware with a version number equal to or less than the current value.</p>
+          <p><strong>Provisioning:</strong> Generate private keys inside the TPM or secure element, produce a CSR, and sign with an offline or HSM-protected CA. Never ship identical bootstrap credentials across a product line. Isolate the factory provisioning VLAN and audit every step—compromise here clones your entire fleet identity.</p>
+          <p><strong>Broker policies:</strong> Bind <code>clientId</code> and topic prefixes to certificate subject fields or registry attributes so a device cannot impersonate neighbors. Prefer topic layouts such as <code>{tenantId}/devices/{deviceId}/telemetry</code> and scope IAM policies to matching ARN or policy variables.</p>
+          <p><strong>OTA:</strong> Sign firmware with an offline key; verify hash and signature on device before swap. Pair signature checks with monotonic version counters or anti-rollback fuses so attackers cannot flash an older, vulnerable build.</p>
+          <p><strong>Rotation:</strong> Start campaigns well before expiry; stage new certificates alongside active ones; reconnect with the new cert before revoking the old. Use job or shadow mechanisms that report per-device success and halt batches on elevated failure rates.</p>
+          <p><strong>Monitoring:</strong> Alert on connections using revoked certs, duplicate client IDs, publish attempts outside ACL, and geographic or temporal anomalies relative to device type baselines.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Default credentials:</strong> Devices shipping with default username/password (admin/admin, user/1234) that are never changed represent the IoT security failure mode responsible for the most large-scale compromises (Mirai et al.).</li>
-            <li><strong>Hardcoded credentials in firmware:</strong> Embedding API keys, MQTT passwords, or cloud endpoint credentials in firmware binaries; these can be extracted by anyone who downloads the firmware update and decompiles it.</li>
-            <li><strong>No certificate expiry monitoring:</strong> Certificates expire silently, causing devices to stop connecting; monitor cert expiry across the fleet and initiate rotation campaigns 90 days before expiry.</li>
-            <li><strong>Flat IoT network (no segmentation):</strong> IoT devices on the corporate LAN with no firewall restrictions allow a compromised sensor to probe and attack internal services.</li>
+            <li><strong>Default or shared credentials</strong> left unchanged across thousands of devices—historically the fastest path to botnet recruitment.</li>
+            <li><strong>Secrets embedded in firmware images</strong> extracted after a public OTA download or JTAG debug session.</li>
+            <li><strong>Expired certificates</strong> discovered only when devices mass-disconnect; missing fleet-wide expiry dashboards.</li>
+            <li><strong>Flat networks</strong> placing cameras and HR databases on the same broadcast domain.</li>
+            <li><strong>Rotation without rollback:</strong> pushing a malformed cert bricking devices until field service replaces trust stores.</li>
+            <li><strong>Signed but unencrypted OTA</strong> on hostile networks allowing tampering or downgrade between CDN and device.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does every device have a unique X.509 certificate, not a shared credential?</li>
-            <li>Is MQTT transport secured with mTLS (not username/password)?</li>
-            <li>Are private keys stored in hardware (TPM 2.0 or secure element)?</li>
-            <li>Is secure boot enabled with the root of trust burned into immutable storage?</li>
-            <li>Are OTA firmware updates cryptographically signed and verified on device?</li>
-            <li>Are IoT devices on a segregated VLAN with firewall rules denying access to corporate and OT networks?</li>
+            <li>Does every production device have a unique credential—not a shared product-line certificate?</li>
+            <li>Is device-to-cloud transport encrypted with mutual TLS (or equivalent device-auth) on every path?</li>
+            <li>Are private keys non-exportable from TPM, secure element, or protected keystore?</li>
+            <li>Does secure boot verify a chain to an immutable manufacturer root of trust?</li>
+            <li>Are OTA packages signed, version-ratcheting, and downloaded over TLS?</li>
+            <li>Are broker ACLs tested so a device cannot publish to another device's command topic?</li>
+            <li>Is there a documented cert rotation and revocation runbook with fleet metrics?</li>
+            <li>Are IoT devices isolated from corporate and OT VLANs except explicitly allow-listed services?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Smart meter deployment (utility):</strong> 5M meters; ATECC608 secure element per device; factory provisioning with unique cert; mTLS to AMI head-end; OTA signed with HSM-held key; separate RF mesh network completely isolated from IT; certificate rotation every 5 years via automated Job.</li>
-            <li><strong>Industrial robot arm:</strong> TPM 2.0 for key storage; secure boot with manufacturer root of trust; OTA updates only accepted during scheduled maintenance windows (network access control); device on OT VLAN; mutual TLS to local MQTT broker with per-device ACL policy.</li>
+            <li><strong>Illustrative scenario —</strong> A utility deploys millions of smart meters: factory injection of secure-element keys, mutual TLS to the AMI head-end, dedicated RF mesh segments with no route to enterprise ERP, and five-year certificate rotation driven by cloud jobs with per-meter acknowledgement.</li>
+            <li><strong>Illustrative scenario —</strong> A factory robot controller uses TPM-backed keys, local MQTT with per-device ACLs, secure boot, and OTA restricted to maintenance windows when the safety PLC allows network access.</li>
+            <li><strong>Case study —</strong> AWS IoT Core documents X.509 client authentication, attachable policies, and jobs for fleet certificate rotation at scale.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="device-management.html">Device Management</a> — Certificate provisioning and rotation are core device management operations.</li>
-            <li><a href="iot-architecture.html">IoT Architecture</a> — Security controls layer on top of the core MQTT/cloud architecture.</li>
-            <li><a href="../security/index.html">Security Architecture</a> — Broader security patterns (zero trust, PKI, network segmentation) that underpin IoT security.</li>
+            <li><a href="device-identity.html">Device Identity</a> — Provisioning and attestation that underpin IoT security controls.</li>
+            <li><a href="device-management.html">Device Management</a> — Jobs, shadows, and lifecycle operations that execute rotation and OTA.</li>
+            <li><a href="iot-architecture.html">IoT Architecture</a> — Broader connectivity and data layers where security policies attach.</li>
+            <li><a href="../security/key-management.html">Key Management</a> — PKI, HSM, and signing practices shared with non-IoT systems.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://www.etsi.org/deliver/etsi_en/303600_303699/303645/02.01.01_60/en_303645v020101p.pdf" target="_blank" rel="noopener noreferrer">ETSI EN 303 645 — Cyber Security for Consumer IoT</a></li>
             <li><a href="https://nvlpubs.nist.gov/nistpubs/ir/2020/NIST.IR.8259.pdf" target="_blank" rel="noopener noreferrer">NIST IR 8259 — IoT Device Cybersecurity Capability Baseline</a></li>
-            <li><a href="https://docs.aws.amazon.com/iot/latest/developerguide/x509-client-certs.html" target="_blank" rel="noopener noreferrer">X.509 client certificates — AWS IoT Core</a></li>
+            <li><a href="https://docs.aws.amazon.com/iot/latest/developerguide/x509-client-certs.html" target="_blank" rel="noopener noreferrer">AWS IoT Core — X.509 client certificates</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/iot-edge/security" target="_blank" rel="noopener noreferrer">Microsoft — Azure IoT Edge security</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
