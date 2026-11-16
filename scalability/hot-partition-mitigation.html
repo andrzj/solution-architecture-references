@@ -103,6 +103,7 @@
           <h2 id="what-it-is">What it is</h2>
           <p>A <strong>hot partition</strong> (hot shard) is a logical or physical slice of a distributed store that receives far more read or write traffic than its peers. The rest of the cluster may have spare capacity, but requests keyed to that slice throttle, queue, or fail—capping effective throughput and inflating tail latency. Hot partitions undo the point of horizontal partitioning: you paid for scale-out and still hit a single choke point.</p>
           <p>Skew comes from partition-key choice (timestamps, monotonic IDs), popularity (viral products, celebrity accounts), or access patterns (everyone reads the same config document). Mitigation mixes <em>key design</em> (high-cardinality keys, salting, synthetic shard suffixes), <em>read path</em> changes (caching, replicas, materialized copies), and <em>platform knobs</em> (Azure Cosmos DB autoscale partition splits, DynamoDB on-demand/adaptive behavior within per-partition ceilings). Microsoft’s partition guidance and DynamoDB’s partition-key docs describe the same constraint: throughput and storage are ultimately bounded per physical partition.</p>
+          <p>Distinguish <strong>logical</strong> hot keys (one partition-key value) from <strong>physical</strong> hot partitions (one backend shard). Cosmos DB and DynamoDB map many logical keys to hash buckets; resharding or partition splits add physical capacity but cannot fix a single logical key that absorbs all traffic. When mitigation fails, <strong>resharding</strong>—repartitioning data onto a new key layout—requires dual-write, backfill, and traffic cutover similar to database migration.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Uniform hash distribution is a model, not a guarantee. Business data is power-law shaped: a few keys dominate QPS. Time-series workloads concentrate writes on “now.” Multi-tenant SaaS may place an entire tenant on one shard if the key is <code>tenantId</code> alone and one tenant is ten times larger than the median.</p>
@@ -126,58 +127,55 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Classify write vs read hotspots, then apply scatter, cache, or platform scale—often in combination.</p>
+          <p>Start from telemetry: Cosmos DB normalized RU consumption per partition-key range, DynamoDB CloudWatch <code>ConsumedWriteCapacityUnits</code> by key, or Cassandra nodetool tablehistograms. Write hotspots usually need scatter before scale; read hotspots often resolve with Redis or CDN in front of a single hot document. Platform autoscale and partition splits buy time, but sustained throttling on one logical key almost always ends in key redesign or a controlled resharding migration—not another RU/s click.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    req["Client read/write"] --> route["Partition router"]
-    route --> detect{"Hot key?"}
-    detect -->|no| even["Even partition"]
-    detect -->|write hot| wmit["Write mitigation"]
-    detect -->|read hot| rmit["Read mitigation"]
-    wmit --> salt["Salted / composite key"]
-    wmit --> time["Time bucket + shard suffix"]
-    rmit --> cache["Cache / CDN"]
-    rmit --> replica["Read replica / materialized copy"]
-    salt --> store[("Partitioned store")]
-    time --> store
-    cache --> store
-    replica --> store
-    even --> store
-    store --> throttle{"429 / throttle?"}
-    throttle -->|yes| scale["Raise RU/s or split"]
-    throttle -->|no| ok["SLO met"]</div>
+    hot["Hot partition absorbs all writes"]
+    salt["Key salting spreads writes"]
+    composite["Composite partition key"]
+    cache["Cache absorbs hot reads"]
+    adapt["Adaptive capacity borrows idle WCU"]
+    hot --> salt --> composite
+    hot --> cache --> adapt</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Hot Partition Mitigation Decision Flow
-═══════════════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>
+  Write Hotspot — Timestamp Key Problem:
+  ┌───────────────────────────────────┐
+  │ All writes → partition "2025-05"  │ ← 100% write load
+  │ Old partitions: idle              │ ← 0% write load
+  └───────────────────────────────────┘
 
-  Request ──▶ hash(partition key) ──▶ physical partition
-                    │
-         metrics: RU/s, throttles, key cardinality
-                    │
-        ┌───────────┴───────────┐
-        │                       │
-   Write hotspot            Read hotspot
-        │                       │
-   ┌────┴────┐             ┌────┴────┐
-   │ Salt /  │             │ Redis / │
-   │ composite│            │ Azure   │
-   │ key     │             │ CDN     │
-   └────┬────┘             └────┬────┘
-        │                       │
-        └───────────┬───────────┘
-                    ▼
-            Still throttling?
-              yes → split key space,
-                    autoscale RU/s,
-                    reassess partition key
+  Fix 1: Key Salting (write scatter)
+  Original key: "2025-05"
+  Salted key:   "2025-05#0" through "2025-05#N"
+  Write → randomly pick salt suffix
+  Read  → query ALL N suffixes and merge results
 
-  Write scatter example (time series):
-    pk = "{shardId}_{yyyyMMddHH}"  with shardId 0..15 round-robin
+  Fix 2: Composite Partition Key (DynamoDB)
+  Before: PK = "USER#celeb123"
+  After:  PK = "USER#celeb123#" + random(0,9)
+          → 10x more partitions for one hot user
+  Read:   fan out 10 queries, merge results
 
-  Read hotspot example:
-    product detail ──▶ Azure Cache for Redis (short TTL, jitter)
-                    ──▶ Cosmos DB on cache miss only</code></pre>
+  Fix 3: Read Hotspot — Cache Popular Items
+  ┌───────────┐    miss    ┌────────────┐
+  │  Request  │──────────►│  DB Shard  │ ← hot
+  │           │◄──────────│            │
+  └───────────┘           └────────────┘
+        │
+        ▼ (after first read)
+  ┌───────────┐    hit     ┌────────────┐
+  │  Request  │──────────►│  Redis     │ ← serves hot reads
+  │           │◄──────────│  Cache     │
+  └───────────┘           └────────────┘
+
+  DynamoDB Adaptive Capacity:
+  Partition A: 500 WCU  (provisioned)
+  Partition B: 500 WCU  (provisioned)
+  Actual load: A = 900 WCU, B = 100 WCU
+  Adaptive: borrows unused B capacity → A gets ~900 WCU
+          </code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Detect skewed keys, scatter writes or cache reads, then scale or split partitions if throttling persists.</figcaption>
           </figure>
@@ -202,6 +200,7 @@
                 <li>Platform autoscale cannot exceed per-partition physics—extreme skew still fails.</li>
                 <li>Partition-level metrics are harder to obtain than account-level dashboards suggest.</li>
                 <li>Resharding or key migration is costly once production data adopts a bad key.</li>
+                <li>Write scatter increases application complexity—merge logic, idempotency, and aggregate queries must understand salted layouts.</li>
               </ul>
             </div>
           </div>
@@ -211,6 +210,7 @@
           <p><strong>Write scatter:</strong> Append <code>#0…#N-1</code> salt buckets to logical keys or embed a write shard in the partition key for counters and time buckets. Pick N from measured hotspot ratio (10× load → at least 10 buckets). Reads that need the full logical aggregate fan out with bounded parallelism and merge in the app layer.</p>
           <p><strong>Azure Cosmos DB:</strong> Prefer high-cardinality partition keys; include tenant plus entity type when tenants vary in size. For provisioned throughput, enable autoscale on containers subject to hot keys; for serverless, throttling still occurs per partition—design keys accordingly. Use Azure Cache for Redis in front of point reads on hot documents; pair with <a href="cache-invalidation.html">cache invalidation</a> on writes.</p>
           <p><strong>Time series:</strong> Never use raw timestamp alone; combine <code>deviceId</code> or rotating <code>ingestShard</code> with time bucketing. For DynamoDB, add GSIs that spread query patterns; for Cosmos, model hierarchical keys so hot windows do not collapse to one logical partition.</p>
+          <p><strong>Resharding when keys are locked in:</strong> For DynamoDB, a new table with the corrected partition key plus DynamoDB Streams or AWS Glue backfill is the common path; cut reads over with dual-write and verify item counts. For Cosmos DB, changing partition keys on an existing container is not supported—create a sibling container, migrate with change feed or bulk executor, and repoint applications through feature flags. SQL sharded stores need coordinated range or hash boundary moves with brief read-only windows or dual-write reconciliation.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -219,6 +219,9 @@
             <li><strong>Cache stampede:</strong> Identical TTL on a viral object expires simultaneously; use jitter and probabilistic early refresh.</li>
             <li><strong>Account RU misread:</strong> Raising total RU/s without key redesign leaves throttling on the same physical partition.</li>
             <li><strong>Hot logical partition in SQL:</strong> Partitioned tables with RANGE on “current month” concentrate inserts—split ranges or switch to hash sub-partitioning.</li>
+            <li><strong>DynamoDB Adaptive Capacity exhaustion:</strong> Borrowing across partitions cannot exceed table-wide provisioned or on-demand ceilings; a viral key still saturates its physical partition.</li>
+            <li><strong>Cassandra tombstone pressure:</strong> Hot partitions with churning counters or frequent overwrites accumulate tombstones and slow reads—tune TTL, compaction, and avoid wide-column updates on the same partition key.</li>
+            <li><strong>Reshard cutover without dual-write:</strong> Migrated items missing during DNS or connection-string flip produce 404s or duplicate writes—reconcile with checksum audits before dropping the legacy container.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -229,6 +232,8 @@
             <li>Read hotspots use cache/CDN with TTL jitter and invalidation on update.</li>
             <li>429/throttle alerts tie to partition-key dimensions, not only account aggregates.</li>
             <li>Runbook exists for temporary RU/s scale plus permanent key migration.</li>
+            <li>Cosmos DB autoscale maximum RU/s and per-partition limits were validated against peak hot-key QPS in load tests.</li>
+            <li>Resharding plan defines backfill source, dual-write duration, rollback, and item-level verification before decommissioning the old layout.</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -236,6 +241,7 @@
             <li><strong>Illustrative scenario —</strong> RideRelay stores live driver location tiles in Cosmos DB; ingestion shards <code>{driverId}_{epochMinute}</code> with a rotating <code>writeSlot</code> suffix so flash traffic during a city-wide event spreads across 16 physical partitions instead of one.</li>
             <li><strong>Illustrative scenario —</strong> Northwind Logistics caches global rate tables in Azure Cache for Redis with 30-second TTL and tag invalidation on admin updates, eliminating repeated reads of a single configuration document that previously saturated one partition.</li>
             <li><strong>Case study —</strong> AWS and Microsoft both document partition-key design and throttling behavior for DynamoDB and Azure Cosmos DB; teams routinely combine high-cardinality keys with on-demand/autoscale throughput for unpredictable skew.</li>
+            <li><strong>Illustrative scenario —</strong> A ticketing platform stores per-event seat holds under <code>eventId</code> alone; onsale traffic throttles one Cosmos partition. The team salts writes as <code>{eventId}#{holdBucket}</code>, caches seat maps in Redis, and runs a weekend resharding into a new container keyed by <code>{eventId}#{venueSection}</code> with change-feed backfill before retiring the legacy layout.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

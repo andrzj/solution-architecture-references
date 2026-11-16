@@ -103,6 +103,7 @@
           <h2 id="what-it-is">What it is</h2>
           <p>A <strong>materialized view</strong> stores the result of a query as physical data. Unlike a virtual view, which re-runs its defining query on every access, a materialized view pays the computation cost at refresh time so reads become simple scans or index lookups. The explicit tradeoff is <em>staleness</em>: consumers see data as of the last successful refresh, not necessarily the latest write.</p>
           <p>The pattern appears at every layer. Azure SQL Database and PostgreSQL expose <code>CREATE MATERIALIZED VIEW</code> (or indexed views in SQL Server) for in-database rollups. Azure Synapse Analytics supports materialized views over dedicated SQL pools for warehouse-style pre-aggregation. In <a href="../architecture-styles/cqrs.html">CQRS</a>, the read side is an application-level materialized view: a projector consumes domain events from Event Hubs or a change feed and maintains a denormalized store—often Azure Cosmos DB, Azure Cache for Redis, or Azure AI Search—optimized for query shapes the write model does not serve. Microsoft documents this pairing as the <a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/materialized-view" target="_blank" rel="noopener noreferrer">Materialized View pattern</a> alongside the <a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs" target="_blank" rel="noopener noreferrer">CQRS pattern</a> on Azure Architecture Center.</p>
+          <p><em>Designing Data-Intensive Applications</em> frames the same idea as <strong>derived data</strong>: systems of record stay normalized and authoritative, while downstream consumers maintain purpose-built copies transformed for specific query patterns. Whether you refresh a warehouse rollup nightly, stream deltas through Azure Stream Analytics into a serving layer, or run an idempotent Cosmos projector off Event Hubs, you are trading duplication and bounded inconsistency for read latency and isolation from write-path contention.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Heavy joins, window functions, and cross-shard aggregations routinely take seconds on large datasets. Serving that work on every HTTP request or BI drill-down consumes CPU and I/O that OLTP traffic also needs. Materialized views amortize cost: refresh once (or incrementally), read many times at millisecond latency.</p>
@@ -126,49 +127,63 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Commands persist to a write store and emit events; projectors or scheduled refresh jobs maintain read-optimized materialized stores separate from OLTP.</p>
+          <p>Two refresh topologies dominate production Azure systems. In the <strong>database-native</strong> path, OLTP remains the system of record; Elastic Job, pg_cron, or Synapse pipelines run <code>REFRESH</code> on schedule while dashboards and internal APIs read the materialized table directly. In the <strong>CQRS</strong> path, command handlers append to Azure SQL or Cosmos transactional storage, publish through transactional outbox or change feed to Event Hubs, and stateless projectors upsert denormalized documents into a read tier sized independently—autoscale RU/s on Cosmos, dedicated search replicas, or Redis fronting hot keys. Both paths keep expensive computation off the request hot path; the diagram below shows how writes fan in while reads stay simple.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-            <div class="architecture-diagram__render mermaid">flowchart TB
-    cmd["Command API"] --> wh["Command handler"]
-    wh --> ws[("Write store")]
-    ws --> bus["Events / change feed"]
-    bus --> path{"Refresh path"}
-    path -->|CQRS| proj["Projector Function"]
-    path -->|DB-native| sched["Scheduled REFRESH"]
-    proj --> rs[("Materialized read store")]
-    sched --> rs
-    qa["Query API"] --> rs
-    wh -.->|read-your-writes optional| qa</div>
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    oltp["OLTP writes"] --> mv["Materialized view refresh"]
+    mv --> read["Fast summary queries"]
+    cmd["Command events"] --> proj["Read model projector"]
+    proj --> read</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>CQRS + Materialized Read Model (Azure-oriented)
-══════════════════════════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>
+  PostgreSQL MATERIALIZED VIEW:
 
-  Client ──command──▶ Command API ──▶ Write store (Azure SQL / Postgres)
-                           │
-                           └──▶ Domain events ──▶ Event Hubs / Service Bus
-                                            │
-                                            ▼
-                                    Azure Function projector
-                                            │
-                                            ▼
-                                    Read store (Cosmos DB / AI Search /
-                                    Redis / materialized SQL view)
+  -- Create a materialized view for sales summary
+  CREATE MATERIALIZED VIEW monthly_sales_summary AS
+  SELECT
+    date_trunc('month', order_date) AS month,
+    region,
+    SUM(amount)                     AS total_revenue,
+    COUNT(*)                        AS order_count,
+    AVG(amount)                     AS avg_order_value
+  FROM orders
+  JOIN regions USING (region_id)
+  WHERE order_date >= NOW() - INTERVAL '12 months'
+  GROUP BY 1, 2
+  WITH DATA;  -- populate immediately
 
-  Client ──query───▶ Query API ──▶ Read store only (no joins on write DB)
+  -- Index on the materialized view for fast queries
+  CREATE INDEX ON monthly_sales_summary (month, region);
 
-Database-native materialized view (Azure SQL / PostgreSQL)
-────────────────────────────────────────────────────────
-  CREATE MATERIALIZED VIEW sales_by_region AS … WITH DATA;
-  CREATE INDEX … ON sales_by_region (region, month);
+  -- Refresh options:
+  REFRESH MATERIALIZED VIEW monthly_sales_summary;          -- full refresh (blocks reads)
+  REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales_summary; -- non-blocking (needs UNIQUE index)
 
-  REFRESH MATERIALIZED VIEW CONCURRENTLY sales_by_region;
-  -- or SQL Server indexed view with SCHEMABINDING (different semantics)
+  -- Schedule refresh (pg_cron extension):
+  SELECT cron.schedule('*/15 * * * *',           -- every 15 minutes
+    $$REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_sales_summary$$);
 
-Refresh strategies
-  Scheduled (Elastic Job, pg_cron)  → predictable staleness
-  Incremental (CDC, change feed)    → lower write amplification
-  On-demand (ops / pipeline gate)   → controlled cutover</code></pre>
+  Refresh Strategies:
+  On-commit (triggers):    Refresh on every write → strong consistency, high write cost
+  Scheduled (cron):        Refresh periodically   → predictable staleness, low overhead
+  Incremental:             Apply only changes      → low refresh cost, complex implementation
+  On-demand:               Manual or API-triggered → controlled staleness
+
+  CQRS Read Model as Materialized View:
+  Command side → writes events to event store
+                  │
+                  ▼ event bus
+  Read model projector → receives OrderPlaced, OrderShipped events
+                         → maintains order_summary table (denormalized, fast reads)
+  Query side → reads from order_summary (simple SELECT, no joins)
+
+  vs complex OLTP query:
+  SELECT o.*, c.name, c.email, SUM(i.price) ...
+  FROM orders o JOIN customers c ... JOIN items i ... JOIN shipments s ...
+  → replaced by:
+  SELECT * FROM order_summary WHERE order_id = ?   -- 1ms, no joins
+          </code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Write path emits changes; projectors or scheduled refresh maintain a separate read-optimized materialized store for queries.</figcaption>
           </figure>
@@ -183,6 +198,7 @@ Refresh strategies
                 <li>CQRS read models let query and command tiers scale on different Azure SKUs.</li>
                 <li>Derived stores can be rebuilt from the event log after schema or projector bugs.</li>
                 <li>Indexes on materialized views support the same filter/sort paths as base tables.</li>
+                <li>Azure CQRS deployments can place read APIs in a separate region or subscription from command handlers, limiting blast radius during projector or refresh outages.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -193,13 +209,15 @@ Refresh strategies
                 <li>Non-concurrent refresh blocks readers; CONCURRENT refresh needs unique indexes and runs longer.</li>
                 <li>Projector or job failures leave silent drift unless freshness metrics are monitored.</li>
                 <li>Denormalization duplicates storage and complicates GDPR-style erasure across projections.</li>
+                <li>Ordering and causal semantics across multiple materialized targets require version vectors or monotonic sequence fields—DDIA’s stream-processing materialization guidance applies when one event updates several derived stores.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>In-database views:</strong> On PostgreSQL and Azure Database for PostgreSQL, prefer <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code> when unique indexes exist; otherwise schedule blocking refresh in maintenance windows. Azure SQL indexed views use <code>SCHEMABINDING</code> and different invalidation rules—validate against Microsoft guidance before treating them like PostgreSQL materialized views. In Synapse dedicated pools, size compute for refresh jobs separately from interactive queries.</p>
-          <p><strong>CQRS on Azure:</strong> Commands write to Azure SQL or Cosmos DB transactional containers; integrate events through transactional outbox tables, Change Data Capture, or Cosmos change feed. Azure Functions or containerized workers subscribe via Event Hubs or Service Bus and upsert read documents into Cosmos (partitioned for query keys), Azure AI Search indexes, or Redis caches. Keep projectors idempotent—at-least-once delivery is the default.</p>
+          <p><strong>In-database views:</strong> On PostgreSQL and Azure Database for PostgreSQL, prefer <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code> when unique indexes exist; otherwise schedule blocking refresh in maintenance windows. Azure SQL indexed views use <code>SCHEMABINDING</code> and different invalidation rules—validate against Microsoft guidance before treating them like PostgreSQL materialized views. In Synapse dedicated pools, size compute for refresh jobs separately from interactive queries; Microsoft recommends autostats and distribution hints when the defining query scans large fact tables.</p>
+          <p><strong>CQRS on Azure:</strong> Commands write to Azure SQL or Cosmos DB transactional containers; integrate events through transactional outbox tables, Change Data Capture, or Cosmos change feed. Azure Functions or containerized workers subscribe via Event Hubs or Service Bus and upsert read documents into Cosmos (partitioned for query keys), Azure AI Search indexes, or Redis caches. Keep projectors idempotent—at-least-once delivery is the default. For multi-region active-active, treat each read store as eventually consistent with the event log as the rebuild source of truth, matching Azure’s CQRS guidance on separate command and query data stores.</p>
+          <p><strong>Incremental and streaming paths:</strong> Where full refresh is too slow, maintain delta tables fed by CDC or append-only logs and merge incrementally—the same operational model as Flink or Spark structured streaming materialized into a serving tier. Even without a stream processor, batch “apply changes since watermark” jobs often beat nightly full recompute on fact tables above hundreds of millions of rows.</p>
           <p><strong>Freshness contract:</strong> Expose <code>last_projected_at</code> or version fields on API responses when lag matters. Measure p95 projection delay; alert when it exceeds the documented SLA. Document a full replay procedure: new read container, replay from offset zero or snapshot plus delta, alias cutover.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -209,6 +227,8 @@ Refresh strategies
             <li><strong>Projector drift:</strong> A handler bug writes wrong facet counts; search and OLTP disagree until someone notices. Run periodic reconciliation queries and support full replay.</li>
             <li><strong>Coupling commands to read stores:</strong> Command handlers query the search index to validate uniqueness—reintroduces latency and failure modes CQRS was meant to remove.</li>
             <li><strong>Storage underestimate:</strong> Wide denormalized projections exceed budget; compaction and TTL policies were never designed.</li>
+            <li><strong>Schema migration gap:</strong> Base-table DDL changes invalidate indexed views or break projector mappings; ship backward-compatible events and dual-write projections until cutover completes.</li>
+            <li><strong>Unbounded catch-up:</strong> After an outage, projectors or refresh jobs fall behind faster than they can replay; define maximum backlog depth and shed non-critical projections before user-facing SLOs fail.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -219,6 +239,8 @@ Refresh strategies
             <li>Monitoring alerts on last-success time and projection lag, not only error logs.</li>
             <li>CQRS read models are rebuildable from the event stream or change feed with a tested runbook.</li>
             <li>Storage, replay time, and erasure impact of denormalized copies are estimated.</li>
+            <li>Azure command and query tiers use separate connection strings, secrets, and autoscale policies so read spikes do not starve writers.</li>
+            <li>Periodic reconciliation jobs compare sampled aggregates between system of record and materialized store.</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -226,6 +248,7 @@ Refresh strategies
             <li><strong>Illustrative scenario —</strong> Meridian Commerce runs commands on Azure SQL and publishes <code>OrderPlaced</code> events to Event Hubs. A Function projector maintains an <code>order_summary</code> container in Cosmos DB; the storefront query API reads partition-key lookups in under 10 ms while the normalized write schema stays unchanged.</li>
             <li><strong>Illustrative scenario —</strong> A regional analytics team refreshes PostgreSQL <code>monthly_sales_by_region</code> every 15 minutes via Elastic Job; Power BI hits the materialized view instead of scanning 80 million fact rows on each report open.</li>
             <li><strong>Case study —</strong> Azure Architecture Center’s CQRS and Materialized View patterns describe separating command and query workloads with dedicated read data stores—common in catalog, IoT telemetry dashboards, and order-tracking UIs on Azure managed services.</li>
+            <li><strong>Illustrative scenario —</strong> A multi-tenant SaaS billing service writes invoice events to Event Hubs; projectors maintain per-tenant AR aging summaries in Cosmos and a warehouse materialized view in Synapse. Finance exports hit Synapse with 15-minute freshness while the customer portal reads Cosmos documents scoped by <code>tenantId</code> without joining normalized line-item tables.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
