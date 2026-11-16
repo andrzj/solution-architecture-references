@@ -58,6 +58,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "reliability",
         "scalability",
         "search",
+        "security",
     }
 )
 
