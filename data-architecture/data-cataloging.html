@@ -100,11 +100,10 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>When an analyst cannot find which table holds net revenue, a <strong>data catalog</strong> inventories schemas, lineage, owners, freshness, and glossary terms so discovery happens in search instead of tribal knowledge.</p>
-          <p>Key catalog capabilities: <strong>Data lineage</strong> — which upstream sources feed a table, and which downstream reports or models consume it; <strong>Business glossary</strong> — organization-wide definition of terms like "active customer" or "revenue" tied to the physical columns that implement them; <strong>Data classification</strong> — labeling columns as PII, sensitive, restricted; <strong>Data discovery</strong> — search and browse interface for finding datasets;</p>
-          <p><strong>Quality scores</strong> — freshness, completeness, accuracy metrics surfaced inline.</p>
-          <p>Common tools: <strong>Apache Atlas</strong> (open-source, Hadoop ecosystem, strong lineage); <strong>DataHub</strong> (open-source, LinkedIn-originated, modern REST/GraphQL API, pre-built connectors); <strong>Amundsen</strong> (open-source, Lyft-originated, discovery-focused); <strong>Alation</strong>, <strong>Collibra</strong>, <strong>Atlan</strong> (commercial);</p>
-          <p><strong>AWS Glue Data Catalog</strong>, <strong>Google Dataplex</strong>, <strong>Microsoft Purview</strong> (cloud-native managed).</p>
+          <p>A <strong>data catalog</strong> is a searchable inventory of datasets, schemas, pipelines, dashboards, and models across the organization. It captures <em>technical metadata</em> (where data lives, how it is shaped) and <em>business context</em> (what it means, who owns it, how sensitive it is) so consumers can discover and trust assets without tribal knowledge.</p>
+          <p>Core capabilities include <strong>discovery</strong> (search and browse), <strong>lineage</strong> (upstream sources and downstream consumers), a <strong>business glossary</strong> tying terms like “net revenue” to physical columns, <strong>classification</strong> for privacy and compliance, and <strong>quality or freshness signals</strong> surfaced next to each asset.</p>
+          <p>In Zhamak Dehghani’s <a href="../architecture-styles/data-mesh.html">Data Mesh</a> model, the catalog is part of the <em>self-serve data platform</em>: domain teams publish data products, and the catalog is how other domains find those products under <em>federated computational governance</em>. Contracts define producer obligations; the catalog records what exists, who owns it, and how it connects in the graph.</p>
+          <p>Implementations range from open source—<a href="https://datahubproject.io/docs/" rel="noopener noreferrer" target="_blank">DataHub</a>, <a href="https://atlas.apache.org/" rel="noopener noreferrer" target="_blank">Apache Atlas</a>, <a href="https://github.com/amundsen-io/amundsen" rel="noopener noreferrer" target="_blank">Amundsen</a>—to commercial and cloud-native catalogs (<strong>Alation</strong>, <strong>Collibra</strong>, <strong>Atlan</strong>, AWS Glue, Google Dataplex, Microsoft Purview).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>As organizations accumulate data across warehouses, lakes, operational databases, SaaS tools, and streaming systems, the cost of not knowing what data exists and how to trust it grows faster than the data itself. Analysts waste hours searching for the right table and asking colleagues for context. Duplicate datasets with subtly different definitions proliferate. A new GDPR deletion request arrives and no one knows all the systems where a user's data resides.</p>
@@ -114,7 +113,7 @@
           <ul>
             <li><strong>Growing data landscape:</strong> When the organization has more than a handful of data sources and analysts spend meaningful time finding and understanding data rather than analyzing it.</li>
             <li><strong>Regulatory compliance:</strong> GDPR, CCPA, HIPAA, and similar regulations require knowing where personal or sensitive data resides, who accesses it, and being able to execute deletion requests — a catalog with classification is foundational.</li>
-            <li><strong>Data mesh implementation:</strong> Each domain team publishes their data products with catalog metadata; the catalog is the discovery layer that makes domain data products findable across the organization.</li>
+            <li><strong>Data mesh implementation:</strong> Each domain publishes data products with owners, SLAs, and glossary links in the catalog—the discovery surface Dehghani describes for cross-domain analytics without a central modeling bottleneck.</li>
             <li><strong>ML governance:</strong> Track which training datasets, feature tables, and model versions were used together — required for model auditing, reproducibility, and detecting data drift.</li>
             <li><strong>Impact analysis:</strong> Before modifying a table schema or deprecating a dataset, lineage in the catalog shows all downstream consumers (reports, dashboards, pipelines) that will be affected.</li>
           </ul>
@@ -128,6 +127,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Connectors and pipeline metadata (dbt <code>manifest.json</code>, Spark lineage, warehouse audit logs) flow into a central metadata graph. Analysts and engineers search the catalog; stewards curate descriptions and classifications; compliance teams scope GDPR or retention work from lineage and PII tags. In mesh topologies, product entries link to <a href="data-contracts.html">data contracts</a> and owning domains.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     src["Data platforms&lt;br/&gt;DBs, lakes, BI"]
@@ -194,8 +194,10 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with <strong>automated metadata harvesting</strong> before manual curation: configure connectors to ingest schema, statistics (row counts, null rates, value distributions), and usage patterns (query logs identify popular and frequently-joined tables) from your primary data sources. Automated lineage from dbt models is particularly high-value — dbt's <code>manifest.json</code> exposes full model dependency graphs that catalogs like DataHub and Atlan ingest natively. Prioritize cataloging the 20% of datasets that 80% of queries touch, rather than attempting complete coverage before demonstrating value.</p>
-          <p>For GDPR compliance metadata, implement a <strong>data classification taxonomy</strong> at minimum: PII (directly identifies individuals), Quasi-PII (indirectly identifies when combined), Sensitive (financial, health, credentials), Internal, Public. Apply classifications at column level via a combination of automated pattern detection (regex for email, SSN, credit card formats), ML-based column name and sample value classifiers, and manual review by data stewards. Integrate classification into access control: classify first, then trigger access policy review for any newly discovered PII columns. Track classifications in version control alongside schema definitions rather than only in the catalog UI.</p>
+          <p><strong>Harvesting first:</strong> Ingest schema, profiling stats, and query-log popularity from warehouses, lakes, and orchestrators before mandating manual documentation. dbt lineage into DataHub or similar tools is high leverage because model dependencies are already explicit in Git.</p>
+          <p><strong>Stewardship:</strong> Assign domain owners per mesh-aligned product or subject area. Empty descriptions and stale owners are the main reason catalogs are abandoned—treat curation as an ongoing operating duty, not a launch project.</p>
+          <p><strong>Classification:</strong> Define a small taxonomy (PII, sensitive, internal, public) and apply at column level via pattern rules, sampling, and steward review. Wire classifications to access policies so discovery metadata drives enforcement, not slide decks.</p>
+          <p><strong>Data mesh alignment:</strong> Catalog entries for each data product should expose owner, contract status, freshness, and glossary terms—the metadata consumers need for self-serve use without filing tickets to a central team, matching Dehghani’s platform and governance principles.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -218,9 +220,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>GDPR deletion request fulfillment:</strong> A user submits a right-to-erasure request. The data privacy team queries the catalog for all assets classified as containing that user's PII, filtered by the user's user_id column. The catalog returns 14 tables across 5 systems with column-level lineage. Engineers execute targeted deletion scripts against each asset within the 30-day regulatory window.</li>
-            <li><strong>New analyst onboarding:</strong> A new data analyst joins and needs to find revenue data for a sales dashboard. They search "monthly recurring revenue" in the catalog's business glossary, find the canonical definition, click through to the physical columns in the <code>fct_subscriptions</code> table in Snowflake, see the dbt model that computes it, review the 4-day freshness SLA, and identify the data steward to contact with questions — all without asking a colleague.</li>
-            <li><strong>Schema change impact analysis:</strong> An engineer needs to rename a column in a frequently-used table. Before making the change, they use the catalog's lineage view to identify 12 downstream dbt models, 3 Looker dashboards, and 1 Airflow pipeline that reference that column — producing a precise migration checklist.</li>
+            <li><strong>Illustrative scenario —</strong> A privacy team receives a right-to-erasure request. Catalog search on PII classification and <code>user_id</code> columns returns tables across warehouses, lakes, and SaaS exports with lineage; engineers scope deletion scripts to listed assets within the regulatory window.</li>
+            <li><strong>Illustrative scenario —</strong> A new analyst searches the business glossary for “monthly recurring revenue,” lands on the canonical definition, follows links to physical columns and the dbt model, and sees freshness SLAs and steward contact—without a week of Slack archaeology.</li>
+            <li><strong>Illustrative scenario —</strong> Before renaming a shared column, an engineer opens downstream lineage in the catalog and lists affected dbt models, dashboards, and jobs for a coordinated migration.</li>
+            <li><strong>Case study —</strong> LinkedIn’s open-sourcing of <a href="https://datahubproject.io/docs/" rel="noopener noreferrer" target="_blank">DataHub</a> and Lyft’s <a href="https://github.com/amundsen-io/amundsen" rel="noopener noreferrer" target="_blank">Amundsen</a> popularized discovery-first catalogs integrated with modern data stacks; many mesh adopters pair them with domain-owned products and contract metadata.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -232,9 +235,12 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://datahubproject.io/docs/" target="_blank" rel="noopener noreferrer">DataHub Documentation — Open-Source Data Catalog</a></li>
-            <li><a href="https://atlas.apache.org/" target="_blank" rel="noopener noreferrer">Apache Atlas — Data Governance and Metadata Management</a></li>
-            <li><a href="https://github.com/amundsen-io/amundsen" target="_blank" rel="noopener noreferrer">Amundsen — open-source data discovery and metadata platform</a></li>
+            <li><a href="https://datahubproject.io/docs/" rel="noopener noreferrer" target="_blank">DataHub Documentation</a></li>
+            <li><a href="https://atlas.apache.org/" rel="noopener noreferrer" target="_blank">Apache Atlas</a></li>
+            <li><a href="https://martinfowler.com/articles/data-monolith-to-mesh.html" rel="noopener noreferrer" target="_blank">How to Move Beyond a Monolithic Data Lake to a Distributed Data Mesh — Zhamak Dehghani</a></li>
+            <li><a href="https://martinfowler.com/articles/data-mesh-principles.html" rel="noopener noreferrer" target="_blank">Data Mesh Principles — catalog and platform in mesh practice</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/purview/catalog-data-governance-purview" rel="noopener noreferrer" target="_blank">Microsoft Purview — unified catalog and governance</a></li>
+            <li><a href="https://github.com/amundsen-io/amundsen" rel="noopener noreferrer" target="_blank">Amundsen — discovery-oriented open-source catalog</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
