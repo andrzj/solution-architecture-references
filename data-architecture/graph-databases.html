@@ -101,32 +101,34 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A <strong>graph database</strong> stores <strong>nodes</strong>, <strong>edges</strong>, and properties, treating relationships as first-class data instead of foreign keys joined at query time. Label–property graphs (Neo4j, Amazon Neptune with Gremlin) and RDF triple stores (SPARQL) both target workloads where the question is "how are these entities connected?" — for example friends-of-friends recommendations or fraud rings sharing devices.</p>
-          <p>The defining storage property is <strong>index-free adjacency</strong>: each node keeps direct references to incident edges, so each hop is roughly a pointer chase rather than an index lookup plus join. On large, highly connected graphs, bounded multi-hop queries that take milliseconds in a graph engine can time out when expressed as deep recursive SQL.</p>
-          <p><strong>Cypher</strong> (Neo4j and compatible engines) expresses patterns with path-shaped syntax, for example <code>MATCH (a:User)-[:FOLLOWS]-&gt;(b:User)-[:FOLLOWS]-&gt;(c:User) WHERE a.name = $name RETURN c.name</code>. Kleppmann compares graph and relational models in <em>Designing Data-Intensive Applications</em>; adopt a dedicated graph store when measured traversal cost — not diagram aesthetics — justifies the extra operational surface.</p>
+          <p>A <strong>graph database</strong> persists data as <strong>nodes</strong> (entities), <strong>relationships</strong> (typed, directed edges), and <strong>properties</strong> on both. Queries are expressed as pattern matching over paths—who follows whom, which accounts share a device, how permissions inherit—rather than as repeated join clauses over junction tables.</p>
+          <p>Label–property graphs (Neo4j, Neptune with Gremlin) dominate operational microservices; RDF triple stores answer SPARQL for semantic web and ontology workloads. The performance story is <strong>index-free adjacency</strong>: storing pointers from each node to its incident edges makes each hop roughly O(1) in the local neighborhood, which Kleppmann contrasts with relational join planning in <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer"><em>Designing Data-Intensive Applications</em></a>. That matters when SLA-bound features need three to six hops across millions of vertices, not when you occasionally draw an ER diagram with many lines.</p>
+          <p><strong>Cypher</strong> (documented in the <a href="https://neo4j.com/docs/cypher-manual/current/" target="_blank" rel="noopener noreferrer">Neo4j Cypher manual</a>) makes paths legible: <code>MATCH (u:User {id: $id})-[:PURCHASED]-&gt;(p)&lt;-[:PURCHASED]-(peer) RETURN peer, count(p)</code>. Treat the graph as a specialized read/traversal engine alongside relational OLTP, per Fowler’s <a href="https://martinfowler.com/bliki/PolyglotPersistence.html" target="_blank" rel="noopener noreferrer">polyglot persistence</a>, not as a drop-in replacement for every foreign key.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Relational databases implement relationships as foreign keys joined at query time. Each join requires an index lookup; 4-hop traversals require 4 joins, each scanning intermediate result sets that grow multiplicatively. For highly connected data (social graphs, fraud rings, supply chains, knowledge graphs), the relational model's query cost scales with the number of hops, while graph databases' index-free adjacency keeps traversal cost constant per hop. The performance advantage is not marginal — benchmarks consistently show 10–1000x improvement for multi-hop graph queries, a difference that determines whether a feature is viable or not.</p>
+          <p>Relational schemas represent graphs indirectly: entities in tables, edges as join tables or foreign keys evaluated at query time. Each additional hop multiplies intermediate rowsets and planner work; deep recursive SQL on dense networks often misses latency budgets even with good indexes. Fraud, identity resolution, and social features ask relational questions that are graph-native in shape.</p>
+          <p>Graph stores invert the cost model: you pay operational complexity and narrower analytics primitives, but bounded traversals stay predictable as total graph size grows. Neo4j’s own graph modeling guidance and Kleppmann’s model comparison both emphasize measuring path queries on realistic degree distributions—not assuming “we have relationships” is sufficient justification.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Recommendation engines:</strong> "Products bought by people who bought X" — collaborative filtering traverses purchase relationships between users and products.</li>
-            <li><strong>Fraud detection:</strong> Identifying fraud rings by finding shared entities (phone numbers, addresses, devices) across account networks — rings are multi-hop cycles in the graph.</li>
-            <li><strong>Social networks:</strong> Followers, friends, connections, content graphs — the core data structure is inherently a graph.</li>
-            <li><strong>Knowledge graphs:</strong> Entities and their semantic relationships (company → subsidiary, person → employer, product → category → taxonomy) — queried for inference and search.</li>
-            <li><strong>Access control / permissions:</strong> Role hierarchy and permission inheritance — "does this user have permission X?" traverses a role-assignment and role-inheritance graph.</li>
+            <li>Multi-hop recommendations or similarity over explicit links (co-purchase, co-view, shared interests).</li>
+            <li>Risk and compliance graph analytics: shared identifiers, circular ownership, shell-company structures within N hops.</li>
+            <li>Authorization models where roles, groups, and resources form inheritance DAGs queried on every request.</li>
+            <li>Operational knowledge graphs where entities are discovered incrementally and linked without rigid upfront schemas.</li>
+            <li>Master data or lineage scenarios when impact analysis is “what downstream nodes depend on this edge?” more often than “sum revenue by month.”</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Don't use a graph database for tabular, aggregation-heavy analytics — graph databases are not OLAP systems; aggregating total revenue across millions of nodes is not their strength.</li>
-            <li>Don't use it if your data has few relationships or most queries don't traverse them — a product catalog where products aren't queried by relationship is better served by a document store.</li>
-            <li>Don't use a graph database as a replacement for a relational OLTP database — most graph databases have weaker transactional guarantees and are not designed for high-throughput record-level CRUD.</li>
-            <li>Don't assume graph database = better for all graph-like data — PostgreSQL with recursive CTEs handles tree traversals (organizational hierarchies, bill-of-materials) adequately for bounded depth without additional infrastructure.</li>
+            <li>Primary financial OLTP with strong cross-entity transactions—keep money and inventory in relational stores; project edges asynchronously if needed.</li>
+            <li>Flat reporting and warehouse aggregates—export events to columnar OLAP rather than scanning all nodes in-graph.</li>
+            <li>Shallow trees with depth caps (org charts, BOMs)—PostgreSQL recursive CTEs or <code>ltree</code> may suffice without new ops surface.</li>
+            <li>Catalog browsing with attribute filters only—document or relational indexes win when relationships are not in the query path.</li>
+            <li>Teams without capacity to govern label/property conventions—unconstrained graph schemas become unqueryable swamps.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Applications write and read traversals against the graph store while publishing domain events to keep search indexes and warehouses in sync. The mermaid diagram shows a minimal property-graph pattern; the text fallback adds Cypher examples and a common hub layout with read replicas and downstream consumers.</p>
+          <p>Command paths validate business rules in relational or document stores, then upsert nodes and edges into the graph for traversal-heavy reads. Change feeds (Kafka, CDC) keep search indices, warehouses, and feature caches aligned with graph writes—mirroring microservices.io guidance to keep integration event-driven rather than dual-writing every store synchronously. The diagram is a minimal property-graph motif; production topologies add read replicas, GDS batch jobs, and cached traversal results.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     u1["User Alice"]
@@ -178,68 +180,70 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Constant-time traversal: following a relationship is O(1) pointer dereference regardless of graph size — multi-hop queries don't degrade with data volume.</li>
-                <li>Expressive query language: Cypher pattern matching expresses complex graph queries intuitively with ASCII-art syntax that maps directly to the mental model of the domain.</li>
-                <li>Relationship-first model: relationships are first-class citizens with their own properties — "Alice follows Bob since Jan 2023 with notification preferences" is natural to model.</li>
-                <li>Algorithmic library: Neo4j GDS (Graph Data Science) provides PageRank, community detection, shortest path, centrality, and ML algorithms over the graph without custom implementation.</li>
-                <li>Flexible schema: nodes and edges can have arbitrary properties without schema migration — adding a new attribute to a node type doesn't require ALTER TABLE.</li>
+                <li>Path queries stay localized—latency depends on hop count and local degree, not on global table cardinality.</li>
+                <li>Relationship properties (weights, timestamps, trust scores) are queryable without rebuilding junction tables.</li>
+                <li>Cypher/Gremlin/SPARQL align code with whiteboard diagrams, easing reviews with risk and product teams.</li>
+                <li>Graph Data Science libraries ship centrality, community detection, and path algorithms without bespoke Spark jobs for moderate scale.</li>
+                <li>Schema evolution can be incremental—new labels and edge types land without wide ALTER TABLE migrations on monolithic schemas.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Limited OLAP capabilities: aggregate analytics (GROUP BY, SUM across large node sets) are not graph databases' strength — they require separate analytical stores.</li>
-                <li>Scaling writes: most graph databases (including Neo4j Community) run on a single writer; sharding graphs is fundamentally difficult because edges create cross-partition dependencies.</li>
-                <li>Operational complexity: separate graph database infrastructure to operate, monitor, and back up alongside existing relational stores.</li>
-                <li>Limited transactional throughput: graph databases optimize for complex read traversals, not high-frequency OLTP writes; not suitable as the primary operational store for high-volume transaction processing.</li>
-                <li>Ecosystem and tooling smaller: fewer ORMs, BI integrations, and developer familiarity compared to SQL databases.</li>
+                <li>Global aggregates and BI-style slicing belong in warehouses, not in traversal engines.</li>
+                <li>Write scaling is hard: edges bind partitions; many deployments run single-leader write paths.</li>
+                <li>Another datastore means backups, upgrades, on-call runbooks, and data residency review.</li>
+                <li>Supernodes and dense cliques break naive patterns; modeling and caching discipline are mandatory.</li>
+                <li>Smaller ORM and migration ecosystems—teams own query review, profiling, and regression tests.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>In Neo4j, always <strong>create indexes on node properties used in MATCH WHERE clauses</strong> to find the starting node of a traversal: <code>CREATE INDEX FOR (u:User) ON (u.id)</code>. Without this index, every traversal that starts with <code>MATCH (u:User {id: $id})</code> performs a full node scan. Once the starting node is found via index, subsequent traversal hops use index-free adjacency and are fast. Use <strong>EXPLAIN</strong> and <strong>PROFILE</strong> to inspect query execution plans and confirm index usage.</p>
-          <p>Avoid <code>MATCH (n) RETURN n LIMIT 10</code> — this scans all nodes; always start traversals from indexed properties.</p>
-          <p>For Amazon Neptune (managed graph database), choose between the <strong>TinkerPop/Gremlin</strong> interface (for LPG workloads, compatible with Neo4j data models) and <strong>SPARQL/RDF</strong> (for knowledge graphs with semantic web standards). Neptune Serverless scales automatically and is appropriate for variable or unpredictable graph query workloads. For read-heavy recommendation workloads, use Neptune read replicas and route read queries via the reader endpoint. Cache the output of expensive traversal queries (recommendations, permissions) in Redis or DynamoDB with a short TTL rather than re-traversing the graph on every request.</p>
+          <p>Index every anchor property used to start traversals—typically external IDs, emails, or account numbers. In Neo4j, <code>CREATE INDEX FOR (u:User) ON (u.id)</code> plus <code>PROFILE</code> on hot Cypher in CI catches plan regressions. Cap variable-length patterns (<code>*1..4</code>) and require selective predicates early in the match.</p>
+          <p>Model supernodes explicitly: fan-out edges through intermediate “bucket” nodes, precompute ranked neighbors, or serve celebrity adjacency from a cache. For Neptune, pick Gremlin for property graphs and SPARQL for RDF ontologies; use reader endpoints for recommendation read traffic and keep Gremlin/Cypher workloads within documented memory limits.</p>
+          <p>Synchronize graph projections from an authoritative relational source or event log—avoid dual manual updates. Pair with <a href="vector-databases.html">vector indexes</a> on Neo4j when hybrid semantic+structural retrieval is required (see Neo4j embeddings documentation). Document retention: GDPR deletes may require node/edge tombstoning strategies that relational cascades do not provide automatically.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Supernodes:</strong> A few nodes have millions of edges (a celebrity user in a social graph with 10M followers); traversals that touch the supernode create hot spots and slow down dramatically due to the large adjacency list that must be loaded.</li>
-            <li><strong>Missing start-node index:</strong> A Cypher query lacks an index on the entry-point property; Neo4j performs a full scan of all nodes of that label — a query that should take 10ms takes 30 seconds on a large graph.</li>
-            <li><strong>Using graph DB for aggregations:</strong> A developer queries Neo4j for <code>MATCH (o:Order) RETURN SUM(o.amount)</code>; the graph DB scans all Order nodes; this is 10–100x slower than the same query in a relational or columnar database.</li>
-            <li><strong>Unbounded traversal:</strong> A query pattern like <code>MATCH (a)-[*]->(b)</code> (variable-length traversal without bound) on a dense graph exponentially explores all reachable nodes; the query never returns or exhausts memory.</li>
-            <li><strong>No relationship index:</strong> Filtering traversals by relationship properties (e.g., <code>[:FOLLOWS {since: "2024"}]</code>) without an index on the relationship property causes full relationship scans.</li>
+            <li><strong>Unanchored MATCH:</strong> Queries without selective start predicates devolve into label scans—acceptable in dev, catastrophic in production.</li>
+            <li><strong>Unbounded variable paths:</strong> <code>-[*]-</code> patterns on social graphs explore the entire component and OOM the heap.</li>
+            <li><strong>Graph-as-warehouse:</strong> Revenue rollups and cohort metrics run in Cypher stall engineering until moved to OLAP.</li>
+            <li><strong>Supernode blindness:</strong> Influencer or hub nodes with millions of edges dominate latency; no ranking or sampling strategy exists.</li>
+            <li><strong>Stale dual writes:</strong> Edge updates in the graph without matching OLTP commits produce irreversible fraud false positives.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are the primary query patterns multi-hop relationship traversals where relational joins are known to be slow (measured, not assumed)?</li>
-            <li>Is the domain inherently graph-shaped — entities defined primarily by their relationships, not their attributes?</li>
-            <li>Are indexes created on all node properties used as starting-point filters in traversal queries?</li>
-            <li>Is there a strategy for supernodes (high-degree nodes) — either modeling them differently or caching their adjacency lists?</li>
-            <li>Is there a separate analytical store for aggregation queries that shouldn't run against the graph database?</li>
-            <li>Are all traversal queries bounded with relationship-hop depth limits to prevent unintended exponential exploration?</li>
+            <li>Do production SLIs include multi-hop queries that fail SQL budgets on realistic data volumes?</li>
+            <li>Is there a single source of truth for entity identity before graph projection?</li>
+            <li>Are traversal entry points indexed and covered by automated plan checks?</li>
+            <li>Is maximum hop depth documented per use case, with abuse limits for user-supplied patterns?</li>
+            <li>Are supernodes identified in degree histograms with mitigation designs approved?</li>
+            <li>Do analytics and compliance reads route to warehouse exports instead of the graph cluster?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Case study —</strong> <strong>LinkedIn</strong> popularized graph-shaped connection recommendations ("People You May Know") where two-hop traversals and ranking over shared edges are core product logic — workloads that are awkward to keep fast in normalized SQL at scale.</li>
-            <li><strong>Illustrative scenario —</strong> A payments team models accounts, phones, and devices as nodes; analysts query within three hops of a flagged account to surface rings that share identity attributes.</li>
-            <li><strong>Illustrative scenario —</strong> An authorization service stores roles, groups, and permission inheritance as a graph so "does user X have permission Y?" is a bounded traversal rather than a deep recursive CTE on every request.</li>
+            <li><strong>Case study —</strong> Professional networks built “people you may know” on two-hop connection signals—archetypal graph workload where join depth dominated SQL cost at scale.</li>
+            <li><strong>Illustrative scenario —</strong> A bank links accounts, merchants, and devices; investigators run bounded traversals from alert nodes to surface shared hardware within three hops.</li>
+            <li><strong>Illustrative scenario —</strong> A SaaS platform stores RBAC as a graph; permission checks become reachability queries with cached results for hot principals.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="polyglot-persistence.html">Polyglot Persistence</a> — Graph databases are a component in polyglot architectures, used alongside relational and document stores.</li>
-            <li><a href="vector-databases.html">Vector Databases</a> — Both are specialized databases for specific data types; graph for relationships, vectors for semantic similarity.</li>
-            <li><a href="data-modeling-patterns.html">Data Modeling Patterns</a> — Adjacency list and nested set patterns in relational databases as alternatives for tree data before adopting a graph DB.</li>
+            <li><a href="polyglot-persistence.html">Polyglot Persistence</a> — Graph stores rarely stand alone in microservice data planes.</li>
+            <li><a href="vector-databases.html">Vector Databases</a> — Semantic similarity complements structural adjacency in modern retrieval stacks.</li>
+            <li><a href="data-modeling-patterns.html">Data Modeling Patterns</a> — Relational adjacency lists remain valid before committing to a graph engine.</li>
+            <li><a href="event-store.html">Event Store</a> — Event streams can feed idempotent graph projectors.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.oreilly.com/library/view/designing-data-intensive-applications/9781491903063/" target="_blank" rel="noopener noreferrer">Designing Data-Intensive Applications — Martin Kleppmann (O'Reilly)</a></li>
+            <li><a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer">Designing Data-Intensive Applications — Martin Kleppmann</a></li>
             <li><a href="https://neo4j.com/docs/cypher-manual/current/" target="_blank" rel="noopener noreferrer">Neo4j Cypher Manual</a></li>
-            <li><a href="https://neo4j.com/graph-databases-book/" target="_blank" rel="noopener noreferrer">Graph Databases (Robinson, Webber &amp; Eifrem) — O'Reilly</a></li>
+            <li><a href="https://neo4j.com/graph-databases-book/" target="_blank" rel="noopener noreferrer">Graph Databases — Robinson, Webber &amp; Eifrem</a></li>
+            <li><a href="https://neo4j.com/docs/embeddings-and-vector-indexes/current/" target="_blank" rel="noopener noreferrer">Neo4j — Embeddings and Vector Indexes</a></li>
             <li><a href="https://docs.aws.amazon.com/neptune/latest/userguide/intro.html" target="_blank" rel="noopener noreferrer">Amazon Neptune User Guide</a></li>
             <li><a href="https://martinfowler.com/bliki/PolyglotPersistence.html" target="_blank" rel="noopener noreferrer">Polyglot Persistence — Martin Fowler</a></li>
           </ul>

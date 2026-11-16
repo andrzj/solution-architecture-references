@@ -101,33 +101,34 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>A <strong>vector database</strong> stores high-dimensional <strong>embeddings</strong> (dense float arrays produced by models) and answers <strong>approximate nearest neighbor (ANN)</strong> queries: "which stored vectors are closest to this query vector?" RAG, semantic search, and similarity recommendations depend on that lookup completing in milliseconds over millions of vectors — impractical with brute-force distance math.</p>
-          <p>Dedicated engines include <strong>Pinecone</strong>, <strong>Weaviate</strong>, <strong>Qdrant</strong>, and <strong>Milvus</strong>; extensions such as <strong>pgvector</strong>, <strong>Redis Vector Search</strong>, and <strong>Elasticsearch dense_vector</strong> add ANN indexes to existing stores. MongoDB Atlas Vector Search is another option when documents and vectors should live together. Dominant index families are <strong>HNSW</strong> (graph-based, high recall, higher memory) and <strong>IVF</strong> (cluster-quantized, faster build, tunable recall).</p>
-          <p>Kleppmann discusses full-text and secondary-index trade-offs in <em>Designing Data-Intensive Applications</em>; vector indexes are a specialized secondary structure where exact scans are too slow and ANN recall must be measured per domain rather than assumed.</p>
+          <p>A <strong>vector database</strong> (or vector index inside another store) persists <strong>embeddings</strong>—fixed-length float vectors from ML models—and answers <strong>approximate nearest neighbor (ANN)</strong> queries: given a query vector, which stored vectors are closest under cosine, dot product, or L2 distance?</p>
+          <p>Purpose-built systems include Pinecone, Weaviate, Qdrant, and Milvus; embedded options include <a href="https://github.com/pgvector/pgvector" target="_blank" rel="noopener noreferrer">pgvector</a> on PostgreSQL, Redis vector search, Elasticsearch <code>dense_vector</code>, and <a href="https://www.mongodb.com/docs/atlas/atlas-vector-search/vector-search-overview/" target="_blank" rel="noopener noreferrer">MongoDB Atlas Vector Search</a> when documents and vectors should co-locate. Indexes are dominated by <strong>HNSW</strong> (graph-based, high recall, RAM-heavy) and <strong>IVF</strong> (inverted lists with probes).</p>
+          <p>Kleppmann’s secondary-index discussion in <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer"><em>Designing Data-Intensive Applications</em></a> applies: ANN structures are maintenance-heavy, approximate, and must be validated on domain queries—not benchmark slogans.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Semantic similarity is not expressible as a relational query. A SQL <code>WHERE text LIKE '%machine learning%'</code> misses documents about "neural networks" or "AI" even though they're semantically related. Embedding models encode meaning in geometric space: semantically similar concepts cluster near each other. The nearest-neighbor search over embeddings retrieves semantically relevant results regardless of exact keyword overlap.</p>
-          <p>Exact nearest-neighbor search over millions of 1536-dimensional vectors requires billions of distance computations — intractable in milliseconds. ANN algorithms trade a small, tunable amount of recall for dramatically faster search: HNSW returns top-10 from 10 million vectors in under 10ms with 95%+ recall.</p>
+          <p>Keyword search fails when vocabulary diverges from user intent; embeddings map text, images, or audio into spaces where semantic nearness is geometric nearness. Exact k-NN over millions of 1k–3k dimensional vectors is CPU-prohibitive for interactive SLAs.</p>
+          <p>ANN indexes trade guaranteed optimality for throughput and latency, exposing knobs (<code>ef_search</code>, probes, quantization) that teams must tune against labeled evaluation sets. RAG architectures ground LLM outputs by retrieving chunks from this layer; without it, prompts hallucinate or omit policy-sensitive context.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Retrieval-Augmented Generation (RAG):</strong> Retrieve semantically relevant document chunks from a knowledge base to include as context in LLM prompts — the standard architecture for grounding AI responses in factual documents.</li>
-            <li><strong>Semantic search:</strong> Find content matching the intent of a natural language query rather than exact keyword matches — product search, document search, Q&amp;A systems.</li>
-            <li><strong>Recommendation systems:</strong> Find items similar to a user's interaction history or profile by embedding both users and items in the same vector space.</li>
-            <li><strong>Duplicate detection:</strong> Find near-duplicate images, code snippets, or documents by embedding and searching for high-similarity neighbors.</li>
-            <li><strong>Anomaly detection:</strong> Identify data points with no close neighbors in embedding space as potential anomalies or outliers.</li>
+            <li>RAG and enterprise search where natural-language questions must retrieve policy, runbooks, or product docs by meaning.</li>
+            <li>Recommendations based on embedding similarity of items, sessions, or multi-modal assets.</li>
+            <li>Deduplication and near-duplicate detection for media, code, or support tickets.</li>
+            <li>Anomaly cues when “far from all neighbors” signals novelty—paired with human review.</li>
+            <li>Hybrid retrieval stacks combining BM25 filters with vector ranking for SKU-heavy catalogs.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Don't use vector search for exact keyword lookup — a standard full-text search engine (Elasticsearch, PostgreSQL FTS) handles exact keyword matching more efficiently and with more precise recall.</li>
-            <li>Don't use a dedicated vector database if your vector dataset is small (&lt;1M vectors) — pgvector on PostgreSQL provides ANN search with acceptable performance without additional infrastructure.</li>
-            <li>Don't expect vector search alone to solve all semantic search problems — hybrid search (combining vector similarity with BM25 keyword relevance) consistently outperforms either approach alone.</li>
-            <li>Don't assume vector search returns "correct" results — ANN is approximate; there's no guarantee that the semantically most relevant result is always in the top-K returned; tune recall thresholds and test with domain-specific evaluation sets.</li>
+            <li>Exact identifier lookup (order ID, error code)—use btree or inverted indexes.</li>
+            <li>Tiny corpora where pgvector brute force or small HNSW on Postgres suffices.</li>
+            <li>Compliance-only search without recall evaluation—ANN false negatives are silent failures.</li>
+            <li>Teams unable to operate embedding refresh pipelines when source documents change.</li>
+            <li>Problems solved well by graph traversals or SQL joins alone—vectors add cost without lift.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Ingestion chunks source documents, embeds each chunk, and writes vectors plus metadata into the ANN index. At query time the question is embedded, top-<em>K</em> neighbors are retrieved (optionally filtered), and chunks feed a ranker or LLM prompt. The diagram shows that split pipeline; the fallback includes a pgvector schema sketch.</p>
+          <p>Content lands in object storage or CMS; a pipeline chunks text, calls an embedding API or local model, and upserts vectors with metadata (tenant, ACL, version). Query paths embed the question, run top-<em>K</em> ANN with metadata filters, optionally rerank, then pass chunks to an LLM or UI. Postgres with pgvector can colocate transactional metadata; larger corpora split search tier from OLTP. The diagram captures the split ingest/query loop; the fallback sketches pgvector DDL.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     docs["Documents"]
@@ -181,68 +182,69 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Semantic retrieval: finds conceptually relevant content regardless of exact terminology — critical for natural language interfaces and recommendation quality.</li>
-                <li>Millisecond search over millions/billions of vectors: HNSW indexes provide sub-10ms top-K search with 95%+ recall, enabling real-time applications.</li>
-                <li>Metadata filtering: most vector databases support filtering by metadata (date, category, tenant ID) combined with vector search — efficient hybrid queries without post-processing.</li>
-                <li>Multi-modal: modern vector databases (Weaviate, Milvus) support images, audio, and text embeddings in the same index — cross-modal similarity search.</li>
-                <li>Pluggable embedding models: the vector database is model-agnostic; you can upgrade the embedding model by re-embedding your corpus without changing the database infrastructure.</li>
+                <li>Captures intent and synonymy that keyword indexes miss—essential for conversational interfaces.</li>
+                <li>ANN indexes deliver interactive latency at million-plus scale when tuned.</li>
+                <li>Metadata-filtered vector search supports tenant isolation and ACL-aware retrieval.</li>
+                <li>Model upgrades are localized to re-embedding jobs; storage layout can remain stable.</li>
+                <li>Colocated pgvector reduces moving parts for moderate corpora already on PostgreSQL.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Approximate, not exact: ANN search may miss the true nearest neighbor; recall must be validated for each application with domain-specific test sets.</li>
-                <li>High memory footprint: HNSW indexes store graph edges in memory; 1 million 1536-dim float32 vectors ≈ 6GB of raw vectors + 2–4x HNSW index overhead.</li>
-                <li>Embedding freshness: when source documents are updated, their stored embeddings become stale; update pipelines must re-embed and re-index changed content.</li>
-                <li>Chunking strategy sensitivity: RAG quality depends heavily on how documents are chunked — too small loses context, too large exceeds prompt limits; optimal chunking is domain-specific.</li>
-                <li>Embedding model lock-in: switching embedding models requires re-embedding and re-indexing the entire corpus — a significant operational burden for large datasets.</li>
+                <li>ANN recall gaps are invisible without labeled eval harnesses.</li>
+                <li>HNSW RAM footprint scales superlinearly—capacity planning is non-optional.</li>
+                <li>Chunking and embedding version choices dominate RAG quality more than index brand.</li>
+                <li>Re-embedding entire corpora on model changes is a scheduled migration, not a toggle.</li>
+                <li>Distance metric mismatches silently degrade ranking until indexes are rebuilt.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For pgvector's HNSW index, tune <code>m</code> (number of bi-directional links per node, default 16) and <code>ef_construction</code> (candidate list size during index build, default 64) for recall vs. memory tradeoff. Higher <code>m</code> values (32–64) improve recall at the cost of more memory. At query time, set <code>SET hnsw.ef_search = 100</code> (default 40) to increase candidate exploration for better recall on important queries.</p>
-          <p>For IVF_FLAT indexes in pgvector, set <code>lists</code> to approximately <code>sqrt(N)</code> where N is the number of rows, and <code>probes</code> to 10–20% of lists at query time.</p>
-          <p>Always benchmark recall on your specific data and query distribution — synthetic benchmarks don't represent domain performance.</p>
-          <p>For production RAG systems, implement <strong>hybrid search</strong> (vector + BM25 keyword): retrieve candidate documents using both methods, then combine scores using Reciprocal Rank Fusion (RRF) or a learned re-ranker. This handles cases where exact keywords are more discriminative than semantic similarity (specific error codes, product model numbers, names). Implement <strong>embedding caching</strong>: identical text always produces identical embeddings from a deterministic model; cache query embeddings in Redis with the query text as key to avoid redundant API calls to the embedding service.</p>
+          <p>Pick distance ops to match model training: pgvector index opclasses (<code>vector_cosine_ops</code>, etc.) must align with embedder docs. Tune HNSW <code>m</code>, <code>ef_construction</code>, and session <code>hnsw.ef_search</code> against a held-out query set; log recall@k and nDCG in CI for retrieval changes.</p>
+          <p>Chunk with overlap sized to model context—headings-aware splits beat naive fixed token windows for policy docs. Store content hash and embedding model version on each row to trigger partial re-embed jobs. Cache query embeddings when models are deterministic.</p>
+          <p>Ship <strong>hybrid retrieval</strong> (vector + BM25 via Elasticsearch/Postgres FTS) with reciprocal rank fusion for SKU- and error-code-heavy domains. For MongoDB workloads, define Atlas vector index definitions alongside document validators so metadata filters stay consistent.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Stale embeddings:</strong> Source documents are updated but their stored embeddings aren't re-computed; the vector index returns chunks from outdated document versions; AI responses cite superseded information.</li>
-            <li><strong>No recall evaluation:</strong> A team deploys a vector search system and assumes high recall; unmeasured recall is actually 70% on their domain; 30% of relevant results are never surfaced; users report poor search quality but can't articulate why.</li>
-            <li><strong>Chunking too small:</strong> Documents are chunked into single sentences to maximize semantic precision; each chunk lacks sufficient context for the LLM to answer; retrieved chunks are semantically relevant but individually uninterpretable without surrounding context.</li>
-            <li><strong>HNSW memory exhaustion:</strong> A large corpus with 10M vectors and a high-m HNSW index requires 80GB of RAM; the vector database server runs out of memory and crashes; no capacity planning was done before ingestion.</li>
-            <li><strong>Wrong distance metric:</strong> Embeddings from an OpenAI model are stored with Euclidean distance; the model's embedding space is optimized for cosine similarity; search results are suboptimal; the index must be rebuilt with the correct metric.</li>
+            <li><strong>Stale vectors after edit:</strong> CMS updates without re-embed jobs cause RAG citations to reference withdrawn policy.</li>
+            <li><strong>No offline eval:</strong> Demo queries look fine; production long-tail queries miss 30%+ relevant docs.</li>
+            <li><strong>Micro-chunks:</strong> Sentence-level splits retrieve irrelevant snippets lacking definitional context.</li>
+            <li><strong>RAM cliff:</strong> High <code>m</code> HNSW on tens of millions of vectors without horizontal sharding collapses nodes.</li>
+            <li><strong>Metric mismatch:</strong> Euclidean index on cosine-normalized embeddings ranks plausible neighbors incorrectly.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the use case semantic search, RAG, or recommendation — where meaning-based similarity outperforms keyword matching?</li>
-            <li>Is the corpus size large enough to justify a dedicated vector database, or can pgvector on existing PostgreSQL serve the need?</li>
-            <li>Is there a recall evaluation pipeline using domain-specific labeled queries to measure actual retrieval quality?</li>
-            <li>Is there an embedding update pipeline that re-indexes documents when source content changes?</li>
-            <li>Is the distance metric (cosine, dot product, Euclidean) matched to what the embedding model was trained for?</li>
-            <li>Has memory capacity been estimated: (vector_count × dimensions × 4 bytes) × 3–4x for HNSW overhead?</li>
+            <li>Is there a labeled query set representing production traffic for recall measurement?</li>
+            <li>Does embedding model choice, dimensionality, and distance metric appear in architecture docs?</li>
+            <li>Are chunking rules versioned and tested against token limits of downstream LLMs?</li>
+            <li>Is re-embedding scoped by content hash when sources change?</li>
+            <li>For pgvector: is ANN sufficient at projected N, or is a dedicated shard required?</li>
+            <li>Are ACL metadata fields enforced on both ingest and query filters?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> An internal support portal embeds runbooks and policies, retrieves the top five chunks per question, and grounds an LLM answer with citations to source documents.</li>
-            <li><strong>Illustrative scenario —</strong> A retailer combines vector similarity on product descriptions with BM25 on SKUs and brand names so natural-language queries surface related categories while exact model numbers still rank precisely.</li>
-            <li><strong>Case study —</strong> <strong>Spotify</strong> documents embedding-based similarity for music discovery and recommendation — representative of production ANN search over millions of item vectors with metadata filters.</li>
+            <li><strong>Illustrative scenario —</strong> Internal IT embeds runbooks in pgvector, retrieves top chunks per incident description, and requires the LLM to cite chunk IDs in responses.</li>
+            <li><strong>Illustrative scenario —</strong> A retailer hybrid-searches SKU tokens with BM25 and merges with description embeddings for natural-language browse.</li>
+            <li><strong>Case study —</strong> Streaming platforms publicly describe embedding similarity for discovery—illustrative of ANN at catalog scale with metadata filters.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="graph-databases.html">Graph Databases</a> — Another specialized database for non-relational data; graph for relationships, vectors for semantic similarity.</li>
-            <li><a href="data-cataloging.html">Data Cataloging</a> — Vector search is used in modern data catalogs for semantic discovery of datasets and columns by description.</li>
-            <li><a href="../ai-ml/index.html">AI &amp; ML Systems</a> — Vector databases are the retrieval layer in AI pipelines; LLM integration patterns build on top of this foundation.</li>
+            <li><a href="graph-databases.html">Graph Databases</a> — Structural hops and semantic nearness compose in modern retrieval stacks.</li>
+            <li><a href="data-cataloging.html">Data Cataloging</a> — Semantic dataset discovery benefits from vector indexes over descriptions.</li>
+            <li><a href="polyglot-persistence.html">Polyglot Persistence</a> — Vector tiers often sit beside OLTP Postgres and search clusters.</li>
+            <li><a href="../ai-ml/index.html">AI &amp; ML Systems</a> — Embeddings and retrieval are upstream of LLM serving patterns.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.oreilly.com/library/view/designing-data-intensive-applications/9781491903063/" target="_blank" rel="noopener noreferrer">Designing Data-Intensive Applications — Martin Kleppmann (O'Reilly)</a></li>
+            <li><a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer">Designing Data-Intensive Applications — Martin Kleppmann</a></li>
             <li><a href="https://github.com/pgvector/pgvector" target="_blank" rel="noopener noreferrer">pgvector — PostgreSQL Vector Similarity</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/pgtrgm.html" target="_blank" rel="noopener noreferrer">PostgreSQL Full-Text Search (hybrid baseline)</a></li>
             <li><a href="https://www.mongodb.com/docs/atlas/atlas-vector-search/vector-search-overview/" target="_blank" rel="noopener noreferrer">MongoDB Atlas Vector Search</a></li>
             <li><a href="https://www.pinecone.io/learn/series/faiss/hnsw/" target="_blank" rel="noopener noreferrer">HNSW Algorithm Explained — Pinecone</a></li>
             <li><a href="https://neo4j.com/docs/embeddings-and-vector-indexes/current/" target="_blank" rel="noopener noreferrer">Neo4j — Embeddings and Vector Indexes</a></li>
