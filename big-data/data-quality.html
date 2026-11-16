@@ -104,47 +104,102 @@
         </div>
         <div class="article-content">
 <h2 id="what-it-is">What it is</h2>
-          
+          <p><strong>Data quality</strong> is the practice of measuring and enforcing whether analytical datasets meet agreed standards for accuracy, completeness, timeliness, validity, and consistency before and after they reach consumers. Teams express those standards as executable checks—schema contracts, row-level expectations, freshness bounds, and distribution anomalies—and wire them into pipelines so bad data is detected, blocked, or quarantined instead of silently polluting dashboards and models.</p>
+          <p>Quality work spans profiling sources, validating at layer boundaries (for example silver before gold promotion on a lakehouse), publishing trust metrics to observability tools, and tying breaches back to dataset owners. Frameworks such as <a href="https://greatexpectations.io/" target="_blank" rel="noopener noreferrer">Great Expectations</a> and <a href="https://github.com/awslabs/deequ" target="_blank" rel="noopener noreferrer">Deequ</a> codify expectations as versioned assets; orchestrators treat critical failures as pipeline errors and surface warnings without stopping low-risk paths.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Downstream dashboards and models amplify upstream errors. Quality gates at pipeline boundaries reduce incident cost and rebuild trust with business stakeholders.</p>
+          <p>Downstream BI and machine learning multiply upstream defects: a duplicated key in a staging table becomes wrong revenue in an executive dashboard; a late partition makes a fraud model train on stale labels. Without systematic gates, teams discover problems only when business users report them—after decisions may already have been made on faulty numbers.</p>
+          <p>Formal quality at pipeline boundaries turns trust into measurable signals: row counts, null rates, referential integrity, and freshness lag become SLIs you can alert on, trend over time, and attach to data contracts. That reduces incident cost, makes re-runs safe when checks fail, and gives stakeholders a defensible answer when someone asks whether a metric is fit for purpose.</p>
+
           <h2 id="when-to-use">When to use</h2>
-          <ul><li>Gold-layer tables feeding executives or regulators.</li><li>ML training sets with automatic retraining.</li><li>Shared self-serve datasets.</li><li>After major source system migrations.</li></ul>
+          <ul>
+            <li>Gold-layer or serving tables used for executive reporting, regulatory filings, or customer-facing analytics.</li>
+            <li>ML feature tables and training snapshots where automatic retraining must not ingest corrupted labels or schema drift.</li>
+            <li>Shared self-serve datasets consumed by multiple teams without a single report author to catch errors manually.</li>
+            <li>Major source migrations, mergers, or CDC cutovers where historical distributions and keys are likely to shift.</li>
+            <li>Platforms that publish data contracts requiring provable freshness and schema stability.</li>
+          </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
-          <ul><li>Exploratory sandboxes with explicit “untrusted” labels.</li></ul>
+          <ul>
+            <li>Exploratory sandboxes explicitly labeled untrusted, with no downstream production dependency.</li>
+            <li>One-off ad hoc extracts where the analyst validates results manually and discards the dataset immediately.</li>
+            <li>Ultra-low-latency paths where every millisecond of check latency is unacceptable and you accept manual reconciliation instead.</li>
+          </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Validate before promote; quarantine bad batches.</p>
+          <p>Ingestion lands raw or lightly typed data; a validation stage runs expectations before promotion to curated layers. Passing batches continue to gold; failing batches route to quarantine storage and trigger alerts to owners.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    ingest["Ingest"]
-    checks_great_expectation["Checks (Great Expectations/Deequ)"]
-    pass["pass"]
-    gold_fail["Gold  fail"]
-    quarantine_alert["Quarantine + alert"]
-    ingest --> checks_great_expectation
-    checks_great_expectation --> pass
-    pass --> gold_fail
-    gold_fail --> quarantine_alert</div>
+    ingest["Ingest / staging"]
+    checks["Quality checks"]
+    pass["Pass"]
+  promote["Promote to gold"]
+  fail["Fail"]
+  quarantine["Quarantine + alert"]
+    ingest --> checks
+    checks --> pass
+    pass --> promote
+    checks --> fail
+    fail --> quarantine</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Ingest ► Checks (Great Expectations/Deequ) ► pass► Gold  fail► Quarantine + alert
-</code></pre>
+              <pre class="architecture-diagram__canvas"><code>Ingest / staging
+       ↓
+Quality checks (expectations on schema, counts, freshness)
+       ├─ pass ──► Promote to gold
+       └─ fail ──► Quarantine storage + alert to owner</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Validate before promote; quarantine bad batches.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Validate before promotion; quarantine failing batches instead of merging them into serving tables.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul><li>Early detection; fewer fire drills.</li><li>Measurable trust scores.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul><li>Rule maintenance.</li><li>False positives blocking pipelines.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Detects regressions at the layer boundary, before executives or models consume bad data.</li>
+                <li>Produces time-series quality metrics that support SLOs, audits, and data-contract enforcement.</li>
+                <li>Expectations as code integrate with CI and pull requests, so rule changes are reviewable.</li>
+                <li>Quarantine patterns allow forensic inspection without rolling back entire partitions blindly.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Rule catalogs require ongoing curation; stale expectations give false confidence.</li>
+                <li>Blocking checks can halt pipelines when thresholds are too aggressive or seasonality is ignored.</li>
+                <li>Full-table scans for quality on huge lakes add compute cost unless sampling is designed carefully.</li>
+                <li>Tooling sprawl appears when every team picks a different validation framework.</li>
+              </ul>
+            </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Define dimensions: completeness, uniqueness, timeliness, validity, consistency. Version expectations with code; fail pipelines on critical rules, warn on informational. Track quality metrics over time; tie incidents to source owners.</p>
-          
+          <p>Adopt a small set of <strong>quality dimensions</strong>—completeness, uniqueness, timeliness, validity, consistency—and map each published dataset to critical versus informational rules. Store expectations beside pipeline code or in a shared package; version them with deployments.</p>
+          <p>Run checks on the grain that matters: partition-level assertions for daily marts, key-level uniqueness for dimensions, referential checks between silver and bronze. On open table formats (<a href="https://docs.delta.io/latest/delta-batch.html" target="_blank" rel="noopener noreferrer">Delta Lake</a>, <a href="https://iceberg.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Iceberg</a>, <a href="https://hudi.apache.org/docs/overview" target="_blank" rel="noopener noreferrer">Apache Hudi</a>), validate before <code>MERGE</code> or append into gold; on warehouses, use post-load tests in the orchestrator DAG.</p>
+          <p>Tier outcomes: fail the job on contract-breaking rules, warn on drift you want visibility into, and record numeric results to metrics backends. Assign an owner per dataset for paging when SLAs breach.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul><li><strong>Alert fatigue:</strong> Too many non-blocking warnings ignored.</li><li><strong>Sample-only checks:</strong> Miss rare partition corruption.</li></ul>
+          <ul>
+            <li><strong>Alert fatigue:</strong> Too many non-blocking warnings train teams to ignore the channel; critical failures then blend into noise.</li>
+            <li><strong>Sample-only checks:</strong> Random samples miss corrupt partitions or rare key collisions that only appear at full scale.</li>
+            <li><strong>Checks after consumers read:</strong> Validating only at ingest while gold is updated incrementally lets bad rows reach BI before detection.</li>
+            <li><strong>Unowned expectations:</strong> Rules copied from templates without domain tuning block pipelines every month-end close.</li>
+          </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist"><li>Are critical rules blocking for gold promotion?</li><li>Is freshness measured per consumer SLA?</li><li>Do owners get paged on contract breaches?</li></ul>
+          <ul class="checklist">
+            <li>Do critical rules block promotion to gold or production schemas?</li>
+            <li>Is freshness measured against each consumer SLA, not only against wall-clock schedule success?</li>
+            <li>Are expectation results stored as metrics you can trend and audit?</li>
+            <li>Do dataset owners receive pages when contracts breach, with runbooks linked from alerts?</li>
+            <li>Can you quarantine or roll back a bad batch without reprocessing unrelated partitions?</li>
+          </ul>
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul><li><strong>Revenue mart:</strong> Daily row count within 3% of trailing average; breach blocks exec dashboard refresh.</li></ul>
+          <ul>
+            <li><strong>Illustrative scenario —</strong> A finance mart runs daily row-count and distribution checks against a trailing baseline; a breach blocks promotion to the gold table that powers the executive dashboard.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="data-governance-for-analytics.html">Data Governance for Analytics</a></li><li><a href="../data-architecture/data-contracts.html">Data Contracts</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
@@ -152,6 +207,7 @@
             <li><a href="https://greatexpectations.io/" target="_blank" rel="noopener noreferrer">Great Expectations</a></li>
             <li><a href="https://github.com/awslabs/deequ" target="_blank" rel="noopener noreferrer">Deequ</a></li>
             <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark documentation</a></li>
+            <li><a href="https://docs.delta.io/latest/delta-batch.html" target="_blank" rel="noopener noreferrer">Delta Lake documentation</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

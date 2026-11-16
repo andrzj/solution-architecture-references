@@ -102,27 +102,30 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>The leading open-source real-time OLAP systems — Apache Pinot, Apache Druid, and ClickHouse — achieve sub-second queries at scale through columnar storage, aggressive pre-computation and rollup at ingestion time, vectorised query execution, and inverted indexes on high-cardinality dimensions.</p>
+          <p><strong>Real-time analytics</strong> (often implemented as real-time OLAP) is the practice of serving interactive aggregates and filters over fresh event data with sub-second query latency at high concurrency. Unlike warehouse BI that scans large tables on demand, real-time OLAP engines pre-structure data at ingest—columnar segments, rollups, star-trees, or materialized views—so dashboards and product APIs read pre-computed grains instead of raw events.</p>
+          <p>Apache Druid, Apache Pinot, and ClickHouse are common open-source engines in this space; each combines append-heavy ingestion from streams or object storage with vectorized execution and indexing tuned for time-range scans and grouped metrics.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Two use case classes drive real-time OLAP: (1) <strong>user-facing analytics</strong> — embedding analytics dashboards in products (e.g., an advertising platform showing campaign metrics to advertisers), where query latency is a product quality metric; and (2) <strong>operational monitoring</strong> — dashboards and alerting for engineering and operations teams that must respond to anomalies within seconds (error rate spikes, fraud pattern detection). Traditional BI tools backed by data warehouses are too slow and too expensive for these access patterns.</p>
+          <p>Product teams embed analytics in customer-facing surfaces—ad performance, usage meters, live leaderboards—where latency is part of the user experience, not a back-office report. Operations teams need the same freshness for incident response: error bursts, payment velocity, or fraud signals must appear in rolling windows before a nightly warehouse refresh.</p>
+          <p>General-purpose warehouses excel at flexible SQL and batch freshness but struggle to sustain hundreds of concurrent, millisecond-budget queries over billions of rows without dedicated pre-aggregation and serving tiers built for that access pattern.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Sub-second dashboard queries over streaming or near-real-time ingested events.</li>
-            <li>Product-embedded analytics where latency is part of UX.</li>
-            <li>High-cardinality aggregations (per user, campaign, device) at large event volume.</li>
-            <li>Operational monitoring with alerting on rolling windows.</li>
+            <li>Dashboards or APIs must return aggregate answers in under a second over data ingested minutes ago.</li>
+            <li>Analytics ship inside a product where slow queries directly degrade customer trust or revenue.</li>
+            <li>You must group by moderately high-cardinality dimensions (campaign, device class, region) at event volumes warehouses would scan repeatedly.</li>
+            <li>Operational alerting depends on rolling metrics computed from a live stream rather than scheduled extracts.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Executive reports refreshed nightly or weekly from a warehouse.</li>
-            <li>Low event rates where warehouse materialized views are cheaper and simpler.</li>
+            <li>Stakeholders accept hourly or daily freshness and run exploratory SQL against a warehouse or lakehouse.</li>
+            <li>Event volume is low enough that warehouse materialized views or indexed marts meet latency and cost goals.</li>
+            <li>You need rich joins, multi-row transactions, or frequent row-level updates—OLAP engines are poor primary transactional stores.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Events arrive on a stream or batch path into an OLAP cluster that segments and optionally rolls up data; a query tier exposes SQL or REST to product dashboards and monitoring tools.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     real_time_olap_ingestion["REAL-TIME OLAP INGESTION PIPELINE"]
@@ -246,7 +249,7 @@ CHOOSING BETWEEN DRUID / PINOT / CLICKHOUSE
     → ClickHouse Cloud / StarRocks Cloud / Tinybird (Pinot-based)
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Sub-second OLAP at scale: Apache Pinot, Apache Druid (rollup on ingestion, segment structure), ClickHouse (MergeTree engine, columnar storage), pre-aggregation patterns, user-facing analytics, fraud monitoring, and operational alerting.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Streaming or batch loads feed an OLAP cluster that serves low-latency queries to embedded product analytics and operations dashboards.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -254,44 +257,47 @@ CHOOSING BETWEEN DRUID / PINOT / CLICKHOUSE
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Sub-second query latency over billions of rows enables user-facing analytics previously only possible with heavy pre-computation or expensive data warehouses.</li>
-                <li>Columnar storage compresses numeric/categorical telemetry extremely efficiently (5–50x compression vs row-oriented databases).</li>
-                <li>Kafka-native ingestion in Druid and Pinot enables seconds-fresh data without a separate streaming pipeline.</li>
-                <li>ClickHouse's MergeTree family and materialized views allow flexible, incremental pre-aggregation without separate pipeline code.</li>
+                <li>Pre-aggregation at ingest makes sub-second responses feasible over very large event histories.</li>
+                <li>Columnar encoding typically yields strong compression on telemetry and categorical dimensions.</li>
+                <li>Native stream ingestion paths keep dashboard freshness within minutes of production events.</li>
+                <li>Materialized views and rollup configs can shift work from query time to ingest time when patterns are known upfront.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>None of the three systems are general-purpose: complex joins, multi-row transactions, and ad-hoc updates are poorly supported.</li>
-                <li>Druid and Pinot have complex cluster topologies (multiple node types: Coordinator, Broker, Historical, Realtime, Overlord in Druid) with steep operational learning curves.</li>
-                <li>Pre-aggregation (rollup, star-tree, materialized views) must be configured at schema design time; adding a new dimension later requires backfilling the entire dataset.</li>
+                <li>Engines optimize for append and aggregate patterns, not arbitrary joins or OLTP-style updates.</li>
+                <li>Distributed OLAP clusters include multiple specialized roles that increase onboarding and on-call surface area.</li>
+                <li>Adding dimensions or finer time grains after launch usually requires backfill and schema planning.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Rollup granularity trade-off:</strong> Druid's rollup and Pinot's star-tree dramatically reduce storage and query time but lose the ability to query individual raw events. Choose the minimum time granularity that satisfies query requirements: minute-level for operational monitoring, hour-level for user-facing dashboards. If raw event access is occasionally needed, archive raw data to S3 Parquet and use Athena for historical ad-hoc queries alongside the real-time OLAP store for dashboards.</p>
-          <p><strong>High-cardinality dimensions:</strong> Bitmap inverted indexes work well for dimensions with up to ~100,000 unique values. For high-cardinality dimensions (user IDs with millions of values), use a different lookup strategy: store in the OLAP system indexed by time range + filter, not user ID range.</p>
+          <p><strong>Rollup granularity:</strong> Pick the coarsest time bucket and dimension set that still answers required queries; finer grains explode storage and rebuild cost. Keep raw events in cheap object storage when occasional drill-down to individual records is required.</p>
+          <p><strong>Write pattern:</strong> All three engines expect batched inserts or stream micro-batches; single-row synchronous writes degrade throughput and merge performance.</p>
+          <p><strong>High-cardinality dimensions:</strong> Bitmap-style indexing works up to moderate cardinality; user- or device-level keys at millions of values may need dedicated lookup tables, sampling, or restricted query patterns.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Using ClickHouse/Druid as a transactional database:</strong> High-frequency small writes (1 row at a time) destroy performance; batch inserts (minimum 1,000–10,000 rows) are required for all real-time OLAP engines.</li>
-            <li><strong>Over-relying on materialized views without testing:</strong> Materialized view logic bugs produce silently wrong numbers with no error — test materialized view output against raw data before going live.</li>
+            <li><strong>OLAP as system of record:</strong> Treating the engine like a transactional database leads to write amplification and inconsistent reads.</li>
+            <li><strong>Untested materialized views:</strong> Logic errors in ingest-time aggregation surface as silently wrong KPIs until someone reconciles against raw data.</li>
+            <li><strong>Schema drift without backfill:</strong> New dimensions added only to fresh segments make historical dashboards incomparable.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are inserts batched (not one-row-at-a-time) to maintain write throughput?</li>
-            <li>Is rollup/pre-aggregation granularity sufficient for the intended query patterns?</li>
-            <li>Is raw event data archived separately (S3 Parquet) for occasional ad-hoc access?</li>
-            <li>Have materialized view outputs been validated against raw data?</li>
+            <li>Are writes batched or stream-buffered to match the engine’s ingest expectations?</li>
+            <li>Does rollup or star-tree coverage match the dimension and time grains product queries need?</li>
+            <li>Is an archival path available when analysts need row-level history outside the serving store?</li>
+            <li>Have materialized or rolled-up outputs been reconciled against a sample of raw events?</li>
+            <li>Is cluster sizing validated for peak concurrent queries, not just ingest rate?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Advertising analytics (Pinot):</strong> LinkedIn-style: advertisers query impressions, clicks, CTR by campaign/date/device type; 100M events/day; Pinot star-tree on (campaign_id, date, device_type) delivers P99 &lt; 50ms at 1,000 QPS.</li>
-            <li><strong>Fraud monitoring (ClickHouse):</strong> Payment transactions → Kafka → ClickHouse (AggregatingMergeTree); Grafana dashboard on velocity metrics (transactions per card per hour) refreshes every 30 seconds; alert when velocity > threshold.</li>
+            <li><strong>Case study —</strong> <strong>LinkedIn</strong> created Apache Pinot to power interactive analytics over high-volume engagement and advertising metrics with sub-second query latency at large concurrency.</li>
+            <li><strong>Illustrative scenario —</strong> A payments team ingests authorization events into ClickHouse, materializes per-card velocity aggregates, and wires Grafana alerts when hourly transaction counts exceed a policy threshold.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -303,9 +309,10 @@ CHOOSING BETWEEN DRUID / PINOT / CLICKHOUSE
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://druid.apache.org/docs/latest/design/" target="_blank" rel="noopener noreferrer">Apache Druid Architecture Documentation</a></li>
-            <li><a href="https://docs.pinot.apache.org/" target="_blank" rel="noopener noreferrer">Apache Pinot Documentation</a></li>
-            <li><a href="https://clickhouse.com/docs/en/intro" target="_blank" rel="noopener noreferrer">ClickHouse Documentation</a></li>
+            <li><a href="https://druid.apache.org/docs/latest/design/" target="_blank" rel="noopener noreferrer">Apache Druid — Design</a></li>
+            <li><a href="https://docs.pinot.apache.org/" target="_blank" rel="noopener noreferrer">Apache Pinot — Documentation</a></li>
+            <li><a href="https://clickhouse.com/docs/en/intro" target="_blank" rel="noopener noreferrer">ClickHouse — Introduction</a></li>
+            <li><a href="https://research.google/pubs/pub43838/" target="_blank" rel="noopener noreferrer">The Dataflow Model (Akidau et al.)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

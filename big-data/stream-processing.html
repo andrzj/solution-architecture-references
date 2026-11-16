@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Stream Processing — SA References</title>
-  <meta name="description" content="Stream processing: event-time semantics, state, windows, and exactly-once patterns with Kafka and Flink.">
+  <meta name="description" content="Stream processing continuously transforms unbounded event logs with event-time windows, durable state, and idempotent sinks—using engines such as Flink, Kafka Streams, and Spark Structured Streaming.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,20 +99,37 @@
             <span class="badge badge--primary">Big Data & Analytics</span>
           </div>
           <h1 class="article-header__title">Stream Processing</h1>
-          <p class="article-header__desc">Continuous computation over unbounded event streams for real-time analytics, CDC, and operational intelligence.</p>
+          <p class="article-header__desc">Continuous transforms over durable event logs—event-time windows, state, and idempotent sinks for operational and analytical use cases.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-<h2 id="what-it-is">What it is</h2>
-          
+          <h2 id="what-it-is">What it is</h2>
+          <p><strong>Stream processing</strong> is continuous computation over an unbounded sequence of events: each record arrives in order (per partition), operators update derived state or emit results, and the job keeps running until you stop it. Engines such as Apache Flink, Kafka Streams, Spark Structured Streaming, or cloud-native stream services read from durable logs (typically Apache Kafka or similar), apply windows, joins, and aggregations, and write to serving stores or downstream topics.</p>
+          <p>Stream processing treats <em>event time</em>—when something happened—as distinct from <em>processing time</em>—when the system saw it. That distinction drives watermarks, lateness handling, and whether dashboards reflect business reality or only ingestion order.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Operational decisions—fraud, personalization, inventory—depend on fresh data. Streaming reduces the gap between business events and automated action while still allowing replay from durable logs.</p>
+          <p>Batch schedules hide reality for minutes or hours. Fraud scoring, inventory allocation, personalization, and incident response need answers while the event is still actionable. A durable log plus stateful stream jobs closes that gap: consumers process the live tail for low latency and can rewind offsets to rebuild state after code or schema changes.</p>
+          <p>Streaming also unifies operational and analytical paths when the same event log feeds both real-time views and later batch snapshots—reducing duplicate ingestion if you design retention and replay deliberately.</p>
+
           <h2 id="when-to-use">When to use</h2>
-          <ul><li>Real-time KPIs, alerting, and anomaly detection.</li><li>CDC propagation to search indexes and caches.</li><li>Sessionization and funnel analytics on live traffic.</li><li>Materializing features for online ML inference.</li></ul>
+          <ul>
+            <li>Dashboards, alerts, or automations require seconds-to-minutes freshness.</li>
+            <li>Change-data-capture must propagate to search indexes, caches, or read models with low lag.</li>
+            <li>Sessionization, funnel metrics, or per-user aggregates must reflect live traffic.</li>
+            <li>Online ML features are materialized from the event stream into a low-latency store.</li>
+            <li>You already operate a replayable log and can accept the operational cost of stateful jobs.</li>
+          </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
-          <ul><li>Reporting that tolerates hourly latency.</li><li>Tiny event volumes where polling is simpler.</li></ul>
+          <ul>
+            <li>Stakeholders accept hourly or daily freshness and batch cost is lower.</li>
+            <li>Event volume is so low that periodic polling or micro-batch cron jobs suffice.</li>
+            <li>The team lacks capacity to debug event-time skew, consumer lag, and state growth.</li>
+            <li>Workloads need multi-hour scans over full history that batch engines handle more simply.</li>
+          </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Durable log + stateful operators + serving layer.</p>
+          <p>Producers append to a partitioned log. Stream processors maintain keyed state (often RocksDB-backed), emit aggregates or enriched events, and sink to databases or topics. Serving APIs or alert rules read the hot path while retention on the log supports replay and audit.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     producers["Producers ──"]
@@ -133,25 +150,63 @@
           </figure>
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul><li>Low latency; replayable log.</li><li>Unified batch/stream with kappa-style designs.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul><li>Operational complexity; event-time bugs.</li><li>Harder testing than batch.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Low end-to-end latency from event to action or dashboard.</li>
+                <li>Durable logs enable replay, auditing, and Kappa-style reprocessing without a separate batch truth path.</li>
+                <li>Horizontal scale via partitioned topics and parallel operator tasks.</li>
+                <li>Incremental updates avoid full-table scans for many operational read models.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Stateful topologies are harder to test, reason about, and upgrade than finite batch jobs.</li>
+                <li>Event-time correctness requires explicit watermarks and late-data policies.</li>
+                <li>Consumer lag, checkpoint failures, and state size drive on-call load.</li>
+                <li>Exactly-once end-to-end semantics are expensive; many teams settle on at-least-once plus idempotent sinks.</li>
+              </ul>
+            </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Model event time explicitly with watermarks; avoid processing-time windows for business SLAs. Use idempotent sinks and transactional writes or upsert keys. Monitor consumer lag, checkpoint duration, and state size. Start with at-least-once plus idempotent consumers before chasing exactly-once end-to-end.</p>
-          
+          <p><strong>Time semantics:</strong> Define windows and joins on event timestamps; use watermarks with a documented allowed lateness. Reserve processing-time windows for debugging only unless SLAs explicitly allow ingestion-time approximations.</p>
+          <p><strong>Delivery guarantees:</strong> Prefer at-least-once ingestion with idempotent sink keys or upsert semantics before investing in exactly-once across heterogeneous systems.</p>
+          <p><strong>State bounds:</strong> Set TTLs on keyed state, compact changelog topics where appropriate, and monitor RocksDB or managed state store disk usage.</p>
+          <p><strong>Operations:</strong> Track consumer lag, checkpoint duration, backpressure, and failed records (dead-letter topics). Version job logic with blue/green or savepoint-based deploys when the engine supports them.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul><li><strong>Late data drops:</strong> Watermarks too aggressive.</li><li><strong>Unbounded state:</strong> Grouping by high-cardinality keys without TTL.</li></ul>
+          <ul>
+            <li><strong>Aggressive watermarks:</strong> Late events are dropped, so aggregates diverge from batch reconciliation.</li>
+            <li><strong>Unbounded state:</strong> High-cardinality group-by keys without TTL exhaust disk and stall checkpoints.</li>
+            <li><strong>Non-idempotent sinks:</strong> Redelivered messages double-charge customers or inflate counts.</li>
+            <li><strong>Schema drift without compatibility:</strong> Deserialization failures poison partitions or stall jobs silently.</li>
+          </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist"><li>Are windows defined in event time?</li><li>Can you replay a topic to rebuild state?</li><li>Are sinks idempotent under redelivery?</li></ul>
+          <ul class="checklist">
+            <li>Are business windows and SLAs defined in event time, with explicit late-data handling?</li>
+            <li>Can you replay from the log (or a savepoint) to rebuild serving state within an acceptable window?</li>
+            <li>Do sinks remain correct under at-least-once redelivery?</li>
+            <li>Are state size, lag, and checkpoint health monitored with actionable alerts?</li>
+            <li>Is there a documented plan to reconcile stream metrics with batch or warehouse totals?</li>
+          </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul><li><strong>Fraud scoring:</strong> Flink joins card authorizations with device telemetry in a 5-minute session window.</li></ul>
+          <ul>
+            <li><strong>Illustrative scenario —</strong> A payments platform joins card authorizations with device telemetry in a five-minute event-time window to raise fraud scores before settlement completes.</li>
+            <li><strong>Case study —</strong> <strong>LinkedIn</strong> built Kafka and stream-oriented infrastructure to propagate profile and activity updates to many derived systems with low lag—patterns that influenced broader stream-processing adoption.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="real-time-analytics.html">Real-Time Analytics</a></li><li><a href="../communication-patterns/event-streaming.html">Event Streaming</a></li><li><a href="kappa-architecture.html">Kappa Architecture</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://nightlies.apache.org/flink/flink-docs-stable/" target="_blank" rel="noopener noreferrer">Apache Flink docs</a></li>
             <li><a href="https://kafka.apache.org/documentation/streams/" target="_blank" rel="noopener noreferrer">Kafka Streams</a></li>
-            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark documentation</a></li>
+            <li><a href="https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html" target="_blank" rel="noopener noreferrer">Spark Structured Streaming programming guide</a></li>
+            <li><a href="https://www.oreilly.com/radar/the-world-beyond-batch-streaming-101/" target="_blank" rel="noopener noreferrer">The Dataflow Model (streaming foundations)</a></li>
+            <li><a href="https://kafka.apache.org/documentation/" target="_blank" rel="noopener noreferrer">Apache Kafka documentation</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

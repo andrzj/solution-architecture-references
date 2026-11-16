@@ -97,32 +97,33 @@
             <span class="badge badge--primary">Big Data &amp; Analytics</span>
           </div>
           <h1 class="article-header__title">Lambda Architecture</h1>
-          <p class="article-header__desc">Nathan Marz's Lambda Architecture: batch layer (HDFS + Spark), speed layer (Spark Streaming / Storm), serving layer merge pattern, dual code path complexity, and why Kappa Architecture emerged as a simpler alternative.</p>
+          <p class="article-header__desc">Lambda architecture merges batch and speed layers over an immutable master dataset—accuracy from full recomputes plus low-latency recent views.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>It achieves this by running two parallel processing paths — a <strong>batch layer</strong> that periodically recomputes comprehensive, accurate views over all historical data, and a <strong>speed layer</strong> that processes the incoming stream in near real-time to fill the latency gap between batch runs. A <strong>serving layer</strong> merges views from both layers to answer queries.</p>
-          <p>The architecture's core insight is that batch processing (MapReduce/Spark over HDFS) can produce arbitrarily accurate results given enough time, while real-time processing (Storm, Spark Streaming) can produce approximate results with low latency. By combining both, Lambda provides both accuracy and freshness.</p>
+          <p><strong>Lambda architecture</strong> is a big-data pattern, popularized by Nathan Marz, that answers queries by combining three layers: an immutable <strong>master dataset</strong> of raw events, a <strong>batch layer</strong> that periodically recomputes complete views from that history, and a <strong>speed layer</strong> that incrementally updates recent data between batch runs. A <strong>serving layer</strong> merges batch and speed views at query time so readers see both accurate history and low-latency recent updates.</p>
+          <p>The design treats batch computation as the source of truth for correctness—given enough time, MapReduce or Spark over the full raw log can rebuild arbitrary views—while the speed layer covers the latency gap with streaming or micro-batch processors (Storm, Flink, Spark Structured Streaming, and similar).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In the early 2010s, the dominant big data processing model was batch: periodic Hadoop MapReduce jobs over HDFS. This produced accurate results but with hours of latency. Newer use cases (recommendation engines, fraud detection, operational dashboards) required data freshness in seconds or minutes, not hours. Lambda Architecture emerged as a pragmatic solution: keep the battle-tested batch pipeline for accuracy and correctness, and add a real-time layer on top for freshness, merging the results at query time.</p>
+          <p>In the early 2010s, Hadoop batch pipelines over HDFS delivered dependable analytics but often finished hours after data arrived. Product teams still needed fresher counts, recommendations, and operational dashboards without giving up the ability to recompute everything from raw data when logic or regulations changed. Lambda architecture formalized running batch and real-time paths in parallel against the same immutable ingress, then merging results for queries—a compromise described in Marz’s writing and in <em>Big Data: Principles and best practices of scalable realtime data systems</em> (Manning).</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Systems where both real-time approximations and accurate historical reprocessing are required.</li>
-            <li>Legacy contexts where a Hadoop batch pipeline already exists and the requirement is to add near real-time capability without replacing the batch system.</li>
-            <li>Use cases where batch reprocessing from raw data is required for corrections, regulatory compliance, or algorithm updates.</li>
+            <li>You genuinely need both near-real-time read models and the ability to recompute accurate historical views from immutable raw data.</li>
+            <li>A mature batch platform already exists and you must add streaming without replacing the batch investment.</li>
+            <li>Regulatory or product requirements mandate full historical reprocessing from raw events when algorithms or definitions change.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>New systems where the team has streaming expertise — Kappa Architecture is simpler.</li>
-            <li>Use cases where the data volume is small enough for a single streaming pipeline to handle reprocessing easily.</li>
-            <li>Teams without capacity to maintain two separate codebases implementing the same business logic.</li>
+            <li>You are building a greenfield system where a single replayable log and stream processor (Kappa architecture) can meet freshness and reprocessing goals.</li>
+            <li>Data volume and retention fit comfortably in one streaming pipeline with affordable log retention and occasional replay.</li>
+            <li>The team cannot afford to implement, test, and operate two code paths for the same business logic.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>All incoming data appends to an immutable master store. The batch layer scans history on a schedule to publish complete views; the speed layer consumes the live tail to update recent state. Query handlers read merged results from the serving layer, using a time cutoff to combine batch-backed history with speed-layer updates.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     ingest["Incoming data"]
@@ -209,7 +210,7 @@ DUAL CODE PATH PROBLEM
   This is the primary reason Kappa Architecture emerged as a replacement.
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Nathan Marz's Lambda Architecture: batch layer (HDFS + Spark), speed layer (Spark Streaming / Storm), serving layer merge pattern, dual code path complexity, and why Kappa Architecture emerged as a simpler alternative.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Immutable ingestion fans out to batch and speed layers whose views are merged at query time in the serving layer.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -217,44 +218,50 @@ DUAL CODE PATH PROBLEM
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Batch layer provides strong accuracy guarantees — periodic recomputation from raw data corrects any processing errors automatically.</li>
-                <li>Speed layer provides low latency for recent data without waiting for the next batch run.</li>
-                <li>Fault tolerant: if the speed layer produces wrong results, the batch layer will eventually overwrite them.</li>
-                <li>Well-proven pattern with mature tooling (Spark, Hive, Hadoop) and a large body of operational knowledge.</li>
+                <li>Periodic batch recomputation from raw data can correct speed-layer mistakes and yields authoritative historical views.</li>
+                <li>The speed layer exposes recent updates without waiting for the next full batch cycle to finish.</li>
+                <li>Immutability at the master dataset simplifies audit trails because every correction is a new replay rather than an in-place edit.</li>
+                <li>The pattern is well documented and aligns with mature Hadoop-era tooling (HDFS, Hive, Spark) that many enterprises already operate.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Dual code path: the same computation must be implemented twice (once for batch, once for stream) — divergence and bugs are common.</li>
-                <li>High operational complexity: two processing engines, two storage systems for views, and a serving layer merging them all.</li>
-                <li>Batch recomputation over large datasets can be slow and resource-intensive, delaying corrections.</li>
-                <li>Kappa Architecture (single stream path with replayable log) solves the dual code path problem and is simpler for most new systems.</li>
+                <li>The same business logic must be implemented twice—batch and stream—which invites divergence, duplicated tests, and doubled incident surface.</li>
+                <li>Operating batch engines, stream engines, multiple view stores, and merge logic in the serving layer increases cost and on-call complexity.</li>
+                <li>Full batch recomputes over growing history can be slow and expensive, which delays how quickly corrections reach readers.</li>
+                <li>Kappa architecture and replayable logs address many of the same goals with a single processing path for greenfield designs.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Data immutability:</strong> Lambda Architecture's correctness guarantee depends on the master dataset being immutable and append-only. Raw data must never be updated or deleted — corrections are applied by re-running the batch pipeline over the original raw data. This means the raw storage layer (HDFS / S3) must never be mutated; corrections are handled in the processing logic, not by modifying source data.</p>
+          <p><strong>Immutable master dataset:</strong> Treat the raw log as append-only on object storage or HDFS; never update or delete source events in place. Apply corrections by re-running batch jobs over the unchanged history and by defining speed-layer state that the batch layer will supersede.</p>
+          <p><strong>Merge contract:</strong> Document the timestamp or version cutoff between batch-backed and speed-backed views, and test queries that span the boundary so you neither double-count nor leave gaps.</p>
+          <p><strong>Dual implementation discipline:</strong> Share schemas, test fixtures, and golden datasets across batch and stream code paths; run differential tests on sampled historical data before promoting logic changes.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Speed and batch view divergence:</strong> The two implementations drift apart over time as the team fixes bugs in one but not the other; build comprehensive integration tests that run both paths against the same data and verify identical results.</li>
-            <li><strong>Serving layer merge complexity:</strong> Determining the exact cutoff point between batch and speed views requires careful coordination; off-by-one errors lead to either gaps or double-counting in query results.</li>
+            <li><strong>Speed and batch divergence:</strong> Teams patch bugs in one layer but not the other, so merged query results disagree with batch-only audits.</li>
+            <li><strong>Incorrect merge cutoffs:</strong> Off-by-one window boundaries between layers create missing hours or duplicated metrics in serving-layer queries.</li>
+            <li><strong>Mutable raw storage:</strong> In-place edits to the master dataset break the guarantee that batch recomputation can reconstruct truth from history.</li>
+            <li><strong>Unbounded batch runtime:</strong> Batch layers that scan entire history every run cannot keep pace with data growth, so corrections and freshness SLAs slip together.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is there a genuine requirement for both real-time approximations AND accurate historical reprocessing? (If only one, use a simpler architecture.)</li>
-            <li>Is the team prepared to maintain two separate implementations of the same business logic?</li>
-            <li>Has Kappa Architecture been evaluated as a simpler alternative using a replayable log (Kafka)?</li>
-            <li>Is the master dataset stored immutably with no in-place updates?</li>
+            <li>Do you truly need both low-latency recent views and full historical recomputation from raw data—not just one of those properties?</li>
+            <li>Is the team committed to maintaining, testing, and deploying two implementations of the same logic for the foreseeable roadmap?</li>
+            <li>Have you evaluated Kappa architecture with a replayable log (for example Apache Kafka) as a simpler alternative?</li>
+            <li>Is the master dataset append-only with retention and access controls that prevent silent mutation?</li>
+            <li>Are merge rules between batch and speed views specified, tested, and monitored in production queries?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Social network analytics:</strong> Batch layer computes daily aggregates (total likes, follower counts) from HDFS; speed layer computes counts for the last hour; serving layer merges both for "total likes in the last 7 days" queries.</li>
-            <li><strong>E-commerce recommendation engine:</strong> Batch layer trains collaborative filtering model nightly over full purchase history; speed layer updates session-level product interactions in real time; recommendations merge both signals.</li>
+            <li><strong>Illustrative scenario —</strong> A social product counts likes and followers: nightly Spark batch jobs rebuild authoritative totals from an immutable event log, while a streaming job maintains counts for the last hour and the serving API merges both for “last seven days” queries.</li>
+            <li><strong>Illustrative scenario —</strong> An e-commerce site trains a collaborative filtering model in batch over purchase history and blends in session-level clicks from a speed layer until the next nightly model refresh lands.</li>
+            <li><strong>Case study —</strong> <strong>Twitter (now X)</strong> was an early adopter of large-scale batch analytics alongside Storm for real-time computation; Nathan Marz created Storm at Twitter while advocating Lambda-style separation of batch correctness and stream freshness.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -266,9 +273,10 @@ DUAL CODE PATH PROBLEM
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="http://nathanmarz.com/blog/how-to-beat-the-cap-theorem.html" target="_blank" rel="noopener noreferrer">How to beat the CAP theorem — Nathan Marz (original Lambda Architecture post)</a></li>
-            <li><a href="https://www.oreilly.com/library/view/big-data/9781617290343/" target="_blank" rel="noopener noreferrer">Big Data: Principles and best practices of scalable realtime data systems — Marz &amp; Warren</a></li>
-            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark documentation</a></li>
+            <li><a href="https://nathanmarz.com/blog/how-to-beat-the-cap-theorem.html" target="_blank" rel="noopener noreferrer">How to beat the CAP theorem — Nathan Marz</a></li>
+            <li><a href="https://www.manning.com/books/big-data" target="_blank" rel="noopener noreferrer">Big Data: Principles and best practices of scalable realtime data systems — Marz &amp; Warren (Manning)</a></li>
+            <li><a href="https://www.oreilly.com/radar/questioning-the-lambda-architecture/" target="_blank" rel="noopener noreferrer">Questioning the Lambda Architecture — Jay Kreps</a></li>
+            <li><a href="https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html" target="_blank" rel="noopener noreferrer">Apache Spark — Structured Streaming programming guide</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

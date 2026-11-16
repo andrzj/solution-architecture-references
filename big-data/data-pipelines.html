@@ -103,16 +103,31 @@
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-<h2 id="what-it-is">What it is</h2>
-          <p>A <strong>data pipeline</strong> is the orchestrated path from ingestion through validation, transformation, and publication to consumers. Good pipelines are incremental, observable, and governed by contracts on schema and quality.</p>
+          <h2 id="what-it-is">What it is</h2>
+          <p>A <strong>data pipeline</strong> is the end-to-end path that moves data from source systems through ingestion, validation, transformation, and publication to downstream consumers. Well-designed pipelines are incremental where possible, observable at each stage, and bound by explicit contracts on schema, freshness, and quality—not a chain of one-off scripts known to a single engineer.</p>
+          <p>Pipeline design spans batch and streaming modes, orchestration of dependencies, failure recovery, and the interfaces analysts, applications, and ML jobs use to discover trustworthy datasets.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Ad-hoc scripts fail silently at scale. Pipelines encode dependencies, SLAs, and recovery—turning data movement into a managed product rather than tribal knowledge.</p>
+          <p>As sources multiply, ad-hoc extracts stop scaling: jobs fail quietly, schemas drift without notice, and no one can reconstruct which version of a metric powered a decision. Formal pipelines encode what runs when, what “done” means, and how to replay after an outage.</p>
+          <p>Treating data movement as a managed product—owned datasets, SLAs, lineage, and alerts—reduces incident cost and makes self-serve analytics feasible without every team re-implementing the same glue code.</p>
+
           <h2 id="when-to-use">When to use</h2>
-          <ul><li>Multi-source analytics platforms.</li><li>Regulated industries requiring lineage and audit.</li><li>ML platforms needing scheduled feature builds.</li><li>Self-serve BI over curated marts.</li></ul>
+          <ul>
+            <li>Multiple upstream systems must land in a shared analytics or ML platform on a defined schedule or latency budget.</li>
+            <li>Regulatory, financial, or contractual obligations require audit trails, lineage, and reproducible reruns.</li>
+            <li>Feature stores or training pipelines depend on refreshed, versioned inputs rather than point-in-time exports.</li>
+            <li>Business users consume curated marts or metrics layers that must stay consistent across tools.</li>
+          </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
-          <ul><li>One-off CSV exports.</li><li>Single-table replication with managed CDC only.</li></ul>
+          <ul>
+            <li>A one-time CSV pull or manual export satisfies the need with no repeatability requirement.</li>
+            <li>A managed replication product fully owns extract, load, and schema evolution and you only query the replica.</li>
+            <li>A single microservice owns both write and read paths with no separate analytics consumers.</li>
+          </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Bronze → silver → gold with orchestration and quality gates.</p>
+          <p>Sources land in raw storage, pass quality and transformation stages, and emerge as curated datasets orchestrated by a scheduler or stream controller.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     sources["Sources"]
@@ -135,25 +150,53 @@
           </figure>
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
-            <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul><li>Repeatable freshness SLAs.</li><li>Central quality and lineage.</li></ul></div>
-            <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul><li>Platform team investment.</li><li>Coordination on schema changes.</li></ul></div>
+            <div class="pros-cons__col pros-cons__col--pros">
+              <h3>Pros</h3>
+              <ul>
+                <li>Declared schedules and dependencies make freshness predictable instead of tribal cron knowledge.</li>
+                <li>Central quality checks and lineage reduce time spent debugging conflicting dashboard numbers.</li>
+                <li>Partitioned replay and idempotent writes shorten recovery after partial failures.</li>
+              </ul>
+            </div>
+            <div class="pros-cons__col pros-cons__col--cons">
+              <h3>Cons</h3>
+              <ul>
+                <li>Platform engineering, orchestration, and observability require ongoing investment.</li>
+                <li>Cross-team schema changes need coordination so producers and consumers do not break one another.</li>
+                <li>Over-abstraction early can slow delivery before usage patterns are understood.</li>
+              </ul>
+            </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Adopt medallion or similar layering; never mutate bronze. Use data contracts (schema + SLAs) at silver boundaries. Orchestrate with explicit sensors; backfill via partition replays. Emit pipeline metrics: rows in/out, null rates, max event lag.</p>
-          
+          <p>Use layered storage (for example bronze, silver, gold) so raw history remains immutable while curated layers enforce contracts. Publish schema and SLA expectations at layer boundaries; block promotion when checks fail.</p>
+          <p>Trigger work from data readiness (new partition, watermark, or stream lag) rather than wall clock alone when freshness depends on upstream delivery. Emit row counts, error rates, and max event lag as first-class metrics for each published dataset.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
-          <ul><li><strong>Upstream schema drift:</strong> Breaks parsers without contract tests.</li><li><strong>Recursive dependencies:</strong> DAG cycles across teams.</li></ul>
+          <ul>
+            <li><strong>Silent schema drift:</strong> Upstream adds or renames fields and downstream parsers fail or mis-map columns without automated contract tests.</li>
+            <li><strong>Non-idempotent retries:</strong> A restarted job duplicates facts or double-counts partitions that were partially written.</li>
+            <li><strong>Unclear ownership:</strong> No named owner for a mart means outages linger because no team is paged.</li>
+          </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
-          <ul class="checklist"><li>Is there a single owner per published dataset?</li><li>Are failures retried with bounded staleness?</li><li>Can consumers discover schema and lineage?</li></ul>
+          <ul class="checklist">
+            <li>Does each published dataset have a single accountable owner and documented SLA?</li>
+            <li>Can failed runs retry or replay without corrupting history?</li>
+            <li>Can consumers discover current schema, lineage, and last successful run?</li>
+            <li>Are critical quality rules blocking promotion to curated layers?</li>
+          </ul>
           <h2 id="example-use-cases">Example use cases</h2>
-          <ul><li><strong>Customer 360:</strong> CDC from CRM, product, and billing into a unified dimension table nightly.</li></ul>
+          <ul>
+            <li><strong>Illustrative scenario —</strong> A B2B SaaS team pipes CDC from CRM, product usage, and billing systems into a nightly pipeline that builds a unified customer dimension for sales and success dashboards.</li>
+          </ul>
           <h2 id="related-patterns">Related patterns</h2>
           <ul><li><a href="data-pipeline-patterns.html">Data Pipeline Patterns</a></li><li><a href="data-quality.html">Data Quality</a></li><li><a href="../data-architecture/data-contracts.html">Data Contracts</a></li></ul>
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.databricks.com/glossary/medallion-architecture" target="_blank" rel="noopener noreferrer">Databricks medallion</a></li>
-            <li><a href="https://airflow.apache.org/docs/" target="_blank" rel="noopener noreferrer">Airflow docs</a></li>
-            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark documentation</a></li>
+            <li><a href="https://www.databricks.com/glossary/medallion-architecture" target="_blank" rel="noopener noreferrer">Databricks — Medallion Architecture</a></li>
+            <li><a href="https://airflow.apache.org/docs/apache-airflow/stable/" target="_blank" rel="noopener noreferrer">Apache Airflow — Documentation</a></li>
+            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark — Documentation</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

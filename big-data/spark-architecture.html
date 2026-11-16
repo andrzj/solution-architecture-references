@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Apache Spark Architecture — SA References</title>
-  <meta name="description" content="Apache Spark architecture: driver, DAG Scheduler, executor model, RDD lineage, DataFrame/Dataset, Catalyst optimizer, Tungsten engine, wide vs narrow transformations, shuffle cost, and Spark on Kubernetes vs YARN.">
+  <meta name="description" content="Apache Spark is a distributed analytics engine: a driver JVM plans Catalyst-optimized stages, executors run tasks on a cluster manager, and shuffles define the critical performance boundaries.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -97,32 +97,36 @@
             <span class="badge badge--primary">Big Data &amp; Analytics</span>
           </div>
           <h1 class="article-header__title">Apache Spark Architecture</h1>
-          <p class="article-header__desc">How Spark works internally: Driver, DAG Scheduler, Task Scheduler, executor model, RDD lineage, DataFrame/Dataset vs RDD, Catalyst query optimizer, Tungsten execution engine, wide vs narrow transformations, shuffle cost, and Spark on Kubernetes vs YARN.</p>
+          <p class="article-header__desc">Driver, executors, Catalyst, and shuffle boundaries—the cluster model behind batch, SQL, and Structured Streaming on Apache Spark.</p>
           <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
+          <p><strong>Apache Spark</strong> is a distributed analytics engine that runs user programs as a directed acyclic graph (DAG) of stages across a cluster. A single <strong>driver</strong> JVM coordinates work: it builds logical and physical plans, cuts the DAG at shuffle boundaries, and sends <strong>tasks</strong> to <strong>executors</strong> that read partitions, compute, and optionally cache data in memory. Cluster managers (YARN, Kubernetes, or standalone) allocate executor containers; Spark itself schedules tasks within those resources.</p>
+          <p>Most teams interact through <strong>DataFrames</strong> and SQL: Catalyst optimizes logical plans (predicate pushdown, join reordering), and Tungsten generates efficient bytecode for tight loops. RDDs remain the low-level fault-tolerance primitive—lineage lets Spark recompute lost partitions—but DataFrames are the default for ETL, lakehouse queries, and Structured Streaming micro-batches.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Hadoop MapReduce writes intermediate results to HDFS after every map and reduce step, making it slow for iterative algorithms (ML training, graph computation) and interactive queries. Spark keeps intermediate data in memory across stages, dramatically reducing I/O for multi-pass workloads. It also provides a richer API — where MapReduce exposes only map and reduce, Spark provides join, groupByKey, window functions, UDFs, and DataFrames with SQL semantics — making complex ETL and analytics much simpler to express.</p>
+          <p>Hadoop MapReduce persisted intermediate results to disk after every map and reduce wave, which made iterative ML, graph algorithms, and multi-pass SQL painfully slow. Spark introduced in-memory iteration across stages and a unified API for batch, SQL, streaming, and MLlib—reducing the number of specialized systems in a data platform.</p>
+          <p>Spark also met teams where they already were: on YARN and HDFS, later on object storage and Kubernetes. Managed offerings (Databricks, EMR, Dataproc, Synapse) operationalized the cluster model so engineers could focus on transforms rather than JVM tuning—while still needing a mental model of drivers, shuffles, and partitions when jobs misbehave.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Large-scale ETL and data transformation (Bronze → Silver → Gold in Medallion architecture).</li>
-            <li>Distributed ML training (MLlib, or Spark as a data preparation layer before training in PyTorch/TensorFlow).</li>
-            <li>Complex aggregation queries over data lake (S3/ADLS Parquet) that require join, window, and aggregation at multi-TB scale.</li>
-            <li>Batch reprocessing of historical data in Kappa or Lambda architectures.</li>
+            <li>Large-scale ETL and lakehouse curation (bronze → silver → gold) over Parquet, Iceberg, Delta, or Hudi.</li>
+            <li>Heavy joins, windowed aggregations, or SQL over terabyte-scale datasets that exceed a single-node engine.</li>
+            <li>Distributed feature engineering or MLlib jobs that prepare training data before handing off to deep-learning frameworks.</li>
+            <li>Batch recomputation in Lambda-style deployments or replay workloads in Kappa-style designs via Structured Streaming.</li>
+            <li>You have—or can buy—a cluster or managed Spark plane and staff to tune shuffle, memory, and skew.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Sub-gigabyte data that runs faster on a single-node SQL engine or pandas.</li>
-            <li>Ultra-low-latency per-record APIs where Spark’s batch/stream micro-batch overhead dominates.</li>
-            <li>Teams without cluster operations capacity and no managed Spark offering—consider warehouse SQL or serverless query engines instead.</li>
+            <li>Datasets fit comfortably on one machine and pandas, DuckDB, or warehouse SQL is faster to develop and operate.</li>
+            <li>You need millisecond per-record APIs; Spark’s driver and task scheduling overhead dominates small or ultra-low-latency work.</li>
+            <li>No operations capacity and no managed Spark—serverless SQL or warehouse-native ELT may be simpler.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Client code calls actions on a SparkSession in the driver. The DAG Scheduler forms stages at shuffles; the Task Scheduler places tasks on executors. Executors run threads, cache blocks, and write shuffle files; the cluster manager only supplies containers or YARN slots.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     spark_cluster_architectu["SPARK CLUSTER ARCHITECTURE"]
@@ -234,7 +238,7 @@ SPARK ON KUBERNETES vs YARN
   YARN only when already on Hadoop or using Cloudera/Hortonworks.
 </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">How Spark works internally: Driver, DAG Scheduler, Task Scheduler, executor model, RDD lineage, DataFrame/Dataset vs RDD, Catalyst query optimizer, Tungsten execution engine, wide vs narrow transformations, shuffle cost, and Spark on Kub...</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">The driver plans stages and dispatches tasks to executors provisioned by a cluster manager; shuffles split the DAG at wide transformations.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -242,31 +246,33 @@ SPARK ON KUBERNETES vs YARN
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Unified engine for batch, streaming, SQL, and ML — reduces the number of processing systems in the stack.</li>
-                <li>Catalyst optimizer and Tungsten code generation deliver performance competitive with hand-tuned C++ for many workloads.</li>
-                <li>Massive ecosystem: Delta Lake, Iceberg, Hudi, MLflow, Koalas (pandas-on-Spark); most data engineering tools integrate natively.</li>
-                <li>In-memory caching of hot datasets dramatically speeds up iterative workloads compared to MapReduce.</li>
+                <li>One engine spans batch, SQL, Structured Streaming, and MLlib, reducing the number of specialized runtimes to operate.</li>
+                <li>Catalyst and Tungsten optimize DataFrame plans and generate efficient loops for many ETL and SQL workloads.</li>
+                <li>Deep lakehouse ecosystem (Delta Lake, Iceberg, Hudi) and managed offerings integrate Spark as the default transform layer.</li>
+                <li>In-memory caching and lineage-based recovery speed iterative jobs versus disk-heavy MapReduce patterns.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>JVM overhead: memory management is complex — GC pauses, OOM errors with large executor heaps, serialization cost.</li>
-                <li>Shuffle performance is a major pain point: wide transformations cause network-intensive data exchange that can dominate job time.</li>
-                <li>Overhead for small jobs: Spark's driver startup, task scheduling overhead, and executor launch time make it a poor choice for sub-minute jobs.</li>
-                <li>Structured Streaming's micro-batch model adds latency compared to Flink's true streaming model for low-latency use cases.</li>
+                <li>JVM memory tuning is non-trivial: GC pauses, driver OOM from collects, and executor heap sizing require ongoing attention.</li>
+                <li>Wide transformations trigger costly shuffles that often dominate runtime and failure rates.</li>
+                <li>Job startup and executor provisioning make Spark a poor default for tiny or sub-minute interactive tasks.</li>
+                <li>Structured Streaming’s micro-batch cadence adds latency versus continuous stream engines when seconds matter.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Partition sizing:</strong> Spark's parallelism is determined by the number of partitions. Too few partitions underutilises the cluster; too many creates scheduling overhead. Target 2–4 partitions per CPU core, with each partition 128–512 MB on disk. After a wide transformation (join, groupBy), partition count defaults to <code>spark.sql.shuffle.partitions</code> (default 200) regardless of data size — tune this value to the actual parallelism needed.</p>
-          <p><strong>Data skew:</strong> When one key has significantly more records than others, the task handling that partition becomes the bottleneck, stalling the entire stage. Solutions: (1) salting — add a random suffix to the skewed key, then aggregate in two passes; (2) AQE (Adaptive Query Execution) in Spark 3.x automatically detects and coalesces skewed partitions at runtime.</p>
+          <p><strong>Partition sizing:</strong> Parallelism follows partition count. Aim for partitions roughly 128–512 MB at rest and enough tasks to keep cores busy without drowning the scheduler. After joins or group-bys, default <code>spark.sql.shuffle.partitions</code> (often 200) may be far too high or too low for your data volume—tune explicitly.</p>
+          <p><strong>Shuffles and skew:</strong> Prefer narrow transforms where possible; broadcast small dimension tables; use salting or AQE (Spark 3.x) when a few keys dominate partition size. Review the Spark UI for stages with one straggler task.</p>
+          <p><strong>API choice:</strong> Default to DataFrames/SQL so Catalyst can push filters and prune columns; reserve RDDs for primitives Catalyst cannot express.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>OOM on executors:</strong> Caused by large shuffle state, uncached RDDs being recomputed, or collecting too much data to the driver — profile memory usage with the Spark UI before tuning heap and memory fractions.</li>
-            <li><strong>Default shuffle.partitions=200 on large joins:</strong> With 10TB of data, 200 partitions means each partition is 50 GB — tasks will OOM; set <code>spark.sql.shuffle.partitions</code> proportional to cluster size and data volume.</li>
+            <li><strong>Executor OOM:</strong> Oversized shuffles, wide collects, or caching unbounded datasets exhaust heap; use the Spark UI and event logs before blindly raising memory.</li>
+            <li><strong>Mis-tuned shuffle partitions:</strong> Too few partitions create giant tasks; too many create scheduler noise—both show up as timeouts or skew.</li>
+            <li><strong>Driver collects:</strong> <code>collect()</code> or large broadcasts on big dimensions move too much data to the driver JVM.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -280,8 +286,8 @@ SPARK ON KUBERNETES vs YARN
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Data lake ETL (Medallion):</strong> S3 Bronze (raw JSON) → Spark job cleans, validates, writes Silver (Parquet, partitioned by date) → Spark SQL aggregates Silver to Gold (fact tables for BI tools); Delta Lake for ACID transactions and schema evolution.</li>
-            <li><strong>Feature engineering at scale:</strong> 500 million user events per day → Spark computes 50 user-level features (30-day rolling counts, categorical aggregations) → writes to feature store offline store (S3 Parquet, partitioned by date) for ML training.</li>
+            <li><strong>Illustrative scenario —</strong> A lakehouse team runs Spark jobs that promote raw JSON from object storage into silver Parquet, then Spark SQL builds gold fact tables for BI tools, using Delta Lake for ACID merges and schema evolution.</li>
+            <li><strong>Case study —</strong> <strong>Netflix</strong> has publicly described using Apache Spark for large-scale data processing alongside other engines in its data platform.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -293,9 +299,10 @@ SPARK ON KUBERNETES vs YARN
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark Documentation</a></li>
-            <li><a href="https://www.oreilly.com/library/view/learning-spark-2nd/9781492050032/" target="_blank" rel="noopener noreferrer">Learning Spark, 2nd Edition — O'Reilly</a></li>
-            <li><a href="https://docs.aws.amazon.com/whitepapers/latest/aws-overview/summary.html" target="_blank" rel="noopener noreferrer">AWS Big Data Analytics whitepapers</a></li>
+            <li><a href="https://spark.apache.org/docs/latest/" target="_blank" rel="noopener noreferrer">Apache Spark documentation</a></li>
+            <li><a href="https://spark.apache.org/docs/latest/cluster-overview.html" target="_blank" rel="noopener noreferrer">Spark cluster overview</a></li>
+            <li><a href="https://www.usenix.org/system/files/conference/nsdi12/nsdi12-final138.pdf" target="_blank" rel="noopener noreferrer">Spark: Cluster Computing with Working Sets (NSDI 2012)</a></li>
+            <li><a href="https://spark.apache.org/docs/latest/sql-performance-tuning.html" target="_blank" rel="noopener noreferrer">Spark SQL performance tuning</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
