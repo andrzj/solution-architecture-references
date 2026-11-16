@@ -103,11 +103,12 @@
           <h2 id="what-it-is">What it is</h2>
           <p>A <strong>vector clock</strong> is an array (or map) of counters—one component per participating node—where component <em>i</em> counts events known from node <em>i</em>. Lamport’s paper established happens-before; vector clocks (Fidge, Mattern, and follow-on work) make <strong>concurrency</strong> observable: if neither vector is component-wise ≤ the other, the events are concurrent and may conflict.</p>
           <p>In storage systems the same idea often appears as <strong>version vectors</strong> attached to objects (Dynamo, Riak, early Cassandra patterns). Kleppmann distinguishes object-level version metadata from pure event clocking in <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer"><em>Designing Data-Intensive Applications</em></a>: version vectors tell a coordinator whether one write causally descends from another or whether the application must merge <strong>siblings</strong>.</p>
-          <p>Imagine two stateless services updating the same shopping-cart document without coordination: one applies a promotion in us-east, another changes quantity in eu-west. Without vectors, LWW silently drops one edit; with version vectors, the read returns both versions and the API merges or asks the shopper to choose.</p>
+          <p>Imagine two stateless services updating the same replicated document without coordination: one applies a field change in one region, another applies a conflicting field in another. Without vectors, LWW silently drops one edit; with version vectors, the read returns both versions and the API merges or asks the client to reconcile.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Partial orders from Lamport timestamps cannot answer “were these writes independent?”—a higher Lamport value does not imply causality. Multi-leader and leaderless replication need that answer to implement causal+ consistency, sibling detection, and read repair that does not discard legitimate branches.</p>
           <p>Vector metadata also powers anti-entropy: peers compare vectors to learn which object versions they are missing before shipping deltas over <a href="gossip-protocols.html">gossip</a> or repair sessions.</p>
+          <p>Lamport timestamps give a total order compatible with causality but cannot flag independence; Fidge and Mattern’s vector scheme answers “were these updates concurrent?” by comparing component-wise dominance. That distinction is what Dynamo’s read coordinator uses before returning siblings instead of a single value.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -175,7 +176,7 @@
               <h3>Cons</h3>
               <ul>
                 <li>Metadata grows with the number of logical writers—per-client vectors spiraled in early Dynamo deployments.</li>
-                <li>Application teams must implement merge semantics; “take max per field” is often wrong for carts and inventory.</li>
+                <li>Application teams must implement merge semantics; “take max per field” is often wrong for counters and inventory.</li>
                 <li>Storage and RPC payloads swell when siblings accumulate unread.</li>
                 <li>Operators need training—on-call pages look like “mysterious duplicate objects.”</li>
               </ul>
@@ -187,6 +188,7 @@
           <p><strong>Dynamo pattern:</strong> coordinator gathers versions from quorum replicas; if vectors diverge without dominance, return siblings. <a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" target="_blank" rel="noopener noreferrer">Amazon’s Dynamo paper</a> documents this read path and hinted handoff interaction.</p>
           <p><strong>Dotted version vectors:</strong> attach unique dots per write so a delete marks causality through tombstones—Riak 2.x adopted this to stop delete/recreate from looking concurrent.</p>
           <p><strong>Practical DynamoDB:</strong> many teams use conditional writes and server timestamps for hot keys; vectors remain the conceptual backbone for understanding what conditional expressions are defending.</p>
+          <p>Production systems prune vector components when replica identities leave the ring; unbounded per-client IDs still blow metadata size. Expose sibling counts and unresolved conflicts as metrics—Jepsen histories of Riak and Cassandra frequently show repair and vector handling bugs that integration tests miss. Document whether your API auto-merges, returns siblings to clients, or fails closed; ambiguity there becomes on-call debt when concurrent writes spike during promotions or bulk edits.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -226,6 +228,7 @@
             <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> (causal consistency, version stamps, multi-leader replication)</li>
             <li><a href="https://haslab.wordpress.com/2011/07/08/version-vectors-are-not-vector-clocks/" rel="noopener noreferrer" target="_blank">Version Vectors are not Vector Clocks — HASLab</a></li>
             <li><a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" rel="noopener noreferrer" target="_blank">Dynamo: Amazon's Highly Available Key-value Store — DeCandia et al.</a></li>
+            <li><a href="https://jepsen.io/analyses" rel="noopener noreferrer" target="_blank">Jepsen Analyses</a> — partition tests surfacing sibling and stale-read bugs.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

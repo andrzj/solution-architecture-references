@@ -106,6 +106,7 @@
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Microservices commit locally; once a transaction commits, other services may read the new state. There is no cross-database undo that magically rewinds peer replicas. Garcia-Molina and Salem’s saga model therefore pairs each forward transaction with an explicit compensating transaction so a workflow can move backward at the business level while leaving an auditable trail of forward and reverse events—exactly the long-running transaction problem their 1987 paper targeted before “microservices” existed.</p>
+          <p>Compensation is not a database feature—it is application logic that must be designed, tested, and monitored like any other API. DDIA emphasises that at-least-once delivery and client retries make idempotent compensating handlers mandatory; otherwise undo steps become a second source of duplicate side effects during the same incident you are trying to clean up.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -177,7 +178,8 @@
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Record compensation attempts in the service’s own database keyed by saga id and step number before returning success to the orchestrator, so duplicate deliveries short-circuit to the stored outcome. Derive idempotency tokens from stable business identifiers rather than ephemeral transport metadata.</p>
           <p>Distinguish <strong>retry</strong> from <strong>compensate</strong> in the state machine: transient timeouts and capacity errors should exhaust a bounded retry policy before the workflow transitions to undo. Document <strong>pivot</strong> steps—operations after which compensation is partial or impossible—and place them as late as product rules allow.</p>
-          <p>Prefer semantic inverses that match domain language (<code>cancelReservation</code>, not <code>DELETE FROM</code> blind deletes) and align amounts, quantities, and status fields with the forward operation. For monetary flows, mirror the idempotency guidance Stripe and other processors document for payment APIs—your undo path should tolerate the same duplicate-delivery assumptions.</p>
+          <p>Prefer semantic inverses that match domain language (<code>cancelReservation</code>, not <code>DELETE FROM</code> blind deletes) and align amounts, quantities, and status fields with the forward operation. For monetary flows, mirror the idempotency guidance payment processors publish for capture APIs—your undo path should tolerate the same duplicate-delivery assumptions.</p>
+          <p>Garcia-Molina and Salem’s saga paper classifies isolation anomalies between concurrent sagas; compensations do not magically restore serialisability—they restore business invariants. Runbooks should list maximum acceptable compensation latency (for example alerting if refund or release steps remain incomplete after five to fifteen minutes). Every compensating handler needs the same observability as forward steps: structured saga identifiers in logs, metrics on success and permanent failure, and paging when retries exhaust. Treat “compensation succeeded” as a durable state transition stored before acknowledging the orchestrator, matching the idempotency pattern in DDIA’s discussion of faults and retries.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -220,6 +222,7 @@
             <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/compensating-transaction" rel="noopener noreferrer" target="_blank">Compensating Transaction — Azure Architecture Center</a> — implementation structure and failure handling.</li>
             <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Saga — microservices.io (Chris Richardson)</a> — how compensating steps fit orchestrated and choreographed sagas.</li>
             <li><a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="noopener noreferrer" target="_blank">How to Do Distributed Locking — Martin Kleppmann</a> — fencing and safety context when compensation replaces locks.</li>
+            <li><a href="https://docs.temporal.io/develop/java/message-passing#compensations" rel="noopener noreferrer" target="_blank">Temporal — Compensating actions</a> — durable workflow patterns for sagas.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
