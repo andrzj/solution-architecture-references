@@ -105,25 +105,26 @@
           <p>It appears at every tier: <strong>lazy initialization</strong> of expensive singletons, <strong>ORM lazy associations</strong> (load children only when traversed), <strong>viewport-driven assets</strong> (<code>loading="lazy"</code>, Intersection Observer), <strong>route-based code splitting</strong> in SPAs, and <strong>virtualised lists</strong> that render only visible rows while paging data in the background.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Startup time and initial page load time are critical metrics. An application that eagerly initializes 50 services, loads 10,000 product images, and fetches megabytes of JSON at startup will be unresponsive for seconds before the user can interact with it. Lazy loading decouples initialization from startup, allowing the critical path to complete quickly while non-essential resources load in the background or on demand.</p>
-          <p>Memory usage is the other motivating factor. A product listing page might display 12 products but the catalog contains 100,000. Eagerly loading all 100,000 products into memory would require gigabytes of RAM and take minutes. Lazy loading (fetching the current page of results only) reduces this to kilobytes.</p>
-          <p>The same applies to database ORM queries: a user object with lazily-loaded associations returns quickly with just the user record; loading all orders, all addresses, all payment methods eagerly would result in hundreds of database joins that are almost always unnecessary for the immediate use case.</p>
+          <p>Time-to-interactive dominates product metrics: booting dozens of services, prefetching thousands of assets, and pulling large JSON graphs before the first paint keeps users staring at spinners. Deferring non-critical work lets the critical path finish first; everything else can hydrate, stream, or download after the shell is usable.</p>
+          <p>Memory pressure is equally real. A grid that shows twelve SKUs while the catalog holds hundreds of thousands cannot afford to materialize the full collection in RAM—pagination, virtual windows, and on-demand fetches keep resident data in kilobytes instead of gigabytes.</p>
+          <p>ORM layers amplify the tradeoff. Returning a parent row without joined children is fast; eager-fetching every optional association for every list endpoint multiplies joins and payload size for code paths that never read those fields—exactly the waste lazy loading was meant to avoid when associations are truly optional.</p>
+          <p>Front-end performance budgets (LCP, INP, total blocking time) reward deferring below-the-fold assets and non-critical JavaScript while keeping the critical rendering path lean.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Resources (images, scripts, data, services) are large, expensive to load, and not always needed by every user or code path.</li>
-            <li>Application startup time is a concern — lazy initialization allows deferring non-critical services to after the application becomes responsive.</li>
-            <li>UI renders lists, grids, or feeds with potentially thousands of items — only the visible portion needs to be loaded.</li>
-            <li>ORM-based data access where associated records are needed only in some code paths, not all.</li>
-            <li>Module loading in large SPAs — route-based code splitting loads JS bundles only for the routes the user visits.</li>
+            <li>Assets or data are bulky, costly to fetch, and only some requests or personas touch them (images, admin modules, infrequent reports).</li>
+            <li>Cold start or first paint matters—initialize security and routing first; defer analytics exporters, feature probes, and heavy SDKs until after listen/ready.</li>
+            <li>Feeds, tables, or infinite scroll where rendering every row would overwhelm the DOM—load the viewport plus a small prefetch margin.</li>
+            <li>Domain models with optional associations: default to lean queries; fetch children only when a handler actually traverses the graph.</li>
+            <li>Large front-end bundles—split by route or feature so mobile users do not download checkout code on the home page.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Resources are always needed immediately — lazy loading adds a lookup indirection cost with no benefit.</li>
-            <li>Sequential ORM lazy loading of relations in a loop — this is the N+1 problem and is actively harmful for performance.</li>
-            <li>Security-critical initializations (auth middleware, input validation) that must be active at startup, not deferred.</li>
-            <li>Resources needed for the critical rendering path — lazy loading above-the-fold images degrades perceived performance.</li>
+            <li>Every request touches the resource on the hot path—deferral only adds indirection and a guaranteed miss on first access.</li>
+            <li>Lazy association access inside loops over parents—the classic N+1 pattern; replace with JOIN/eager fetch for that path.</li>
+            <li>Authn, authz, WAF rules, and input validation that must guard the first byte served—never delay these to “first request.”</li>
+            <li>Hero, logo, and other above-the-fold media required for LCP—eager or priority-load them; lazy below-the-fold content instead.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -203,46 +204,50 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Reduces initial load time and startup latency by deferring non-critical resource initialization.</li>
-                <li>Reduces memory usage: resources that are never accessed are never loaded.</li>
-                <li>Improves perceived performance: users see a responsive UI immediately while secondary content loads progressively.</li>
-                <li>Reduces database and API load: resources are only fetched when needed, not speculatively for all possible code paths.</li>
-                <li>Virtual scrolling makes infinite lists with thousands of items performant in browsers, which cannot render 100,000 DOM nodes efficiently.</li>
+                <li>Shrinks boot and first-load budgets by moving optional work off the synchronous startup path.</li>
+                <li>Never-loaded resources cost zero RAM and zero egress—waste tracks actual access patterns.</li>
+                <li>Skeleton screens and progressive enhancement make the app feel fast even while deferred chunks arrive.</li>
+                <li>Back ends see fewer speculative queries and smaller payloads when handlers fetch only what the code path reads.</li>
+                <li>Virtualization keeps DOM node count bounded for long lists that would otherwise choke the renderer.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Introduces latency on first access — the user waits at the moment of need rather than during a background pre-load.</li>
-                <li>ORM lazy loading in loops causes the N+1 query problem — a catastrophic performance anti-pattern when misapplied.</li>
-                <li>Lazy initialization adds complexity: thread-safety must be carefully implemented in multi-threaded environments.</li>
-                <li>Below-the-fold images loading on scroll can cause layout shifts (CLS) if image dimensions are not reserved with placeholder space.</li>
-                <li>Virtual scrolling implementations can be complex; keyboard navigation, accessibility, and screen reader support require careful implementation.</li>
+                <li>First touch pays the full fetch/parse cost—latency moves from startup to the moment of need.</li>
+                <li>Implicit lazy associations in loops remain the most expensive ORM foot-gun (N+1).</li>
+                <li>Thread-safe lazy singletons and module init require explicit synchronization or language primitives.</li>
+                <li>Images without reserved dimensions reflow on load, hurting CLS and Core Web Vitals scores.</li>
+                <li>Virtual lists demand extra engineering for focus management, keyboard nav, and screen-reader semantics.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>The N+1 problem:</strong> ORM lazy loading is the source of the most common database performance problem in application development. The N+1 pattern: load a list of N parent records, then for each parent access a lazily-loaded association, triggering N additional queries. For 100 orders with lazy-loaded items, this is 101 queries instead of 1. The fix is always eager loading (JOIN-based loading of the association in the original query).</p>
-          <p>In Hibernate/JPA, use <code>JOIN FETCH</code> or <code>@EntityGraph</code>. In Sequelize, use <code>include</code> options. In Rails ActiveRecord, use <code>includes</code>. Enable SQL query logging in development and review it for N+1 patterns; they are almost never obvious from reading the application code alone.</p>
-          <p><strong>Intersection Observer for images:</strong> The HTML <code>loading="lazy"</code> attribute provides native browser lazy loading for images and iframes with no JavaScript required. It defers loading of off-screen images until they are near the viewport. For custom components (lazy sections, code-split React components), use the Intersection Observer API with a <code>rootMargin</code> of 200–400px to pre-load just before the user scrolls to the element, avoiding visible loading delays. Always specify <code>width</code> and <code>height</code> attributes on lazily-loaded images to reserve space and prevent Cumulative Layout Shift (CLS), which is a Core Web Vital metric.</p>
+          <p><strong>The N+1 problem:</strong> Listing N parents then touching a lazy child on each row fires N extra round trips—101 queries for 100 orders is the textbook failure. Profile SQL in development; ORM code rarely advertises the pattern. Fix with JOIN fetch, <code>include</code>/<code>includes</code>, <code>@EntityGraph</code>, or a dedicated DTO query for list endpoints.</p>
+          <p>In Hibernate/JPA, prefer <code>JOIN FETCH</code> or fetch graphs on the repository method that backs the list API. In Sequelize and Rails, scope <code>include</code>/<code>includes</code> to the handler that needs children—not the global default scope. Enable SQL logging or APM database spans in non-production and treat “queries per request” as a release gate.</p>
+          <p>Make “list view” and “detail view” fetch plans explicit in code review: optional associations belong on detail queries, not default scopes. Staging should fail CI or warn when query count per request exceeds a budget.</p>
+          <p><strong>Intersection Observer for images:</strong> Prefer native <code>loading="lazy"</code> for images and iframes; pair with explicit <code>width</code>/<code>height</code> or <code>aspect-ratio</code> to reserve layout. For custom sections or dynamically imported components, Intersection Observer with <code>rootMargin</code> of 200–400px prefetches just before scroll arrives, hiding network latency without eager-loading the whole page.</p>
+          <p><strong>Code splitting:</strong> In React, Vue, and Angular, lazy-route imports shrink the initial bundle; prefetch critical routes after idle. On the server, lazy-init expensive SDK clients only in workers that need them so API pods that serve health checks do not load heavy ML runtimes at boot.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>N+1 query problem:</strong> ORM lazy loading inside a loop generates N+1 database queries. This is the most common, most impactful, and most invisible lazy loading failure mode. Always use query logging and profiling tools to detect N+1 in development.</li>
-            <li><strong>Layout shift on lazy image load:</strong> Images without reserved dimensions cause the page to reflow as they load, producing poor CLS scores and jarring user experience. Always set explicit width/height or use CSS aspect-ratio containers.</li>
-            <li><strong>Race conditions in lazy singleton initialization:</strong> Two threads simultaneously find the instance is null and both initialize it. In Java, use <code>volatile</code> + double-checked locking or the initialization-on-demand holder idiom. In modern languages, use built-in lazy initialization primitives (<code>lazy</code> in Kotlin, <code>std::call_once</code> in C++).</li>
-            <li><strong>Deferred security initialization:</strong> Security middleware lazily initialized on first request may miss the very first request before initialization completes. Security components must always be eagerly initialized at startup.</li>
+            <li><strong>N+1 query problem:</strong> Hidden lazy getters inside service loops—catch with ORM statistics, Micrometer query tags, or integration tests that assert query count per HTTP call. One extra query per row at 10k rows can DDOS your own database during a product launch.</li>
+            <li><strong>Layout shift on lazy image load:</strong> Missing intrinsic size or aspect-ratio boxes causes CLS spikes; use placeholders, blur-up LQIP, or fixed aspect containers. Reserve space even when using responsive <code>srcset</code>.</li>
+            <li><strong>Race conditions in lazy singleton initialization:</strong> Double-checked locking without <code>volatile</code>, or unsynchronized module init in multi-threaded runtimes—use holder idiom, <code>sync.Once</code>, Kotlin <code>lazy</code>, or equivalent.</li>
+            <li><strong>Deferred security initialization:</strong> First request races ahead of middleware registration—register auth and validation in the main bootstrap before accepting traffic.</li>
+            <li><strong>Waterfall bundles:</strong> Chained dynamic imports without preloading can serialize network fetches on navigation—prefetch likely next routes and colocate critical CSS with the shell.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>ORM associations are loaded eagerly (JOIN) for code paths that always need them; lazy loading is only used where associations are genuinely optional.</li>
-            <li>Query logging is enabled in development to detect N+1 patterns before they reach production.</li>
-            <li>Lazily-loaded images use <code>loading="lazy"</code> or Intersection Observer with explicit width/height to prevent layout shift.</li>
-            <li>Virtual scrolling is used for lists exceeding ~1,000 items to prevent DOM node accumulation.</li>
-            <li>Lazy singleton implementations are thread-safe with appropriate synchronization primitives.</li>
-            <li>Above-the-fold, critical-path resources are NOT lazily loaded — they must be available immediately.</li>
+            <li>Hot list endpoints use eager/JOIN plans; lazy associations limited to optional detail flows.</li>
+            <li>Development and staging emit per-request query counts or slow-query alerts for N+1 regression.</li>
+            <li>Below-the-fold media lazy-loads with reserved layout; LCP candidates are prioritized or preloaded.</li>
+            <li>Lists beyond ~1,000 visible rows use virtualization or keyset pagination, not full DOM materialization.</li>
+            <li>Shared lazy singletons reviewed for safe publication under concurrency.</li>
+            <li>Security, tracing, and health middleware initialize before the server advertises ready.</li>
+            <li>Route-level and component-level lazy boundaries are documented so on-call engineers know which chunks affect which user journeys.</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -255,16 +260,16 @@
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="materialized-views.html">Materialized Views</a> — the inverse tradeoff: pre-computing expensive queries eagerly to avoid per-request computation latency.</li>
-            <li><a href="caching-strategies.html">Caching Strategies</a> — cache-aside is effectively lazy loading plus result caching: load on first miss, serve from cache thereafter.</li>
-            <li><a href="partitioning-patterns.html">Partitioning Patterns</a> — pagination is a form of lazy loading at the data layer, loading one partition of results at a time.</li>
+            <li><a href="materialized-views.html">Materialized Views</a> — front-load computation so reads stay cheap; opposite default from on-demand fetch.</li>
+            <li><a href="caching-strategies.html">Caching Strategies</a> — cache-aside combines lazy first fetch with fast repeat hits from the cache tier.</li>
+            <li><a href="partitioning-patterns.html">Partitioning Patterns</a> — paging and keyset cursors lazily load one slice of a large dataset at a time.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://developer.mozilla.org/en-US/docs/Web/Performance/Lazy_loading" target="_blank" rel="noopener noreferrer">MDN — Lazy Loading Guide (images, scripts, iframes)</a></li>
-            <li><a href="https://web.dev/articles/virtualize-long-lists-react-window" target="_blank" rel="noopener noreferrer">web.dev — Virtualize Large Lists with react-window</a></li>
-            <li><a href="https://vladmihalcea.com/n-plus-1-query-problem/" target="_blank" rel="noopener noreferrer">Vlad Mihalcea — How to Fix the N+1 Query Problem</a></li>
+            <li><a href="https://developer.mozilla.org/en-US/docs/Web/Performance/Lazy_loading" target="_blank" rel="noopener noreferrer">MDN — lazy loading for images, scripts, and iframes</a></li>
+            <li><a href="https://web.dev/articles/virtualize-long-lists-react-window" target="_blank" rel="noopener noreferrer">web.dev — virtualizing long lists (react-window)</a></li>
+            <li><a href="https://vladmihalcea.com/n-plus-1-query-problem/" target="_blank" rel="noopener noreferrer">Vlad Mihalcea — diagnosing and fixing the N+1 query problem</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

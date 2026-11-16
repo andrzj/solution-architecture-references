@@ -110,18 +110,18 @@
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Any application making repeated connections to a relational database — connection pooling is a near-universal requirement for production systems.</li>
-            <li>Horizontally scaled application tiers where the total number of application instances would otherwise create hundreds or thousands of database connections.</li>
-            <li>Applications connecting to PostgreSQL, where per-connection process overhead is particularly high.</li>
-            <li>Microservices with high-frequency short-lived service calls to other services via HTTP or gRPC (HTTP connection pools, gRPC channel pools).</li>
-            <li>Serverless functions that require database access — without pooling, each invocation creates a new connection; PgBouncer or RDS Proxy mediates this.</li>
+            <li>Production services that open a database handle on almost every request—pooling is the default discipline, not an optional optimization.</li>
+            <li>Fleets that scale out horizontally: aggregate client connections from dozens or hundreds of replicas would otherwise exceed safe <code>max_connections</code> on the datastore.</li>
+            <li>PostgreSQL-backed workloads, where each session is an OS process and idle sessions still consume RAM and scheduler time.</li>
+            <li>Microservice meshes that chatter over HTTP or gRPC: shared client pools (keep-alive, channel reuse) amortize TLS and TCP setup across high fan-out call graphs.</li>
+            <li>Serverless and bursty compute that touches SQL—without an external pooler or managed proxy, cold starts and concurrency spikes translate directly into connection storms.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Databases that use a thread-per-connection model with very low per-connection overhead (MySQL with max_connections=5,000 on large instances) — pooling is still beneficial but less critical than with PostgreSQL.</li>
-            <li>Single-threaded applications with sequential processing — a single pre-established connection is sufficient; a pool of one is equivalent.</li>
-            <li>Long-running transactional operations in PgBouncer transaction mode — transaction mode closes the server connection between transactions, which breaks session-level features like advisory locks and <code>SET LOCAL</code> settings.</li>
+            <li>Engines with lightweight thread-per-connection models on very large instances (for example MySQL at thousands of <code>max_connections</code>)—pooling still helps, but the penalty of skipping it is smaller than on PostgreSQL.</li>
+            <li>Strictly single-threaded, sequential workers where one long-lived connection suffices; configuring a pool of size one adds indirection without gain.</li>
+            <li>Sessions that depend on PostgreSQL advisory locks, <code>SET LOCAL</code>, or <code>LISTEN/NOTIFY</code> while routed through PgBouncer <strong>transaction</strong> mode—server backends are reassigned between transactions, breaking session stickiness.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -180,47 +180,47 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Eliminates per-request connection establishment overhead; reduces latency by 10–100ms per request for new connections.</li>
-                <li>Limits the total number of database connections regardless of application concurrency, protecting the database from connection overload.</li>
-                <li>PgBouncer multiplexes connections, allowing hundreds of application instances to share a small fixed pool of database connections.</li>
-                <li>Pool health management (connection validation, max lifetime) proactively replaces stale or severed connections before they cause errors.</li>
-                <li>Acts as an implicit concurrency throttle: the pool size is the maximum number of concurrent database operations.</li>
+                <li>Reuses warm TCP/TLS/database sessions, stripping 10–100ms of setup from requests that would otherwise pay full connect cost.</li>
+                <li>Caps simultaneous server sessions independent of thread count—protecting the datastore from unbounded connection growth.</li>
+                <li>External multiplexers (PgBouncer, RDS Proxy) let large pod counts share a modest, tunable backend pool on PostgreSQL.</li>
+                <li>Lifecycle settings (validation queries, <code>maxLifetime</code>, idle eviction) retire half-dead sockets before they surface as intermittent I/O failures.</li>
+                <li>Pool capacity doubles as a backpressure signal: maximum checkout equals maximum in-flight database work per process.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Pool exhaustion (all connections in use) causes request threads to block, increasing latency and potentially causing timeouts.</li>
-                <li>Connection leaks (code that borrows a connection but doesn't return it) silently exhaust the pool over time.</li>
-                <li>PgBouncer transaction mode is incompatible with session-level features: prepared statements (client-side), advisory locks, <code>SET</code> commands, and <code>LISTEN/NOTIFY</code>.</li>
-                <li>Serverless functions (AWS Lambda) with per-invocation isolation bypass in-process pools; each cold start creates a new connection, requiring external pooling (RDS Proxy, PgBouncer).</li>
-                <li>Adds infrastructure complexity: PgBouncer is another component to deploy, monitor, and scale.</li>
+                <li>When every connection is checked out, callers block on acquire—P99 latency climbs and threads may hit <code>connectionTimeout</code>.</li>
+                <li>Leaked checkouts (missing <code>close</code>, swallowed exceptions) shrink the effective pool until the service appears “up” but cannot serve SQL.</li>
+                <li>Transaction-mode PgBouncer breaks session semantics: server-prepared statements, <code>SET</code>, advisory locks, and <code>LISTEN/NOTIFY</code> need session mode or a bypass path.</li>
+                <li>Isolated serverless invocations do not share in-process pools across requests; without a proxy, each cold path may still open a fresh backend session.</li>
+                <li>Another moving part in the stack—pooler HA, auth wiring, metrics, and version skew between app drivers and pooler features.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Sizing the pool:</strong> The naive assumption is "more connections = more throughput." This is wrong. Beyond the optimal pool size, more connections increase lock contention and context-switch overhead, reducing throughput. The Hikari team's recommended formula is <code>pool_size = (core_count × 2) + effective_spindle_count</code>. For an I/O-bound workload on a 4-core machine with SSD storage, this yields approximately 9 connections.</p>
-          <p>For heavily I/O-bound workloads (slow queries, lots of network waits), you can increase beyond this formula, but monitor actual throughput — it should plateau or decline past the optimal point. Keep <code>minimumIdle</code> equal to <code>maximumPoolSize</code> (the HikariCP recommendation) to avoid the overhead of pool warmup on traffic bursts.</p>
-          <p><strong>PgBouncer modes:</strong> Use <strong>transaction mode</strong> for read-heavy workloads with short transactions — it provides the best connection multiplexing (many application connections share few server connections). Use <strong>session mode</strong> when your application uses session-level features (prepared statements, advisory locks, <code>SET LOCAL</code>, <code>LISTEN</code>). Never use statement mode in production — it breaks multi-statement transactions. When using transaction mode, disable client-side prepared statements in your JDBC driver (<code>prepareThreshold=0</code> in pgjdbc) because PgBouncer transaction mode routes each transaction to potentially a different server connection, making server-side prepared statement handles invalid.</p>
+          <p><strong>Sizing the pool:</strong> Treating “more connections always equals more throughput” is a common mistake. Past an optimum, additional sessions increase lock waits and scheduling overhead on both app and database CPUs. HikariCP’s rule of thumb—<code>pool_size = (core_count × 2) + effective_spindle_count</code>—lands near ~9 connections on a four-core host with SSD-backed I/O.</p>
+          <p>I/O-heavy apps may justify modest overshoot, but plot completed transactions per second as pool size rises; throughput should flatten or fall. Set <code>minimumIdle</code> equal to <code>maximumPoolSize</code> so bursts do not pay cold-pool expansion on every traffic ramp.</p>
+          <p><strong>PgBouncer modes:</strong> Prefer <strong>transaction mode</strong> for short, read-heavy transactions where multiplexing buys the most headroom. Choose <strong>session mode</strong> when prepared statements, <code>SET LOCAL</code>, advisory locks, or <code>LISTEN</code> must persist across statements. Avoid statement mode in production—it cannot span multi-statement transactions. In transaction mode, disable client-side prepare in JDBC (<code>prepareThreshold=0</code> for pgjdbc) because backends rotate per transaction and server-side prepare handles become invalid.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Pool exhaustion under load:</strong> All pool connections are held by long-running queries or transactions. New requests block until timeout. Symptoms: database shows all connections ACTIVE, application shows connection timeout errors. Fix: reduce pool size to match database capacity, optimize slow queries, set statement_timeout on long-running queries.</li>
-            <li><strong>Connection leak:</strong> A code path acquires a connection but fails to return it (uncaught exception bypassing connection close, missing try-with-resources block). The pool slowly shrinks until exhausted. Fix: use <code>leakDetectionThreshold</code> in HikariCP; use try-with-resources for all connection usage.</li>
-            <li><strong>Stale connections after database restart:</strong> All pooled connections become invalid when the database restarts. Applications receive "broken pipe" errors. Fix: set <code>maxLifetime</code> less than any server-side idle timeout; configure connection validation (<code>connectionTestQuery</code> or <code>keepaliveTime</code>).</li>
-            <li><strong>Serverless cold start connection storm:</strong> 500 Lambda functions cold-start simultaneously after a traffic spike; each creates a new connection, exhausting max_connections. Fix: use RDS Proxy (AWS) or PgBouncer as an external pool that mediates Lambda connections.</li>
+            <li><strong>Pool exhaustion under load:</strong> Slow queries or forgotten transactions hold every checkout; newcomers block until timeout while the database shows all sessions ACTIVE. Right-size pools to datastore capacity, tune slow SQL, and enforce <code>statement_timeout</code> on runaway statements.</li>
+            <li><strong>Connection leak:</strong> A branch acquires a connection and never returns it—often an exception path without <code>finally</code> or try-with-resources. Enable <code>leakDetectionThreshold</code> and standardize scoped connection helpers.</li>
+            <li><strong>Stale connections after database restart:</strong> Rolling restarts or firewall idle drops leave dead sockets in the pool until the next query fails with broken pipe. Keep <code>maxLifetime</code> below server idle limits and run lightweight validation on checkout or idle eviction.</li>
+            <li><strong>Serverless cold start connection storm:</strong> Hundreds of concurrent invocations each open a backend session after a spike, tripping <code>max_connections</code>. Front the database with RDS Proxy or PgBouncer sized for burst connect, not burst Lambdas.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Pool size has been set based on the sizing formula and load testing, not an arbitrary large number.</li>
-            <li>Connection leak detection is enabled (<code>leakDetectionThreshold</code> in HikariCP).</li>
-            <li>Connection timeout (<code>connectionTimeout</code>) is set to fail fast rather than block indefinitely.</li>
-            <li><code>maxLifetime</code> is set below the database server's <code>idle_in_transaction_session_timeout</code> and any firewall idle timeout.</li>
-            <li>For PgBouncer transaction mode: client-side prepared statements are disabled and session-level feature compatibility is verified.</li>
-            <li>The total connection count (pool_size × application_instances) does not exceed the database's max_connections limit.</li>
-            <li>Pool metrics (active connections, pending connections, connection wait time) are monitored and alerted on.</li>
+            <li>Maximum pool size validated with load tests and the sizing heuristic—not a round number copied from another service.</li>
+            <li>Leak detection (<code>leakDetectionThreshold</code>) enabled in non-production at minimum; promoted to production where overhead is acceptable.</li>
+            <li><code>connectionTimeout</code> bounded so threads fail fast instead of wedging request worker pools.</li>
+            <li><code>maxLifetime</code> shorter than database <code>idle_in_transaction_session_timeout</code> and network middlebox idle timers.</li>
+            <li>Transaction-mode PgBouncer: JDBC prepare disabled and session-feature code paths audited or moved to session pooling.</li>
+            <li>Product of <code>maximumPoolSize × replica count</code> (plus pooler server pool) fits under database <code>max_connections</code> with headroom.</li>
+            <li>Dashboards track active, idle, pending, and acquire-wait time with alerts before user-visible timeouts dominate.</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -233,16 +233,16 @@
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="request-throttling.html">Request Throttling</a> — the pool size is effectively a concurrency throttle; pool exhaustion is the same as semaphore exhaustion in request throttling.</li>
-            <li><a href="read-replicas.html">Read Replicas</a> — read replica connection pools must be managed separately from the primary pool; routing reads to replicas splits the connection load.</li>
-            <li><a href="../reliability/bulkhead-pattern.html">Bulkhead Pattern</a> — separate connection pools per service or feature class are a direct implementation of the bulkhead pattern.</li>
+            <li><a href="request-throttling.html">Request Throttling</a> — checkout limits mirror semaphore-based admission control; an exhausted pool behaves like a saturated throttle queue.</li>
+            <li><a href="read-replicas.html">Read Replicas</a> — maintain distinct pools (or pooler databases) for primary writes versus replica reads so routing does not starve either tier.</li>
+            <li><a href="../reliability/bulkhead-pattern.html">Bulkhead Pattern</a> — per-tenant or per-feature pools isolate blast radius when one workload holds connections longer than others.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing" target="_blank" rel="noopener noreferrer">HikariCP — About Pool Sizing (the definitive pool size guide)</a></li>
-            <li><a href="https://www.pgbouncer.org/features.html" target="_blank" rel="noopener noreferrer">PgBouncer — Features and Pooling Modes</a></li>
-            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy.html" target="_blank" rel="noopener noreferrer">AWS RDS Proxy — Serverless Connection Pooling</a></li>
+            <li><a href="https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing" target="_blank" rel="noopener noreferrer">HikariCP wiki — About Pool Sizing</a></li>
+            <li><a href="https://www.pgbouncer.org/features.html" target="_blank" rel="noopener noreferrer">PgBouncer documentation — pooling modes and limitations</a></li>
+            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy.html" target="_blank" rel="noopener noreferrer">AWS RDS Proxy — connecting serverless and burst workloads</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

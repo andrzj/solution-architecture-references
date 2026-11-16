@@ -105,24 +105,25 @@
           <p>Common building blocks include <strong>concurrency caps</strong> (maximum in-flight requests), <strong>priority queues</strong> (serve health checks and interactive reads before bulk exports), <strong>edge shaping</strong> (NGINX <code>limit_req</code>, API gateway quotas with burst), and <strong>adaptive client throttling</strong> (Google SRE-style probabilities that tell callers to slow down when the server is already rejecting). The goal is to keep Little’s Law bounded: if arrivals exceed service capacity, queue depth and latency grow until something breaks—throttling caps that growth before OOM or thread starvation.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>A server has a finite concurrency capacity — a certain number of threads, goroutines, or event loop slots. Accepting more concurrent requests than this capacity causes thread pool exhaustion, out-of-memory errors, or extreme latency increases as the OS scheduler thrashes between too many threads. Throttling prevents this by ensuring the concurrency stays within bounds even under overload. The key insight is that it is better to make some requests wait (finite queue) than to allow all requests to proceed slowly and fail due to resource exhaustion.</p>
-          <p>Queueing theory (Little's Law: L = λW) formalizes this: average concurrency L equals arrival rate λ multiplied by average processing time W. If λ exceeds your system's capacity, concurrency grows unbounded. Throttling caps λ at the ingress, keeping L within the system's safe operating zone. This is particularly important for protecting stateful dependencies like databases: a database running at 5ms query latency when handling 100 concurrent queries might run at 500ms under 1,000 concurrent queries as lock contention and I/O saturation compound.</p>
-          <p>Throttling the application tier prevents cascading degradation in downstream tiers.</p>
+          <p>Every process has a finite concurrency budget—threads, goroutines, event-loop turns. Admitting unbounded in-flight work drives context-switch storms, heap growth, and thread pool starvation. A bounded queue trades some wait time for predictable failure instead of melting down every dependent.</p>
+          <p>Little’s Law (<em>L = λW</em>) explains why: when arrival rate λ times service time W exceeds what the machine can sustain, concurrency L climbs without bound. Ingress throttling caps effective λ so L stays inside the operating envelope. Databases amplify the effect—latency that looks fine at modest concurrency can spike tenfold once locks and I/O queues saturate.</p>
+          <p>Shaping load at the service boundary keeps deeper tiers—SQL, GPUs, partners—from becoming the accidental fuse for an upstream spike. Throttling is preferable to accepting every request and watching p99 latency climb until the process OOMs or the datastore refuses connections.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Services with limited downstream capacity (databases, external APIs, GPU inference) that will degrade non-linearly under overload.</li>
-            <li>CPU-bound or memory-bound workloads where accepting more concurrency than available cores leads to context-switch overhead and memory pressure.</li>
-            <li>Batch processing APIs (file uploads, bulk imports) where a few large requests should not block all interactive user requests.</li>
-            <li>Services that experience periodic traffic surges and prefer to delay requests briefly rather than fail them immediately.</li>
-            <li>Microservices that must implement backpressure from overwhelmed downstream services.</li>
+            <li>Dependencies with non-linear slowdown under parallel load (OLTP, synchronous ML RPC, partner APIs with strict concurrency).</li>
+            <li>CPU- or memory-heavy handlers where extra goroutines mostly add scheduling tax, not throughput.</li>
+            <li>Mixed traffic classes—bulk import versus interactive read—where priority lanes must not starve each other.</li>
+            <li>Burst-prone services that prefer short queueing to hard fail when spikes are seconds, not minutes.</li>
+            <li>Call graphs that must propagate backpressure when a downstream returns saturation signals.</li>
+            <li>Worker pools draining queues from Kafka or SQS where unbounded prefetch would pin memory and threads.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Interactive user-facing endpoints where queuing adds latency that degrades user experience worse than an immediate 503. For interactive APIs, rejecting quickly with a clear retry signal is better than a silent 30-second queue wait.</li>
-            <li>Stateless, fast API endpoints where the bottleneck is network throughput rather than server concurrency — queuing adds overhead without benefit.</li>
-            <li>When clients cannot handle delayed responses (fixed HTTP timeouts shorter than maximum queue wait time).</li>
+            <li>Latency-sensitive UX where a 503 with <code>Retry-After</code> beats an opaque thirty-second queue.</li>
+            <li>Ultra-light handlers bound by network bandwidth, not process concurrency—queues add delay without protecting anything.</li>
+            <li>Clients with hard timeouts shorter than your maximum queue wait—work will abort client-side anyway.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -194,48 +195,53 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Prevents overload-induced cascading failures by keeping concurrency within safe bounds, even under extreme traffic.</li>
-                <li>Priority queuing ensures critical traffic (health checks, premium users) is served even when low-priority traffic is shed.</li>
-                <li>Adaptive throttling allows clients to self-regulate based on server feedback, reducing the need for arbitrary hard limits.</li>
-                <li>Queue-based throttling smooths traffic spikes: brief bursts are absorbed rather than rejected.</li>
-                <li>Backpressure propagation in gRPC/reactive streams prevents resource accumulation in upstream services.</li>
+                <li>Stops overload cascades by pinning in-flight work to a tested concurrency ceiling.</li>
+                <li>Priority queues preserve health checks and premium paths while shedding bulk jobs.</li>
+                <li>Adaptive client throttling (SRE-style) nudges callers to slow down when servers raise error rates.</li>
+                <li>Short queues absorb micro-bursts that would otherwise trigger immediate 503s.</li>
+                <li>Streaming protocols propagate pressure—gRPC flow control and reactive backpressure limit upstream buffering.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Queuing adds latency; queued requests experience higher-than-normal response times that may violate SLAs.</li>
-                <li>Queue depth tuning is tricky: too small causes unnecessary rejections; too large causes memory pressure and long wait times.</li>
-                <li>Priority inversions can starve low-priority requests indefinitely during sustained overload (starvation).</li>
-                <li>Adaptive throttling requires accurate error/latency signal from the server; noisy metrics lead to premature throttling.</li>
-                <li>Adds complexity to both server and client implementations compared to simple rate limiting.</li>
+                <li>Queued requests inflate tail latency—SLO burn shows up as wait time, not error rate.</li>
+                <li>Depth and timeout tuning is fragile: shallow queues reject early; deep queues hoard memory and stale work.</li>
+                <li>Sustained overload can starve low-priority classes unless aging or fair-share policies exist.</li>
+                <li>Adaptive policies need clean signals; noisy dashboards cause over-throttling.</li>
+                <li>More moving parts than a single rate counter—servers and clients must cooperate on timeouts and retries.</li>
+                <li>Mis-set queue timeouts cause work to finish after clients gave up, wasting CPU without improving success rate.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Concurrency vs. rate limiting:</strong> These are complementary controls with different semantics. Rate limiting says "no more than N requests per second." Concurrency limiting says "no more than N requests active simultaneously." A server with 10 threads can handle 10 concurrent 1-second requests = 10 req/s OR 10 concurrent 10-millisecond requests = 1,000 req/s. Rate limiting alone doesn't protect against long-running requests that hold threads.</p>
-          <p>Always implement both: rate limiting prevents per-client abuse; concurrency limiting prevents total server overload regardless of client behavior.</p>
-          <p><strong>Queue depth and timeout:</strong> The queue depth determines how much latency smoothing you provide vs. how much memory overhead you accept. A queue depth of 2× your concurrency limit is a reasonable starting point. More importantly, set a queue timeout equal to your client's expected timeout minus your processing time.</p>
-          <p>If clients time out after 5 seconds and processing takes 1 second, queue timeout should be 4 seconds.</p>
-          <p>Requests that wait longer than that will fail on the client side anyway — there is no point completing them.</p>
+          <p><strong>Concurrency vs. rate limiting:</strong> Rate caps requests per second; concurrency caps simultaneous executions. Ten threads can serve ten slow 1s jobs (10 RPS) or ten fast 10ms jobs (~1k RPS). Long-held slots break rate-only designs—deploy both per-client limits and global semaphores.</p>
+          <p>Always implement both: <a href="rate-limiting.html">rate limiting</a> curbs abusive identities; concurrency throttles protect the fleet even when every client is well behaved.</p>
+          <p><strong>Queue depth and timeout:</strong> Start with queue depth around 2× max concurrency. Set max wait to client timeout minus expected service time—if clients time out after 5 seconds and processing takes 1 second, queue timeout should be about 4 seconds. Completing work the caller already abandoned wastes capacity and poisons latency histograms.</p>
+          <p><strong>Priority and shedding:</strong> Classify traffic (health, interactive, bulk) into lanes; drain high priority first during overload. NGINX <code>limit_req</code> with <code>burst</code> and <code>nodelay</code> offers edge shaping; inside the process, prefer semaphores with timed <code>tryAcquire</code> over unbounded blocking queues.</p>
+          <p>Expose queue depth, wait time, and reject counts as first-class metrics; tune from load tests rather than defaults copied from blog posts. Adaptive client throttling (Google SRE) can complement server queues when mobile or browser clients can honor overload signals.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Queue buildup under sustained overload:</strong> Traffic exceeds capacity for minutes; the queue fills, requests stack up with increasing wait times. Without a queue cap, memory is exhausted. Always cap queue depth and fail fast when the queue is full.</li>
-            <li><strong>Head-of-line blocking:</strong> A few slow requests at the front of the queue block all subsequent requests regardless of their own processing time. Use parallel processing (thread pools, goroutines) so slow requests don't block fast ones. FIFO queues are particularly vulnerable; consider concurrent processing with a semaphore instead.</li>
-            <li><strong>Thundering herd on queue drain:</strong> After a bottleneck clears, all queued requests are released simultaneously. Use a leaky bucket or token bucket on the output side of the queue to smooth the drain rate.</li>
-            <li><strong>Downstream overload via queue release:</strong> Throttling the API tier without throttling downstream calls means a queue release floods the database. Throttling must be applied at each tier independently.</li>
+            <li><strong>Queue buildup under sustained overload:</strong> Arrivals exceed service for minutes; waits grow until memory blows—cap depth and return 503 with <code>Retry-After</code> when full.</li>
+            <li><strong>Head-of-line blocking:</strong> FIFO queues behind one slow job stall fast requests—use worker pools with semaphores or separate lanes per latency class.</li>
+            <li><strong>Thundering herd on queue drain:</strong> Releasing a full queue at once hammers downstream—shape drain with token or leaky bucket on the egress.</li>
+            <li><strong>Downstream overload via queue release:</strong> Draining the API queue without pool limits floods SQL—throttle each hop, including connection checkout limits.</li>
+            <li><strong>Adaptive throttle mis-tuning:</strong> Noisy error or latency metrics cause clients to throttle prematurely—smooth signals and require minimum sample windows before reducing call volume.</li>
+            <li><strong>Priority starvation:</strong> Low-priority lanes never drain during chronic overload—use aging, weighted fair queuing, or occasional promotion of long-waiting jobs.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Maximum safe concurrency for the service has been established via load testing, not guessing.</li>
-            <li>Queue depth and timeout are defined based on client timeout expectations and memory budget.</li>
-            <li>Priority tiers are defined for different request classes (health checks, user-facing, bulk/background).</li>
-            <li>503/429 responses on queue full include <code>Retry-After</code> to guide client retry timing.</li>
-            <li>Throttling is applied independently at each tier (API, application, database) — not just at the edge.</li>
-            <li>Backpressure signals are propagated to upstream callers rather than silently queuing indefinitely.</li>
+            <li>Safe concurrency established by load test with realistic payload sizes and dependency latency.</li>
+            <li>Queue depth, wait timeout, and shed policy aligned with client timeouts and memory budget.</li>
+            <li>Request classes mapped to priority tiers with documented preemption rules.</li>
+            <li>503/429 on saturation include <code>Retry-After</code> and structured error bodies for SDKs.</li>
+            <li>Each tier (edge, app, datastore) owns its own throttle—not only the outer gateway.</li>
+            <li>Backpressure surfaced to callers (stream pause, error rate headers) instead of silent infinite queue growth.</li>
+            <li>Load tests include long-running and bulk requests mixed with interactive traffic to validate priority shedding.</li>
+            <li>Runbooks document when operators should raise concurrency temporarily versus when to shed load upstream.</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -248,15 +254,15 @@
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="rate-limiting.html">Rate Limiting</a> — rate limiting rejects excess requests; throttling queues them. Both protect server resources from overload.</li>
-            <li><a href="connection-pooling.html">Connection Pooling</a> — the database connection pool is itself a concurrency-limiting throttle; its size directly determines safe concurrency.</li>
-            <li><a href="../reliability/bulkhead-pattern.html">Bulkhead Pattern</a> — bulkheads isolate concurrency pools per tenant or feature; throttling limits total concurrency across all pools.</li>
+            <li><a href="rate-limiting.html">Rate Limiting</a> — rejects excess arrivals per identity; throttling shapes how admitted work executes.</li>
+            <li><a href="connection-pooling.html">Connection Pooling</a> — checkout limits are a datastore-facing throttle tied to SQL concurrency.</li>
+            <li><a href="../reliability/bulkhead-pattern.html">Bulkhead Pattern</a> — isolated pools per tenant; global throttling caps the sum across bulkheads.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://sre.google/sre-book/handling-overload/" target="_blank" rel="noopener noreferrer">Google SRE Book — Handling Overload (Chapter 21)</a></li>
-            <li><a href="https://nginx.org/en/docs/http/ngx_http_limit_req_module.html" target="_blank" rel="noopener noreferrer">NGINX — ngx_http_limit_req_module Documentation</a></li>
+            <li><a href="https://sre.google/sre-book/handling-overload/" target="_blank" rel="noopener noreferrer">Google SRE Book — handling overload (Chapter 21)</a></li>
+            <li><a href="https://nginx.org/en/docs/http/ngx_http_limit_req_module.html" target="_blank" rel="noopener noreferrer">NGINX — <code>limit_req</code> module reference</a></li>
             <li><a href="https://grpc.io/docs/guides/flow-control/" target="_blank" rel="noopener noreferrer">gRPC — Flow Control</a></li>
           </ul>
         </div>
