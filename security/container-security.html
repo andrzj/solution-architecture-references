@@ -99,8 +99,9 @@
           <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
+
           <h2 id="what-it-is">What it is</h2>
-          <p>Container security operates at four distinct layers: <strong>Image layer</strong> — scanning container images for OS package vulnerabilities, ensuring images use minimal base images (Alpine, distroless), and signing images to verify provenance; <strong>Container runtime layer</strong> — restricting container capabilities (non-root user, read-only filesystem, dropped Linux capabilities, seccomp/AppArmor profiles) to reduce the impact of a container compromise; <strong>Kubernetes configuration layer</strong> — controlling who can do what via RBAC, enforcing pod security standards via PodSecurity admission, and managing Kubernetes secrets securely; and <strong>Runtime monitoring layer</strong> — Falco, a CNCF project, monitors container syscalls at runtime and detects anomalous behaviour (shell spawned in production container, unexpected network connection, credentials file read) that indicates a compromise in progress.</p>
+          <p><strong>Container security</strong> protects images, runtimes, orchestrators, and workloads from build through production. Containers share a host kernel, so compromise of one workload can threaten neighbors without deliberate isolation and least privilege. The practice spans <strong>image security</strong> (minimal bases, CVE scanning, Cosign/Sigstore signatures and SLSA-style provenance at admission); <strong>runtime hardening</strong> (non-root, read-only root filesystem, dropped capabilities, seccomp/AppArmor); <strong>Kubernetes configuration</strong> (RBAC, PodSecurity profiles, secrets handling aligned with the CIS Kubernetes Benchmark); and <strong>runtime detection</strong> (Falco syscall rules for shells, unexpected egress, credential access).</p>
           <p><strong>Kubernetes RBAC</strong> (Role-Based Access Control) controls access to the Kubernetes API — which users and service accounts can create, read, update, or delete which Kubernetes resources. Misconfigured RBAC (overly permissive roles, cluster-admin granted broadly) is a primary vector for Kubernetes cluster compromise. <strong>PodSecurity admission</strong> (the successor to PodSecurityPolicy) enforces a set of pod-level security constraints at admission time, preventing workloads from running as root, mounting host filesystems, or using privileged mode, even if the deployment manifest requests it. The three standard profiles are <em>privileged</em> (no restrictions), <em>baseline</em> (prevents the most dangerous configurations), and <em>restricted</em> (most security, requires non-root, drops capabilities, read-only root filesystem).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
@@ -243,6 +244,7 @@
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Implement container security controls progressively using the Kubernetes PodSecurity standard levels: start by applying <em>baseline</em> (blocks the most dangerous configurations) to all namespaces in warn mode to identify violations without breaking workloads, fix violations, then switch to enforce mode. Then apply <em>restricted</em> incrementally namespace by namespace, starting with least-critical workloads and working toward production. Use the <code>pod-security.kubernetes.io/warn</code> and <code>pod-security.kubernetes.io/audit</code> labels alongside <code>enforce</code> to identify remaining violations.</p>
           <p>For Kubernetes secrets management, avoid storing sensitive configuration in Kubernetes Secrets directly unless the cluster has etcd encryption at rest enabled — Kubernetes Secrets are base64 encoded, not encrypted, by default. Use an external secrets operator (ESO) to sync secrets from Vault or AWS Secrets Manager into Kubernetes Secrets, with the source of truth in a properly encrypted secrets manager rather than in etcd. Configure RBAC to restrict which service accounts can read which secrets.</p>
+          <p>Scan images in CI with Trivy or Grype and block critical CVEs before push. Sign release digests with Cosign via Sigstore OIDC; admission controllers should verify signatures and optionally SLSA provenance attestations. Export CIS Kubernetes Benchmark scan results periodically as audit evidence for regulated workloads.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -265,9 +267,9 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Kubernetes multi-tenant platform</strong>: Platform team applies restricted PodSecurity profile to all tenant namespaces; tenant workloads must run non-root; Kyverno policies enforce image registry allowlist; NetworkPolicies prevent cross-tenant communication; Falco alerts on any shell execution in any tenant namespace.</li>
-            <li><strong>Financial services container hardening</strong>: All production containers use distroless images, run as UID 65534 (nobody), have read-only root filesystem with tmpfs mounts for <code>/tmp</code> and log directories; seccomp RuntimeDefault profile applied; PCI DSS audit satisfied by CIS Kubernetes Benchmark compliance scan results.</li>
-            <li><strong>Supply chain security for containers</strong>: Images built in CI, signed with Cosign using GitHub OIDC identity; Kyverno admission policy requires Cosign signature verification before any pod can start; unsigned or tampered images rejected at deployment time by the cluster.</li>
+            <li><strong>Illustrative scenario — multi-tenant platform</strong>: Restricted PodSecurity, Kyverno registry allowlists, NetworkPolicies, Falco on shell execution.</li>
+            <li><strong>Illustrative scenario — regulated hardening</strong>: Distroless, non-root, read-only root FS; CIS benchmark scans as PCI audit evidence.</li>
+            <li><strong>Illustrative scenario — Sigstore admission</strong>: Cosign keyless CI signing; Kyverno verifies signatures before scheduling pods.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -283,6 +285,8 @@
             <li><a href="https://falco.org/docs/" target="_blank" rel="noopener noreferrer">Falco Runtime Security</a></li>
             <li><a href="https://www.cisecurity.org/benchmark/kubernetes" target="_blank" rel="noopener noreferrer">CIS Kubernetes Benchmark</a></li>
           </ul>
+        
+
         </div>
         <nav class="article-nav" aria-label="Article navigation">
           <a href="secure-sdlc.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Secure SDLC</span></a>

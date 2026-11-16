@@ -100,117 +100,151 @@
           </div>
           <h1 class="article-header__title">OAuth2 & OpenID Connect</h1>
           <p class="article-header__desc">The industry standard delegation and identity protocols — flows, tokens, and common pitfalls.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: a mobile app opens a system browser to the IdP, returns an authorization code via PKCE, exchanges it for access + ID tokens, and validates <code>iss</code>, <code>aud</code>, <code>nonce</code>, and <code>exp</code>.</p>
+          <p><strong>OAuth 2.0</strong> is an authorisation framework: a client obtains limited access to a resource on behalf of a resource owner without ever receiving that owner’s password. The authorization server issues <strong>access tokens</strong> scoped to specific permissions; resource servers validate those tokens before serving data. <strong>OpenID Connect (OIDC)</strong> is an identity layer on top of OAuth 2.0 — it standardises how clients learn <em>who</em> authenticated via an <strong>ID token</strong> (a JWT carrying claims such as <code>sub</code>, <code>iss</code>, and <code>aud</code>) alongside the access token.</p>
+          <p>Common grant patterns include <strong>Authorization Code</strong> (with <strong>PKCE</strong> for public clients such as SPAs and mobile apps), <strong>Client Credentials</strong> for machine-to-machine calls, and <strong>Device Authorization</strong> for headless devices. OAuth answers “may this client act on behalf of this user with these scopes?”; OIDC answers “which user signed in, and when?”</p>
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Custom SSO protocols failed interoperably. OAuth/OIDC are industry standards supported by every major IdP and API gateway, enabling secure delegation without sharing user passwords with third parties.</p>
+          <p>Before OAuth, third-party integrations often required users to share passwords — a breach of one site compromised accounts everywhere. Custom single sign-on protocols did not interoperate across vendors. OAuth 2.0 and OIDC are IETF/OpenID Foundation standards supported by every major identity provider, API gateway, and cloud IAM product, which means architects can federate workforce and customer identity once and reuse the same token validation patterns across services.</p>
+          <p>Mis-implementing these flows still causes high-severity breaches (redirect hijacking, token theft, confused-deputy attacks), so the standards ecosystem now encodes safer defaults: OAuth 2.1 deprecates the implicit flow, mandates PKCE for public clients, and encourages sender-constrained tokens.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>User login to web, mobile, and SPA applications.</li>
-            <li>API access on behalf of users (delegated scopes).</li>
-            <li>Federation with external partners via standard flows.</li>
+            <li>User login for web, mobile, and single-page applications where a browser or system web view can complete an interactive authorisation step.</li>
+            <li>Delegated API access — a client calls an API with an access token scoped to what the user consented to, not the user’s full account.</li>
+            <li>Enterprise and B2B federation — OIDC bridges SaaS apps to corporate IdPs; SAML federation upstream can still terminate at an OIDC-capable broker.</li>
+            <li>Partner integrations where partners authenticate users at their IdP and your resource server trusts tokens from a known issuer.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Pure service-to-service without a user — prefer client credentials or mTLS.</li>
-            <li>Implicit flow or resource-owner password grant for new apps.</li>
+            <li><strong>Pure service-to-service</strong> with no user in the loop — prefer client credentials, workload identity, or mTLS rather than inventing a “user” for OAuth.</li>
+            <li><strong>Resource Owner Password Credentials</strong> or <strong>Implicit flow</strong> for new applications — both are deprecated or removed from OAuth 2.1; they expose credentials or tokens to the browser.</li>
+            <li><strong>First-party session replacement</strong> where a simple server-side session and HttpOnly cookie suffice and no third-party delegation is required — OAuth adds moving parts without benefit.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Authorization Code flow with PKCE for public clients.</p>
+          <p>For interactive clients, the Authorization Code flow with PKCE keeps secrets out of the browser: the client proves possession of a one-time verifier when exchanging the code at the token endpoint. Confidential backends (BFF pattern) hold client secrets and perform token exchange server-side.</p>
 
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">sequenceDiagram
-    participant Client
-    participant IdP as Authorization server
     participant User
-    Client->>IdP: authorize redirect + PKCE challenge
-    IdP->>User: authenticate + consent
-    User->>IdP: approve
-    IdP->>Client: authorization code
-    Client->>IdP: code + code_verifier
-    IdP->>Client: access_token + id_token</div>
+    participant Client
+    participant BFF as Confidential client / BFF
+    participant AS as Authorization server
+    participant RS as Resource server
+    User->>Client: start login
+    Client->>BFF: initiate OIDC
+    BFF->>AS: authorize + code_challenge
+    AS->>User: authenticate + consent
+    User->>AS: approve
+    AS->>BFF: authorization code
+    BFF->>AS: code + code_verifier + client_auth
+    AS->>BFF: access_token + id_token + refresh_token
+    BFF->>RS: API call Bearer access_token
+    RS->>AS: optional introspection / JWKS verify
+    RS->>BFF: protected resource</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>OIDC AUTHORIZATION CODE + PKCE:
+              <pre class="architecture-diagram__canvas"><code>OIDC AUTHORIZATION CODE + PKCE (BFF pattern):
 
-  [Client] --(login redirect + code_challenge)-->
-        [AuthZ endpoint @ IdP]
-              |
-              v
-        user authenticates + consents
-              |
-  [Client] <-- authorization code -------
-       |
-       +-- token endpoint (code + code_verifier)
-              |
-              v
-        access_token + id_token (JWT)
+  [User] --> [Public client: SPA / mobile]
+                |
+                v
+        [BFF / confidential client]
+                |
+    1. redirect --> [Authorization endpoint]
+                |         user MFA + consent
+    2. code  <---+
+                |
+    3. POST token endpoint: code + code_verifier + client_secret
+                |
+                v
+    access_token + id_token (JWT) + refresh_token
+                |
+    4. BFF stores server-side session; browser gets HttpOnly cookie
+                |
+    5. BFF --> [Resource server] Authorization: Bearer access_token
 
-VALIDATE: signature, iss, aud, exp, nonce</code></pre>
+TOKEN VALIDATION (resource server / BFF):
+  - Fetch JWKS from issuer (cache by kid)
+  - Verify signature, iss, aud, exp, nbf
+  - ID token: also nonce (if used at authorize)
+  - Access token: scope / audience for this API only</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">OIDC authorization code with PKCE: public clients exchange a code for tokens after user consent and MFA.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Authorization Code with PKCE: the user authenticates at the authorization server; a confidential backend exchanges the code and calls APIs with scoped access tokens.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Widely supported libraries and IdPs.</li>
-            <li>PKCE protects public clients without client secret.</li>
-            <li>Standard scopes and claims reduce integration cost.</li>
-            <li>Refresh tokens enable silent re-auth with rotation.</li>
+                <li>Interoperable libraries, conformance suites, and managed IdPs reduce bespoke auth code.</li>
+                <li>PKCE secures public clients without embedding a client secret in mobile or SPA binaries.</li>
+                <li>Scoped access tokens enforce least privilege per API and per client registration.</li>
+                <li>Refresh token rotation and PAR (Pushed Authorization Requests) support high-assurance deployments.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Misconfigured redirect URIs enable token theft.</li>
-            <li>JWT validation mistakes are common.</li>
-            <li>Complex enterprise claims mapping.</li>
-            <li>Token size can bloat headers.</li>
+                <li>Redirect URI and client registration mistakes are a frequent source of account takeover.</li>
+                <li>JWT validation errors (wrong <code>aud</code>, stale JWKS, accepting <code>none</code>) are common in custom middleware.</li>
+                <li>Enterprise claim mapping (groups, tenant IDs, custom attributes) grows complex across many clients.</li>
+                <li>Large JWT access tokens inflate headers and complicate logging and caching.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Register exact redirect URI allowlists; use PAR for high-assurance clients. Validate ID tokens against JWKS with key rotation support.</p>
-          <p>Use refresh token rotation and revoke on logout; bind tokens to DPoP or mTLS where threat model requires.</p>
+          <p>Register <em>exact</em> redirect URI allowlists — no wildcards, no open paths. Use separate client registrations per environment (dev/stage/prod) and per platform (web vs mobile deep link). For SPAs, prefer a backend-for-frontend that performs token exchange; never store refresh tokens in browser storage.</p>
+          <p>Validate ID tokens on every login: signature against issuer JWKS, <code>iss</code> matches configured authority, <code>aud</code> matches this client ID, <code>exp</code>/<code>iat</code> within clock skew, and <code>nonce</code> if the authorisation request included one. For access tokens, validate audience for <em>this</em> API — an ID token audience is not interchangeable with an API resource indicator.</p>
+          <p>Enable refresh token rotation with reuse detection; revoke family on suspected theft. Consider <strong>DPoP</strong> or mTLS-bound tokens when tokens might leak from logs or proxies. Use <strong>PAR</strong> or JAR for clients that need request integrity on the authorisation endpoint. Propagate logout via OIDC RP-initiated logout or back-channel logout when sessions must end across apps.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Open redirect</strong>: wildcard redirect URI.</li>
-            <li><strong>Accepting alg=none</strong> or wrong audience.</li>
-            <li><strong>Long-lived refresh tokens</strong> without rotation.</li>
-            <li><strong>Mixing access token as session</strong> without validation.</li>
+            <li><strong>Open redirect on redirect_uri</strong>: wildcard or prefix-only matching lets an attacker steal authorization codes on a controlled path.</li>
+            <li><strong>PKCE downgrade</strong>: authorization server accepts token exchange without <code>code_verifier</code> for public clients.</li>
+            <li><strong>Using access tokens as session cookies</strong> without audience and scope checks on each request.</li>
+            <li><strong>Accepting alg=none or symmetric algorithms</strong> when only asymmetric RS256/ES256 from the IdP is intended.</li>
+            <li><strong>Long-lived refresh tokens</strong> without rotation, device binding, or revocation on password change.</li>
+            <li><strong>Mixing tenants</strong>: one client ID serves multiple customers without <code>iss</code>/<code>tid</code> validation, enabling cross-tenant token replay.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Authorization Code + PKCE for SPA/mobile?</li>
-            <li>Redirect URIs exact match only?</li>
-            <li>ID token signature and claims validated?</li>
-            <li>Refresh rotation enabled?</li>
-            <li>Scopes minimized per client?</li>
-            <li>Logout propagates to IdP when required?</li>
+            <li>Are interactive clients using Authorization Code + PKCE (not implicit or ROPC)?</li>
+            <li>Are redirect URIs exact-match only, with separate registrations per app surface?</li>
+            <li>Are ID and access tokens validated separately with correct <code>aud</code> for each resource?</li>
+            <li>Is refresh token rotation enabled with reuse detection?</li>
+            <li>Are scopes minimised per client registration and documented for reviewers?</li>
+            <li>Does logout propagate to the IdP when shared sessions must end?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>B2B SaaS</strong>: Auth0 tenants with per-customer SAML federation upstream.</li>
-            <li><strong>Mobile banking</strong>: App attestation + PKCE + step-up for transfers.</li>
-            <li><strong>CLI tools</strong>: Device code flow for headless login.</li>
+            <li><strong>Illustrative scenario — multi-tenant B2B SaaS:</strong> Each customer’s workforce federates via SAML to a central OIDC broker; the SaaS API trusts access tokens whose <code>tid</code> claim scopes data plane queries.</li>
+            <li><strong>Illustrative scenario — mobile consumer app:</strong> System browser completes PKCE login; refresh tokens are device-bound; step-up authentication at the IdP raises <code>acr</code> before high-risk in-app actions.</li>
+            <li><strong>Case study — Google accounts:</strong> Google’s identity platform issues OIDC tokens consumed by thousands of third-party “Sign in with Google” clients using standard discovery and JWKS endpoints.</li>
+            <li><strong>Illustrative scenario — operator CLI:</strong> Device Authorization Grant displays a user code on a headless VM; the engineer approves on a phone; the CLI polls until it receives scoped tokens.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="authentication.html">Authentication Fundamentals</a> — Credential and session practices.</li>
-            <li><a href="jwt-best-practices.html">JWT Best Practices</a> — JWT handling details.</li>
-            <li><a href="identity-and-access-management.html">Identity and Access Management</a> — Directory and provisioning.</li>
+            <li><a href="authentication.html">Authentication Fundamentals</a> — Sessions, MFA, and credential hygiene around federated login.</li>
+            <li><a href="jwt-best-practices.html">JWT Best Practices</a> — Validating ID and access tokens at APIs and BFFs.</li>
+            <li><a href="identity-and-access-management.html">Identity and Access Management</a> — Directory, provisioning, and lifecycle upstream of OIDC.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://oauth.net/2/" target="_blank" rel="noopener noreferrer">OAuth 2.0 Framework</a></li>
+            <li><a href="https://oauth.net/2/" target="_blank" rel="noopener noreferrer">OAuth 2.0 — oauth.net</a></li>
             <li><a href="https://openid.net/connect/" target="_blank" rel="noopener noreferrer">OpenID Connect Overview</a></li>
             <li><a href="https://datatracker.ietf.org/doc/html/rfc7636" target="_blank" rel="noopener noreferrer">RFC 7636 — PKCE</a></li>
+            <li><a href="https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics" target="_blank" rel="noopener noreferrer">OAuth 2.0 Security Best Current Practice (RFC 9700)</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
