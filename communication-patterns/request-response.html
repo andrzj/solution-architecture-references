@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Request-Response — SA References</title>
-  <meta name="description" content="Synchronous request-response communication pattern: HTTP/gRPC, timeout configuration, connection pooling, idempotency, circuit breaking, and latency budgets.">
+  <meta name="description" content="Request-response synchronous pattern: HTTP and gRPC blocking calls, deadline propagation, connection pooling, safe retries, idempotency keys, and circuit breaking.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>(function(){const t=localStorage.getItem('sa-refs-theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);})();</script>
 </head>
@@ -84,41 +84,42 @@
         <div class="article-header">
           <div class="article-header__tags"><span class="badge badge--primary">Communication Patterns</span><span class="badge badge--muted">Sync</span><span class="badge badge--muted">Essential</span></div>
           <h1 class="article-header__title">Request-Response</h1>
-          <p class="article-header__desc">The foundational synchronous communication pattern where a caller blocks waiting for a direct reply — covering HTTP/gRPC mechanics, timeout strategies, connection pooling, safe retries, and circuit breaking.</p>
+          <p class="article-header__desc">Synchronous request-response: the caller waits for a direct reply over HTTP or gRPC, with timeouts, pooling, safe retries, and circuit breaking as first-class design concerns.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>Request-response is the simplest and most ubiquitous inter-service communication model: a client sends a request and <em>blocks</em> until it receives a response or a timeout fires. The protocol can be HTTP/1.1, HTTP/2 (used by gRPC), WebSockets (for server-push variants), or raw TCP. The key characteristic is temporal coupling — the caller and the callee must both be alive and reachable at the same moment in time.</p>
-          <p>Every browser page load, every REST API call, and every gRPC unary RPC is a request-response interaction. Despite the rise of asynchronous patterns, synchronous request-response remains the right default for user-facing reads and simple, low-latency queries because it offers the simplest mental model: you ask a question and you get the answer.</p>
-          <p>Over HTTP/1.1 the connection is typically kept alive via <code>Connection: keep-alive</code>; HTTP/2 multiplexes many logical streams over a single TCP connection, eliminating head-of-line blocking at the HTTP layer. gRPC builds on HTTP/2 and adds a strongly typed contract via Protocol Buffers, binary framing, and built-in streaming variants (server-streaming, client-streaming, bidirectional). REST over HTTP/1.1 is still dominant for public APIs due to tooling familiarity and firewall compatibility.</p>
+          <p><strong>Request-response</strong> is a synchronous communication pattern in which a caller sends a message and blocks until the callee returns a reply or the call fails with a timeout or error. The pattern appears everywhere HTTP exposes request/response semantics, in gRPC unary RPCs on HTTP/2, and in analogous RPC layers over WebSockets or TCP.</p>
+          <p>Its defining property is <em>temporal coupling</em>: both peers must be available and reachable for the duration of the exchange. That coupling is a trade-off — simplicity and immediate feedback on one side, fragility under partial outages and long chains on the other. Enterprise Integration Patterns describes the same idea as a pair of <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/RequestReply.html" target="_blank" rel="noopener noreferrer">Request-Reply</a> channels (request channel plus reply channel); microservices.io treats synchronous RPC as the default integration style when you need an answer before proceeding.</p>
+          <p>HTTP/1.1 typically reuses connections via keep-alive; HTTP/2 multiplexes many streams on one connection. gRPC adds typed contracts (Protocol Buffers), binary framing, and optional streaming modes while keeping unary RPC as the common request-response shape.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Many operations are inherently interrogative: "What is the current price?", "Is the user authorised?", "Does this record exist?" These questions have no useful answer unless they are answered <em>now</em>. Asynchronous patterns require the caller to manage correlation state and poll or listen for a reply, which adds complexity without benefit when the latency of the operation is small and predictable. Request-response maps naturally to programming language idioms: a function call, an <code>await</code>, a future — the runtime suspends the caller until the answer arrives, keeping application code straightforward. It also aligns with HTTP's stateless, cacheable semantics, allowing intermediate caches (CDN, reverse proxy) to serve responses without ever reaching the origin service.</p>
+          <p>Many operations are inherently interrogative: current price, permission to proceed, or whether a record exists. Async alternatives force the caller to manage correlation identifiers, out-of-band delivery, and completion detection, which buys little when the downstream answer is fast and the caller cannot continue without it.</p>
+          <p>Request-response maps cleanly to language primitives (<code>await</code>, futures, blocking I/O), which keeps application code readable. On the web it also aligns with cacheable HTTP semantics, so CDNs and reverse proxies can serve read responses without hitting the origin when policy allows.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>User-facing reads</strong> where the browser or mobile app is waiting for data to render — every millisecond of latency is visible to the user.</li>
-            <li><strong>Simple, low-latency queries</strong> — fetching a user profile, looking up a product by SKU, checking inventory count.</li>
-            <li><strong>Authentication and authorisation checks</strong> where the request cannot proceed until a yes/no answer is obtained.</li>
-            <li><strong>Synchronous validation</strong> — credit card number format check, address geocoding before saving an order.</li>
-            <li><strong>Admin and operational APIs</strong> — triggering a one-off job, querying a health endpoint, reading configuration.</li>
-            <li><strong>When simplicity matters more than scale</strong> — early-stage products where operational overhead of async messaging is unjustified.</li>
+            <li>User-facing reads where a browser or mobile client must render before the interaction can continue.</li>
+            <li>Simple queries whose downstream latency fits inside the caller’s end-to-end budget (profile lookup, SKU resolution, inventory check).</li>
+            <li>Authentication and authorisation gates that must return allow/deny before request handling proceeds.</li>
+            <li>Validation that must complete before committing state (address verification, eligibility checks).</li>
+            <li>Operational and admin APIs where an operator expects an immediate success or error (health checks, configuration reads, one-shot triggers).</li>
+            <li>Early-stage systems where the operational cost of brokers and async pipelines outweighs their benefits.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Long-running operations</strong> (> a few seconds) — HTTP timeouts and user patience do not accommodate multi-minute workflows; use async job patterns instead.</li>
-            <li><strong>Fan-out to many downstream services</strong> — calling 10 services serially to assemble a composite response compounds latency and failure probability.</li>
-            <li><strong>Fire-and-forget notifications</strong> — if the caller does not need the result, sync coupling adds unnecessary latency and failure surface.</li>
-            <li><strong>High-throughput write ingestion</strong> — a broker queue absorbs bursts far better than a synchronous endpoint that blocks a thread per connection.</li>
-            <li><strong>Cross-datacenter critical paths</strong> — inter-region RTT of 60–100 ms can make synchronous call chains unusable under P99 SLOs.</li>
+            <li>Workflows that run longer than client or gateway timeouts permit; prefer async jobs with polling or callbacks.</li>
+            <li>Composite pages or APIs that would serialize many downstream calls; parallel fan-out or materialized read models reduce tail latency.</li>
+            <li>Fire-and-forget side effects where the caller does not need the outcome.</li>
+            <li>High-volume write ingestion where a durable queue absorbs burst traffic better than a thread per in-flight HTTP request.</li>
+            <li>Critical paths that span regions or data centers, because round-trip latency accumulates on every synchronous hop.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>A client (browser, mobile app, or upstream service) opens an HTTP/2 connection to the service. Connection pooling ensures the TCP handshake cost is amortised across many requests. A reverse proxy or API gateway sits in front to handle TLS termination, rate limiting, and routing. Downstream the service may make further synchronous calls, forming a call chain.</p>
-          <p>Each hop in the chain must budget its latency share to meet the overall SLO. A circuit breaker wraps each downstream call to fail fast when the dependency is degraded.</p>
+          <p>A client (browser, mobile app, or upstream microservice) terminates TLS at an API gateway or service mesh ingress, then invokes an edge or BFF service over HTTP/2 or gRPC. Connection pooling amortizes handshake cost across requests; the edge service may call additional services synchronously, forming a dependency chain.</p>
+          <p>Each hop should consume only part of the end-to-end deadline, and outbound calls should be wrapped with circuit breakers so a failing dependency fails fast instead of tying up worker threads.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     client["Client"]
@@ -160,70 +161,70 @@ Timeouts: Gateway→A = 500 ms
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Simplest mental model — caller code reads as a function call.</li>
-              <li>Immediate feedback — errors and validation failures surface instantly.</li>
-              <li>HTTP caching (ETags, Cache-Control) reduces origin load for reads.</li>
-              <li>Mature tooling — load balancers, service meshes, APM agents all understand HTTP natively.</li>
-              <li>Easy to trace end-to-end with distributed tracing (W3C trace context propagated in headers).</li>
+              <li>Caller code reads like a local function call, which keeps control flow easy to reason about.</li>
+              <li>Errors and validation failures return immediately to the caller without extra correlation plumbing.</li>
+              <li>HTTP caching headers can serve read-heavy traffic from intermediates when responses are cacheable.</li>
+              <li>Load balancers, API gateways, service meshes, and APM tools have first-class support for HTTP and gRPC.</li>
+              <li>W3C Trace Context headers propagate naturally in request metadata for end-to-end tracing.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>Temporal coupling — caller and callee must both be available simultaneously.</li>
-              <li>Cascading failures — a slow downstream stalls the caller thread/goroutine/connection.</li>
-              <li>Latency amplification in deep call chains — P99 latency compounds multiplicatively.</li>
-              <li>Thread/connection exhaustion under high load — each in-flight request occupies a resource until response or timeout.</li>
-              <li>Retry storms — naive retry logic can overload an already-struggling service.</li>
+              <li>Caller and callee must be healthy at the same moment, which increases blast radius during outages.</li>
+              <li>A slow or stalled downstream blocks the caller’s worker until timeout, which can trigger cascading overload.</li>
+              <li>Deep synchronous chains multiply tail latency because each hop consumes part of the same deadline.</li>
+              <li>High concurrency ties up threads or connections for the full duration of each in-flight call.</li>
+              <li>Aggressive client retries can amplify load on a dependency that is already failing.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Timeouts:</strong> Always set two timeouts — a <em>connect timeout</em> (fail fast if the remote is unreachable, typically 100–200 ms) and a <em>read/request timeout</em> (bound the total call duration, sized to your SLO). In gRPC, use per-call deadlines propagated via context so the entire call chain respects the same absolute deadline, not a fresh relative timeout per hop.</p>
-          <p><strong>Connection pooling:</strong> HTTP/1.1 clients must use a pool with a maximum-connections-per-host setting. HTTP/2 clients multiplex over a single connection, but still need a pool per host to handle TLS session establishment. Pool size should be tuned to <code>max_concurrent_requests / avg_latency_s</code> using Little's Law. Too few connections queue requests; too many overwhelm the server.</p>
-          <p><strong>Idempotency for safe retries:</strong> GET and HEAD requests are safe (no side effects) and idempotent by specification — retry freely on network errors. PUT and DELETE are idempotent by definition. POST is neither safe nor idempotent — introduce an <code>Idempotency-Key</code> header (a UUID generated by the caller) so the server can detect and suppress duplicate submissions within a deduplication window (typically 24 h stored in Redis).</p>
-          <p><strong>Retry policy:</strong> Apply exponential backoff with jitter — <code>delay = min(cap, base * 2^attempt) + random(0, jitter)</code>. Only retry on transient errors (503, 429, connection reset, timeout). Never retry on 400, 401, 403, 422 — these are deterministic failures that retrying cannot fix.</p>
-          <p><strong>Circuit breaker:</strong> Wrap each downstream call with a circuit breaker (Hystrix, Resilience4j, Envoy). When the failure rate exceeds a threshold (e.g., 50% over a 10-second window) the circuit opens, and subsequent calls fail immediately without attempting the downstream. This prevents thread exhaustion and gives the dependency time to recover. The circuit transitions to half-open after a sleep window to probe recovery.</p>
+          <p>Set separate connect and request/read timeouts on every outbound client, sized from the caller’s latency budget rather than library defaults. In gRPC, propagate absolute deadlines through <code>context</code> so child calls inherit the remaining time instead of starting a fresh timeout per hop (<a href="https://grpc.io/docs/guides/deadlines/" target="_blank" rel="noopener noreferrer">gRPC deadlines guide</a>).</p>
+          <p>Pool HTTP connections per upstream host; HTTP/2 multiplexing reduces connection count but pools still matter for TLS and failover. Size pools from expected concurrency and typical call duration (Little’s Law: in-flight ≈ arrival rate × latency).</p>
+          <p>Retry only idempotent operations or those protected by server-side deduplication. HTTP GET/HEAD are safe to retry on transport errors; PUT and DELETE are idempotent by definition; POST usually requires an <code>Idempotency-Key</code> or equivalent token so duplicate submits collapse to one effect. Use exponential backoff with jitter on transient failures (timeouts, connection resets, 503, 429) as described in the <a href="https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/" target="_blank" rel="noopener noreferrer">AWS Builders’ Library</a>.</p>
+          <p>Wrap fragile dependencies with circuit breakers that open after sustained failure and probe in half-open state before fully closing again. Document AsyncAPI or OpenAPI contracts for public edges so clients know which status codes are retryable.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Timeout cascade:</strong> An upstream service increases its timeout, masking a slow downstream and allowing threads to accumulate until the upstream exhausts its connection pool.</li>
-            <li><strong>Thundering herd on retry:</strong> Many clients timeout simultaneously and retry at the same moment, creating a retry storm that overwhelms the recovering service.</li>
-            <li><strong>Missing timeout propagation:</strong> Each service uses its own fixed timeout rather than the remaining budget from a parent deadline, causing deep chains to accept requests they cannot fulfill in time.</li>
-            <li><strong>Connection pool starvation:</strong> Pool is sized too small; requests queue behind in-flight calls and appear as high latency even though the downstream is healthy.</li>
-            <li><strong>Double charge on non-idempotent retry:</strong> Retrying a payment POST without an idempotency key results in duplicate charges.</li>
-            <li><strong>Circuit breaker not tuned:</strong> A circuit breaker with too-sensitive thresholds opens on normal error rates during deployments, causing unnecessary degradation.</li>
+            <li>Timeout creep upstream masks a slow dependency until connection pools or thread pools exhaust.</li>
+            <li>Synchronized client retries after a shared outage create a thundering herd against a recovering service.</li>
+            <li>Per-hop fixed timeouts ignore the parent deadline, so deep chains accept work they cannot finish in time.</li>
+            <li>Undersized connection pools queue healthy requests behind slow ones and inflate perceived latency.</li>
+            <li>Retries on non-idempotent POSTs without deduplication keys cause duplicate side effects (for example double charges).</li>
+            <li>Circuit breaker thresholds tuned to deployment noise trip open during normal rollouts and amplify perceived outages.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does the caller need the result <em>before</em> it can proceed? If not, consider async.</li>
-            <li>Is the expected p99 latency of the downstream within the caller's latency budget?</li>
-            <li>Have timeouts been set for every outbound call — both connect and read timeouts?</li>
-            <li>Are retries limited to idempotent/safe operations, or is an idempotency key scheme in place for non-idempotent calls?</li>
-            <li>Is a circuit breaker configured around each downstream dependency?</li>
-            <li>Is the connection pool sized according to expected concurrency (Little's Law)?</li>
-            <li>Are W3C trace context headers (<code>traceparent</code>, <code>tracestate</code>) propagated to enable distributed tracing?</li>
+            <li>Does the caller truly need the reply before continuing, or would async handoff suffice?</li>
+            <li>Does measured downstream latency fit inside the caller’s end-to-end budget?</li>
+            <li>Are connect and read/request timeouts configured on every outbound client?</li>
+            <li>Are retries limited to safe/idempotent operations or backed by idempotency keys?</li>
+            <li>Is each fragile dependency protected by a circuit breaker or equivalent bulkhead?</li>
+            <li>Is the connection pool sized for peak concurrent in-flight calls?</li>
+            <li>Are <code>traceparent</code> (and optional <code>tracestate</code>) headers forwarded on internal calls?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce product page:</strong> Browser calls the BFF (Backend for Frontend), which calls the product service (gRPC, 80 ms budget) and inventory service (gRPC, 60 ms budget) in parallel, then assembles the page payload synchronously.</li>
-            <li><strong>Auth token validation:</strong> Every API gateway request calls a token introspection endpoint synchronously; result is cached per token with a short TTL to minimise latency.</li>
-            <li><strong>Real-time pricing:</strong> Trading dashboard hits a pricing microservice with &lt;10 ms SLO; gRPC over HTTP/2 with a pre-warmed connection pool meets the target.</li>
+            <li>Illustrative scenario — A storefront BFF loads product detail and stock level with two parallel gRPC calls, then returns one JSON payload to the browser in a single synchronous page request.</li>
+            <li>Illustrative scenario — An API gateway validates access tokens via a synchronous introspection call and caches allow/deny decisions per token to avoid repeating the round trip on every request.</li>
+            <li>Case study — Stripe documents idempotency keys for payment APIs so clients can retry POSTs safely after transport failures without double-settling charges.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="pub-sub.html">Publish/Subscribe</a> — async alternative when decoupling is more important than immediacy.</li>
-            <li><a href="fan-out-fan-in.html">Fan-Out / Fan-In</a> — parallelises multiple downstream sync calls to stay within a single latency budget.</li>
-            <li><a href="correlation-ids.html">Correlation IDs</a> — essential for tracing a synchronous call chain across services.</li>
-            <li><a href="../reliability/index.html">Circuit Breaker</a> — wraps synchronous calls to prevent cascading failures.</li>
+            <li><a href="pub-sub.html">Publish/Subscribe</a> decouples producers and consumers when immediacy is not required.</li>
+            <li><a href="fan-out-fan-in.html">Fan-Out / Fan-In</a> parallelizes multiple synchronous dependencies within one latency budget.</li>
+            <li><a href="correlation-ids.html">Correlation IDs</a> tie log and trace lines together across a call chain.</li>
+            <li><a href="../reliability/index.html">Reliability patterns</a> include circuit breaking and bulkheads tailored to synchronous call graphs.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://grpc.io/docs/guides/deadlines/" rel="noopener noreferrer" target="_blank">gRPC Deadlines</a> — gRPC official guide on propagating deadlines across services.</li>
-            <li><a href="https://stripe.com/blog/idempotency" rel="noopener noreferrer" target="_blank">Idempotency Keys</a> — Stripe Engineering on designing safe retries for payment APIs.</li>
-            <li><a href="https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/" rel="noopener noreferrer" target="_blank">Timeouts, Retries, and Backoff with Jitter</a> — AWS Builder's Library deep dive.</li>
-            <li><a href="https://martinfowler.com/bliki/CircuitBreaker.html" rel="noopener noreferrer" target="_blank">CircuitBreaker</a> — Martin Fowler's original pattern description.</li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/RequestReply.html" rel="noopener noreferrer" target="_blank">Enterprise Integration Patterns — Request-Reply</a></li>
+            <li><a href="https://microservices.io/patterns/communication-style/messaging.html" rel="noopener noreferrer" target="_blank">microservices.io — Messaging vs synchronous communication</a></li>
+            <li><a href="https://grpc.io/docs/guides/deadlines/" rel="noopener noreferrer" target="_blank">gRPC — Deadlines and cancellation</a></li>
+            <li><a href="https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/" rel="noopener noreferrer" target="_blank">AWS Builders’ Library — Timeouts, retries, and backoff with jitter</a></li>
+            <li><a href="https://martinfowler.com/bliki/CircuitBreaker.html" rel="noopener noreferrer" target="_blank">Martin Fowler — Circuit Breaker</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

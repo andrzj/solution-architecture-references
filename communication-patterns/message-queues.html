@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Message Queues — SA References</title>
-  <meta name="description" content="Message Queues: decoupled producer-consumer through durable buffers. FIFO vs priority, visibility timeout, dead-letter queues, back-pressure, and comparisons between SQS, RabbitMQ, and ActiveMQ.">
+  <meta name="description" content="Message queues: point-to-point durable buffers, competing consumers, visibility timeout, dead-letter queues, back-pressure, and at-least-once idempotent handling.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>(function(){const t=localStorage.getItem('sa-refs-theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);})();</script>
 </head>
@@ -84,40 +84,40 @@
         <div class="article-header">
           <div class="article-header__tags"><span class="badge badge--primary">Communication Patterns</span><span class="badge badge--muted">Async</span><span class="badge badge--muted">Essential</span></div>
           <h1 class="article-header__title">Message Queues</h1>
-          <p class="article-header__desc">A durable buffer between producers and consumers that decouples throughput, absorbs bursts, and guarantees at-least-once delivery — the backbone of reliable asynchronous task processing.</p>
+          <p class="article-header__desc">Message queues buffer work between producers and consumers: point-to-point delivery, competing workers, visibility timeouts, dead-letter queues, and at-least-once handling.</p>
           <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>A message queue is a durable, ordered buffer that accepts messages from one or more <strong>producers</strong> and delivers each message to exactly one <strong>consumer</strong> (point-to-point). Producers enqueue messages without knowing which consumer will handle them or when. Consumers dequeue — or, more precisely, lease — messages, process them, then acknowledge completion.</p>
-          <p>If the consumer fails before acknowledging, the broker re-queues the message after a configurable <em>visibility timeout</em> expires, ensuring no work is silently lost. This at-least-once guarantee means duplicate delivery is possible — consumers must be idempotent.</p>
-          <p>Queues differ from pub/sub topics in fan-out semantics: a message in a queue is handled by exactly one consumer instance, making queues ideal for task distribution and load balancing. A message in a pub/sub topic is replicated to every subscription. In practice many architectures combine both: a pub/sub topic fans out to multiple queues, each processed independently by a worker pool.</p>
-          <p>Major implementations include <strong>Amazon SQS</strong> (fully managed, unlimited scale), <strong>RabbitMQ</strong> (AMQP, rich routing, acks at transport level), and <strong>Apache ActiveMQ</strong> / <strong>ActiveMQ Artemis</strong> (JMS-compatible, used heavily in Java enterprise environments). Redis Streams offer queue-like semantics with consumer groups for lightweight deployments.</p>
+          <p><strong>Message queues</strong> implement the Enterprise Integration Patterns <em>Point-to-Point Channel</em>: producers send messages into a durable channel and the messaging system delivers each message to <em>one</em> consumer instance among a competing group. The producer does not address a specific worker; the broker routes, buffers, and re-delivers until processing succeeds or the message is moved to a dead-letter path.</p>
+          <p>Consumers typically <em>lease</em> a message (Amazon SQS visibility timeout, RabbitMQ consumer acknowledgments), process it, then acknowledge so the broker can delete or commit the offset. If the worker dies before ack, the message becomes available again, which yields at-least-once semantics and requires idempotent handlers.</p>
+          <p>Queues contrast with pub/sub topics, where every subscription receives a copy. Production systems often combine both—SNS fan-out into per-team SQS queues is a common pattern for broadcast plus isolated worker pools.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without a queue, a producer must either call the consumer synchronously (tight coupling, cascading failures) or accept message loss if the consumer is unavailable. A queue absorbs bursts — if 10,000 messages arrive in a second but the consumer pool handles 1,000/s, the queue buffers the excess and drains it over time, protecting downstream services from overload. This temporal decoupling is especially valuable for spike traffic (flash sales, batch imports) and for isolating slow, resource-intensive processing (PDF rendering, video transcoding) from fast request-serving services.</p>
+          <p>Synchronous calls force producers to wait for downstream capacity and availability. A queue inserts buffering and temporal decoupling: spikes land in the queue while consumers drain at a sustainable rate, which protects fragile or expensive workers (rendering, enrichment, third-party API calls) from overload.</p>
+          <p>Queues also define a clear ownership boundary between teams: the contract is the queue name and message schema, not a live HTTP endpoint that must be up when the producer fires.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Asynchronous task offloading</strong> — sending emails, generating reports, processing images: tasks where the user does not wait for the result.</li>
-            <li><strong>Rate limiting downstream processing</strong> — produce at whatever rate events arrive; consume at a sustainable rate for the downstream service.</li>
-            <li><strong>Reliable task delivery with at-least-once guarantee</strong> — the message persists in the queue even if the consumer crashes mid-processing.</li>
-            <li><strong>Work distribution across a pool of consumers</strong> — multiple workers consume the same queue; the broker load-balances naturally.</li>
-            <li><strong>Decoupling microservices across deployment boundaries</strong> — one team owns the producer, another the consumer, with the queue as the contract boundary.</li>
+            <li>Background tasks where the user or API caller should not block on completion (email, reports, media processing).</li>
+            <li>Smoothing traffic so producers can burst while consumers respect downstream rate limits.</li>
+            <li>Work that must survive consumer crashes because the broker retains messages until acknowledged.</li>
+            <li>Horizontal scaling via competing consumers on the same queue without duplicate processing of the same message.</li>
+            <li>Cross-team integration where deploy schedules differ and neither side should hold open HTTP connections.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Fan-out to multiple independent services</strong> — use a pub/sub topic instead; a single queue with multiple consumers competes for messages rather than each getting a copy.</li>
-            <li><strong>Ordered processing across all messages globally</strong> — queues parallelise consumption; global order requires a single consumer, which eliminates horizontal scaling. Use a Kafka partition instead.</li>
-            <li><strong>Sub-millisecond latency</strong> — queue serialisation and broker round-trips add overhead incompatible with latency-critical paths.</li>
-            <li><strong>Event replay or audit log</strong> — standard queues delete messages after acknowledgment; use an event log (Kafka) if replay is required.</li>
+            <li>Every independent service needs its own copy of the same event; use pub/sub or streaming instead.</li>
+            <li>Strict global ordering across all messages is required without sacrificing parallelism; consider a single-partition stream or FIFO grouping with known throughput limits.</li>
+            <li>Latency budgets are tighter than broker round-trip and serialization overhead allow.</li>
+            <li>Consumers must replay historical events from a retained log; queues delete after ack rather than serving as an audit trail.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The producer writes a message to the queue (enqueue). The broker persists it to durable storage. A consumer polls (receives) the message — the broker hides it from other consumers for the <em>visibility timeout</em>. The consumer processes and acknowledges (deletes) the message.</p>
-          <p>If processing fails or the consumer crashes, the visibility timeout expires and the message becomes visible again for another consumer. After <em>maxReceiveCount</em> failures, the message is routed to a <em>dead letter queue</em> (DLQ) for manual inspection.</p>
+          <p>The producer enqueues a message; the broker persists it. One consumer receives the message and the broker hides it from peers for the visibility timeout (or holds an unacked delivery in AMQP). Successful processing ends with an acknowledgment that removes the message from the active queue.</p>
+          <p>Failed or timed-out processing returns the message for retry; after repeated failures the broker routes it to a dead-letter queue for inspection, as configured in Amazon SQS redrive policies or RabbitMQ dead-letter exchanges.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     prod["Producer"]
@@ -153,68 +153,70 @@ Queue ──► Dead Letter Queue (DLQ)
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Durability — messages survive producer and consumer restarts.</li>
-              <li>Load levelling — buffers burst traffic; consumers process at a stable rate.</li>
-              <li>Horizontal scaling — add consumers to drain backlog; remove them when idle.</li>
-              <li>Fault tolerance — visibility timeout + DLQ ensures no silent message loss.</li>
-              <li>Decoupled deployments — producer and consumer can be released independently.</li>
+              <li>Messages persist across producer and consumer restarts when the broker is configured for durability.</li>
+              <li>Queues absorb bursts and let consumers process at a steady, defensible rate.</li>
+              <li>Adding consumers increases drain rate without changing producer code.</li>
+              <li>Visibility timeouts and dead-letter queues provide a path for poison messages instead of silent loss.</li>
+              <li>Teams can deploy producers and consumers on independent schedules behind a stable queue contract.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>At-least-once delivery — duplicate processing is possible; consumers must handle it.</li>
-              <li>No built-in replay — messages are deleted after ACK; not suitable as an event log.</li>
-              <li>FIFO is expensive — strict ordering requires a single-lane FIFO queue which limits throughput (SQS FIFO: 300 TPS per message group without batching).</li>
-              <li>Increased operational complexity vs. direct calls — queue depth, DLQ size, and consumer lag all need monitoring.</li>
-              <li>Latency floor — a queue adds at least one broker round-trip; not suitable for real-time interactions.</li>
+              <li>At-least-once delivery makes duplicate processing possible unless handlers are idempotent.</li>
+              <li>Acknowledged messages are removed, so queues are poor primary stores for replay or compliance archives.</li>
+              <li>Strict FIFO or exactly-once semantics often reduce throughput compared with standard queues.</li>
+              <li>Queue depth, age of oldest message, and DLQ volume become mandatory operational metrics.</li>
+              <li>An extra broker hop adds latency unsuitable for user-facing synchronous paths.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Visibility timeout:</strong> Set to 1.5–2× the expected maximum processing time. Too short causes duplicates; too long delays re-processing after a consumer crash. Consumers should extend (heartbeat) the visibility timeout for long-running jobs.</p>
-          <p><strong>Message acknowledgment:</strong> Always acknowledge <em>after</em> successful processing, not before. Some frameworks offer auto-ack on receipt — disable it for reliable processing. In RabbitMQ use <code>basic.ack</code> on success and <code>basic.nack</code> with <code>requeue=false</code> on unrecoverable failure to route to DLQ.</p>
-          <p><strong>Dead letter queues:</strong> Configure a DLQ on every queue. Set an appropriate <code>maxReceiveCount</code> (typically 3–5). Alert on DLQ depth > 0 — every message in the DLQ represents a processing failure requiring investigation. Include enough context in the message payload (correlation ID, original timestamp, source) to diagnose failures.</p>
-          <p><strong>Back-pressure:</strong> Monitor queue depth as a scaling signal. Use an autoscaler (KEDA, AWS Application Auto Scaling) to add consumer instances when depth exceeds a threshold. Define a maximum queue depth at which you stop accepting new messages or return 429 to producers.</p>
-          <p><strong>FIFO vs standard queues:</strong> Standard queues offer best-effort ordering and nearly unlimited throughput. FIFO queues guarantee exactly-once processing and strict order within a message group, but at lower throughput. Use FIFO only when ordering is a hard requirement and throughput fits within limits.</p>
+          <p>Size Amazon SQS visibility timeout longer than worst-case handler duration; use <code>ChangeMessageVisibility</code> for long jobs (<a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html" target="_blank" rel="noopener noreferrer">SQS visibility timeout</a>). In RabbitMQ, ack after successful work with manual acknowledgment (<a href="https://www.rabbitmq.com/docs/confirms" target="_blank" rel="noopener noreferrer">consumer acknowledgments</a>).</p>
+          <p>Configure a dead-letter queue on every workload queue and alert when DLQ depth is non-zero. Include correlation IDs and source timestamps in payloads to support triage.</p>
+          <p>Scale consumers from queue depth or oldest-message age (KEDA, AWS Application Auto Scaling). Cap producer ingress when depth exceeds policy so back pressure propagates upstream.</p>
+          <p>When payloads exceed broker limits (for example the maximum message size documented for SQS), store the body in object storage and pass a reference using the Claim Check pattern.</p>
+          <p>Document queue contracts in AsyncAPI or internal schema registries so version changes do not break consumers silently.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Poison message:</strong> A malformed message repeatedly fails processing, exhausts its retry count, and lands in the DLQ — but if the DLQ is not monitored, it silently accumulates.</li>
-            <li><strong>Visibility timeout too short:</strong> Slow consumers process the message successfully but the broker re-delivers it before the ACK arrives, causing duplicate processing.</li>
-            <li><strong>Consumer starvation:</strong> A large batch of high-priority messages blocks a fixed-size consumer pool; lower-priority messages wait indefinitely (solution: priority queues or dedicated pools).</li>
-            <li><strong>No DLQ configured:</strong> Failed messages vanish after max retries, leading to silent data loss — the worst outcome in a reliable system.</li>
-            <li><strong>Queue unbounded growth:</strong> Consumers are too slow or stopped; queue depth grows without an alarm, causing storage exhaustion or cascading producer failures.</li>
+            <li>Poison messages retry until they reach the DLQ while operators never page on DLQ depth.</li>
+            <li>Visibility timeout shorter than processing time causes duplicate work on healthy consumers.</li>
+            <li>One priority class monopolizes a shared pool and starves other message types.</li>
+            <li>Missing DLQ configuration drops failed messages after max receives with no audit trail.</li>
+            <li>Runaway queue depth when consumers stop or fall behind without autoscaling or producer throttling.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does each message need to be processed by exactly one consumer? If multiple consumers need a copy, use a pub/sub topic.</li>
-            <li>Is the consumer idempotent? At-least-once delivery is default for all major queues.</li>
-            <li>Is the visibility timeout set to at least 1.5× the maximum expected processing time?</li>
-            <li>Is a DLQ configured, and is DLQ depth monitored with an alert?</li>
-            <li>Is queue depth exposed as a scaling metric to trigger autoscaling?</li>
-            <li>Are FIFO semantics required? If yes, does the expected throughput fit within the queue's FIFO limits?</li>
-            <li>Is the maximum message size within the broker's limit (SQS: 256 KB; if larger, use the Claim Check pattern)?</li>
+            <li>Should exactly one worker process each message?</li>
+            <li>Are consumers idempotent for duplicate deliveries?</li>
+            <li>Is visibility timeout or ack timeout aligned with worst-case processing time?</li>
+            <li>Is a DLQ wired with monitoring and a documented replay procedure?</li>
+            <li>Does autoscaling react to queue depth or message age?</li>
+            <li>If FIFO ordering is required, are throughput limits documented and tested?</li>
+            <li>Are oversized payloads handled via claim check rather than inline bodies?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Order fulfilment:</strong> An e-commerce checkout service enqueues <code>order.confirmed</code> messages; a warehouse service processes them at capacity, picking and packing without blocking checkout.</li>
-            <li><strong>Email/SMS dispatch:</strong> A notification queue buffers send requests; a worker pool calls the email provider API, retrying on transient failures without affecting the application.</li>
-            <li><strong>Video transcoding pipeline:</strong> An upload service enqueues video IDs; a GPU worker pool picks up jobs, transcodes to multiple resolutions, and acknowledges on completion.</li>
+            <li>Illustrative scenario — Checkout enqueues fulfillment jobs so warehouse workers pick and pack without holding the HTTP checkout response open.</li>
+            <li>Illustrative scenario — A notification queue buffers outbound email API calls while workers retry provider rate limits in the background.</li>
+            <li>Case study — Amazon SQS documents decoupling of microservices with standard and FIFO queues, visibility timeout, and dead-letter queues as core reliability primitives.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="pub-sub.html">Publish/Subscribe</a> — fan-out variant; one message delivered to multiple independent consumers.</li>
-            <li><a href="competing-consumers.html">Competing Consumers</a> — the scaling pattern for worker pools consuming a shared queue.</li>
-            <li><a href="claim-check.html">Claim Check</a> — handle payloads larger than the queue's message size limit.</li>
-            <li><a href="transactional-outbox.html">Transactional Outbox</a> — reliably enqueue messages atomically with a database write.</li>
+            <li><a href="pub-sub.html">Publish/Subscribe</a> broadcasts events when every subscriber needs a copy.</li>
+            <li><a href="competing-consumers.html">Competing Consumers</a> describes scaling patterns for shared queue consumption.</li>
+            <li><a href="claim-check.html">Claim Check</a> stores large payloads externally and passes references on the queue.</li>
+            <li><a href="transactional-outbox.html">Transactional Outbox</a> atomically writes domain state and outbox rows before a relay publishes to the queue.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html" rel="noopener noreferrer" target="_blank">Amazon SQS Developer Guide</a> — visibility timeout, DLQ, FIFO queues.</li>
-            <li><a href="https://www.rabbitmq.com/tutorials/tutorial-one-go" rel="noopener noreferrer" target="_blank">RabbitMQ Tutorials</a> — work queues, acknowledgments, and durability.</li>
-            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageChannel.html" rel="noopener noreferrer" target="_blank">Message Channel Pattern</a> — Hohpe &amp; Woolf foundational pattern.</li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/PointToPointChannel.html" rel="noopener noreferrer" target="_blank">Enterprise Integration Patterns — Point-to-Point Channel</a></li>
+            <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html" rel="noopener noreferrer" target="_blank">Amazon SQS — Dead-letter queues</a></li>
+            <li><a href="https://www.rabbitmq.com/tutorials/tutorial-two-java" rel="noopener noreferrer" target="_blank">RabbitMQ — Work queues tutorial</a></li>
+            <li><a href="https://microservices.io/patterns/data/transactional-outbox.html" rel="noopener noreferrer" target="_blank">microservices.io — Transactional outbox</a></li>
+            <li><a href="https://docs.nats.io/nats-concepts/core-nats/queue" rel="noopener noreferrer" target="_blank">NATS — Queue groups</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
