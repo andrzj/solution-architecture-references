@@ -121,35 +121,39 @@
           </div>
         </div>
         <div class="article-content">
- <h2 id="what-it-is">What it is</h2>
- <p><strong>Backward compatibility</strong> means a new version of a producer still satisfies existing consumers built against an older contract.</p>
- <p><strong>Forward compatibility</strong> is the mirror image: an older server tolerates a newer client (unknown fields, optional data).</p>
- <p>a logistics operator runs the the dispatch console mobile app against <code>GET /v1/drivers/{id}</code>. Drivers keep older app builds on their phones. When the driver API team ships a new service version, responses must still include fields those builds parse — or changes must be additive only.</p>
- <p><strong>Postel’s Law</strong> (the Robustness Principle): be conservative in what you send, liberal in what you accept. A logistics operator’s API gateway strips nothing consumers rely on; clients ignore fields they do not yet understand.</p>
+<h2 id="what-it-is">What it is</h2>
+ <p><strong>Backward compatibility</strong> means a newer producer still honors the contract that existing consumers were built against—same field names, types, semantics, and error behavior unless you explicitly version a breaking change.</p>
+ <p><strong>Forward compatibility</strong> is the converse: an older server tolerates a newer client that sends unknown fields or optional data the producer does not yet model.</p>
+ <p>Together they enable independent deployment. Microservices, mobile clients, partner integrations, and batch consumers rarely upgrade in the same maintenance window; the runtime mix of versions is normal, not an edge case. Treat that mix as a design input, not a bug.</p>
+ <p><strong>Postel’s Law</strong> (the Robustness Principle) captures the design posture: be conservative in what you emit and liberal in what you accept. Producers should not remove or rename fields others depend on; consumers should ignore unknown keys and treat optional data as optional. That split lets each side evolve without synchronized releases.</p>
 
  <h2 id="why-it-exists">Why it exists</h2>
- <p>In a monolith, one deploy updates producers and consumers together. A logistics operator’s driver API, dispatch service, and the dispatch console app ship on different cadences.</p>
- <p>A breaking rename on the driver API can blank out contact info in the dispatch console until every user updates — a failure mode you cannot fix from the server alone.</p>
- <p>Compatible contracts also enable rolling deploys: during a canary, old and new API pods must serve both lagging mobile builds and the latest beta.</p>
+ <p>In monoliths, compatibility is largely a compile-time concern—one artifact ships and every caller updates together. Distributed systems flip the problem to runtime: a mobile build in the field, a partner still on last quarter’s SDK, and a downstream service waiting for its own release train may all call the same endpoint while you roll out a new pod set.</p>
+ <p>Breaking API or schema changes without a migration path force a coordinated cutover. That pattern is expensive, risky, and fights team autonomy. Compatibility is how you keep velocity when components deploy on different schedules.</p>
+ <p>It also underpins continuous delivery and zero-downtime deploys. Blue-green, canary, and rolling updates all assume old and new producer versions interoperate with both lagging and current clients during the transition. Without that overlap, every change becomes a flag day.</p>
+ <p>Libraries and SDKs inherit the same constraint: a minor semver bump should not break compile-time callers; runtime APIs consumed across process boundaries need even stricter additive defaults because you cannot recompile every downstream binary on deploy day.</p>
 
  <h2 id="when-to-use">When to use</h2>
  <ul>
- <li>Plan for backward compatibility when mobile or third-party clients cannot be force-upgraded, such as the dispatch console or partner TMS integrations.</li>
- <li>Plan for it on HTTP or gRPC between a logistics operator microservices that release on independent trains.</li>
- <li>Plan for it on Kafka or Avro events where multiple consumers read at different schema revisions.</li>
- <li>Plan for it on shared database columns that more than one service writes, treating schema like a public API.</li>
- <li>Plan for it on any production endpoint another team will depend on for longer than one sprint.</li>
+ <li>Public or partner APIs where you cannot force every client to upgrade on your timeline—especially mobile apps and third-party integrations.</li>
+ <li>Network boundaries between microservices that release on independent pipelines and must keep talking during partial rollouts.</li>
+ <li>Event topics and stream schemas where multiple consumers read at different code and schema revisions.</li>
+ <li>Shared database columns touched by more than one service—treat schema like a published interface, not a private implementation detail.</li>
+ <li>Any production endpoint another team will depend on for longer than a single sprint, which is effectively all durable APIs.</li>
+ <li>GraphQL and gRPC schemas exposed to multiple generated clients, where field removal breaks compilation or queries in the wild.</li>
  </ul>
 
  <h2 id="when-not-to-use">When not to use</h2>
  <ul>
- <li>Runtime backward compatibility matters less when you ship a single deployable unit and every caller rebuilds each release, though libraries may still semver.</li>
- <li>Breaking changes are acceptable on explicit <code>v0</code> or beta APIs when you document that no external dependents exist.</li>
- <li>A tiny coordinated consumer set with a written migration window may accept a flag day, though expand-contract still shrinks blast radius.</li>
+ <li>Internal systems deployed atomically as one unit, where every caller rebuilds each release—runtime compatibility adds little, though libraries may still semver.</li>
+ <li>Early <code>v0</code> or beta surfaces with no external dependents, when rapid iteration legitimately requires breaking changes and expectations are documented.</li>
+ <li>Tiny, controlled consumer sets with a written migration window and appetite for a flag day—though expand–contract still reduces blast radius even here.</li>
  </ul>
 
  <h2 id="typical-architecture">Typical architecture</h2>
- <p>The <strong>expand–contract</strong> pattern (parallel change) is how a logistics operator makes breaking database or API shifts without a flag day. Expand: add <code>first_name</code> and <code>last_name</code> beside legacy <code>full_name</code>. Migrate: dual-write, move the dispatch console and dispatch readers. Contract: drop <code>full_name</code> only when telemetry shows zero use.</p>
+ <p>Most evolution splits into <strong>additive</strong> changes (new optional fields, endpoints, enum values consumers must ignore) versus <strong>breaking</strong> changes (removals, renames, tighter validation, semantic shifts). Breaking work either needs a new major API version or a phased migration.</p>
+ <p>The <strong>expand–contract</strong> pattern (parallel change) is the canonical database and API migration shape: <em>expand</em> by adding the new shape beside the old; <em>migrate</em> consumers and dual-write or backfill until traffic moves; <em>contract</em> by removing the legacy path only when telemetry proves zero use. That yields zero-downtime migration without a synchronized deploy.</p>
+ <p>When a breaking HTTP contract is unavoidable, common versioning styles include path segments (<code>/v1/</code> vs <code>/v2/</code>), content negotiation headers, query parameters, or subdomain splits—pick one per API surface and document deprecation policy. For serialized payloads, Protobuf wire identity is field numbers (never reuse), Avro evolves through registry-checked reader/writer rules, and JSON needs explicit OpenAPI or AsyncAPI discipline because the wire format enforces nothing by itself.</p>
  <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
  <div class="architecture-diagram__render mermaid">flowchart TB
  s1["Safe: optional fields"] --> s2["Safe: new endpoints"]
@@ -214,75 +218,80 @@
 
 
  <h2 id="pros-and-cons">Pros and cons</h2>
+ <p><strong>Distinguish compatibility modes:</strong> <em>Backward</em> readers must deserialize historical payloads; <em>forward</em> writers must not break older consumers; registries often enforce one mode per subject. Document which mode your stream or API promises—confusion here shows up as “compatible” schema checks with still-broken consumers.</p>
  <div class="pros-cons">
  <div class="pros-cons__col pros-cons__col--pros">
  <h3>Pros</h3>
  <ul>
- <li>the dispatch console and dispatch can ship without locking to the same release train as the driver API.</li>
- <li>Rollbacks and canaries avoid “stop the world” upgrades when a field disappears.</li>
- <li>Teams deploy smaller batches because consumers are not blockers on every PR.</li>
- <li>Partners trust A logistics operator’s public TMS hooks when deprecations are announced, not surprise breaks.</li>
+ <li>Producers and consumers upgrade on different schedules without coordinated cutovers.</li>
+ <li>Rollbacks and canaries stay safe when new pods must serve both old mobile builds and current web clients.</li>
+ <li>Continuous delivery ships smaller batches because consumer readiness is not a gate on every merge.</li>
+ <li>Stable public APIs build partner trust—deprecations with notice beat surprise field loss years later.</li>
  </ul>
  </div>
  <div class="pros-cons__col pros-cons__col--cons">
  <h3>Cons</h3>
  <ul>
- <li>Legacy fields linger — driver payloads accumulate aliases and deprecated columns.</li>
- <li>Supporting <code>/v1</code> and <code>/v2</code> in parallel doubles handlers and tests.</li>
- <li>Expand–contract needs a migration tracker; otherwise dual-write phases never end.</li>
- <li>Clients must ignore unknown JSON keys — easy to forget in strongly typed mobile models.</li>
+ <li>Additive-only evolution accumulates legacy fields and aliases that burden new integrators.</li>
+ <li>Running <code>v1</code> and <code>v2</code> in parallel doubles handlers, tests, and operational attention.</li>
+ <li>Expand–contract migrations need an owner and tracker—dual-write phases otherwise linger indefinitely.</li>
+ <li>Forward-compatible clients must ignore unknown data—a discipline easy to skip in strongly typed models.</li>
  </ul>
  </div>
  </div>
 
  <h2 id="implementation-notes">Implementation notes</h2>
- <p><strong>Pact in CI:</strong> the dispatch console defines the driver response shape it needs; the driver API provider verification job runs on every PR. a logistics operator caught a proposed <code>email</code> rename because the contract still expected <code>email_address</code>.</p>
- <p><strong>Semver and policy:</strong> Breaking driver API changes bump major path (<code>/v2/...</code>). Additive fields are minor documentation updates. Publish how long <code>v1</code> stays after <code>v2</code> GA. Return <code>Deprecation</code> and <code>Sunset</code> headers on aging routes so the dispatch console telemetry can plan upgrades.</p>
- <p><strong>Protobuf discipline:</strong> If a logistics operator moves driver events to gRPC, field numbers are the wire identity. Rename freely; never reuse numbers. Mark retired slots with <code>reserved</code> so a future engineer does not recycle them.</p>
- <p><strong>Schema registry:</strong> Avro changes for <code>DriverStatusChanged</code> go through registry compatibility checks before merge — incompatible writer schemas fail the build.</p>
+ <p><strong>Consumer-driven contract testing:</strong> Frameworks such as Pact invert the usual integration test: each consumer publishes the requests and responses it actually needs; the provider’s CI replays those contracts against the latest code. Breaking renames or missing fields fail the provider pipeline before deploy, not in production traffic.</p>
+ <p><strong>Semantic versioning and deprecation:</strong> Treat major bumps as breaking contract changes (new URL major, new topic subject version), minors as additive capabilities, patches as bug fixes without contract drift. Publish how long the previous major remains available. Emit <code>Deprecation</code> and <code>Sunset</code> headers (and changelog entries) so client telemetry and partner runbooks can schedule upgrades.</p>
+ <p><strong>Protobuf discipline:</strong> Field numbers are wire identity—rename freely, never recycle numbers. Use <code>reserved</code> for retired slots: <code>reserved 3, 4; reserved "old_name";</code>. Breaking evolution usually means a new message type or a new service package, not in-place number reuse.</p>
+ <p><strong>Schema registry for Avro and friends:</strong> Register schemas before publish; let CI reject incompatible writer evolution. Pair registry checks with human review when semantics change but structure looks additive—registry green does not guarantee business meaning is unchanged.</p>
+ <p><strong>OpenAPI and JSON:</strong> Where the wire format is schemaless, publish machine-readable contracts, lint pull requests for breaking diffs, and keep examples that reflect what oldest supported clients still send.</p>
+ <p><strong>Migration telemetry:</strong> Track field-level access and schema versions in access logs or APM attributes. Contract phases should close on evidence—dropping a column because the sprint ended, not because traffic quieted, is how silent regressions return.</p>
 
  <h2 id="common-failure-modes">Common failure modes</h2>
  <ul>
- <li><strong>Silent rename:</strong> <code>driver_id</code> becomes <code>driverId</code> in JSON with no alias — the dispatch console shows empty IDs without a hard error.</li>
- <li><strong>New required field:</strong> <code>home_terminal</code> becomes mandatory — older app builds get 400 on every fetch.</li>
- <li><strong>Enum shrink:</strong> Removing <code>ON_BREAK</code> breaks the dispatch console switches and downstream reports.</li>
- <li><strong>Stuck expand phase:</strong> Both <code>full_name</code> and split names stay forever; writers disagree on canonical source.</li>
- <li><strong>No contract tests:</strong> Integration tests mock ideal responses; production clients still break.</li>
+ <li><strong>Silent rename:</strong> <code>user_id</code> becomes <code>userId</code> without an alias—clients read <code>null</code> instead of a hard error, corrupting downstream state quietly.</li>
+ <li><strong>New required field:</strong> A previously optional attribute becomes mandatory; every client that omits it receives 400 responses until upgraded.</li>
+ <li><strong>Enum shrink:</strong> Removing a status value breaks consumers with switches, constraints, or reports that still expect it.</li>
+ <li><strong>Stuck expand phase:</strong> New and old columns both stay writable with no canonical source—migrations never reach contract and data diverges.</li>
+ <li><strong>No contract tests:</strong> Suites mock ideal JSON while real clients parse stricter shapes—production breaks despite green unit tests.</li>
+ <li><strong>Semantic drift:</strong> A field keeps its name but changes meaning—registry and type checks pass while finance or fulfillment reports skew.</li>
  </ul>
 
  <h2 id="decision-checklist">Decision checklist</h2>
  <ul class="checklist">
- <li>Is the driver API change additive-only? If not, is there a new major version path?</li>
- <li>Did you search the dispatch console, dispatch, and partner repos for usages of fields you remove or tighten?</li>
- <li>Does CI run provider verification against consumer Pact files (or equivalent)?</li>
- <li>For DB changes on the driver store, are you in expand, migrate, or contract — with an owner for contract?</li>
- <li>For Protobuf/Avro, did registry compatibility pass on the PR?</li>
- <li>Is there a written deprecation window for the dispatch console and external TMS consumers?</li>
- <li>Do deprecated a logistics operator endpoints emit <code>Deprecation</code> / <code>Sunset</code> headers?</li>
+ <li>Is the change additive only? If not, is there a new major version path and published deprecation timeline?</li>
+ <li>Have all known consumers been audited for usage of fields you remove, rename, or tighten?</li>
+ <li>Does CI run provider verification against consumer contracts (Pact or equivalent) before production deploy?</li>
+ <li>For database or shared-column work, are you in expand, migrate, or contract—with a named owner to finish contract?</li>
+ <li>For Protobuf, Avro, or JSON Schema, did registry or linter checks pass on the PR?</li>
+ <li>Do deprecated endpoints return <code>Deprecation</code> / <code>Sunset</code> headers and documented replacement URLs?</li>
+ <li>Will canary metrics distinguish errors from old clients versus new clients during rollout?</li>
+ <li>After contract, is there a time-boxed cleanup ticket to remove shims, aliases, and dual-write paths?</li>
  </ul>
 
  <h2 id="example-use-cases">Example use cases</h2>
-          <p>Northwind’s driver profile work follows one thread:</p>
-          <ul>
-            <li><strong>Illustrative scenario —</strong> <strong>Additive response:</strong> Optional <code>preferred_language</code> ships; old FieldOps builds ignore it.</li>
-            <li><strong>Illustrative scenario —</strong> <strong>Expand–contract names:</strong> Split <code>full_name</code> while dual-writing until FieldOps release notes say all fleets are on the new build.</li>
-            <li><strong>Illustrative scenario —</strong> <strong>Major version:</strong> <code>/v2/drivers/{id}</code> introduces redesigned status enums; <code>v1</code> keeps old values until sunset headers say otherwise.</li>
-            <li><strong>Illustrative scenario —</strong> <strong>Pact gate:</strong> A PR that drops <code>email_address</code> fails provider verification until FieldOps publishes an updated consumer contract.</li>
-          </ul>
+ <ul>
+   <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> adds optional <code>preferred_language</code> on driver profiles; legacy FieldOps builds ignore the field without crashing.</li>
+   <li><strong>Illustrative scenario —</strong> Northwind splits <code>full_name</code> into <code>first_name</code> / <code>last_name</code> using expand–contract dual-write until telemetry shows zero reads of the legacy column.</li>
+   <li><strong>Illustrative scenario —</strong> Northwind ships <code>/v2/drivers/{id}</code> with redesigned status enums while <code>v1</code> remains until sunset headers and partner notices expire.</li>
+   <li><strong>Illustrative scenario —</strong> A provider PR that drops <code>email_address</code> fails Pact verification until FieldOps publishes an updated consumer contract.</li>
+   <li><strong>Illustrative scenario —</strong> A payments API team cites long-running public API stability—fields deprecate with years of notice rather than silent removal, echoing how mature payment platforms treat integrator trust.</li>
+ </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="architecture-decision-records.html">Architecture Decision Records</a> — breaking API changes and migration strategies should be documented in ADRs for future team context.</li>
-            <li><a href="idempotency.html">Idempotency</a> — idempotency key behavior is part of the API contract and must be preserved across versions.</li>
-            <li><a href="architecture-principles.html">Architecture Principles</a> — "design for evolvability" is a principle that directly drives backward compatibility practices.</li>
+            <li><a href="architecture-decision-records.html">Architecture Decision Records</a> — document breaking contract changes, deprecation windows, and expand–contract phases so the next team inherits rationale, not archaeology.</li>
+            <li><a href="idempotency.html">Idempotency</a> — retry semantics and key handling are part of the outward contract; version bumps must not change dedupe behavior without notice.</li>
+            <li><a href="architecture-principles.html">Architecture Principles</a> — evolvability and stable interfaces are principle-level goals that backward compatibility operationalizes at the API and schema layer.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.pact.io/" rel="noopener noreferrer" target="_blank">Pact Documentation</a> — the definitive guide to consumer-driven contract testing.</li>
-            <li><a href="https://www.martinfowler.com/articles/evodb.html" rel="noopener noreferrer" target="_blank">Evolutionary Database Design — Martin Fowler &amp; Pramod Sadalage</a> — the canonical reference on database schema evolution with the expand-contract pattern.</li>
-            <li><a href="https://protobuf.dev/programming-guides/proto3/#updating" rel="noopener noreferrer" target="_blank">Updating A Message Type — Protocol Buffers Documentation</a> — the official rules for backward-compatible Protobuf schema evolution.</li>
-            <li><a href="https://semver.org/" rel="noopener noreferrer" target="_blank">Semantic Versioning 2.0.0</a> — the specification for communicating compatibility guarantees through version numbers.</li>
+            <li><a href="https://docs.pact.io/" rel="noopener noreferrer" target="_blank">Pact Documentation</a> — consumer-driven contracts, provider verification, and CI wiring.</li>
+            <li><a href="https://www.martinfowler.com/articles/evodb.html" rel="noopener noreferrer" target="_blank">Evolutionary Database Design — Martin Fowler &amp; Pramod Sadalage</a> — expand–contract and incremental schema change without downtime.</li>
+            <li><a href="https://protobuf.dev/programming-guides/proto3/#updating" rel="noopener noreferrer" target="_blank">Updating A Message Type — Protocol Buffers Documentation</a> — field numbers, reserved ranges, and compatible wire evolution.</li>
+            <li><a href="https://semver.org/" rel="noopener noreferrer" target="_blank">Semantic Versioning 2.0.0</a> — communicating breaking vs additive change through version numbers.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
