@@ -105,6 +105,7 @@
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Unbounded <code>GET /orders</code> responses exhaust client memory, tie up connection pools, and force full-table scans. Pagination caps row count per round trip, keeps p95 latency predictable as tables grow to millions of rows, and gives databases a chance to use indexes instead of scanning discarded offset rows.</p>
+          <p>Google’s list-collection pattern standardises <code>page_token</code> opaque strings and consistent field names across hundreds of public APIs—adopting that vocabulary reduces surprises for integrators who already consume other cloud APIs. REST and GraphQL pagination differ in argument names but share the same database constraints: unstable sorts and unindexed cursor columns undermine both styles equally.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -113,6 +114,8 @@
             <li>Admin or partner APIs where concurrent writes would shift offset-based pages.</li>
             <li>GraphQL list fields—often modelled with the Relay connection pattern.</li>
           </ul>
+
+          <p>Single-item GET endpoints and fixed-size reference data sets under a few hundred rows may document “returns full set” without pagination—still cap size in tests so growth triggers a pagination project before production pain.</p>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
@@ -266,6 +269,13 @@ X-Total-Count: 1842
   }
 }</code></pre>
           <p>The Relay connection specification standardises cursor-based pagination in GraphQL. Every paginated list is a <em>connection</em> with: <code>edges</code> (array of { cursor, node }), <code>pageInfo</code> (hasNextPage, hasPreviousPage, startCursor, endCursor), and optionally <code>totalCount</code>. Arguments are <code>first</code>/<code>after</code> (forward) and <code>last</code>/<code>before</code> (backward). Most GraphQL clients and frameworks have built-in Relay connection support.</p>
+
+          <h3>Operational limits</h3>
+          <p>Cap <code>limit</code> between 50 and 250 per Google AIP list guidance; document default and max in OpenAPI. Offset pagination beyond a few thousand rows degrades on most SQL engines—switch to keyset cursors indexed on sort columns. RFC 8288 <code>Link</code> headers keep JSON bodies smaller than embedding <code>next</code> URLs; verify absolute URL generation behind path-stripping gateways. Opaque cursors should be signed or encrypted so clients cannot forge positions; include expiry when cursors encode sort keys that may become invalid after long idle periods.</p>
+          <h3>Detection</h3>
+          <p>Monitor requests with very high <code>offset</code> or repeated identical cursors—often runaway sync jobs. Rising list latency with stable QPS points to missing composite indexes on cursor columns.</p>
+          <p>Return empty pages with stable <code>next</code> links only when more data exists—clients treat missing <code>next</code> as end-of-list. For total counts on large tables, expose approximate counts or omit totals rather than running expensive <code>COUNT(*)</code> per list request.</p>
+          <p>Stable sort keys must be unique—tie-break with primary key or immutable id in every cursor encoding so rows inserted mid-traversal do not duplicate or skip.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

@@ -110,6 +110,7 @@
           <p>Authenticated callers are not automatically trusted for every operation. Without authorization, any valid token could read or mutate any row. Least privilege requires evaluating policy on every call, preferably in code paths that understand domain invariants.</p>
           <p>Hardcoded <code>if (role == "admin")</code> checks sprawl across services and diverge under pressure. Central policy (scopes at the edge, OPA or ReBAC stores for fine grain) keeps decisions auditable, versioned, and testable—especially when the same API serves partners, staff, and end users with different rules.</p>
           <p>Regulators and enterprise buyers increasingly expect evidence that access was checked at request time—not inferred from network location. Structured authorization logs (subject, resource, action, outcome, policy version) support SOC audits and incident replay without scraping application stderr.</p>
+          <p>Attribute-based policies express rules on resource labels, time windows, and request context—useful for data residency and “owner may edit, others read” models. Relationship-based stores model inheritance (folder contains documents) without copying role lists into every service. Neither replaces authentication: a forged token with valid signature still fails if authorization denies the action on the targeted resource id.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -119,6 +120,8 @@
             <li><strong>ReBAC</strong> — collaborative products where folders, teams, and inherited shares define access.</li>
             <li><strong>Resource-based checks</strong> — any API returning or mutating instances by ID (orders, patient records, documents).</li>
           </ul>
+
+          <p>Authorization belongs in the request path for every mutating and sensitive read operation—caching “admin” in a session cookie without re-checking on each API call is not a substitute for policy evaluation at the resource server.</p>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
@@ -207,6 +210,13 @@
 
           <h3>Authorization testing and observability</h3>
           <p>Table-driven tests should cover allow, deny, and edge tuples for each route—especially horizontal privilege attempts with another tenant’s identifier. In staging, replay production-shaped tokens against policy bundles before rollout. Emit metrics on deny rates by route and policy version so sudden spikes reveal misconfiguration or credential abuse before support queues fill up.</p>
+
+          <h3>Policy engines and latency</h3>
+          <p>Centralised authorisation (OPA, OpenFGA, Cedar) should answer in single-digit milliseconds at p99—budget more than one round trip per HTTP request. Cache decisions by subject–resource–action with TTL only when stale denials are acceptable; never cache denials as allows. Fine-grained ReBAC graphs (Zanzibar-style) scale reads with consistent indexing; document max relation depth and batch-check APIs for list endpoints that must filter rows by permission.</p>
+          <h3>Scopes versus resources</h3>
+          <p>OAuth scopes from <a href="https://www.rfc-editor.org/rfc/rfc6749.html" rel="noopener noreferrer" target="_blank">RFC 6749</a> express coarse capability; object-level checks still validate that the token’s tenant matches the resource identifier in the path—OWASP API1/API5 failures happen when scope alone gates access. Return <code>403</code> for failed authorisation and <code>404</code> when existence must be hidden; document the policy for integrators.</p>
+          <p>Decision logs for denied requests (subject, action, resource, policy version) support audit without logging full tokens. Policy bundles should be immutable versioned artifacts deployed like application binaries—runtime policy edits without version bumps make incidents unreproducible.</p>
+          <p>List endpoints must apply authorisation before SQL LIMIT—fetching rows then filtering in memory leaks existence via timing and response sizes.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

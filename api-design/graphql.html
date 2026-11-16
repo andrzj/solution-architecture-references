@@ -126,6 +126,7 @@ type Subscription {
           <p>Mobile and web clients often need different field sets from the same domain model. Classic REST tends to <em>over-fetch</em> (fixed JSON blobs with unused fields) or <em>under-fetch</em> (many sequential calls to stitch a view). GraphQL inverts the coupling: the schema stays stable while product teams change queries when UIs evolve, without requesting a new endpoint for every layout tweak.</p>
           <p>The trade-off is operational: resolver trees can hide N+1 database access, caching is harder than cacheable GET URLs, and expressive queries need depth and cost guards. Teams adopt GraphQL when client flexibility and a typed contract matter more than leaning on HTTP caching conventions.</p>
           <p>Subscriptions push server-initiated events over WebSockets or similar transports; they share the same schema types as queries but require connection-scoped auth, heartbeat handling, and backpressure when subscribers lag. Many teams keep writes on mutations and reserve subscriptions for narrow notification surfaces rather than full graph replication.</p>
+          <p>The GraphQL specification separates transport from query execution—HTTP POST remains the default for queries and mutations, while gateways may front subgraphs with federation routers. Teams evaluating GraphQL should budget schema governance and perf tooling as first-class platform work, not as an afterthought once mobile screens ship.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -134,6 +135,8 @@ type Subscription {
             <li>Developer-facing APIs where introspection and schema-first tooling improve integration speed.</li>
             <li>Dashboards or detail views that need nested, related entities in a single request.</li>
           </ul>
+
+          <p>CRUD resources with stable shapes and many cache-friendly GET clients are often simpler in REST with OpenAPI than maintaining a graph layer solely for field selection.</p>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
@@ -205,7 +208,7 @@ Federation (multi-team):
           <p>Listing 100 parents each resolving a child collection can become 101 database round trips. <strong>DataLoader</strong> collects keys per tick (or per request frame) and issues one batched query, then maps rows back to resolvers. Instantiate loaders <strong>per request</strong> so cached batches never leak across users.</p>
 
           <h3>Persisted queries and transport</h3>
-          <p><a href="https://graphql.org/learn/persisted-queries/" target="_blank" rel="noopener noreferrer">Automatic Persisted Queries</a> send a hash instead of the full document after registration—smaller bodies, optional GET for reads, and production allowlists. Pair with variables validated against input types in SDL.</p>
+          <p><a href="https://www.apollographql.com/docs/apollo-server/performance/apq/" target="_blank" rel="noopener noreferrer">Automatic Persisted Queries</a> send a hash instead of the full document after registration—smaller bodies, optional GET for reads, and production allowlists. Pair with variables validated against input types in SDL.</p>
 
           <h3>Federation vs manual stitching</h3>
           <p>Manual stitching merged schemas at a gateway with hand-written delegation. Federation marks entities with <code>@key</code> in subgraphs; the router builds query plans across services. Prefer federation when many teams own slices of one product graph.</p>
@@ -216,6 +219,13 @@ Federation (multi-team):
 
           <h3>Schema registry and governance</h3>
           <p>Large organisations treat the schema as a published contract: lint rules in CI, breaking-change detection on pull requests, and optional registry approval before subgraphs deploy. Federation routers add composition checks—conflicting types or missing <code>@key</code> fields fail fast in the pipeline instead of at runtime when the first client query spans services.</p>
+
+          <h3>Query cost and depth limits</h3>
+          <p>The <a href="https://spec.graphql.org/" rel="noopener noreferrer" target="_blank">GraphQL specification</a> does not cap query cost—servers must enforce depth (often 10–15), field count, and complexity scores before execution. Persisted queries (APQ) shrink attack surface and CDN cache keys. Reject introspection or throttle it in production; attackers use introspection to craft expensive trees. Document maximum <code>first</code> connection sizes (50–100) consistent with database page limits. Federation adds N+1 risk across subgraphs—DataLoader batching and subgraph query plans should appear in load tests, not only happy-path UI queries.</p>
+          <h3>Errors and observability</h3>
+          <p>Return partial data with <code>errors</code> arrays per spec rules; log resolver-level failures with correlation IDs without leaking internal paths in extensions. Track p95 resolution time per root field—one hot field dominating latency usually means a missing DataLoader or an unindexed subgraph resolver.</p>
+          <p>Mutations should return affected entity ids and expected state clients need for cache updates—under-fetching mutation payloads forces extra round trips that defeat GraphQL’s purpose. Subscription transports (WebSocket or SSE) need separate auth and idle timeouts documented beside query endpoints.</p>
+          <p>Federation trace metrics expose which subgraph dominates latency; alert when a single subgraph’s error rate correlates with composed query failures.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -261,7 +271,7 @@ Federation (multi-team):
             <li><a href="https://graphql.org/learn/" target="_blank" rel="noopener noreferrer">GraphQL — Introduction (graphql.org/learn)</a></li>
             <li><a href="https://spec.graphql.org/" target="_blank" rel="noopener noreferrer">GraphQL Specification — spec.graphql.org</a></li>
             <li><a href="https://graphql.org/learn/queries/" target="_blank" rel="noopener noreferrer">GraphQL — Queries and Mutations</a></li>
-            <li><a href="https://graphql.org/learn/persisted-queries/" target="_blank" rel="noopener noreferrer">GraphQL — Persisted Queries</a></li>
+            <li><a href="https://www.apollographql.com/docs/apollo-server/performance/apq/" target="_blank" rel="noopener noreferrer">GraphQL — Persisted Queries</a></li>
             <li><a href="https://graphql.org/learn/security/" target="_blank" rel="noopener noreferrer">GraphQL — Security</a></li>
             <li><a href="https://github.com/graphql/dataloader" target="_blank" rel="noopener noreferrer">DataLoader — batching and caching for resolvers</a></li>
             <li><a href="https://relay.dev/graphql/connections.htm" target="_blank" rel="noopener noreferrer">Relay Cursor Connections Specification</a></li>

@@ -123,6 +123,7 @@ message User {
           <p>It deliberately targets trusted networks and platform teams who can operate HTTP/2-aware proxies, health probes, and schema registries—not arbitrary browser clients without an adapter.</p>
           <p>Generated stubs also shorten cross-team integration: consumers compile against tagged proto releases instead of hand-maintaining HTTP client wrappers that drift from informal JSON examples on a wiki. Pin proto module versions in lock files the same way you pin service container images.</p>
           <p>Compression (gzip or snappy on the wire), keepalive pings, and max connection age tuning matter at high QPS: they reduce bandwidth on east-west links and prevent stale TCP sessions from pinning traffic to drained nodes during rolling deploys.</p>
+          <p>gRPC shines when both client and server share protobuf contracts and long-lived channels; public third-party integrations still usually need REST or Connect-style HTTP bridges because external developers standardise on OpenAPI clients and corporate proxies that inspect TLS HTTP more readily than raw HTTP/2 RPC.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -132,6 +133,8 @@ message User {
             <li>Mobile or edge clients where smaller payloads matter on metered links.</li>
             <li>Organizations enforcing deadlines, metadata propagation, and interceptors uniformly.</li>
           </ul>
+
+          <p>Browser-only clients without a gRPC-Web or Connect proxy still need a JSON HTTP façade—do not assume end users will load native gRPC stacks.</p>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
@@ -217,6 +220,13 @@ Health: grpc.health.v1.Health/Check + Watch</code></pre>
 
           <h3>Connection management</h3>
           <p>Channel options such as <code>max_connection_age</code> and <code>keepalive_time</code> (language-specific names vary) help load balancers redistribute long-lived HTTP/2 sessions after autoscaling events. Document recommended client defaults in internal developer portals so polyglot consumers do not each tune by trial and error. Load tests should mix unary and streaming RPCs so autoscalers see realistic connection churn.</p>
+
+          <h3>Deadlines, status codes, and proto evolution</h3>
+          <p>gRPC maps cancellations to <code>DEADLINE_EXCEEDED</code> and business failures to rich <code>google.rpc.Status</code> details—document which codes clients should retry (typically <code>UNAVAILABLE</code>, <code>RESOURCE_EXHAUSTED</code>) versus fatal validation errors. Set client deadlines slightly below gateway upstream timeouts; server handlers should honour <code>context</code> cancellation to release DB connections. Protobuf field rules from the <a href="https://protobuf.dev/programming-guides/proto3/" rel="noopener noreferrer" target="_blank">proto3 guide</a>: never renumber fields, reserve deprecated numbers, add new fields with defaults for backward compatibility. Breaking renames require new message types or versioned services (<code>v1</code>/<code>v2</code> packages), not silent wire changes.</p>
+          <h3>Interop with HTTP gateways</h3>
+          <p>grpc-gateway and Envoy transcoding expose JSON over HTTP for browsers; keep error bodies aligned with RFC 9457 where possible so one client library handles both transports. mTLS or bearer metadata on every RPC matches zero-trust mesh expectations—plaintext gRPC inside a VPC is increasingly replaced by sidecar-terminated TLS.</p>
+          <p>Server reflection helps debugging but exposes service names—disable in production or restrict by network policy. Health checking should use the standard gRPC health protocol so orchestrators do not confuse TCP reachability with application readiness.</p>
+          <p>Streaming backpressure: slow consumers on server-streaming RPCs must not unbounded-buffer messages—cancel context when send blocks beyond a configurable threshold.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>

@@ -109,6 +109,7 @@
           <p>Without a gateway, every service would duplicate JWT validation, quota enforcement, TLS configuration, and trace header propagation—leading to inconsistent security and painful audits. A gateway gives platform teams one place to apply organisation-wide policy while product teams focus on domain code.</p>
           <p>Clients need a stable external URL and contract even when services split, merge, or move behind gRPC. The gateway abstracts churn and can translate protocols (HTTP/JSON at the edge, gRPC inside) or route API versions to different upstream clusters.</p>
           <p>Security operations teams also gain a choke point for bot scoring, geo policy, and emergency kill switches—without redeploying every microservice when a partner key is compromised or a route must be quarantined during an investigation.</p>
+          <p>Gateways are not a substitute for service-side authorization—they terminate TLS and enforce coarse identity, but each origin must still validate object-level access. Over-loading transformation logic (heavy JSON reshaping on every request) turns the gateway into a second application tier with its own release train; keep shaping thin or push it to BFFs tuned per channel.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -118,6 +119,8 @@
             <li>TLS termination, WAF, and DDoS protection at the perimeter.</li>
             <li>REST or HTTP front-ends to internal gRPC, WebSocket, or queue-driven workers.</li>
           </ul>
+
+          <p>Single-team monoliths with one north-south entry rarely need a heavyweight gateway tier—a load balancer plus framework middleware often suffices until multiple services share a public hostname.</p>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
@@ -214,6 +217,13 @@ Patterns
 
           <h3>Observability at the edge</h3>
           <p>Gateway access logs are often the only complete record of north-south traffic: client IP, route, consumer identity, latency, and upstream status. Propagate W3C <code>traceparent</code> on every hop and avoid stripping client-supplied correlation IDs unless they fail validation. Per-route RED metrics (rate, errors, duration) on the gateway surface SLOs that domain services alone cannot compute, because they never see failed auth or throttled requests.</p>
+
+          <h3>Timeouts, retries, and body limits</h3>
+          <p>Set route-level upstream timeouts (often 5–30&nbsp;s for synchronous JSON, longer only for documented async exports). Disable blind retry on non-idempotent POST at the gateway unless idempotency keys are validated. Terminate TLS at the edge with max body sizes (1–10&nbsp;MB default) to block oversized uploads before JVM heaps allocate. Token exchange at the gateway (<a href="https://www.rfc-editor.org/rfc/rfc8693.html" rel="noopener noreferrer" target="_blank">RFC 8693</a>) centralises audience reduction so microservices receive downscoped tokens instead of raw user credentials.</p>
+          <h3>Failure detection</h3>
+          <p>Elevated <code>502</code>/<code>504</code> at the gateway with healthy upstream health checks usually means timeout mismatch—clients give up while origins still work. Auth plugin errors appearing as <code>500</code> mask misconfiguration; separate metrics for JWT validation failures versus origin errors.</p>
+          <p>WAF and bot rules at the gateway reduce credential-stuffing volume before auth services see traffic—tune false-positive rates with canary rules. Plugin WASM filters add supply-chain risk; pin image digests and audit third-party filters like application dependencies.</p>
+          <p>North-south gateway capacity planning should include TLS handshake CPU—HTTP/2 connection counts often limit scale before application CPU.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
