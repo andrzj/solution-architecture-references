@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Consensus Algorithms — SA References</title>
-  <meta name="description" content="Paxos, Raft, and practical distributed consensus — how nodes agree on a value despite failures, and the limits imposed by the FLP impossibility result.">
+  <meta name="description" content="Distributed consensus algorithms let replicas agree on an ordered log despite crashes and partitions; Paxos and Raft provide linearisable coordination with known latency and failure-model limits.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,35 +96,36 @@
             <span class="badge badge--muted">Advanced</span>
           </div>
           <h1 class="article-header__title">Consensus Algorithms</h1>
-          <p class="article-header__desc">How distributed nodes agree on a single value despite failures — Paxos, Raft, the FLP impossibility result, and where consensus is used in practice.</p>
+          <p class="article-header__desc">Consensus algorithms replicate an ordered log despite crashes and partitions; Raft and Paxos underpin etcd, Consul, and strongly consistent coordination metadata.</p>
           <div class="article-header__meta"><span>⏱ 14 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Distributed consensus is the problem of getting a set of nodes in a network to agree on a single value (or sequence of values) even when some nodes fail or messages are delayed. A consensus algorithm must satisfy three properties: <strong>agreement</strong> (all non-faulty nodes decide on the same value), <strong>validity</strong> (the decided value must have been proposed by some node), and <strong>termination</strong> (all non-faulty nodes eventually decide). In practice, consensus underpins replicated logs, leader election, distributed locks, and coordination services.</p>
+          <p><strong>Distributed consensus</strong> is the problem of getting a set of replicas to agree on a single value or on an append-only log order despite crash failures and unreliable networks. A consensus protocol typically guarantees <strong>agreement</strong> (no two correct nodes decide differently), <strong>validity</strong> (only proposed values are chosen), and <strong>termination</strong> (correct nodes eventually decide) under explicit system assumptions. In production, consensus backs replicated state machines—configuration stores, shard metadata, leader records, and lock services—so clients see one coherent history even when individual machines restart.</p>
+          <p><strong>Raft</strong> (Ongaro and Ousterhout) and <strong>Paxos</strong> (Lamport) are the dominant crash-fault-tolerant families; both rely on quorums so committed entries survive minority loss. Martin Kleppmann’s <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a> connects consensus to linearisable reads and writes, while the Dynamo and Jepsen literature show what happens when teams skip it on the data path.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Without consensus, replication is unreliable: two nodes can independently accept conflicting writes, diverge in their state, and produce inconsistent results. Consensus is the theoretical and practical foundation for strong consistency in distributed systems. The FLP impossibility result (Fischer, Lynch, Paterson 1985) proves that no deterministic consensus algorithm can guarantee termination in an asynchronous system with even one faulty process. In practice, this is resolved by adding timing assumptions (partially synchronous model) and randomisation, allowing algorithms like Paxos and Raft to make progress under realistic conditions.</p>
+          <p>Independent replicas that accept writes without coordination can diverge permanently after partitions or crashes, which breaks invariants for locks, leases, and financial metadata. Consensus provides a safe replication substrate: one leader (in leader-based protocols) orders client updates, replicates them to followers, and commits after a quorum acknowledges. The Fischer–Lynch–Paterson impossibility result shows that no deterministic protocol guarantees termination in a fully asynchronous model with even one faulty process; practical systems therefore adopt partial synchrony, randomised leader election, and bounded failure detectors so Raft and Paxos make progress when the network eventually stabilizes.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>You need a replicated log with linearisable semantics (etcd, ZooKeeper, Consul for configuration).</li>
-            <li>Leader election must be safe: exactly one leader at a time with no split-brain.</li>
-            <li>Distributed locking with strong safety guarantees.</li>
-            <li>Metadata services or coordination primitives that underpin a larger system.</li>
-            <li>Cluster sizes are small (3–7 nodes) — consensus does not scale to hundreds of peers.</li>
+            <li>You need a strongly consistent replicated log for metadata, configuration, or coordination—not the primary high-volume data plane.</li>
+            <li>Leader election, distributed locks, or membership must not admit split-brain without fencing.</li>
+            <li>Cluster size stays small enough that quorum RPC overhead is acceptable on your latency budget.</li>
+            <li>You can operate odd-sized quorums, persistent logs, and rehearsed recovery procedures.</li>
+            <li>Crash faults are the threat model; Byzantine actors require different protocols and larger quorums.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>High-throughput data paths — consensus adds latency (at least one round trip to a majority before committing).</li>
-            <li>Geographically distributed clusters with hundreds of milliseconds of latency between regions.</li>
-            <li>Systems tolerating eventual consistency — CRDTs or gossip provide better throughput with weaker guarantees.</li>
-            <li>Large clusters — consensus quorum overhead grows with cluster size; use hierarchical or sharded designs.</li>
+            <li>The hot data path needs massive write throughput—consensus serializes through a leader and pays at least one round trip to a majority.</li>
+            <li>Wide-area latency dominates and product rules allow eventual consistency (Dynamo-style AP designs).</li>
+            <li>Every write would require a new consensus group—prefer hierarchical metadata plus partition-local availability.</li>
+            <li>You have not budgeted for Jepsen-class testing of your chosen implementation under partition and clock skew.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Raft is the most widely understood modern consensus algorithm. It separates the problem into three sub-problems: leader election, log replication, and safety.</p>
+          <p>Raft decomposes consensus into leader election, log replication, and safety rules that prevent followers from accepting stale leader entries. The sequence below shows a client write appended by the leader, replicated with <code>AppendEntries</code>, and committed once a quorum persists the entry:</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">sequenceDiagram
     participant Cl as Client
@@ -172,68 +173,72 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Provides linearisable (strongly consistent) reads and writes.</li>
-                <li>Tolerates up to ⌊(n−1)/2⌋ node failures in an n-node cluster.</li>
-                <li>Raft is understandable — designed explicitly with comprehensibility as a goal.</li>
-                <li>Well-tested implementations exist: etcd, CockroachDB, TiKV, Consul.</li>
+                <li>Delivers a total order on committed entries, enabling linearisable coordination APIs.</li>
+                <li>Survives minority replica loss when majorities overlap across configuration changes.</li>
+                <li>Raft’s specification is teaching-friendly; <a href="https://raft.github.io/" rel="noopener noreferrer" target="_blank">raft.github.io</a> publishes the paper, visualizations, and reference implementations.</li>
+                <li>Mature open-source embeds (etcd, Consul, CockroachDB, TiKV) reduce the need to roll your own.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Latency floor: at least one leader-to-majority round trip per write.</li>
-                <li>Leader is a bottleneck for all writes; no horizontal write scaling within a single consensus group.</li>
-                <li>Does not tolerate Byzantine (malicious) faults — use PBFT or Tendermint for adversarial environments.</li>
-                <li>Paxos is notoriously hard to reason about and implement correctly; Multi-Paxos has many implementation variants.</li>
+                <li>Write latency includes replication to a quorum; leaders do not scale writes horizontally within one group.</li>
+                <li>Paxos-family protocols are subtle to implement completely—production bugs often appear only under partition tests.</li>
+                <li>Crash-fault Raft/Paxos do not defend against malicious replicas; BFT protocols pay higher quorum and message costs.</li>
+                <li>Misconfigured membership changes or stale leaders can still harm availability until operators intervene.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Paxos vs Raft:</strong> Paxos (Lamport 1989) is the original consensus algorithm. Single-decree Paxos agrees on one value; Multi-Paxos extends it to an ordered log by reusing a leader across multiple rounds. Paxos is correct but underspecified — real implementations make dozens of undocumented decisions. Raft was designed explicitly to be understandable and fully specifies log matching, election safety, and log compaction.</p>
-          <p>For new implementations, choose Raft. <strong>Viewstamped Replication (VSR)</strong> predates Paxos and is equivalent; it is the basis of some production systems including the original Google Chubby design.</p>
-          <p><strong>Byzantine Fault Tolerant (BFT) consensus:</strong> Paxos and Raft assume crash-fault tolerance — nodes fail by stopping, not by sending malicious messages. Practical Byzantine Fault Tolerance (PBFT) and its successors (Tendermint, HotStuff, used in blockchain consensus) tolerate Byzantine nodes but require 3f+1 nodes to tolerate f failures and have higher message complexity.</p>
-          <p><strong>etcd uses Raft</strong> with a WAL for durability. ZooKeeper uses ZAB (ZooKeeper Atomic Broadcast), which is similar to Paxos. Both provide linearisable reads (with appropriate settings) and are suitable for coordination metadata but not as general-purpose databases.</p>
+          <p><strong>Paxos vs Raft:</strong> Lamport’s Paxos decides single values; Multi-Paxos chains decisions into a log with repeated prepare/accept phases. Implementations differ in leader persistence, batching, and recovery details that the original paper left implicit. Raft specifies leader election, log matching, and safe snapshot transfer in one narrative—most new systems embed an existing Raft library rather than re-deriving Multi-Paxos.</p>
+          <p><strong>Operational embeds:</strong> Kubernetes stores cluster state in <strong>etcd</strong> (Raft + WAL). <strong>HashiCorp Consul</strong> and <strong>etcd</strong> expose key-value and session primitives on Raft. Apache ZooKeeper’s ZAB protocol provides atomic broadcast for Kafka metadata and similar control planes. <strong>Google Spanner</strong> shards data across Paxos groups and layers SQL and TrueTime on top—consensus at shard granularity rather than one global group.</p>
+          <p><strong>Testing:</strong> Before trusting any coordination layer, review independent fault-injection results. <a href="https://jepsen.io/" rel="noopener noreferrer" target="_blank">Jepsen</a> (Kyle Kingsbury / Aphyr) publishes partition-heavy histories for many databases and coordination products. Kleppmann’s locking essay complements consensus by explaining why leases need fencing when storage does not participate in the protocol.</p>
+          <p>Tune election timeouts above measured WAN RTT and JVM pause budgets; enable quorum or lease-checked reads when stale leader serves would violate product guarantees. Apply joint consensus or one-at-a-time membership changes from the Raft paper when altering voter sets.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Leader thrashing:</strong> unstable network causes frequent elections; heartbeat and election timeout tuning is critical.</li>
-            <li><strong>Split vote:</strong> two candidates receive equal votes in the same term; Raft resolves by randomising election timeouts.</li>
-            <li><strong>Stale leader:</strong> a leader that has been partitioned from the majority continues serving reads, returning stale data without read linearisation (use quorum reads or lease-based reads).</li>
-            <li><strong>Log divergence:</strong> a crashed leader had uncommitted entries that followers didn't replicate; Raft's log matching property resolves this on recovery.</li>
-            <li><strong>Membership change races:</strong> adding or removing nodes incorrectly can create two independent majorities; use joint-consensus or single-server-at-a-time membership changes.</li>
+            <li><strong>Leader flapping:</strong> marginal networks trigger repeated elections; workloads stall without careful timeout tuning.</li>
+            <li><strong>Split vote:</strong> competing candidates tie in a term until randomized backoff breaks symmetry.</li>
+            <li><strong>Stale leader writes:</strong> partitioned leader accepts client traffic until fencing or quorum checks reject it.</li>
+            <li><strong>Unmerged log tails:</strong> recovered nodes must truncate divergent suffixes per log-matching rules before serving.</li>
+            <li><strong>Unsafe reconfiguration:</strong> overlapping majorities during membership change can admit two leaders.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Do you require linearisability, or would eventual consistency suffice?</li>
-            <li>Is your cluster size appropriate (3, 5, or 7 nodes for standard fault tolerance)?</li>
-            <li>Have you tuned heartbeat intervals and election timeouts for your network latency?</li>
-            <li>Are you protecting against Byzantine failures or only crash failures?</li>
-            <li>Have you considered using an existing consensus service (etcd, ZooKeeper) rather than implementing your own?</li>
-            <li>Is the consensus group small enough to avoid quorum-majority bottlenecks at your target write throughput?</li>
+            <li>Does the use case require linearisable history, or is eventual consistency enough?</li>
+            <li>Is replica count odd with overlapping majorities across planned changes?</li>
+            <li>Are heartbeat and election timeouts validated against production RTT and pause profiles?</li>
+            <li>Is the failure model crash-only rather than Byzantine?</li>
+            <li>Are you embedding etcd, Consul, or another maintained implementation instead of writing consensus?</li>
+            <li>Have you reviewed Jepsen (or equivalent) results for the exact version you deploy?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>etcd serving as the backing store for Kubernetes control plane state.</li>
-            <li>Apache ZooKeeper providing distributed coordination for Kafka (leader election, topic metadata).</li>
-            <li>CockroachDB using Raft per-range to replicate SQL data with serialisable isolation.</li>
-            <li>Consul using Raft for service registry and key-value store with strong consistency.</li>
+            <li><strong>Case study —</strong> <strong>etcd</strong> persists Kubernetes API objects; control plane availability depends on etcd’s Raft quorums.</li>
+            <li><strong>Case study —</strong> <strong>Apache Kafka</strong> historically relied on <strong>ZooKeeper</strong> for controller election and topic metadata until KRaft moved metadata onto an internal Raft log.</li>
+            <li><strong>Case study —</strong> <strong>CockroachDB</strong> and <strong>TiKV</strong> replicate SQL and key-value ranges with per-range Raft for serializable data planes.</li>
+            <li><strong>Case study —</strong> <strong>Google Spanner</strong> uses Paxos per shard with synchronized clocks for externally consistent transactions across a global fleet.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="leader-election.html">Leader Election</a> — a primary application of consensus; Raft's leader election is consensus-based.</li>
-            <li><a href="distributed-locking.html">Distributed Locking</a> — consensus-backed stores (etcd, ZooKeeper) provide the safest locking primitives.</li>
-            <li><a href="distributed-coordination.html">Distributed Coordination</a> — ZooKeeper and etcd expose consensus as a coordination service.</li>
+            <li><a href="leader-election.html">Leader Election</a> — Raft’s first subroutine; many products expose it as a standalone primitive.</li>
+            <li><a href="distributed-locking.html">Distributed Locking</a> — safest locks sit atop consensus stores with fencing.</li>
+            <li><a href="distributed-coordination.html">Distributed Coordination</a> — etcd, Consul, and ZooKeeper package consensus as a service.</li>
+            <li><a href="quorum-patterns.html">Quorum Patterns</a> — majority overlap that makes committed entries durable.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://raft.github.io/raft.pdf" rel="noopener noreferrer" target="_blank">In Search of an Understandable Consensus Algorithm (Raft) — Ongaro &amp; Ousterhout</a> — the original Raft paper, highly readable.</li>
-            <li><a href="https://lamport.azurewebsites.net/pubs/paxos-simple.pdf" rel="noopener noreferrer" target="_blank">Paxos Made Simple — Leslie Lamport</a> — accessible description of Paxos from its inventor.</li>
-            <li><a href="https://en.wikipedia.org/wiki/Consensus_(computer_science)" rel="noopener noreferrer" target="_blank">Consensus (computer science) — Wikipedia</a> — overview including the FLP impossibility result and practical workarounds.</li>
+            <li><a href="https://raft.github.io/raft.pdf" rel="noopener noreferrer" target="_blank">In Search of an Understandable Consensus Algorithm (Raft) — Ongaro &amp; Ousterhout</a> — canonical Raft specification; companion site at <a href="https://raft.github.io/" rel="noopener noreferrer" target="_blank">raft.github.io</a>.</li>
+            <li><a href="https://lamport.azurewebsites.net/pubs/paxos-simple.pdf" rel="noopener noreferrer" target="_blank">Paxos Made Simple — Leslie Lamport</a> — entry point to Multi-Paxos and replicated-state-machine use.</li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> — consensus, replication, and consistency models.</li>
+            <li><a href="https://research.google/pubs/pub39966/" rel="noopener noreferrer" target="_blank">Spanner: Google’s Globally-Distributed Database</a> — Paxos-backed shards and strong distributed transactions.</li>
+            <li><a href="https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf" rel="noopener noreferrer" target="_blank">Dynamo: Amazon’s Highly Available Key-value Store</a> — contrast case when the data path favors availability over consensus strong ordering.</li>
+            <li><a href="https://jepsen.io/" rel="noopener noreferrer" target="_blank">Jepsen</a> — partition-oriented correctness analyses of databases and coordination systems (Aphyr).</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

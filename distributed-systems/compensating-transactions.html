@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Compensating Transactions — SA References</title>
-  <meta name="description" content="Semantic undo operations for reversing committed work in distributed systems — designing compensatable operations and handling partial completion scenarios.">
+  <meta name="description" content="A compensating transaction is a business-level semantic undo for an already-committed local step when a later workflow step fails and database rollback cannot cross service boundaries.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,35 +96,35 @@
             <span class="badge badge--muted">Consistency</span>
           </div>
           <h1 class="article-header__title">Compensating Transactions</h1>
-          <p class="article-header__desc">Business-level semantic undo operations that reverse the effects of committed work in distributed workflows — when normal database rollback is not available.</p>
+          <p class="article-header__desc">Compensating transactions are semantic undo steps for committed local work when a later saga step fails and database rollback cannot cross service boundaries.</p>
           <div class="article-header__meta"><span>⏱ 8 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-
-          <p>A compensating transaction undoes the effect of a completed local step when a later step in a workflow fails. Refund payment reverses charge payment in an e-commerce checkout. Each compensating action must be idempotent because retries are inevitable.</p>
+          <p>A <strong>compensating transaction</strong> is an application-defined operation that reverses the business effect of an already-committed local step when a later step in a distributed workflow fails. Unlike a database <code>ROLLBACK</code>, compensation does not erase history from the log—it issues a new semantic inverse such as refunding a charge, releasing a hold, or marking an entity cancelled. Compensations appear in saga rollbacks and in user-facing cancel flows wherever two-phase commit cannot span service boundaries.</p>
+          <p>Each compensating handler must be <strong>idempotent</strong> because message brokers and HTTP clients retry on timeouts. Kleppmann’s treatment of fault tolerance in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a> applies directly: at-least-once delivery plus non-idempotent undo equals duplicated financial or inventory side effects.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In distributed systems and microservices, each service commits its local database transaction independently. Once committed, that change is permanent and visible to other readers. There is no way to use a database-level ROLLBACK across service boundaries. When a later step in a multi-step business workflow fails, the only way to maintain business consistency is to explicitly undo the effects of already-committed steps by issuing compensating transactions in reverse order.</p>
+          <p>Microservices commit locally; once a transaction commits, other services may read the new state. There is no cross-database undo that magically rewinds peer replicas. Garcia-Molina and Salem’s saga model therefore pairs each forward transaction with an explicit compensating transaction so a workflow can move backward at the business level while leaving an auditable trail of forward and reverse events—exactly the long-running transaction problem their 1987 paper targeted before “microservices” existed.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Saga steps that have committed locally need to be undone when a later step fails.</li>
-            <li>Long-running business processes where holding distributed locks is not feasible.</li>
-            <li>The business operation has a clear semantic inverse (charge → refund, reserve → release, create → cancel).</li>
-            <li>You need to provide a cancellation or undo feature for user-initiated multi-step operations.</li>
+            <li>A saga or choreography step has committed locally and a downstream step fails or is rejected.</li>
+            <li>The domain exposes a safe semantic inverse (charge/refund, reserve/release, open/close as cancel).</li>
+            <li>You offer user-initiated cancellation after partial progress in a multi-step API.</li>
+            <li>Business rules tolerate a window where forward effects are visible before compensation completes.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Operations with no meaningful semantic inverse — sending an email, firing a missile, dispatching a physical shipment that has left the warehouse.</li>
-            <li>Side effects that have already been acted upon by third parties (e.g., a payment that triggered downstream wire transfers in an external bank system).</li>
-            <li>When the cost of designing and maintaining compensating logic for every step exceeds the benefit — consider whether a simpler eventual-consistency approach works.</li>
+            <li>The forward step triggered an irreversible physical or legal effect with no business undo.</li>
+            <li>External systems have already acted on the outcome in ways your compensating API cannot retract.</li>
+            <li>A single local transaction or consensus group already provides atomicity for the coupled data.</li>
+            <li>Designing and testing inverses for every step costs more than restructuring the workflow around a pivot.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Compensating transactions are executed in reverse order relative to the forward saga steps. Each service must implement both the forward action and its compensation:</p>
+          <p>Compensation runs in <strong>reverse order</strong> relative to successful forward steps: the most recent commit is undone first so dependent state remains interpretable. Each service exposes a forward command and a compensating command guarded by the same correlation or saga identifier:</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     T1["T1 Create order"] --> T2["T2 Charge payment"]
@@ -157,68 +157,69 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Enables business consistency without distributed locks or 2PC.</li>
-                <li>Works across heterogeneous services and databases.</li>
-                <li>Explicit, auditable: compensation actions are visible in the event log.</li>
-                <li>Can be retried independently of the forward saga steps.</li>
+                <li>Restores business invariants without two-phase commit locks spanning services.</li>
+                <li>Works across polyglot storage and independently deployed codebases.</li>
+                <li>Leaves a clear audit trail of forward and reverse operations for finance and compliance.</li>
+                <li>Allows compensating steps to retry on their own schedule after the triggering failure is recorded.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Cannot truly undo effects that have been observed or acted upon externally.</li>
-                <li>Doubles the design and testing burden — every operation needs a proven inverse.</li>
-                <li>Compensation itself can fail, requiring additional failure handling and alerting.</li>
-                <li>Intermediate inconsistent state is visible between the failure and completion of compensation.</li>
+                <li>Cannot recall effects already observed or acted on outside your system boundary.</li>
+                <li>Doubles conceptual surface area—every forward API needs a proven inverse and test matrix.</li>
+                <li>Failed compensation requires escalation paths; there is no single coordinator ROLLBACK.</li>
+                <li>Readers may see inconsistent aggregates until the compensation chain finishes.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Idempotency is mandatory:</strong> compensation messages may be delivered more than once due to retries, so the compensation handler must produce the same result whether called once or ten times. Use a compensation-specific idempotency key derived from the saga ID and step number. Store a record of the compensation in the service's own database before returning success, so replays are detected and short-circuited.</p>
-          <p><strong>Retry vs. compensate decision:</strong> not every failure should trigger compensation immediately. Transient errors (network timeouts, resource temporarily unavailable) should be retried with exponential backoff. Only persistent failures — ones that exceed a configured retry budget or indicate a business-level impossibility — should trigger compensation.</p>
-          <p>Model this decision explicitly in your saga orchestrator as a retry policy before transitioning to a compensation state.</p>
-          <p><strong>Partial completion handling:</strong> document which steps are retried, which are compensated, and which are "pivot" steps (after which compensation cannot fully undo effects). Pivot transactions represent the point of no return and should be chosen carefully — preferably placing them as late as possible in the saga.</p>
+          <p>Record compensation attempts in the service’s own database keyed by saga id and step number before returning success to the orchestrator, so duplicate deliveries short-circuit to the stored outcome. Derive idempotency tokens from stable business identifiers rather than ephemeral transport metadata.</p>
+          <p>Distinguish <strong>retry</strong> from <strong>compensate</strong> in the state machine: transient timeouts and capacity errors should exhaust a bounded retry policy before the workflow transitions to undo. Document <strong>pivot</strong> steps—operations after which compensation is partial or impossible—and place them as late as product rules allow.</p>
+          <p>Prefer semantic inverses that match domain language (<code>cancelReservation</code>, not <code>DELETE FROM</code> blind deletes) and align amounts, quantities, and status fields with the forward operation. For monetary flows, mirror the idempotency guidance Stripe and other processors document for payment APIs—your undo path should tolerate the same duplicate-delivery assumptions.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Non-idempotent compensation:</strong> double-refunding a customer or double-releasing inventory because compensation ran twice.</li>
-            <li><strong>Compensation of an uncommitted step:</strong> attempting to compensate a step that never completed, causing incorrect state (e.g., refunding a payment that was never charged).</li>
-            <li><strong>Compensation failure without fallback:</strong> the compensating transaction itself fails persistently with no further handling, leaving the system in a stuck state.</li>
-            <li><strong>Out-of-order compensations:</strong> compensating T2 before T3 when T3 depends on T2's state, causing referential integrity violations.</li>
-            <li><strong>Missing compensation logic:</strong> a new saga step is added but its compensation is forgotten, breaking rollback for that path.</li>
+            <li><strong>Double compensation:</strong> non-idempotent refund or release runs twice under retry.</li>
+            <li><strong>Compensating a non-success:</strong> refund issued when the forward charge never settled.</li>
+            <li><strong>Stuck undo:</strong> compensating call fails permanently without paging on-call.</li>
+            <li><strong>Wrong order:</strong> releasing a resource before reversing a dependent reservation corrupts invariants.</li>
+            <li><strong>Missing inverse:</strong> new forward step ships without a paired compensating handler.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Has every saga step been paired with a tested compensating transaction?</li>
-            <li>Are all compensating transactions idempotent?</li>
-            <li>Is there a fallback process (manual intervention, alerting) for compensation failures?</li>
-            <li>Is the retry policy defined before triggering compensation?</li>
-            <li>Have you identified the pivot transaction (point of no return) in each saga?</li>
-            <li>Are compensations executed in the correct reverse order?</li>
+            <li>Does every forward saga step list its compensating operation in design docs and tests?</li>
+            <li>Do compensation handlers deduplicate on saga id plus step or an equivalent token?</li>
+            <li>Is there a manual or automated fallback when compensation exceeds retry limits?</li>
+            <li>Does the orchestrator retry transient errors before entering the compensating state?</li>
+            <li>Is the pivot step explicit for auditors and customer support?</li>
+            <li>Are compensations invoked strictly in reverse order of successful forwards?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Order cancellation: refunding payment, releasing reserved inventory, cancelling the order record.</li>
-            <li>Travel booking rollback: releasing a held flight seat and hotel room when the car rental step fails.</li>
-            <li>Financial transfer rollback: crediting back the debit when the downstream credit fails.</li>
-            <li>User account deletion: rolling back service-specific data when a downstream service fails to delete its records.</li>
+            <li><strong>Illustrative scenario —</strong> After a downstream fulfillment call fails, a workflow refunds payment, releases inventory holds, and marks the order cancelled—each step in its owning service.</li>
+            <li><strong>Illustrative scenario —</strong> A multi-supplier booking saga releases airline and hotel holds when a car-rental partner rejects the confirmation.</li>
+            <li><strong>Illustrative scenario —</strong> Account offboarding compensates provisioned resources in reverse order when a dependent directory delete fails.</li>
+            <li><strong>Case study —</strong> Garcia-Molina and Salem’s <a href="https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf" rel="noopener noreferrer" target="_blank">sagas paper</a> defined compensating transactions as first-class replacements for rollback in long-lived transactions—a model still cited in Azure and microservices.io saga guidance.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="saga-pattern.html">Saga Pattern</a> — the orchestrating framework within which compensating transactions are executed.</li>
-            <li><a href="distributed-transactions.html">Distributed Transactions</a> — the alternative (2PC) that avoids the need for compensations but introduces locks and coupling.</li>
-            <li><a href="../foundations/idempotency.html">Idempotency</a> — the foundational property that makes compensating transactions safe to retry.</li>
+            <li><a href="saga-pattern.html">Saga Pattern</a> — orders forward steps and triggers compensations on failure.</li>
+            <li><a href="distributed-transactions.html">Distributed Transactions</a> — atomic rollback when 2PC is viable instead of semantic undo.</li>
+            <li><a href="../foundations/idempotency.html">Idempotency</a> — required property for safe compensation under retries.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf" rel="noopener noreferrer" target="_blank">Sagas — Garcia-Molina &amp; Salem, SIGMOD 1987</a> — original formulation including the concept of compensating transactions.</li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/compensating-transaction" rel="noopener noreferrer" target="_blank">Compensating Transaction Pattern — Microsoft Azure Architecture Center</a> — practical guidance with implementation considerations.</li>
-            <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Saga — microservices.io</a> — choreography and orchestration patterns including compensating steps.</li>
+            <li><a href="https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf" rel="noopener noreferrer" target="_blank">Sagas — Garcia-Molina &amp; Salem (SIGMOD 1987)</a> — compensating transactions and saga semantics.</li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> — transactions, idempotence, and fault-tolerant application design.</li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/compensating-transaction" rel="noopener noreferrer" target="_blank">Compensating Transaction — Azure Architecture Center</a> — implementation structure and failure handling.</li>
+            <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Saga — microservices.io (Chris Richardson)</a> — how compensating steps fit orchestrated and choreographed sagas.</li>
+            <li><a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="noopener noreferrer" target="_blank">How to Do Distributed Locking — Martin Kleppmann</a> — fencing and safety context when compensation replaces locks.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
