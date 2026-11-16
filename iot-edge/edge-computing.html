@@ -102,11 +102,12 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Edge computing is not binary; it exists on a continuum from <em>device edge</em> (on the microcontroller itself) to <em>near edge</em> (a gateway in the same building) to <em>far edge</em> (a regional micro data centre or telco MEC point-of-presence a few milliseconds away) to the public cloud. Real architectures typically use several of these tiers for different classes of processing.</p>
+          <p><strong>Edge computing</strong> places compute, storage, and inference close to where sensors and actuators generate data instead of shipping every byte to a central cloud region. Workloads run on constrained MCUs, plant-floor gateways, or telco <strong>MEC</strong> nodes while the cloud remains authoritative for fleet management, model training, and long-term analytics.</p>
+          <p>Placement is a spectrum: the <em>device edge</em> (RTOS firmware on the sensor), <em>near edge</em> (industrial PC or Raspberry Pi on the LAN), <em>far edge</em> (regional Kubernetes or GPU rack), then hyperscale cloud. Managed runtimes—<a href="https://docs.aws.amazon.com/greengrass/v2/developerguide/what-is-iot-greengrass.html" target="_blank" rel="noopener noreferrer">AWS IoT Greengrass</a>, <a href="https://learn.microsoft.com/en-us/azure/iot-edge/about-iot-edge" target="_blank" rel="noopener noreferrer">Azure IoT Edge</a>—package containerised or native components with local pub/sub, buffering, and OTA deployment. This article covers infrastructure placement and sync; <a href="edge-processing.html">edge processing patterns</a> cover what logic belongs on each tier.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Three forces drive edge computing adoption. First, <strong>latency</strong>: a round trip to a cloud region takes 30–150ms; an autonomous vehicle, a robotic arm, or a real-time safety system cannot tolerate that. Second, <strong>bandwidth</strong>: a factory floor with 500 cameras each generating 4K video cannot economically send all raw video to the cloud — local processing must reduce data to events or anomaly clips. Third, <strong>connectivity</strong>: devices in remote locations (oil rigs, ships, mines) may have intermittent or no cloud connectivity; they need to operate autonomously and sync when connectivity resumes.</p>
+          <p>Cloud round trips measure tens to hundreds of milliseconds—too slow for closed-loop control, robotic safety, or live quality gates. Video, high-frequency vibration, and dense telemetry also overwhelm WAN economics unless edge nodes filter, compress, or classify locally.</p>
+          <p>Intermittent connectivity is normal on ships, rigs, farms, and cellular-only sites. Edge nodes must run autonomously, buffer with backpressure, and reconcile with cloud twins when links return. Data-residency rules add a third driver: some workloads must never leave a facility or country even though central analytics still needs aggregate visibility.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -117,14 +118,16 @@
             <li>On-device ML inference: running TFLite or ONNX models where sub-100ms latency is required and a cloud API call is too slow.</li>
           </ul>
 
-                    <h2 id="when-not-to-use">When not to use</h2>
+          <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>All analytics can tolerate multi-second cloud latency</strong> and bandwidth is cheap — centralised processing is simpler to operate.</li>
-            <li><strong>No local operator or actuator loop</strong> requires sub-100ms response — edge nodes become expensive cache layers with little gain.</li>
-            <li><strong>Teams without remote patch and monitoring</strong> for edge hardware — unmaintained edge becomes security debt.</li>
+            <li><strong>Multi-second cloud latency</strong> is acceptable and bandwidth is inexpensive—centralised services reduce fleet patch burden.</li>
+            <li><strong>No local control loop</strong> needs sub-100&nbsp;ms response—edge hardware becomes an expensive relay.</li>
+            <li><strong>No mature OTA, monitoring, and rollback</strong> for distributed devices—unpatched edge is physical attack surface.</li>
+            <li><strong>Uniform cloud-only compliance</strong> already satisfies regulators without on-prem processing mandates.</li>
           </ul>
 
-<h2 id="typical-architecture">Typical architecture</h2>
+          <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Sensors stream to a gateway runtime that runs modules for protocol translation, buffering, ML inference, and selective upload. Configuration and model versions flow downward from IoT fleet services; telemetry, summaries, and exceptions sync upward when links allow.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     device["Device edge&lt;br/&gt;on MCU"]
@@ -231,29 +234,35 @@ EDGE-CLOUD SYNC PATTERNS
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Deployment strategy:</strong> Use staged rollouts for edge component deployments — deploy to 1% of fleet, monitor health metrics (error rate, latency, resource usage) for 24 hours, then expand to 10%, 50%, 100%. Greengrass and Azure IoT Edge both support deployment groups with rollback triggers. A bad deployment to all devices simultaneously can be catastrophic and may require physical access to recover constrained hardware.</p>
-          <p><strong>Edge ML model compression:</strong> Full-precision (FP32) models trained in the cloud are typically too large for edge inference. Apply post-training quantisation (INT8) to reduce model size 4x and improve inference latency 2–4x on ARM CPUs. For microcontrollers (device edge), use TensorFlow Lite for Microcontrollers (TFLM) — models must fit in tens of kilobytes. Use knowledge distillation to train a small "student" model that approximates the large "teacher" model's behaviour.</p>
+          <p><strong>Staged fleet rollout:</strong> Deploy edge components to a canary group (1–5% of devices), watch error rate, memory, and inference latency for a full business cycle, then expand. Greengrass deployments and IoT Edge layered deployments support automatic rollback when health metrics breach thresholds—avoid simultaneous fleet-wide pushes that need truck rolls to recover bricked gateways.</p>
+          <p><strong>Model lifecycle:</strong> Train in cloud, export to TFLite or ONNX with INT8 quantisation where accuracy allows, sign artifacts, and deliver via fleet jobs. Version models alongside application components; shadow traffic or A/B on a subnet before promoting weights fleet-wide.</p>
+          <p><strong>Buffering and sync:</strong> Size local spools for the longest expected outage plus catch-up bandwidth. Use deterministic correlation IDs so cloud pipelines reconcile edge-decided actions with upstream analytics without double-counting.</p>
+          <p><strong>Security:</strong> Treat gateways like servers—TPM or secure element for identity, signed OTA, minimal open ports, and tamper-evident enclosures where devices are physically accessible.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>No offline operating mode:</strong> Systems designed as "cloud-first" with edge as an afterthought fail completely during cloud outages rather than degrading gracefully; offline operation must be a first-class design requirement.</li>
-            <li><strong>Edge drift:</strong> Without automated deployment, edge devices run different software versions over time; configuration management and fleet-wide deployment tooling are essential from day one.</li>
-            <li><strong>Resource exhaustion:</strong> Edge devices have limited RAM; containerised workloads that run fine in dev environments (with abundant memory) can OOM-kill on a 2GB gateway device; set resource limits on all containers.</li>
+            <li><strong>Cloud-hard dependency:</strong> Control loops that call cloud APIs on every cycle halt when DNS or TLS fails—local fallbacks and degraded modes must be designed in.</li>
+            <li><strong>Configuration drift:</strong> Manual SSH fixes on individual gateways diverge from fleet baselines until incidents expose unknown versions.</li>
+            <li><strong>OOM on gateways:</strong> Dev laptops mask memory limits; unset Docker cgroups or Greengrass component limits crash inference under production camera counts.</li>
+            <li><strong>Split model channels:</strong> Cloud and edge run different model versions silently—accuracy regressions show up only in field complaints.</li>
+            <li><strong>Buffer loss:</strong> RAM-only queues drop telemetry during extended outages; persistent spool with backpressure and upload prioritisation (alerts before bulk history) is required.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the edge/cloud processing split defined by concrete latency, bandwidth, or connectivity requirements?</li>
-            <li>Does the system have an offline operating mode that degrades gracefully during cloud connectivity loss?</li>
-            <li>Is edge software deployed via a managed runtime (Greengrass / Azure IoT Edge) with staged rollout and rollback?</li>
-            <li>Are resource limits (CPU, memory) configured for all edge containers?</li>
-            <li>Is edge ML model compression (quantisation, distillation) applied to meet device hardware constraints?</li>
+            <li>Is each workload placed against documented latency, bandwidth, and residency requirements?</li>
+            <li>Does the architecture operate in offline or degraded mode without human intervention?</li>
+            <li>Are deployments staged with health-based rollback on managed edge runtimes?</li>
+            <li>Are CPU, memory, and disk quotas set per container or Greengrass component?</li>
+            <li>Are ML artifacts signed, versioned, and promoted through canary groups?</li>
+            <li>Is local buffer capacity validated for worst-case outage and catch-up upload time?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Manufacturing quality control:</strong> Camera at conveyor line → edge GPU runs defect detection model (ONNX + TensorRT) → sub-50ms detection → reject actuator triggered locally; only defect images sent to cloud for model retraining.</li>
-            <li><strong>Remote oil field:</strong> SCADA sensors → Greengrass gateway with 4G modem → Greengrass Stream Manager buffers 48h of data locally → syncs to S3 during connectivity windows; anomaly detection component runs locally and triggers local alarm without cloud dependency.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>FieldOps</strong> runs conveyor vision on an edge GPU with ONNX and TensorRT; rejects actuate in under 50&nbsp;ms; only defect frames upload for SageMaker retraining.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> buffers 48&nbsp;hours of refrigerated trailer telemetry on Greengrass Stream Manager over intermittent LTE; anomaly components alarm locally and sync summaries when towers reconnect.</li>
+            <li><strong>Case study —</strong> AWS and Microsoft publish reference architectures for Greengrass v2 and IoT Edge modules covering local pub/sub, Stream Analytics at the edge, and twin-synchronised configuration—patterns reused across manufacturing and energy verticals.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
