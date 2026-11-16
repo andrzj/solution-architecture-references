@@ -96,14 +96,21 @@
             <span class="badge badge--success">Essential</span>
           </div>
           <h1 class="article-header__title">Database Indexing</h1>
-          <p class="article-header__desc">Index types, access patterns, and maintenance — B-tree, Hash, GIN, GiST, BRIN, covering indexes, partial indexes, composite key ordering, index bloat, and query plan analysis with EXPLAIN ANALYZE.</p>
+          <p class="article-header__desc">Matching PostgreSQL index access methods to query predicates—B-tree, GIN, GiST, BRIN, covering and partial indexes—and validating plans with EXPLAIN ANALYZE instead of guessing.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>PostgreSQL index types: <strong>B-tree</strong> (default) — balanced tree, supports <code>=</code>, <code>&lt;</code>, <code>&gt;</code>, <code>BETWEEN</code>, <code>IN</code>, <code>LIKE 'prefix%'</code>, <code>ORDER BY</code>; the right choice for most situations; <strong>Hash</strong> — O(1) equality lookups, does not support range queries, rarely preferable to B-tree; <strong>GIN (Generalized Inverted Index)</strong> — maps each element of a composite value (array element, JSONB key, tsvector lexeme) to its containing rows;</p>
-          <p>required for <code>@&gt;</code> containment, <code>?</code> key-exists, and full-text search; <strong>GiST (Generalized Search Tree)</strong> — extensible tree for geometric, range, and full-text data; used for PostGIS spatial queries, range type containment, and nearest-neighbor searches; <strong>BRIN (Block Range INdex)</strong> — stores min/max per block range, extremely small (10–1000x smaller than B-tree), effective only when column values are physically correlated with row insertion order (timestamps on append-only tables).</p>
+          <p><strong>Database indexing</strong> is the practice of maintaining auxiliary structures so the database can locate rows by key or predicate without reading every page in the table. Indexes trade extra storage and write work on <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> for faster, more selective reads on the queries you run in production.</p>
+          <p>This article focuses on <strong>PostgreSQL</strong>, whose planner picks an index scan or sequential scan from table statistics and estimated selectivity. The official <a href="https://www.postgresql.org/docs/current/indexes.html" rel="noopener noreferrer" target="_blank">PostgreSQL indexes</a> chapter and <a href="https://www.postgresql.org/docs/current/indexes-types.html" rel="noopener noreferrer" target="_blank">index types</a> documentation describe when each access method applies:</p>
+          <ul>
+            <li><strong>B-tree</strong> (default) — equality, range, sorting, and prefix <code>LIKE</code>; see <a href="https://www.postgresql.org/docs/current/btree-introduction.html" rel="noopener noreferrer" target="_blank">B-tree introduction</a>.</li>
+            <li><strong>Hash</strong> — equality only; rarely beats B-tree for general workloads.</li>
+            <li><strong>GIN</strong> — inverted indexes for arrays, <code>jsonb</code>, and full-text <code>tsvector</code>; required for containment and existence operators at scale.</li>
+            <li><strong>GiST</strong> — extensible tree for geometry, ranges, and nearest-neighbor patterns (including PostGIS).</li>
+            <li><strong>BRIN</strong> — block-range summaries for very large, naturally ordered tables such as append-only logs.</li>
+          </ul>
+          <p>Beyond the base type, PostgreSQL supports <strong>partial indexes</strong> (indexed row subsets), <strong>covering indexes</strong> via <code>INCLUDE</code> for index-only scans, and <strong>composite</strong> multi-column keys governed by the left-prefix rule.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Sequential scans are the performance worst case for selective queries. A table with 100M rows and 10KB average row size is 1TB of data — a sequential scan reads all 1TB even if the query matches 10 rows. Indexes trade write overhead (updating the index on INSERT/UPDATE/DELETE) and storage (the index structure itself) for dramatically faster reads. The tradeoff is favorable for most read-heavy OLTP workloads.</p>
@@ -127,6 +134,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Index design starts from <em>query patterns</em>, not column names: list the predicates, sort orders, and join keys your application issues, then pick the narrowest index family that can answer them. Validate every hot path with <a href="https://www.postgresql.org/docs/current/using-explain.html" rel="noopener noreferrer" target="_blank">EXPLAIN</a> (prefer <code>EXPLAIN ANALYZE</code> in non-production or controlled replicas) before adding indexes in production.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     q["Query pattern"]
@@ -217,9 +225,10 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use <code>EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)</code> — not just <code>EXPLAIN</code> — to see actual execution times, row count estimates vs. actual, and buffer hit/miss statistics. Key signals: <code>Seq Scan</code> on large tables with a selective WHERE clause is the primary indicator of a missing index; <code>cost</code> estimates wildly different from <code>actual time</code> indicate stale statistics — run <code>ANALYZE tablename</code>; high <code>Buffers: read</code> vs. <code>Buffers: hit</code> ratio indicates cache thrashing that an index may not solve without also tuning <code>shared_buffers</code> and <code>effective_cache_size</code>.</p>
-          <p>For large tables, use <code>CREATE INDEX CONCURRENTLY</code> to build indexes without locking writes — the index build takes longer but doesn't block production traffic.</p>
-          <p>For composite indexes, the column order follows a rule: put <strong>equality predicates first</strong>, then <strong>range predicates</strong>, then <strong>ORDER BY columns</strong>. For a query <code>WHERE tenant_id = $1 AND created_at &gt; $2 ORDER BY created_at</code>, the optimal index is <code>(tenant_id, created_at)</code> — equality filter first (tenant_id reduces the scan to a single tenant's data), range scan second (created_at traversal within that partition). Placing the range column first wastes the index because the range scan can't then use the equality column to filter. Monitor index bloat periodically: <code>SELECT pg_size_pretty(pg_relation_size(indexrelid)) AS index_size, indexrelname FROM pg_stat_user_indexes ORDER BY pg_relation_size(indexrelid) DESC</code> — indexes significantly larger than expected for their row count indicate bloat requiring <code>REINDEX CONCURRENTLY</code>.</p>
+          <p><strong>EXPLAIN discipline:</strong> Run <code>EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)</code> on representative queries. Treat <code>Seq Scan</code> on large, selective predicates as a missing-index signal; large gaps between estimated and actual rows point to stale stats—refresh with <code>ANALYZE</code>. The <a href="https://www.postgresql.org/docs/current/planner-optimizer.html" rel="noopener noreferrer" target="_blank">planner and optimizer</a> chapter explains when the optimizer may still prefer sequential scans for low-selectivity filters.</p>
+          <p><strong>Production index builds:</strong> Use <code>CREATE INDEX CONCURRENTLY</code> on large tables to avoid long write locks; expect a longer build and monitor <code>pg_stat_progress_create_index</code>. Drop unused indexes found via <code>pg_stat_user_indexes</code> (<code>idx_scan = 0</code>) to cut write amplification.</p>
+          <p><strong>Composite column order:</strong> Put equality columns first, then range columns, then <code>ORDER BY</code> columns—for example <code>(tenant_id, created_at)</code> for <code>WHERE tenant_id = $1 AND created_at &gt; $2 ORDER BY created_at</code>. Partial indexes should mirror the exact filter predicates your hot queries use so the planner can match them automatically.</p>
+          <p><strong>Maintenance:</strong> High-churn tables accumulate index bloat; schedule <code>VACUUM</code> and use <code>REINDEX CONCURRENTLY</code> when index size diverges from row counts. For JSON and text search, consult <a href="https://www.postgresql.org/docs/current/gin.html" rel="noopener noreferrer" target="_blank">GIN</a> and <a href="https://www.postgresql.org/docs/current/brin.html" rel="noopener noreferrer" target="_blank">BRIN</a> operator-class choices before defaulting to B-tree.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -242,9 +251,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce order lookup (covering index):</strong> The orders list page queries <code>SELECT id, created_at, total, status FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20</code>. A covering index <code>CREATE INDEX ON orders(user_id, created_at DESC) INCLUDE (total, status)</code> serves the entire query from the index with zero heap fetches — latency drops from 80ms to 3ms at the p99 for active users with large order histories.</li>
-            <li><strong>Append-only audit log (BRIN):</strong> An audit_events table receives 50,000 inserts per second and holds 10 billion rows. A BRIN index on the timestamp column is 3MB vs. 120GB for a B-tree, with essentially zero write overhead. Time-range queries for compliance audits (last 7 days of events) use the BRIN index efficiently because rows are physically inserted in timestamp order.</li>
-            <li><strong>Multi-tenant SaaS (partial index):</strong> A notifications table has 500M rows but at any time only 2M are unread. A partial index <code>CREATE INDEX ON notifications(user_id, created_at) WHERE read = false</code> is 250x smaller than a full index. The inbox query <code>WHERE user_id = $1 AND read = false ORDER BY created_at DESC</code> is served by the tiny partial index rather than the massive full table index.</li>
+            <li><strong>Illustrative scenario —</strong> An order-history API runs <code>SELECT id, created_at, total, status FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20</code>. A covering index <code>CREATE INDEX ON orders(user_id, created_at DESC) INCLUDE (total, status)</code> enables index-only scans and cuts p99 latency for users with large histories.</li>
+            <li><strong>Illustrative scenario —</strong> An append-only <code>audit_events</code> table grows to billions of rows. A BRIN index on <code>created_at</code> stays orders of magnitude smaller than B-tree while supporting compliance time-range scans when inserts are time-ordered.</li>
+            <li><strong>Illustrative scenario —</strong> A notifications table has hundreds of millions of rows but only a small unread subset matters for inbox queries. <code>CREATE INDEX ON notifications(user_id, created_at) WHERE read = false</code> keeps the working set small and matches <code>WHERE user_id = $1 AND read = false</code> exactly.</li>
+            <li><strong>Case study —</strong> Teams operating large PostgreSQL fleets often cite Markus Winand’s <a href="https://use-the-index-luke.com/" rel="noopener noreferrer" target="_blank">Use The Index, Luke</a> and the official EXPLAIN docs as the baseline for index reviews before adding production indexes.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -256,9 +266,12 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.postgresql.org/docs/current/indexes.html" target="_blank" rel="noopener noreferrer">PostgreSQL Documentation: Indexes</a></li>
-            <li><a href="https://use-the-index-luke.com/" target="_blank" rel="noopener noreferrer">Use The Index, Luke — SQL Indexing and Tuning Guide</a></li>
-            <li><a href="https://www.postgresql.org/docs/current/using-explain.html" target="_blank" rel="noopener noreferrer">PostgreSQL: Using EXPLAIN</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/indexes.html" rel="noopener noreferrer" target="_blank">PostgreSQL: Indexes</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/indexes-types.html" rel="noopener noreferrer" target="_blank">PostgreSQL: Index Types</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/indexes-partial.html" rel="noopener noreferrer" target="_blank">PostgreSQL: Partial Indexes</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html" rel="noopener noreferrer" target="_blank">PostgreSQL: Index-Only Scans and Covering Indexes</a></li>
+            <li><a href="https://www.postgresql.org/docs/current/using-explain.html" rel="noopener noreferrer" target="_blank">PostgreSQL: Using EXPLAIN</a></li>
+            <li><a href="https://use-the-index-luke.com/" rel="noopener noreferrer" target="_blank">Use The Index, Luke — SQL indexing for developers</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

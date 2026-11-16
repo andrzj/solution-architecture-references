@@ -100,9 +100,9 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Downstream dashboards assume the orders stream includes currency and lands within five minutes — a <strong>data contract</strong> is the producer-owned spec for schema, semantics, SLAs, and compatible versioning, like an API contract for data.</p>
-          <p>Data contracts are typically expressed using <strong>schema formats</strong>: <strong>Apache Avro</strong> (binary, compact, widely used in Kafka ecosystems); <strong>Protocol Buffers (Protobuf)</strong> (binary, strongly typed, used in gRPC and event streaming); <strong>JSON Schema</strong> (human-readable, flexible, used for REST APIs and lightweight event schemas). These schemas are versioned and stored in a <strong>Schema Registry</strong> (Confluent Schema Registry, AWS Glue Schema Registry, Apicurio) which enforces compatibility rules when producers attempt to publish new schema versions.</p>
-          <p>The three <strong>schema compatibility modes</strong> enforced by schema registries are: <strong>BACKWARD</strong> — consumers using the new schema can read data written with the old schema (add optional fields, remove fields); <strong>FORWARD</strong> — consumers using the old schema can read data written with the new schema (add fields with defaults, remove optional fields); <strong>FULL</strong> — both directions are compatible simultaneously (most restrictive — add optional fields with defaults only).</p>
+          <p>A <strong>data contract</strong> is a formal, versioned agreement between a data producer and its consumers. It specifies structure (schema), meaning (semantics), quality expectations, freshness SLAs, ownership, and how breaking changes are announced—analogous to an API contract, but for datasets and event streams.</p>
+          <p>Contracts are often serialized in <strong>Apache Avro</strong>, <strong>Protocol Buffers</strong>, or <strong>JSON Schema</strong>, then registered in a <strong>schema registry</strong> that blocks incompatible evolution. Common implementations include <a href="https://docs.confluent.io/platform/current/schema-registry/index.html" rel="noopener noreferrer" target="_blank">Confluent Schema Registry</a>, <a href="https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html" rel="noopener noreferrer" target="_blank">AWS Glue Schema Registry</a>, and <a href="https://www.apicur.io/apicur-registry/docs/" rel="noopener noreferrer" target="_blank">Apicurio Registry</a>. The open <a href="https://datacontract.com/" rel="noopener noreferrer" target="_blank">Data Contract Specification</a> extends schema-only checks with SLAs, quality rules, and ownership metadata.</p>
+          <p>In <a href="../architecture-styles/data-mesh.html">Data Mesh</a>, Zhamak Dehghani treats contracts as part of <em>data as a product</em>: each domain publishes interfaces consumers can trust without constant coordination. Registries enforce <strong>compatibility modes</strong>—typically <strong>BACKWARD</strong> (new readers tolerate old data), <strong>FORWARD</strong> (old readers tolerate new data), or <strong>FULL</strong> (both)—as documented in Confluent’s <a href="https://docs.confluent.io/platform/current/schema-registry/avro.html#compatibility-types" rel="noopener noreferrer" target="_blank">schema evolution</a> guide.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>In a typical organization, data flows from producers (operational databases, event streams, SaaS APIs) through multiple transformation layers to consumers (dashboards, ML models, analytics). Without contracts, a producer engineer renames a column in a table; 3 downstream pipelines silently break; dashboards show NULL where numbers should appear; an ML model begins returning incorrect predictions trained on malformed features. Nobody notices for days because all the pipelines ran without error — the data was just wrong. Data contracts replace implicit, undocumented assumptions with explicit, versioned, enforced specifications that make breaking changes visible before they reach consumers.</p>
@@ -125,6 +125,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Producers own the contract artifact: they register schema versions, embed schema IDs in serialized messages (Kafka) or publish table-level assertions (warehouse/lake), and expose semantic documentation. Consumers pin to a known contract version; CI and the registry reject publishes that violate the agreed compatibility mode before traffic sees incompatible payloads.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     prod["Data producer&lt;br/&gt;owns contract"]
@@ -206,8 +207,10 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For Kafka-based event streaming, use <strong>Confluent Schema Registry</strong> with Avro schemas as the baseline contract enforcement mechanism. Register subject-level compatibility mode as BACKWARD for most topics — this allows consumers to be upgraded before producers, the safest upgrade order. Set the default compatibility to BACKWARD at the registry level and only override per-subject when there's a specific reason for FULL or NONE. Use <strong>schema ID embedding</strong>: Confluent serializers prepend the schema ID (4 bytes) to each message, enabling consumers to always deserialize with the exact writer's schema even when their local schema differs — this is the "schema on read" pattern that enables independent consumer evolution.</p>
-          <p>For batch data contracts (warehouse tables, data lake files), use <strong>dbt tests</strong> as contract assertions: <code>not_null</code>, <code>unique</code>, <code>accepted_values</code>, and <code>relationships</code> tests encode quality constraints directly in the dbt model definition. Combine with <strong>dbt-expectations</strong> (Great Expectations integration) for range checks and statistical assertions. Run these tests as part of your CI pipeline on every dbt model change — contract failures block deployment. Publish the dbt model's <code>manifest.json</code> and test results to your data catalog (DataHub, Atlan) to surface contract status alongside the table metadata, giving consumers visibility into current contract health.</p>
+          <p><strong>Kafka and schema registry:</strong> Prefer registry-aware serializers so every publish is validated. Default subject compatibility to BACKWARD for most topics so consumers can roll forward before producers. Schema IDs in the message envelope let readers deserialize with the writer’s exact schema while projecting to their local reader schema.</p>
+          <p><strong>Batch and warehouse contracts:</strong> Encode quality as executable checks—dbt tests (<code>not_null</code>, <code>unique</code>, <code>relationships</code>) or Great Expectations suites on lake/warehouse tables. Fail CI when assertions break; surface pass/fail in the <a href="data-cataloging.html">data catalog</a> next to table metadata.</p>
+          <p><strong>Governance:</strong> Pair technical compatibility with human process: named owner, semantic field glossary, notice period for breaking changes, and consumer acknowledgement for incompatible migrations. In mesh-style organizations, contracts are the published “interface” of each data product alongside discovery metadata.</p>
+          <p><strong>Renames and deletes:</strong> Treat field renames as multi-version migrations—add the new field, backfill, deprecate the old name—rather than in-place Avro renames that fail registry checks. Document the pattern in team playbooks so on-call engineers do not temporarily set compatibility <code>NONE</code> in production.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -230,9 +233,10 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Kafka payment events:</strong> A payments team produces <code>payment.completed</code> events to Kafka with Avro schema registered in Confluent Schema Registry. When the team adds a new optional <code>payment_method_type</code> field, the registry validates BACKWARD compatibility and issues a new schema version. Downstream fraud detection, analytics, and notifications consumers receive the new field automatically and can opt in to using it without a coordinated release.</li>
-            <li><strong>dbt feature table contract:</strong> A data platform team publishes a <code>fct_user_features</code> table for ML model training. The dbt model includes <code>not_null</code> and <code>accepted_values</code> contract tests for all required ML features. When an upstream pipeline bug introduces NULLs in a key feature column, the dbt CI test fails and blocks the table from being deployed to the feature store — the ML model training job is not triggered with malformed data.</li>
-            <li><strong>Data mesh product contract:</strong> The "Order" domain team in a Data Mesh organization publishes their <code>orders</code> data product with a full YAML contract specifying schema, quality SLAs, and a 14-day notice policy for breaking changes. The analytics team builds a quarterly revenue report consuming this product with confidence that the contract will be honored — and receives automated notifications when the producing team plans a change.</li>
+            <li><strong>Illustrative scenario —</strong> A payments team publishes <code>payment.completed</code> to Kafka with Avro registered in Confluent Schema Registry. Adding optional <code>payment_method_type</code> passes BACKWARD checks; fraud, analytics, and notification consumers pick up the field without a coordinated release train.</li>
+            <li><strong>Illustrative scenario —</strong> A feature store table <code>fct_user_features</code> ships with dbt <code>not_null</code> and <code>accepted_values</code> tests. An upstream bug that injects NULLs fails CI and blocks promotion to the feature store before model training runs on bad rows.</li>
+            <li><strong>Illustrative scenario —</strong> In a mesh-aligned org, the orders domain publishes a YAML contract (schema, freshness SLA, 14-day breaking-change notice). Analytics builds quarterly revenue on that product and receives notification when the producer schedules schema work.</li>
+            <li><strong>Case study —</strong> Uber’s public writing on <a href="https://www.uber.com/blog/schemaless-part-1/" rel="noopener noreferrer" target="_blank">schema evolution at scale</a> and Confluent’s registry documentation are widely used references for Kafka-centric contract enforcement.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -244,9 +248,12 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.confluent.io/platform/current/schema-registry/index.html" target="_blank" rel="noopener noreferrer">Confluent Schema Registry Documentation</a></li>
-            <li><a href="https://datacontract.com/" target="_blank" rel="noopener noreferrer">DataContract.com — Open Standard for Data Contracts</a></li>
-            <li><a href="https://www.datamesh-architecture.com/data-contracts" target="_blank" rel="noopener noreferrer">Data Contracts in Data Mesh Architecture</a></li>
+            <li><a href="https://docs.confluent.io/platform/current/schema-registry/index.html" rel="noopener noreferrer" target="_blank">Confluent Schema Registry</a></li>
+            <li><a href="https://docs.aws.amazon.com/glue/latest/dg/schema-registry.html" rel="noopener noreferrer" target="_blank">AWS Glue Schema Registry</a></li>
+            <li><a href="https://datacontract.com/" rel="noopener noreferrer" target="_blank">Open Data Contract Standard</a></li>
+            <li><a href="https://martinfowler.com/articles/data-monolith-to-mesh.html" rel="noopener noreferrer" target="_blank">How to Move Beyond a Monolithic Data Lake to a Distributed Data Mesh — Zhamak Dehghani</a></li>
+            <li><a href="https://martinfowler.com/articles/data-mesh-principles.html" rel="noopener noreferrer" target="_blank">Data Mesh Principles — Martin Fowler synthesis of Dehghani’s model</a></li>
+            <li><a href="https://avro.apache.org/docs/current/spec.html" rel="noopener noreferrer" target="_blank">Apache Avro Specification</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
