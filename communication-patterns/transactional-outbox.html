@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Transactional Outbox Pattern — SA References</title>
-  <meta name="description" content="Transactional Outbox Pattern: solve the dual-write problem by writing events to an outbox table in the same database transaction as business data, then relaying them to the message broker via polling or CDC.">
+  <meta name="description" content="Transactional Outbox Pattern: atomically update domain data and record outbound messages in one database transaction, then publish via a polling or CDC message relay without two-phase commit.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>(function(){const t=localStorage.getItem('sa-refs-theme')||(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t);})();</script>
 </head>
@@ -84,37 +84,39 @@
         <div class="article-header">
           <div class="article-header__tags"><span class="badge badge--primary">Communication Patterns</span><span class="badge badge--muted">Messaging</span><span class="badge badge--muted">Reliability</span></div>
           <h1 class="article-header__title">Transactional Outbox Pattern</h1>
-          <p class="article-header__desc">Solve the dual-write problem by writing events to an outbox table in the same database transaction as your business data, then relaying them to the message broker via a polling relay or CDC-based relay using Debezium.</p>
+          <p class="article-header__desc">The transactional outbox pattern atomically updates application data and records outbound messages in one database transaction, then uses a separate message relay—polling or CDC—to publish to a broker without two-phase commit.</p>
           <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>The transactional outbox pattern solves one of the fundamental reliability problems in event-driven microservices: a service must atomically update its database <em>and</em> publish an event to the message broker, but these are two separate systems and cannot participate in the same ACID transaction. The outbox pattern avoids this by writing the event to an <code>outbox</code> table in the same database transaction as the business data. A separate relay process reads unpublished rows from the outbox table and publishes them to the broker, then marks them as published.</p>
-          <p>The relay may use polling or Change Data Capture (CDC) via Debezium to detect new outbox rows.</p>
-          <p>The result is that the database write and the event publication become eventually consistent with at-least-once delivery guaranteed: if the service commits the DB transaction, the event will eventually be published. If the service crashes before commit, neither the DB change nor the event is visible — the atomicity guarantee of the local database transaction eliminates the race condition.</p>
+          <p>The <strong>transactional outbox pattern</strong> lets a service update persistent domain state and record an outbound message in <em>one</em> local database transaction. Instead of calling the message broker inside or immediately after the transaction—which cannot be made atomic across DB and broker—the application inserts a row into an <code>outbox</code> table alongside business writes. A separate <strong>message relay</strong> reads those rows and publishes them to Kafka, RabbitMQ, SQS, or similar infrastructure.</p>
+          <p><a href="https://microservices.io/patterns/data/transactional-outbox.html" rel="noopener noreferrer" target="_blank">Chris Richardson</a> documents this on microservices.io as the standard answer to “atomically update the database and send messages” without distributed two-phase commit (2PC). The sender, database (business data plus outbox), and relay are the three moving parts; the broker sits downstream of the relay.</p>
+          <p>If the transaction commits, the message is guaranteed to reach the broker eventually (at-least-once via the relay). If the transaction rolls back, no outbox row exists and nothing is published. Publication lag is typically milliseconds to seconds depending on polling interval or CDC latency—not synchronous with the client response.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>The dual-write problem is insidious: a service writes to the database, then publishes a message to Kafka. Between these two operations, the service can crash, the broker can be unavailable, or the network can fail. The result is a database that has the updated state but no message published (silent data loss from the broker's perspective) or, if the order is reversed, a message published for a database write that was rolled back (phantom events). Both corrupt downstream systems.</p>
-          <p>The transactional outbox pattern is the standard solution for this class of problem in microservices — it appears in virtually every event-driven architecture guide and is directly supported by frameworks like Eventuate Tram, Axon, and Debezium's outbox router.</p>
+          <p>Microservices routinely hit the <strong>dual-write problem</strong>: “update the aggregate, then publish an event.” Publish-before-commit risks phantom events; commit-then-publish risks lost events if the process crashes or the broker is down. XA/2PC across database and broker is rarely viable—many stacks do not support it, and coupling every service to both stores is undesirable.</p>
+          <p>Richardson’s formulation adds an ordering constraint: events for the same aggregate should reach consumers in the order the application emitted them, even across multiple application instances. Persisting messages in the outbox inside the transaction gives the database a durable, ordered queue the relay can drain without the application holding an open transaction across the network.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Any service that must update a database and publish an event atomically</strong> — the canonical use case: order service must commit the order <em>and</em> publish <code>order.created</code>.</li>
-            <li><strong>Financial systems where silent event loss is unacceptable</strong> — payment completed, inventory reserved, balance updated — all must result in reliably published events.</li>
-            <li><strong>Saga orchestration</strong> — the outbox ensures each saga step's database update and subsequent command/event publication are atomic.</li>
-            <li><strong>When you cannot use 2PC or distributed transactions</strong> — this is the practical alternative to XA transactions in microservices.</li>
+            <li><strong>Database update plus domain event publication</strong> — e.g. persist an order and emit <code>order.placed</code> in one logical unit of work.</li>
+            <li><strong>Saga or process-manager steps</strong> — each step that mutates local state and must notify the next participant.</li>
+            <li><strong>Regulated or revenue-critical flows</strong> — silent message loss after a successful commit is unacceptable.</li>
+            <li><strong>Broker or network instability</strong> — the service commits locally; the relay catches up when the broker recovers.</li>
+            <li><strong>No distributed transaction between DB and broker</strong> — the practical alternative to 2PC in polyglot microservices.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>When eventual consistency is unacceptable</strong> — the outbox relay introduces a small lag (typically milliseconds to seconds) between the DB commit and event publication. For hard real-time requirements, this may be insufficient.</li>
-            <li><strong>When you have no relational database</strong> — the pattern relies on local ACID transactions. If your primary store is a NoSQL database without multi-document transactions, the pattern does not directly apply (though document stores with transaction support, like MongoDB 4.x+, can use a variant).</li>
-            <li><strong>Very high-throughput services with no tolerance for outbox table growth</strong> — the outbox table must be pruned; at very high insert rates, this requires careful partitioning.</li>
+            <li><strong>Hard synchronous publish requirement</strong> — callers cannot tolerate relay lag before downstream systems see the event.</li>
+            <li><strong>No transactional store for the outbox</strong> — without local ACID (or an equivalent multi-document transaction), you cannot co-locate business data and outbox rows reliably.</li>
+            <li><strong>Broker is the only source of truth</strong> — if you never persist domain state in a database, an outbox table has nothing to join.</li>
+            <li><strong>Extreme write rates without operational discipline</strong> — the outbox grows until pruned or partitioned; neglecting retention planning becomes a production incident.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The service writes to the business table and the outbox table in a single transaction. The relay process queries the outbox for unpublished rows (polling) or reads the DB change log via CDC (Debezium). The relay publishes each event to the broker, then marks it as published in the outbox. Processed rows are pruned on a schedule.</p>
+          <p>Within one transaction, the application updates domain tables and inserts into <code>outbox</code> (event type, aggregate id, payload, optional metadata). The message relay either polls unpublished rows or tails the database log via CDC. After successful publish, the relay marks the row published (polling) or relies on downstream idempotency (some CDC setups); unpublished backlog and relay health are monitored. Published rows are pruned or partitioned away on a schedule.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     svc["Application service"]
@@ -153,64 +155,74 @@ Relay Process (CDC variant - Debezium):
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Atomicity — DB update and event publication are guaranteed to be consistent; no silent dual-write failures.</li>
-              <li>At-least-once delivery — if the relay crashes after publishing but before marking as published, it will re-publish on restart; consumers must be idempotent.</li>
-              <li>Decouples the service from broker availability — the service commits even if the broker is down; the relay catches up when the broker recovers.</li>
-              <li>Broker-agnostic — the relay can publish to Kafka, RabbitMQ, SQS, or any broker without changing the service code.</li>
+              <li>Local atomicity — business state and intended message commit or roll back together; no split-brain between DB and broker on the write path.</li>
+              <li>Publish iff commit — Richardson’s guarantee: messages are sent only when the transaction commits, and commit implies eventual publish.</li>
+              <li>Broker decoupling — application throughput does not block on broker availability; the relay retries.</li>
+              <li>Per-aggregate ordering — relay can key messages by aggregate id so one partition preserves sequence for that entity.</li>
+              <li>Technology flexibility — relay adapters can target different brokers without changing domain code.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>Additional infrastructure — the relay process is an extra component to operate, monitor, and maintain.</li>
-              <li>Polling relay adds DB load — frequent polls on the outbox table consume DB connection and I/O. Mitigate with CDC-based relay (Debezium) which reads the WAL instead.</li>
-              <li>Outbox table grows unboundedly without pruning — requires scheduled cleanup or partitioning by date.</li>
-              <li>At-least-once (not exactly-once) — consumers must be idempotent; use the inbox pattern to deduplicate at the consumer side.</li>
+              <li>Extra moving parts — relay deployment, monitoring, and failure handling are mandatory, not optional.</li>
+              <li>Eventual publication latency — downstream sees events after relay lag, not inside the request transaction.</li>
+              <li>Polling cost — naive <code>SELECT … WHERE published = false</code> loops add read load unless replaced by CDC.</li>
+              <li>At-least-once from the relay — duplicate publishes after relay crashes; consumers need idempotency (<a href="inbox-pattern.html">inbox pattern</a>).</li>
+              <li>Developer foot-gun — domain code must always write the outbox row; forgetting it reintroduces dual-write risk.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Outbox table schema:</strong> A minimal outbox table: <code>id UUID PK</code>, <code>event_type VARCHAR</code> (e.g., <code>order.confirmed</code>), <code>aggregate_type VARCHAR</code> (e.g., <code>Order</code>), <code>aggregate_id VARCHAR</code> (e.g., the order ID — also used as the Kafka partition key to preserve per-aggregate ordering), <code>payload JSONB</code> (the full event payload), <code>published BOOLEAN DEFAULT false</code>, <code>created_at TIMESTAMP</code>, <code>published_at TIMESTAMP NULL</code>. Add an index on <code>(published, created_at)</code> for the polling query.</p>
-          <p><strong>Polling relay vs CDC-based relay:</strong> Polling is simpler to implement (a cron job or background thread) but polls the database repeatedly, adding load. Set the poll interval to at least 500 ms to avoid overwhelming the DB connection pool. CDC-based relay using Debezium reads the database transaction log (WAL for PostgreSQL, binlog for MySQL) and emits change events in near-real-time (&lt;100ms latency) without querying the database. Debezium's Outbox Event Router SMT (Single Message Transform) can transform the outbox row into a properly keyed Kafka message automatically.</p>
-          <p><strong>Pruning the outbox table:</strong> Never let the outbox table grow indefinitely. Use a scheduled job to delete rows where <code>published = true AND published_at &lt; NOW() - INTERVAL '7 days'</code>. Alternatively, use range partitioning on <code>created_at</code> and drop old partitions wholesale (faster than deleting individual rows).</p>
-          <p><strong>Ordering guarantee:</strong> Use the <code>aggregate_id</code> as the Kafka partition key to ensure all events for the same aggregate (e.g., same order ID) are published to the same Kafka partition, preserving temporal ordering for that aggregate.</p>
-          <p><strong>At-least-once and consumer idempotency:</strong> The relay provides at-least-once delivery, not exactly-once. If the relay crashes after publishing but before updating <code>published = true</code>, it will re-publish the same event on restart. All consumers downstream must be idempotent. Pair with the inbox pattern for exactly-once semantics end-to-end.</p>
+          <p><strong>Outbox row shape:</strong> Typical columns: surrogate <code>id</code>, <code>aggregate_type</code>, <code>aggregate_id</code> (broker partition key), <code>event_type</code> or topic name, serialized <code>payload</code>, <code>created_at</code>, and for polling relays <code>published</code> / <code>published_at</code>. Index <code>(published, created_at)</code> for poll queries. Keep payloads versioned; avoid leaking unstable internal schema.</p>
+          <p><strong>Polling relay:</strong> A worker claims batches of unpublished rows, publishes, then updates <code>published</code> in the same database or via idempotent publish semantics. Use modest batch sizes, backoff on broker errors, and leader election so only one active relay mutates state. Poll intervals in the hundreds of milliseconds are a common starting point—tune against DB load and latency SLOs.</p>
+          <p><strong>CDC relay (Debezium):</strong> Debezium connectors read PostgreSQL WAL, MySQL binlog, or similar and emit change events without polling the outbox table. The <a href="https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html" rel="noopener noreferrer" target="_blank">Outbox Event Router</a> single message transform maps outbox table columns to Kafka topic, key, and payload per Debezium’s documented router configuration—often the lowest-latency option when you already run CDC. See also the <a href="https://debezium.io/documentation/reference/stable/" rel="noopener noreferrer" target="_blank">Debezium reference</a> for connector tuning and delivery semantics.</p>
+          <p><strong>Ordering:</strong> Richardson notes messages should leave the broker in application send order for a given aggregate. Use a stable <code>aggregate_id</code> as the message key (Kafka partition key, SQS message group id in FIFO, etc.).</p>
+          <p><strong>Retention and pruning:</strong> Delete or partition away published rows after a retention window. Unbounded tables slow inserts and polls. Time-based partitioning plus partition drops scales better than row-by-row deletes at high volume.</p>
+          <p><strong>Observability:</strong> Metric unpublished outbox depth, relay error rate, publish lag (time from <code>created_at</code> to broker ack), and broker consumer lag. Alert when unpublished count grows monotonically.</p>
+          <p><strong>Consumer side:</strong> Treat relay delivery as at-least-once. Pair with the <a href="inbox-pattern.html">inbox pattern</a> or Richardson’s <a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html" rel="noopener noreferrer" target="_blank">idempotent consumer</a> so duplicate events do not duplicate business effects.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Relay not deployed / crashes silently:</strong> Events accumulate in the outbox table indefinitely. Alert on outbox table row count exceeding a threshold (e.g., &gt;1,000 unpublished rows) as a signal that the relay is not running.</li>
-            <li><strong>Outbox table never pruned:</strong> The table grows to millions of rows, slowing insert performance and polling queries. Implement pruning from day one.</li>
-            <li><strong>Non-idempotent consumers receiving re-delivered events:</strong> The relay re-delivers after a crash; consumers without idempotency guards double-process events. Implement the inbox pattern on all critical consumers.</li>
-            <li><strong>Aggregate ordering violated:</strong> Relay publishes events without using the aggregate ID as the partition key; unrelated events for the same aggregate land on different Kafka partitions, violating per-aggregate ordering.</li>
+            <li><strong>Outbox write omitted in application code</strong> — domain state commits without a matching outbox row; downstream never learns of the change. Code review and integration tests should assert outbox inserts on every publish path.</li>
+            <li><strong>Stalled or missing relay</strong> — unpublished rows accumulate; user-facing APIs look correct while async workflows freeze. Alert on depth and relay heartbeat.</li>
+            <li><strong>Relay publishes before mark-published (polling)</strong> — crash between broker ack and DB update causes duplicate delivery; consumers must deduplicate.</li>
+            <li><strong>Wrong partition key</strong> — events for one aggregate interleave across partitions; consumers see reordering. Fix keying in the relay adapter.</li>
+            <li><strong>Unpruned outbox table</strong> — index bloat and slower transactions on the hot path. Automate retention from the first production deploy.</li>
+            <li><strong>CDC misconfiguration</strong> — connector lag, schema drift, or router SMT mis-mapping produces wrong topics or dropped fields. Validate with contract tests against sample outbox rows.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the outbox INSERT in the same database transaction as the business data update?</li>
-            <li>Is the relay using CDC (Debezium) or a polling relay with appropriate poll interval?</li>
-            <li>Is the aggregate ID used as the Kafka partition key to preserve per-aggregate ordering?</li>
-            <li>Is there a scheduled pruning job to delete old published outbox rows?</li>
-            <li>Is there an alert on the count of unpublished outbox rows to detect relay failures?</li>
-            <li>Are all downstream consumers idempotent (safe for at-least-once delivery)?</li>
-            <li>Is the inbox pattern applied at critical consumers for exactly-once end-to-end semantics?</li>
+            <li>Does every code path that should emit an event insert an outbox row in the same transaction as the domain write?</li>
+            <li>Is the message relay highly available (or single-leader with fast failover) and monitored?</li>
+            <li>Polling vs CDC: is the chosen relay mode sized for expected throughput and latency?</li>
+            <li>Is <code>aggregate_id</code> used consistently as the broker message key for ordering?</li>
+            <li>Are unpublished outbox rows counted and alerted on?</li>
+            <li>Is there a retention or partition strategy for published rows?</li>
+            <li>Are downstream consumers idempotent (inbox or equivalent) for at-least-once relay delivery?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Order service:</strong> Commits order to <code>orders</code> table and inserts <code>order.confirmed</code> event to <code>outbox</code> table atomically; Debezium CDC relay publishes to Kafka; inventory service consumes and reserves stock.</li>
-            <li><strong>Payment service:</strong> Writes payment record and inserts <code>payment.completed</code> to outbox in one transaction; relay publishes to broker; fulfilment service proceeds with shipment only after consuming the reliable payment event.</li>
-            <li><strong>User registration:</strong> Inserts user record and <code>user.registered</code> outbox event atomically; relay publishes; email service sends welcome email; analytics service records new user — all from one reliable event.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> order service commits an order row and an <code>order.confirmed</code> outbox entry in one transaction; a Debezium relay publishes to Kafka; inventory consumes and reserves stock without Meridian ever dual-writing to Kafka in the request thread.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> payment service records settlement and enqueues <code>payment.captured</code> via outbox; when the broker was down overnight, the relay drains the backlog at morning cutover so fulfilment does not ship on unpaid orders.</li>
+            <li><strong>Illustrative scenario —</strong> A saga orchestrator at <strong>FieldOps</strong> completes each local step in a workflow table and outbox-inserts the next command; relay lag is acceptable because human operators see consistent internal state even when async participants catch up minutes later.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="inbox-pattern.html">Inbox Pattern</a> — the consumer-side complement: deduplicate re-delivered outbox events for exactly-once end-to-end semantics.</li>
-            <li><a href="message-queues.html">Message Queues</a> — the broker the outbox relay publishes to.</li>
-            <li><a href="correlation-ids.html">Correlation IDs</a> — embed correlation IDs in the outbox payload for end-to-end traceability.</li>
+            <li><a href="inbox-pattern.html">Inbox Pattern</a> — consumer-side deduplication for relay at-least-once delivery.</li>
+            <li><a href="message-queues.html">Message Queues</a> — common publish target after the relay.</li>
+            <li><a href="event-notification.html">Event Notification</a> — many outbox payloads are thin domain notifications.</li>
+            <li><a href="correlation-ids.html">Correlation IDs</a> — store correlation and causation ids in outbox metadata for tracing.</li>
+            <li><a href="../integration/change-data-capture.html">Change Data Capture</a> — operational backbone for Debezium-based relays.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://microservices.io/patterns/data/transactional-outbox.html" rel="noopener noreferrer" target="_blank">Transactional Outbox Pattern</a> — Chris Richardson's canonical definition on microservices.io.</li>
-            <li><a href="https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html" rel="noopener noreferrer" target="_blank">Debezium Outbox Event Router</a> — CDC-based outbox relay implementation.</li>
-            <li><a href="https://eventuate.io/docs/manual/eventuate-tram/latest/getting-started-eventuate-tram.html" rel="noopener noreferrer" target="_blank">Eventuate Tram</a> — framework that implements the transactional outbox pattern for Java microservices.</li>
+            <li><a href="https://microservices.io/patterns/data/transactional-outbox.html" rel="noopener noreferrer" target="_blank">Pattern: Transactional outbox (microservices.io)</a> — Chris Richardson’s problem statement, forces, solution roles, and delivery guarantees.</li>
+            <li><a href="https://microservices.io/patterns/communication-style/idempotent-consumer.html" rel="noopener noreferrer" target="_blank">Pattern: Idempotent Consumer (microservices.io)</a> — complementary consumer pattern for relay duplicates.</li>
+            <li><a href="https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html" rel="noopener noreferrer" target="_blank">Debezium Outbox Event Router (reference)</a> — configuration for CDC-driven outbox publishing to Kafka.</li>
+            <li><a href="https://debezium.io/documentation/reference/stable/" rel="noopener noreferrer" target="_blank">Debezium Documentation</a> — connector setup, CDC semantics, and operational tuning.</li>
+            <li><a href="https://www.kamilgrzybek.com/design/the-outbox-pattern/" rel="noopener noreferrer" target="_blank">The Outbox Pattern</a> — Kamil Grzybek’s implementation-oriented walkthrough (outbox plus inbox).</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
