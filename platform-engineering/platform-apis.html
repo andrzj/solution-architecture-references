@@ -188,46 +188,46 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>CRD abstractions encode infrastructure best practices (encryption, backup, network security) as defaults, eliminating the risk of misconfigured infrastructure from developer error.</li>
-                <li>Kubernetes RBAC can restrict which teams can create which resource types, providing fine-grained access control without custom authorisation logic.</li>
-                <li>Desired-state reconciliation detects and corrects configuration drift automatically, reducing the risk of production incidents caused by manual changes.</li>
-                <li>GitOps workflows apply to platform resources just like application deployments — PR reviews, audit trails, rollback by reverting a commit.</li>
-                <li>Backstage Catalog API enables a rich ecosystem of integrations that would otherwise require bespoke API development for each tool.</li>
+                <li>Versioned platform APIs align with the <a href="https://tag-app-delivery.cncf.io/whitepapers/platforms/" target="_blank" rel="noopener noreferrer">CNCF Platforms White Paper</a> model: product teams declare intent while the platform owns safe defaults and reconciliation.</li>
+                <li>Kubernetes RBAC and admission (OPA or Kyverno) enforce who may create which API kinds without building a parallel authorisation service.</li>
+                <li>Desired-state controllers repair drift between declared CRDs and live cloud resources, which keeps GitOps and console edits from diverging silently.</li>
+                <li>GitOps applies the same PR-and-rollback workflow to platform manifests that application teams already use for deploys.</li>
+                <li>The <a href="https://backstage.io/docs/features/software-catalog/software-catalog-api" target="_blank" rel="noopener noreferrer">Backstage Software Catalog API</a> gives incident, cost, and CI tooling one graph of components instead of bespoke spreadsheets per integration.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Writing and maintaining Kubernetes operators requires Go expertise and understanding of the controller-runtime framework — a non-trivial investment for a platform team.</li>
-                <li>Crossplane composition schemas (XRDs and Compositions) have a steep learning curve and verbose YAML that can become very complex for multi-cloud scenarios.</li>
-                <li>Abstraction layers can hide configuration options that advanced teams need; every escape hatch added to the CRD schema increases maintenance burden.</li>
-                <li>Operator bugs can affect all users of a resource type simultaneously — an operator with a reconciliation bug can delete or misconfigure all databases of a given type.</li>
-                <li>CRD versioning is complex; migrating CRD schemas between versions (v1alpha1 → v1beta1 → v1) requires conversion webhooks and careful deprecation planning.</li>
+                <li>Operators built on controller-runtime demand Go proficiency and ongoing upgrades when Kubernetes minor versions ship.</li>
+                <li>Crossplane compositions and XRDs grow verbose quickly; multi-cloud parity often trades schema simplicity for operations complexity.</li>
+                <li>Every escape hatch in a CRD schema reintroduces parameters the abstraction was meant to hide, which increases review and test surface.</li>
+                <li>A defective reconcile loop can affect every instance of a resource type at once, so blast radius dwarfs a single team's misconfiguration.</li>
+                <li>Promoting CRDs from alpha to stable requires conversion webhooks, deprecation windows, and coordination with consumers who cached old field names.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with the Operator SDK or Kubebuilder to scaffold operators — these frameworks handle boilerplate (reconcile loops, informer caches, leader election) and let the platform team focus on the business logic. Follow the operator pattern: the reconcile function should be idempotent (calling it multiple times with the same desired state produces the same result), and all side effects (cloud API calls) should be guarded by existence checks before creation. Use Crossplane's provider packages for cloud resources rather than writing raw AWS SDK calls in your operator — Crossplane Providers (provider-aws, provider-gcp) already handle credential management, retry logic, and status reporting for hundreds of AWS/GCP resource types.</p>
-          <p>For the Backstage Catalog API: the catalog is populated via <code>catalog-info.yaml</code> files in each service repository (registered by Backstage discovery) and via programmatic registration from CI/CD pipelines (<code>POST /api/catalog/entities</code>). Design the catalog entity schema carefully — the <code>spec.owner</code>, <code>spec.system</code>, and <code>spec.lifecycle</code> fields drive ownership routing and should be populated from CODEOWNERS or GitHub team data, not manually. Use Backstage's built-in Software Templates to ensure new services are always registered in the catalog at creation time, preventing catalog staleness.</p>
+          <p>Scaffold operators with <a href="https://kubebuilder.io/introduction.html" target="_blank" rel="noopener noreferrer">Kubebuilder</a> or the Operator SDK so reconcile loops, caching, and leader election are standardized. Keep reconcile functions idempotent: repeated application of the same spec should not create duplicate cloud objects. Prefer <a href="https://docs.crossplane.io/latest/concepts/composition/" target="_blank" rel="noopener noreferrer">Crossplane compositions</a> for cloud primitives so credential handling and provider upgrades stay centralized rather than embedded in bespoke SDK calls.</p>
+          <p>Expose self-service through Backstage Software Templates and actions that call the same APIs as <code>kubectl</code>. Populate the catalog from <code>catalog-info.yaml</code> plus discovery, and from CI jobs that <code>POST</code> entities after merge. Derive <code>spec.owner</code> and <code>spec.system</code> from version-control metadata so paging routes stay accurate. Publish OpenAPI or CRD reference docs in the portal so API consumers understand versioning and supported fields, mirroring product API conventions.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Abstraction too thin:</strong> CRD merely wraps the cloud resource with no defaults — developers still need to understand every cloud parameter; the abstraction provides no value; add opinionated defaults and only expose the parameters that differ between use cases.</li>
-            <li><strong>Abstraction too thick:</strong> CRD hides all cloud configuration; team with a legitimate advanced requirement (read replicas in a specific region) has no way to express it; CRD has no escape hatch; team bypasses the platform entirely; design all abstractions with a documented escape hatch from day one.</li>
-            <li><strong>Operator single point of failure:</strong> The database operator crashes and goes into CrashLoopBackOff; all database provisioning requests queue up unanswered for 4 hours before the platform team notices; run operators with multiple replicas and leader election; add operator health to platform SLOs.</li>
-            <li><strong>CRD schema changes break existing resources:</strong> Platform team changes a CRD field name in v1beta1; all existing resources using v1alpha1 stop reconciling; requires conversion webhooks that were not planned for; version CRDs from the start and maintain conversion webhooks when introducing breaking changes.</li>
-            <li><strong>Backstage catalog stale data:</strong> A service is deleted from the codebase but its catalog entry persists; oncall engineer pages the former owner (who left the company) during an incident; implement automatic catalog cleanup when repos are archived and require catalog health checks in each team's quarterly review.</li>
+            <li><strong>Abstraction too thin:</strong> The CRD is a one-to-one mirror of a cloud resource, so engineers must still master low-level knobs and the platform saves no cognitive load.</li>
+            <li><strong>Abstraction too thick:</strong> Legitimate needs such as cross-region replicas cannot be expressed, so teams fork Terraform or open tickets and the API becomes optional.</li>
+            <li><strong>Operator availability gaps:</strong> A single-replica controller in CrashLoopBackOff stalls every provision request until someone notices queue depth, not SLO burn.</li>
+            <li><strong>Unplanned schema breaks:</strong> Renamed fields in a new API version leave stored objects un-reconciled because conversion webhooks were deferred until “later.”</li>
+            <li><strong>Catalog drift:</strong> Archived repositories still appear as owned entities in Backstage, which routes incidents to departed teams until deletion is automated.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does the resource type have enough demand (3+ teams, multiple instances) to justify writing and maintaining an operator?</li>
-            <li>Are opinionated security defaults (encryption at rest, network isolation, backup retention) baked into the CRD defaults rather than optional fields?</li>
-            <li>Is there a documented and functioning escape hatch for teams with legitimate non-standard configuration requirements?</li>
-            <li>Are operators running with at least 2 replicas with leader election for high availability?</li>
-            <li>Is CRD versioning planned for from the start, with conversion webhooks in place before v1 graduation?</li>
-            <li>Is the Backstage catalog populated via automation (catalog-info.yaml + discovery) rather than manual registration?</li>
+            <li>Does demand from multiple teams justify the cost of operating a controller and documenting a supported API surface?</li>
+            <li>Are encryption, network placement, and backup retention defaults on by default rather than opt-in fields?</li>
+            <li>Is there a tested escape hatch (annotations, elevated tiers, or break-glass roles) for non-standard configurations?</li>
+            <li>Do operators run with leader election, health probes, and SLOs that page platform on-call on reconcile errors?</li>
+            <li>Is an API versioning policy in place before the first production consumer, including conversion for breaking changes?</li>
+            <li>Does every new service register in Backstage through templates or CI rather than manual catalog edits?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -247,9 +247,11 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://crossplane.io/docs/latest/concepts/composition.html" target="_blank" rel="noopener noreferrer">Crossplane Composition — Crossplane Docs</a></li>
+            <li><a href="https://tag-app-delivery.cncf.io/whitepapers/platforms/" target="_blank" rel="noopener noreferrer">CNCF Platforms White Paper — TAG App Delivery</a></li>
+            <li><a href="https://docs.crossplane.io/latest/concepts/composition/" target="_blank" rel="noopener noreferrer">Crossplane Compositions — Crossplane Docs</a></li>
             <li><a href="https://kubebuilder.io/introduction.html" target="_blank" rel="noopener noreferrer">Kubebuilder Introduction — Kubebuilder Book</a></li>
             <li><a href="https://backstage.io/docs/features/software-catalog/software-catalog-api" target="_blank" rel="noopener noreferrer">Software Catalog API — Backstage Docs</a></li>
+            <li><a href="https://dora.dev/guides/dora-metrics-four-keys/" target="_blank" rel="noopener noreferrer">DORA Metrics: Four Keys — DORA.dev</a></li>
           </ul>
 
         </div>
