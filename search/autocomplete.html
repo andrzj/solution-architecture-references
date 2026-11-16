@@ -100,33 +100,35 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>There are two primary architectural approaches. <strong>Index-time approaches</strong> pre-expand every prefix into tokens at write time (using an edge n-gram tokenizer or a dedicated <code>completion</code> field type), so queries are simple lookups. <strong>Query-time approaches</strong> run prefix queries, fuzzy queries, or phrase-suggest queries at read time against the normal index. Index-time approaches are faster at query time but inflate index size; query-time approaches require no special index structure but consume more CPU per request.</p>
-          <p>Most production systems combine both: a completion suggester for the happy path and a fuzzy fallback for typos.</p>
+          <p><strong>Autocomplete</strong> (query suggestion or type-ahead) returns ranked term or phrase completions while the user types a prefix, usually within tens of milliseconds per keystroke. Unlike full result pages scored with BM25 over entire documents, autocomplete optimises prefix lookup: Lucene exposes completion posting formats, edge n-gram token filters, and dedicated <code>search_as_you_type</code> field types so OpenSearch and Elasticsearch can traverse suggestion graphs faster than re-running heavyweight <code>multi_match</code> queries on every character.</p>
+          <p>Suggestion quality still depends on the same analyzers and vocabulary as full-text search; autocomplete is not a substitute for tuning BM25 on the final query.</p>
+          <p>Implementations split between <strong>index-time</strong> expansion (edge n-grams, completion suggester FSTs built at ingest) and <strong>query-time</strong> prefix or fuzzy queries against conventional indices. IIR discusses efficient lexical access for interactive IR; autocomplete applies that idea to partial inputs. Mature stacks often blend a fast suggester path with a fuzzy fallback so typos still resolve without sacrificing median latency.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Users often abandon search when they cannot guess the right keywords. Autocomplete reduces typing, surfaces catalog vocabulary users did not know, and can steer queries away from empty result sets. It also addresses vocabulary mismatch: someone typing "footwear" may not realise the catalogue indexes "shoes". By showing matching product names, categories, and past queries as they type, autocomplete aligns user language with indexed terms.</p>
-          <p>At scale, the latency requirement (sub-100ms, end-to-end) makes standard BM25 full-text queries insufficient: they do too much work per character change. The completion suggester and edge n-gram approaches trade index storage for query speed, using purpose-built FST (Finite State Transducer) data structures that can traverse millions of completions in microseconds — a data structure that cannot be replicated in a general-purpose database.</p>
+          <p>Search abandonment rises when users cannot guess catalog spelling, product naming, or internal jargon. Autocomplete reduces keystrokes, surfaces vocabulary the index already knows, and steers queries away from zero-hit dead ends. It also bridges vocabulary mismatch: colloquial terms can align with canonical titles shown as suggestions before the user commits a BM25 query.</p>
+          <p>Latency budgets for type-ahead are stricter than full search—often sub-100ms end-to-end including network. Running complete BM25 retrieval per character would saturate CPU; Lucene's completion postings and finite-state transducers (documented in Lucene's suggest module) trade additional index bytes for microsecond prefix traversal that general-purpose databases do not replicate cleanly.</p>
+          <p>Elasticsearch and OpenSearch also integrate suggesters alongside full-text APIs so one cluster serves both experiences, sharing security roles and index lifecycle policies. From an architecture standpoint, autocomplete is a specialized retrieval profile on the same corpus rather than a separate siloed system—only the field mappings and query templates differ.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Any search interface where users type free-form queries and expect instant feedback while typing.</li>
-            <li>E-commerce where suggesting matching product names, categories, and brands reduces abandonment.</li>
-            <li>Address and location search where partial postal codes or street names need fast completion.</li>
-            <li>Mobile interfaces where the keyboard takes up half the screen and users want to type as little as possible.</li>
-            <li>Enterprise search portals where surfacing document titles as suggestions shortcuts navigation.</li>
+            <li>Primary search boxes on web or mobile where users expect immediate feedback while typing.</li>
+            <li>Catalogues with finite suggestion vocabularies (titles, brands, places) worth pre-indexing for prefix match.</li>
+            <li>Address, SKU, or ticket lookup flows where partial identifiers must resolve quickly.</li>
+            <li>Enterprise portals surfacing document titles or past queries to accelerate navigation.</li>
+            <li>Voice-to-text search boxes that emit partial transcripts and benefit from rapid lexical alignment.</li>
+            <li>Marketplaces promoting high-margin or high-stock suggestions with explicit completion weights.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Highly sensitive data fields</strong>: Autocomplete over PII (user names, email addresses) can inadvertently expose personal data to other users — ensure strict access controls on the completion endpoint.</li>
-            <li><strong>Very dynamic catalogues</strong>: If products are added and removed at high frequency, the index-time completion approach requires frequent rebuilds; a simpler prefix query on a cache may suffice.</li>
-            <li><strong>Extremely small datasets</strong>: A simple in-memory prefix tree in the application layer is simpler than a search cluster for fewer than ~10,000 entities.</li>
-            <li><strong>Command-line interfaces</strong>: Terminal tab-completion is a different problem domain with different trade-offs.</li>
+            <li>Suggestion sources include sensitive personal data without strict per-user authorization on the suggest endpoint.</li>
+            <li>Catalog churn is so high that rebuilding completion structures lags reality unless you accept query-time prefix costs.</li>
+            <li>Total entity count is modest enough for an in-process trie in the application tier.</li>
+            <li>Shell or IDE tab completion semantics apply—different UX and security constraints.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The browser debounces keystrokes and calls a thin autocomplete API. That service checks a short-TTL cache, then queries a search cluster index tuned for prefix or completion retrieval. Catalog updates flow through the same indexing pipeline used for full search.</p>
+          <p>Keystrokes hit a debounced API, optional Redis, then Lucene completion or n-gram fields fed by the same ingest pipeline as full-text indexes.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     ui["Client keystrokes"]
@@ -164,7 +166,7 @@
 Example prefix "wir" → ranked suggestions: Wireless Headphones, Wired Mic…
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Autocomplete: debounced prefix queries hit a completion index with caching for sub-50ms suggestions.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Debounced prefix traffic flows through cache into Lucene-optimized completion structures backed by the authoritative catalog.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -172,69 +174,76 @@ Example prefix "wir" → ranked suggestions: Wireless Headphones, Wired Mic…
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Dramatically reduces keystrokes needed to complete a successful search.</li>
-                <li>Completion suggester uses FST data structure — sub-millisecond traversal for millions of terms.</li>
-                <li>Fuzzy matching with fuzziness:1 catches single-character typos transparently.</li>
-                <li>Context-aware suggestions (by category, user segment) improve personalisation.</li>
-                <li>Reduces zero-result rates by guiding users to valid vocabulary.</li>
+                <li>Lowers abandonment and guides users toward productive full-text queries.</li>
+                <li>Completion FSTs and edge n-grams deliver sub-millisecond Lucene lookups at high QPS.</li>
+                <li>Fuzzy suggest parameters recover single-edit typos on the happy path.</li>
+                <li>Context and weight fields personalise suggestions without rewriting BM25 mappings.</li>
+                <li>Short TTL edge caches absorb duplicate prefix traffic cheaply.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Edge n-gram indexing inflates index size by 3–10× for the autocomplete field.</li>
-                <li>Completion suggester stored in heap memory; large suggestion sets increase heap pressure.</li>
-                <li>Query-time fuzzy prefix queries are expensive at high cardinality and high QPS.</li>
-                <li>Middle-of-word autocomplete ("wireless" when typing "eless") requires n-gram (not edge n-gram), massively inflating index size.</li>
-                <li>Managing suggestion ranking (popularity vs. recency vs. revenue) adds business logic complexity.</li>
+                <li>Edge n-grams multiply token counts and disk footprint for autocomplete fields.</li>
+                <li>Large completion indices consume heap on data nodes if weights and contexts proliferate.</li>
+                <li>Query-time prefix and fuzzy clauses on high-cardinality fields stress CPUs under viral load.</li>
+                <li>Mid-token completion needs n-grams, not edge n-grams, with steeper storage cost.</li>
+                <li>Ranking suggestions by revenue versus popularity adds cross-team policy complexity.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Three common Elasticsearch/OpenSearch indexing strategies cover most cases. <strong>Edge n-grams</strong> at index time expand each term into prefixes (<code>w</code>, <code>wi</code>, <code>wir</code>, …) for fast prefix match but larger indices. The <strong>completion suggester</strong> stores suggestions in an FST for microsecond lookups and supports weights and context filters — best for curated or popularity-ranked lists. <strong><code>search_as_you_type</code></strong> (7.2+) auto-creates shingle and prefix sub-fields and pairs with <code>bool_prefix</code> queries — a balanced default for product titles and mixed token lengths.</p>
-          <p>For most cases, <code>search_as_you_type</code> offers the best balance: it keeps JVM heap lower than the completion suggester while delivering latency comparable to edge n-gram. Reserve the <code>completion</code> type for curated suggestion lists (for example, the top 1,000 most-searched queries) where you need context filtering and weight-based ordering.</p>
-          <p>For popularity-based ranking, store a <code>weight</code> field in the completion document equal to the search frequency (updated by a daily batch job from query logs). Combine this with context filtering to serve different suggestions to different user segments or on different pages. Implement a debounce of 150–300ms on the client side to avoid firing a request per keystroke — this halves server load with negligible UX impact. Always cache autocomplete responses in a shared cache (Redis) with a short TTL (5–30 seconds) since the suggestion list changes slowly relative to query volume.</p>
+          <p>Choose among <code>search_as_you_type</code> (balanced defaults with <code>bool_prefix</code> queries), custom edge n-gram analyzers on a dedicated field, or the <code>completion</code> suggester for curated weighted lists. OpenSearch and Elasticsearch document trade-offs: completion fields reload FST structures on segment merge; edge n-grams inflate postings but keep suggest logic closer to standard search APIs.</p>
+          <p>Use lightweight analyzers on suggest fields—avoid aggressive stemmers that destroy prefix boundaries. Debounce client calls (~200ms), cap suggestion count (5–10), and cache responses keyed by prefix plus locale in Redis. Refresh completion weights from aggregated query logs in batch jobs rather than per write. For security, never mix tenant-private strings into a global completion index.</p>
+          <p>Instrument suggestion impressions separately from full search: log prefix length, selected suggestion rank, and whether the subsequent BM25 query zero-hit. Pair <code>phrase</code> suggesters on popular bigrams with term suggesters on titles when users paste multi-word fragments. For multilingual catalogs, scope analyzers per locale field and avoid mixing dictionaries in one completion index. Load-test autocomplete paths independently—sustained 200 RPS on three-character prefixes exhausts data nodes faster than headline search benchmarks suggest.</p>
+          <p>When exposing recent-queries autocomplete, hash or tokenize user identifiers in log pipelines so suggestion mining stays GDPR-aware while still capturing popular prefixes per segment.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Completion suggester heap exhaustion</strong>: Loading millions of completion terms into heap with high-weight contexts causes OutOfMemoryError on Elasticsearch data nodes.</li>
-            <li><strong>Leaking PII through suggestions</strong>: Indexing user-generated text (names, emails) into a shared completion index allows any user to enumerate other users' data character by character.</li>
-            <li><strong>No debounce on the client</strong>: Without debouncing, a user typing "laptop" fires 6 requests; at scale this creates a 6× amplification of QPS compared to final searches.</li>
-            <li><strong>Stale suggestions after catalogue update</strong>: Completion suggesters are not updated by document updates; a full index rebuild is required to remove deleted products from suggestions.</li>
-            <li><strong>Language mismatch</strong>: Using a language-specific analyzer (e.g., English stemmer) on the autocomplete field corrupts prefix matching — use standard/simple analyzer for the autocomplete field.</li>
+            <li><strong>Heap pressure</strong> from massive completion contexts causes data-node OOM during merges.</li>
+            <li><strong>PII enumeration</strong> when user-generated text is indexed into shared suggesters without ACL filters.</li>
+            <li><strong>Missing debounce</strong> multiplies QPS by average query length during traffic spikes.</li>
+            <li><strong>Stale suggestions</strong> after deletes because completion FSTs lag document removal until reindex.</li>
+            <li><strong>Stemmed autocomplete fields</strong> break predictable prefix matching for product codes.</li>
+            <li><strong>Cross-region cache pollution</strong> when a shared Redis key ignores locale-specific suggestion lists.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have you chosen between edge n-gram, completion suggester, and search_as_you_type based on cardinality and latency needs?</li>
-            <li>Is autocomplete data isolated from PII or sensitive user-generated content?</li>
-            <li>Have you implemented client-side debouncing (150–300ms)?</li>
-            <li>Is there a caching layer (Redis) in front of the autocomplete endpoint?</li>
-            <li>Have you defined how suggestions are ranked (popularity, revenue, recency)?</li>
-            <li>Is there a refresh/rebuild strategy when the catalogue changes significantly?</li>
+            <li>Is the suggest strategy (n-gram, completion, search_as_you_type) chosen from cardinality and latency targets?</li>
+            <li>Are suggest endpoints authenticated and scoped the same as full search?</li>
+            <li>Does the client debounce and cancel in-flight requests on rapid typing?</li>
+            <li>Is there a Redis or CDN cache with safe TTL for hot prefixes?</li>
+            <li>Are popularity weights refreshed on a schedule aligned with catalog updates?</li>
+            <li>Does rebuild or reindex cover completion fields when SKUs retire?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce type-ahead</strong>: As a user types "blue", suggestions appear for "Blue Jeans", "Bluetooth Headphones", "Blue Light Glasses" weighted by sales volume.</li>
-            <li><strong>Address autocomplete</strong>: Postal address lookup for checkout — edge n-gram over structured address data returns matching streets and postcodes within 50ms.</li>
-            <li><strong>Internal wiki search</strong>: Page title suggestions using completion suggester with context filtering by team namespace, so engineering sees engineering pages first.</li>
+            <li><strong>Illustrative scenario — Northwind Commerce:</strong> Type-ahead on product titles uses <code>search_as_you_type</code> with weights from weekly query logs; selecting a suggestion issues the same BM25 query users would type manually.</li>
+            <li><strong>Illustrative scenario — FieldOps Logistics:</strong> Drivers complete street names via edge n-grams on normalized address fields with 150ms debounce and regional cache keys.</li>
+            <li><strong>Case study — Lucene CompletionPostingsFormat:</strong> Lucene documents FST-backed completion postings used by Elasticsearch completion suggesters.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="full-text-search.html">Full-Text Search</a> — The full query executed once the user submits the autocomplete suggestion.</li>
-            <li><a href="faceted-search.html">Faceted Search</a> — Often combined with autocomplete, where suggestions also pre-filter by category.</li>
-            <li><a href="search-relevance-tuning.html">Search Relevance Tuning</a> — Popularity-weighted suggestions require the same feedback loop as relevance tuning.</li>
+            <li><a href="full-text-search.html">Full-Text Search</a> — Executes once the user accepts a suggestion.</li>
+            <li><a href="faceted-search.html">Faceted Search</a> — Category-aware suggestions can pre-select facet filters.</li>
+            <li><a href="search-relevance-tuning.html">Search Relevance Tuning</a> — Popularity signals feed both ranking and suggest weights.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-suggesters.html" target="_blank" rel="noopener noreferrer">Elasticsearch Suggesters Reference</a></li>
-            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-as-you-type.html" target="_blank" rel="noopener noreferrer">Elasticsearch search_as_you_type field type</a></li>
-            <li><a href="https://lucene.apache.org/core/9_0_0/suggest/org/apache/lucene/search/suggest/document/CompletionPostingsFormat.html" target="_blank" rel="noopener noreferrer">Lucene Completion Postings Format (FST internals)</a></li>
+            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-suggesters.html" target="_blank" rel="noopener noreferrer">Elasticsearch — Suggesters</a></li>
+            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-as-you-type.html" target="_blank" rel="noopener noreferrer">Elasticsearch — search_as_you_type</a></li>
+            <li><a href="https://lucene.apache.org/core/9_0_0/suggest/org/apache/lucene/search/suggest/document/CompletionPostingsFormat.html" target="_blank" rel="noopener noreferrer">Apache Lucene — Completion postings</a></li>
+            <li><a href="https://nlp.stanford.edu/IR-book/" target="_blank" rel="noopener noreferrer">Manning et al. — IIR</a></li>
           </ul>
+
+
+
+
         </div>
         <nav class="article-nav" aria-label="Article navigation">
           <a href="faceted-search.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Faceted Search</span></a>

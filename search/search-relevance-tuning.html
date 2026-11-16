@@ -100,29 +100,29 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The foundation of relevance tuning is a <strong>judgment list</strong>: a curated set of (query, document, relevance-grade) triples where human annotators have rated each document's relevance to a query on a graded scale (0=irrelevant, 1=fair, 2=good, 3=perfect).</p>
-          <p>Against this judgment list, retrieval quality is measured with metrics such as <strong>NDCG@10</strong> (Normalised Discounted Cumulative Gain at rank 10), which rewards highly-graded results appearing at the top of the ranked list.</p>
-          <p><strong>Learning to Rank (LTR)</strong> is the machine-learning extension of manual tuning: instead of hand-crafting boost weights, a supervised model (typically a gradient-boosted tree or neural model) learns to predict relevance from a feature vector per (query, document) pair. Features include BM25 score, freshness, click-through rate, recency, category match, and derived features. The model is trained on judgment labels or implicit feedback (clicks) and outputs a ranking score that replaces the engine's raw BM25 score.</p>
+          <p><strong>Search relevance tuning</strong> is the disciplined process of measuring and improving how well ranked results match user intent for a query set. Teams maintain a <strong>judgment list</strong>—(query, document, graded relevance) tuples rated by humans or debiased click models—and score production rankings with metrics such as <strong>NDCG@<em>K</em></strong> (normalised discounted cumulative gain). Manning's IIR formalises nDCG and other rank metrics; Elasticsearch and OpenSearch expose BM25 scores and function scores that tuning adjusts before optional learning-to-rank (LTR) models replace or rescore the lexical ordering.</p>
+          <p>Manual tuning changes field boosts, synonyms, and business rules; <strong>learning to rank</strong> trains supervised models (often gradient-boosted trees) on feature vectors that include BM25, freshness, category match, and behavioural signals. Turnbull and Berryman's <em>Relevant Search</em> ties these practices to product loops: instrument, judge, change one lever, re-measure. The goal is not maximal BM25 theory but predictable ranking quality under catalog change.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Search relevance degrades over time as the product catalogue changes, user vocabulary evolves, and edge cases accumulate. Without measurement, teams discover relevance regressions only through user complaints or business KPI dips — lagging indicators that are expensive to diagnose. A relevance testing discipline provides leading indicators: automated NDCG tests in the CI/CD pipeline catch regressions before production deployment, just as unit tests catch code bugs.</p>
-          <p>Beyond regression prevention, relevance tuning directly drives business outcomes. In e-commerce, improving NDCG@10 by 5 points on commercial queries typically correlates with measurable conversion rate lifts. The ROI on building a judgment list and NDCG test suite is often far higher than adding more search features, yet most teams invest heavily in features while neglecting measurement. Relevance tuning frameworks like Quepid make judgment collection, metric computation, and before/after comparison accessible without requiring custom tooling.</p>
+          <p>Default BM25 plus stock analyzers rarely align with merchandising, support, or compliance goals on day one. Catalogues grow, vocabularies shift, and boost experiments accumulate until no one knows which mapping version produced a regression. Without offline metrics, teams detect problems through conversion dips or support tickets—slow feedback compared to CI-gated NDCG tests on a judgment list.</p>
+          <p>Relevance engineering also quantifies trade-offs: a synonym rule may lift head queries while harming tail precision. Structured measurement lets stakeholders accept or reject changes before full traffic exposure. LTR extends the same ethos by learning weights from features Lucene already computes at query time, exported through Elasticsearch's learning-to-rank plugin or custom rescore scripts in OpenSearch.</p>
+          <p>IIR emphasizes that ranked retrieval quality is only meaningful relative to a test collection and metric; production search inherits that discipline through judgment lists even when corpora drift daily. Manning's treatment of MAP, nDCG, and k-fold cross-validation informs how many labeled queries you need before trusting a five-point NDCG swing.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Any production search feature where relevance quality affects user outcomes (conversions, task completion, satisfaction).</li>
-            <li>Before and after any change to ranking logic, field weights, analyzers, or retrieval strategy.</li>
-            <li>When zero-result rate exceeds ~5% or when click-through rate on first-page results drops.</li>
-            <li>When preparing to deploy LTR models that require training data and offline evaluation.</li>
-            <li>When scaling search to a new language, region, or product category to validate the base configuration.</li>
+            <li>Customer-facing search where ranking quality affects revenue, resolution time, or satisfaction.</li>
+            <li>Before and after any analyzer, boost, synonym, hybrid alpha, or LTR deployment.</li>
+            <li>When zero-result rate or first-page CTR trends worsen without an obvious infrastructure cause.</li>
+            <li>When onboarding a new locale or category that clones an existing template index.</li>
+            <li>When preparing training data for LTR models that need reproducible offline benchmarks.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Internal admin tools</strong>: Low-traffic, non-customer-facing search rarely justifies the overhead of judgment lists and NDCG measurement.</li>
-            <li><strong>Freshness-first use cases</strong>: News or social feeds ranked by recency have no "relevance" to tune in the traditional sense.</li>
-            <li><strong>Pure semantic similarity</strong>: "More like this" recommendations have no ground truth "correct" answer to judge against.</li>
-            <li><strong>Pre-launch products</strong>: Collecting meaningful implicit feedback requires real traffic; build the measurement infrastructure, but wait for live data before deep tuning.</li>
+            <li>Low-traffic internal admin search where judgment collection cost exceeds user pain.</li>
+            <li>Pure recency-ranked feeds without lexical relevance requirements.</li>
+            <li>Exploratory similarity surfaces with no agreed ground truth labels.</li>
+            <li>Pre-launch products with no query logs—instrument first, judge once traffic exists.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -189,77 +189,88 @@ LTR PIPELINE:
         ▼
   Online serving via rescore query</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Relevance tuning loop: labeled query–document pairs drive offline metric evaluation before promoting ranker changes.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Query logs feed human judgments and offline NDCG gates before ranker or BM25 parameter changes reach production.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
+          <p>Relevance programs sit between information retrieval theory (IIR evaluation chapters) and production search operations (index templates, cluster upgrades, business guardrails). The table below contrasts measurement-driven tuning with ad hoc tweaking.</p>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Objective measurement replaces gut-feel relevance decisions with data-driven ones.</li>
-                <li>NDCG test suite in CI prevents relevance regressions from unrelated code changes.</li>
-                <li>LTR models can incorporate signals (CTR, revenue, freshness) that BM25 cannot express.</li>
-                <li>Judgment lists double as regression tests and training data, compounding in value over time.</li>
-                <li>A/B testing quantifies business impact before full rollout, reducing risk of large ranking changes.</li>
+                <li>Replaces anecdotal ranking debates with reproducible NDCG or ERR metrics.</li>
+                <li>CI integration catches regressions when unrelated index template changes ship.</li>
+                <li>LTR incorporates CTR, margin, or freshness features BM25 cannot express alone.</li>
+                <li>Judgment assets compound as historical baselines for audits and onboarding.</li>
+                <li>A/B testing links offline wins to business KPIs before full rollout.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Judgment collection is expensive: professional annotation of 1,000 query-document pairs costs tens of thousands of dollars and weeks of time.</li>
-                <li>Inter-annotator agreement on relevance grades is typically 60–70%; grading subjectivity is inherent.</li>
-                <li>NDCG measures ranking quality, not user satisfaction — a well-ranked result page may still not answer the user's question.</li>
-                <li>LTR models amplify biases in training data (position bias, popularity bias in click signals).</li>
-                <li>Maintaining judgment lists requires periodic refresh as catalogue and user behaviour change.</li>
+                <li>Human labeling at scale is expensive and exhibits inter-annotator disagreement.</li>
+                <li>Offline metrics can diverge from online satisfaction if judgments are stale or biased.</li>
+                <li>Click-trained models inherit position bias without propensity correction.</li>
+                <li>LTR operational complexity—feature stores, model deployment, rollback—exceeds manual boosts.</li>
+                <li>Overfitting head queries starves the long tail unless judgment sampling is deliberate.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start by identifying your highest-traffic queries from search logs (often the top few hundred by session volume). Improvements on those queries usually affect the most users, so build a judgment list covering them first. Tools such as Quepid integrate with Elasticsearch and Solr, provide a rating UI, and can compute NDCG. Use at least three annotators per query when practical, and majority vote for ground truth where raters disagree.</p>
-          <p>Before promoting a ranking change, compare mean NDCG@10 (or your chosen metric) on the judgment set against the current configuration and reject regressions.</p>
-          <p>For implicit feedback, log events must capture at minimum: session ID, query text, result position, document ID, click boolean, and (for e-commerce) add-to-cart and purchase events. Apply <strong>position debiasing</strong> before using click data as relevance labels — documents shown in position 1 receive far more clicks than equally relevant documents in position 5 even if users would prefer position 5. Techniques include propensity-weighted click models (RandPair, IPS) or using only clicks with dwell time &gt; 30 seconds as positive labels. Without debiasing, LTR models learn to promote what is already ranked highly, not what is genuinely more relevant.</p>
+          <p>Sample head queries from OpenSearch or Elasticsearch query logs, stratify tail examples, and rate top-N documents per query in tools such as Quepid. Compute NDCG@10 against the current production ranker before touching boosts. Change one variable—synonym rule, <code>multi_match</code> type, <code>k1</code>/<code>b</code>, rescore window—then rerun the suite.</p>
+          <p>Log structured events: session identifier, query text, document identifier, position, dwell time, and conversion flags. Apply inverse propensity scoring or dwell thresholds before treating clicks as labels. For LTR, extract Lucene explain features or plugin feature sets, train LambdaMART or XGBoost offline, and deploy via rescore queries with a shadow traffic slice. Align BM25 settings with the cluster default similarity so offline experiments match production scoring.</p>
+          <p>Publish an internal relevance rubric aligned with IIR grade scales so annotators apply consistent 0–3 judgments. Store judgment lists in version control or an artifact bucket keyed by index template hash. When sharding changes, remember Elastic's practical BM25 articles: scores are shard-local until coordinated normalization; compare configurations using the same shard layout you run in production. Schedule quarterly replays against frozen index snapshots so historical metrics remain comparable even as new SKUs arrive daily.</p>
+          <p>Pair offline gains with staged rollouts: canary ten percent of traffic, watch zero-result and add-to-cart rates, and roll back rescore definitions via index alias swap without reindexing the entire corpus.</p>
+          <p>Document every accepted ranking change in a short ADR so future engineers know which judgment list version validated the configuration.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Tuning on head queries only</strong>: Optimising only for the highest-volume queries while ignoring the long tail can inflate headline metrics but still leave most unique queries with poor results.</li>
-            <li><strong>Position bias in click-based LTR</strong>: Training LTR on raw click logs promotes already-top-ranked documents, creating a feedback loop that freezes the ranking in its initial configuration.</li>
-            <li><strong>Stale judgment lists</strong>: A judgment list created 18 months ago against products that have since been discontinued or re-described causes NDCG tests to pass while real-world relevance degrades.</li>
-            <li><strong>Over-optimising NDCG vs. business metrics</strong>: NDCG can be gamed by boosting already-clicked items; ensure NDCG improvements correlate with A/B tested conversion lifts before trusting them.</li>
-            <li><strong>No A/B test for LTR deployment</strong>: Offline NDCG improvements do not always translate to online gains; always A/B test LTR model updates against the live control.</li>
+            <li><strong>Head-query overfitting</strong> inflates NDCG while unique queries still fail.</li>
+            <li><strong>Raw click training</strong> reinforces whatever the old ranker already promoted.</li>
+            <li><strong>Stale judgments</strong> reference delisted SKUs, passing CI while users see irrelevant hits.</li>
+            <li><strong>Metric gaming</strong> via boosts on already-clicked SKUs without conversion lift in A/B tests.</li>
+            <li><strong>Skipping online tests</strong> for LTR models that offline metrics favored but users reject.</li>
+            <li><strong>Shard-scoring mismatch</strong> when offline evaluation runs on a single shard but production uses many primaries with different IDF statistics.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Do you have a judgment list covering your top 100–200 queries by volume?</li>
-            <li>Is NDCG@10 computed automatically on every search configuration change (CI integration)?</li>
-            <li>Have you instrumented query logs with session ID, position, click, and conversion events?</li>
-            <li>Is there a position-debiasing step before using click data as relevance labels for LTR?</li>
-            <li>Is the judgment list refreshed at least quarterly to reflect catalogue and vocabulary changes?</li>
-            <li>Are A/B tests run for all significant ranking changes, with statistical significance thresholds defined?</li>
+            <li>Does a judgment list cover high-traffic and representative tail queries?</li>
+            <li>Is NDCG (or agreed metric) automated on every ranking configuration pull request?</li>
+            <li>Are click logs debiased or complemented with explicit human grades?</li>
+            <li>Is there a quarterly judgment refresh tied to catalog releases?</li>
+            <li>Do A/B tests define minimum detectable effect and stopping rules?</li>
+            <li>Are BM25 and rescore parameters version-controlled with the index template?</li>
+            <li>Does offline evaluation replay queries against the same cluster topology and alias that serves production traffic?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce search team</strong>: Monthly relevance review using Quepid — compute NDCG on 200 commercial queries before and after a category boost change; only deploy if improvement is statistically significant.</li>
-            <li><strong>Travel booking site</strong>: LTR model trained on booking conversion events with debiased click features; outperforms BM25 by 12% NDCG on accommodation search queries.</li>
-            <li><strong>Developer docs portal</strong>: Quarterly judgment collection by developer advocates; NDCG gate in CI pipeline blocks deploys that regress head-query relevance by &gt;2 points.</li>
+            <li><strong>Illustrative scenario — Meridian Commerce:</strong> Merchandisers run Quepid rounds on two hundred head queries before each synonym deploy; merges block if mean NDCG@10 drops more than one point.</li>
+            <li><strong>Illustrative scenario — Northwind Travel:</strong> An LTR rescore model blends BM25, margin, and hotel freshness; shadow traffic validates conversion parity before promotion.</li>
+            <li><strong>Case study — <em>Relevant Search</em>:</strong> Turnbull and Berryman document judgment lists, user-centric evaluation, and Elasticsearch-oriented tuning workflows.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="full-text-search.html">Full-Text Search</a> — The retrieval engine whose ranking parameters are being tuned.</li>
-            <li><a href="hybrid-search.html">Hybrid Search</a> — Hybrid alpha weights are a key relevance tuning parameter.</li>
-            <li><a href="search-infrastructure.html">Search Infrastructure</a> — Reliable cluster infrastructure is a prerequisite for reproducible relevance experiments.</li>
+            <li><a href="full-text-search.html">Full-Text Search</a> — Supplies BM25 and analyzers being tuned.</li>
+            <li><a href="hybrid-search.html">Hybrid Search</a> — Fusion weights are first-class relevance parameters.</li>
+            <li><a href="search-infrastructure.html">Search Infrastructure</a> — Stable clusters keep offline and online experiments comparable.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://github.com/o19s/quepid" target="_blank" rel="noopener noreferrer">Quepid (OpenSource Connections) — judgment-based relevance testing</a></li>
-            <li><a href="https://www.manning.com/books/relevant-search" target="_blank" rel="noopener noreferrer">Relevant Search — Turnbull &amp; Berryman (Manning)</a></li>
-            <li><a href="https://elasticsearch-learning-to-rank.readthedocs.io/" target="_blank" rel="noopener noreferrer">Elasticsearch Learning to Rank Plugin Documentation</a></li>
+            <li><a href="https://github.com/o19s/quepid" target="_blank" rel="noopener noreferrer">Quepid — judgment-based relevance testing</a></li>
+            <li><a href="https://www.manning.com/books/relevant-search" target="_blank" rel="noopener noreferrer">Turnbull &amp; Berryman — <em>Relevant Search</em> (Manning)</a></li>
+            <li><a href="https://nlp.stanford.edu/IR-book/html/htmledition/evaluation-of-ranked-retrieval-results-1.html" target="_blank" rel="noopener noreferrer">Manning et al. — IIR (ranked retrieval evaluation)</a></li>
+            <li><a href="https://elasticsearch-learning-to-rank.readthedocs.io/" target="_blank" rel="noopener noreferrer">Elasticsearch Learning to Rank plugin</a></li>
+            <li><a href="https://www.elastic.co/blog/practical-bm25-part-1-how-shards-affect-relevance-scoring-in-elasticsearch" target="_blank" rel="noopener noreferrer">Elastic blog — Practical BM25 and sharding</a></li>
           </ul>
+
+
+
+
         </div>
         <nav class="article-nav" aria-label="Article navigation">
           <a href="hybrid-search.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Hybrid Search</span></a>

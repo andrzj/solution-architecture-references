@@ -101,29 +101,29 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>Searching a million support tickets for “password reset loop” cannot scan every row — full-text search tokenizes bodies, builds an <strong>inverted index</strong> from terms to document positions, and ranks hits in sub-second time instead of table scans.</p>
-          <p>The core relevance model used by modern engines (Elasticsearch, OpenSearch, Solr) is <strong>BM25</strong> (Best Match 25), a probabilistic ranking function that improves on classic TF-IDF by saturating term frequency and normalising for document length. BM25 scores a document by combining: how often the query term appears in the document (term frequency, dampened), how rare the term is across the corpus (inverse document frequency), and the document length relative to the average. Tuning the <code>k1</code> (TF saturation) and <code>b</code> (length normalisation) parameters is the first step in relevance engineering.</p>
+          <p><strong>Full-text search</strong> is ranked keyword retrieval over analysed text fields using an inverted index. Each token maps to posting lists of documents (and often positions), so conjunctive queries resolve by list intersection instead of full table scans. Elasticsearch, OpenSearch, and Apache Solr embed Apache Lucene: analyzers normalise text at index and query time, segments store the inverted structure on disk, and a similarity scores matches before the coordinator returns a top-<em>K</em> page.</p>
+          <p><strong>BM25</strong> (Okapi BM25) is the default Lucene similarity in these engines. Manning, Raghavan, and Schütze's <em>Introduction to Information Retrieval</em> describes BM25 as a probabilistic model that dampens raw term frequency, rewards rare terms through inverse document frequency, and penalises length so boilerplate does not dominate. Elasticsearch and OpenSearch expose <code>k1</code> and <code>b</code> on <code>BM25Similarity</code>; tuning them is the first structured lever before field boosts, function scores, or learning-to-rank.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Relational databases were designed for structured data and exact-match queries. When users type natural language — with synonyms, typos, stemming variants, and multi-word phrases — SQL's pattern matching becomes slow and semantically blind. As soon as a product catalogue grows past a few thousand items, or a document corpus reaches tens of thousands, users expect Google-like responsiveness and relevance. The inverted index was purpose-built for this problem: index once, retrieve instantly.</p>
-          <p>Beyond speed, full-text search engines provide an <strong>analysis pipeline</strong> that normalises text at index and query time, enabling language-aware features impossible in a general-purpose database: phonetic matching, synonym expansion, stemming ("running" → "run"), stop-word removal, and character folding (accents, case). These transformations decouple what a user types from the exact tokens stored, dramatically improving recall without sacrificing precision.</p>
+          <p>Transactional stores optimise keyed access and constrained predicates. Ad-hoc <code>LIKE</code> scans, application-side substring filters, and unindexed JSON blobs fail once catalogues and knowledge bases grow and users type natural language with synonyms, stemming variants, and multi-token phrases. The inverted index amortises tokenisation at ingest: posting lists make arbitrary token lookups cheap at query time, which is the access pattern interactive search requires.</p>
+          <p>Lucene's analyzer chain—character filters, tokenizer, token filters—runs in paired index and search configurations so stored terms align with query terms. That enables stemming, stop-word removal, synonym graphs, and Unicode normalization that are painful to reproduce in generic SQL. IIR treats this lexical stage as the foundation of modern IR; vector and semantic layers may stack above it, but BM25 over analysed text remains the workhorse for document findability in commerce, support, and observability stacks.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Product catalogues and e-commerce search where users type natural-language queries against titles, descriptions, and attributes.</li>
-            <li>Documentation portals and knowledge bases where employees or customers search across thousands of articles.</li>
-            <li>Log and event search (ELK stack) where engineers need to find specific error messages across billions of log lines.</li>
-            <li>News, content, and publishing platforms where freshness, phrase matching, and field-level boosting matter.</li>
-            <li>Enterprise search aggregating content from multiple heterogeneous sources (wikis, tickets, code repos).</li>
-            <li>Legal, medical, or scientific document retrieval where precision on multi-word phrases is critical.</li>
+            <li>Free-text search spans multiple fields—title, body, tags—and relevance should reflect term overlap, rarity, and field importance rather than a single surrogate key.</li>
+            <li>Corpus size and query concurrency exceed what acceptable full scans on the system of record can sustain.</li>
+            <li>Highlighting, phrase queries, and fuzzy or synonym expansion are product requirements alongside ranking.</li>
+            <li>You already operate Elasticsearch or OpenSearch for logs and want a second index for application content with the same operational toolchain.</li>
+            <li>Discovery workflows combine lexical retrieval with structured filters in one query DSL without pushing ranking into application memory.</li>
+            <li>Relevance feedback and A/B tests need a stable BM25 baseline you can measure before layering learning-to-rank or hybrid retrieval.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Exact-match lookups</strong>: If users are querying by exact ID, SKU, or enum value, a relational index is faster and simpler.</li>
-            <li><strong>Very small corpora</strong>: Fewer than ~1,000 documents rarely justify the operational overhead of running a search cluster.</li>
-            <li><strong>Highly structured filtering only</strong>: If queries are purely numeric range filters or category filters with no text, a database or columnar store is sufficient.</li>
-            <li><strong>Semantic intent without keywords</strong>: When users express intent rather than keywords ("best laptop for video editing"), pure keyword search produces poor results — consider adding <a href="semantic-search.html">semantic search</a> or <a href="hybrid-search.html">hybrid search</a>.</li>
+            <li>Every access path is an exact match on primary keys, barcodes, or enums where a database index is simpler and authoritative.</li>
+            <li>The indexed set is tiny and internal, so cluster operations outweigh sub-second gains over indexed SQL.</li>
+            <li>Ranking is purely temporal—feeds sorted by timestamp—without lexical scoring requirements.</li>
+            <li>Users describe intent without vocabulary overlap with indexed text; add <a href="semantic-search.html">semantic search</a> or <a href="hybrid-search.html">hybrid search</a> rather than expecting BM25 alone to infer meaning.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -179,7 +179,7 @@ Elasticsearch Cluster:
   └──────────┘  └──────────┘  └──────────┘
   P=primary shard, R=replica shard</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Full-text search pipeline: analyzers build an inverted index; queries tokenize and rank hits with BM25.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Indexing runs analyzers into sharded Lucene segments; queries reuse compatible analysis and rank with BM25 before returning hits.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -187,71 +187,76 @@ Elasticsearch Cluster:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Sub-second query latency over millions of documents with proper indexing.</li>
-                <li>Rich language analysis: stemming, synonyms, stop words, phonetics, and multilingual support.</li>
-                <li>Field-level boosting allows tuning which fields (title, body, tags) matter most.</li>
-                <li>Horizontal scaling via sharding; add nodes to increase throughput or storage.</li>
-                <li>Faceted aggregations, highlighting, and autocomplete built into the same engine.</li>
+                <li>Mature Lucene runtimes deliver millisecond-scale retrieval over millions of segments with horizontal sharding.</li>
+                <li>Rich analysis and query types—<code>multi_match</code>, <code>match_phrase</code>, per-field boosts—cover most catalog and portal patterns.</li>
+                <li>Built-in highlighting, suggesters, and aggregations let one cluster serve search, facets, and autocomplete.</li>
+                <li>BM25 parameters and similarity overrides are well documented and map directly to IR textbook intuition.</li>
+                <li>Replica shards scale read throughput independently from write-heavy primaries.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Operational overhead of managing a search cluster (Elasticsearch/OpenSearch) in addition to the primary database.</li>
-                <li>Index synchronisation lag — data written to the primary store takes time to propagate to the search index.</li>
-                <li>BM25 relevance breaks down for semantic queries; does not understand meaning or intent.</li>
-                <li>Deep pagination (from/size) is expensive; scroll or search_after APIs required for large result sets.</li>
-                <li>Mapping explosions and unbounded keyword fields can cause heap pressure and cluster instability.</li>
+                <li>A search tier duplicates data and requires CDC, outbox, or batch sync to stay consistent with the source of truth.</li>
+                <li>Near-real-time refresh intervals create a visible lag between commits and searchable documents.</li>
+                <li>BM25 is lexical; paraphrases and cross-language intent need additional retrieval stages.</li>
+                <li>Deep pagination with large <code>from</code> values is expensive; <code>search_after</code> or scroll APIs are required for export workloads.</li>
+                <li>Poor mappings—unbounded <code>keyword</code> fields, dynamic object explosions—can destabilise cluster heap.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>The single most impactful design decision is <strong>analyzer selection</strong>. Use the built-in <code>english</code> analyzer (or equivalent per language) for free-text fields — it applies lowercase, stop-word removal, and the Porter stemmer. For product names, SKUs, and IDs, use the <code>keyword</code> type (no analysis) or the <code>standard</code> analyzer with case folding only. Define custom analyzers explicitly in the index mapping rather than relying on dynamic mapping, which often produces sub-optimal field types.</p>
-          <p>At query time, always use the same analyzer as at index time, or explicitly set <code>search_analyzer</code> in the mapping.</p>
-          <p>For relevance tuning, start by auditing which fields exist in your documents and assigning boost weights: title fields typically get 3–5×, category tags 2×, and body text 1×. Use a <strong>multi-match query</strong> with <code>type: best_fields</code> or <code>cross_fields</code> depending on whether each field stands independently or all fields together describe a single concept. Instrument click-through rates and zero-result rates from the beginning — you cannot tune relevance without feedback signals. Tools like <strong>Quepid</strong> let you manage judgment lists (rated query-document pairs) and compute NDCG scores to measure relevance objectively across releases.</p>
+          <p>Define explicit index mappings before production traffic. Use language analyzers such as the built-in <code>english</code> analyzer for prose fields and <code>keyword</code> or <code>standard</code> with minimal filters for SKUs and codes. Pair <code>text</code> fields with <code>keyword</code> sub-fields when you need both retrieval and sorting or aggregations, following Elasticsearch and OpenSearch multi-field guidance.</p>
+          <p>Keep index-time and search-time analyzers symmetric unless you deliberately configure <code>search_analyzer</code>; asymmetric analysis is the most common cause of zero-hit queries despite visible term overlap in the UI. Size shards for tens of gigabytes per primary, use index lifecycle management for time-series corpora, and route heavy reindex work off peak hours.</p>
+          <p>For ranking, start with <code>multi_match</code> and explicit boosts on title-like fields, then validate with click logs or a judgment list. Turnbull and Berryman's <em>Relevant Search</em> recommends measuring before tuning boosts blindly. Use <code>function_score</code> or decay functions only after BM25 and field weights are stable.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Analyzer mismatch</strong>: Indexing with one analyzer and querying with another produces zero results for perfectly matching terms (e.g., stemmed index vs. keyword query).</li>
-            <li><strong>Mapping explosion</strong>: Dynamic mapping on JSON fields with high-cardinality keys creates thousands of field mappings, causing heap exhaustion and cluster instability.</li>
-            <li><strong>Split-brain / cluster instability</strong>: Misconfigured <code>discovery.zen.minimum_master_nodes</code> (pre-7.x) or quorum settings allow two master nodes, corrupting the cluster state.</li>
-            <li><strong>Deep pagination performance</strong>: Using <code>from: 50000</code> forces the engine to collect and discard 50,000 results on every shard before returning the page, causing high GC pressure.</li>
-            <li><strong>Index synchronisation drift</strong>: Without a transactional outbox or dual-write strategy, the search index silently falls behind the primary store after failures.</li>
+            <li><strong>Analyzer mismatch</strong> between index and query pipelines stem-or-normalize tokens differently, yielding empty result sets for obvious matches.</li>
+            <li><strong>Dynamic mapping sprawl</strong> on nested JSON creates thousands of fields and trips the cluster mapping limit.</li>
+            <li><strong>Shard skew</strong> from routing keys concentrates hot sellers on one shard, inflating tail latency for BM25 collection.</li>
+            <li><strong>Unsafe deep paging</strong> with high <code>from</code> values forces each shard to materialize and discard enormous hit lists.</li>
+            <li><strong>Unmonitored sync lag</strong> lets the index drift silently after connector failures or poisoned bulk batches.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have you chosen per-field analyzers (language-specific for text, keyword for IDs)?</li>
-            <li>Have you defined explicit mappings rather than relying on dynamic mapping?</li>
-            <li>Is your index synchronisation strategy fault-tolerant (outbox pattern, CDC)?</li>
-            <li>Have you benchmarked query latency under expected peak QPS?</li>
-            <li>Do you have a relevance baseline (judgment list + NDCG score) before tuning?</li>
-            <li>Have you defined an index lifecycle policy (ILM) for retention and rollover?</li>
-            <li>Is deep pagination handled via <code>search_after</code> instead of <code>from/size</code>?</li>
+            <li>Are analyzers and multi-fields defined per logical attribute before the first production index?</li>
+            <li>Does the ingest path guarantee at-least-once delivery with idempotent document IDs?</li>
+            <li>Have you benchmarked p95 query latency at expected QPS with representative bulk sizes?</li>
+            <li>Is there a judgment list or CTR dashboard to validate mapping or boost changes?</li>
+            <li>Are ILM or rollover policies defined for growing indices?</li>
+            <li>Is pagination for exports implemented with <code>search_after</code> instead of offset paging?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce product search</strong>: Multi-field BM25 over product title, brand, description, and category with synonym expansion for "TV" → "television", boosted by sales rank.</li>
-            <li><strong>Developer documentation portal</strong>: Phrase-match queries over code snippets, headings, and body text; highlighted matching terms in result snippets.</li>
-            <li><strong>Security log analysis</strong>: Free-text search over structured log events ingested via Logstash; field-specific queries like <code>error.code:403 AND source.ip:192.168.*</code>.</li>
+            <li><strong>Illustrative scenario — Northwind Commerce:</strong> A marketplace indexes product title, brand, and description with synonym rules for regional spellings; BM25 with title boost 4× and a sales-rank <code>function_score</code> powers the storefront query bar.</li>
+            <li><strong>Illustrative scenario — Meridian Support:</strong> Ticket bodies and chat transcripts share an English analyzer; engineers phrase-search error codes in Kibana-compatible indices while agents filter by tenant keyword fields.</li>
+            <li><strong>Case study — Elasticsearch documentation:</strong> Elastic documents full-text query types, BM25 similarity settings, and <code>search_after</code> as the supported pattern for deep paging at scale.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="faceted-search.html">Faceted Search</a> — Adding aggregation-based filters on top of full-text results.</li>
-            <li><a href="semantic-search.html">Semantic Search</a> — Vector-based retrieval that understands meaning, complementing keyword matching.</li>
-            <li><a href="hybrid-search.html">Hybrid Search</a> — Combining BM25 scores with vector similarity for best-of-both-worlds relevance.</li>
-            <li><a href="search-infrastructure.html">Search Infrastructure</a> — Cluster sizing, shard strategy, and ILM for production deployments.</li>
+            <li><a href="faceted-search.html">Faceted Search</a> — Structured aggregations narrow BM25 hit sets without separate analytics queries.</li>
+            <li><a href="semantic-search.html">Semantic Search</a> — Dense vectors handle paraphrase where lexical overlap fails.</li>
+            <li><a href="hybrid-search.html">Hybrid Search</a> — Combines BM25 and vector scores with tunable fusion weights.</li>
+            <li><a href="search-infrastructure.html">Search Infrastructure</a> — Sizing, sharding, and ILM for production Lucene clusters.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/full-text-queries.html" target="_blank" rel="noopener noreferrer">Elasticsearch Full-Text Queries Reference</a></li>
-            <li><a href="https://www.elastic.co/blog/practical-bm25-part-1-how-shards-affect-relevance-scoring-in-elasticsearch" target="_blank" rel="noopener noreferrer">Practical BM25 — Elasticsearch relevance scoring (Elastic blog)</a></li>
-            <li><a href="https://www.manning.com/books/relevant-search" target="_blank" rel="noopener noreferrer">Relevant Search — Turnbull &amp; Berryman (Manning)</a></li>
+            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/full-text-queries.html" target="_blank" rel="noopener noreferrer">Elasticsearch — Full-text queries</a></li>
+            <li><a href="https://opensearch.org/docs/latest/query-dsl/full-text/index/" target="_blank" rel="noopener noreferrer">OpenSearch — Full-text query DSL</a></li>
+            <li><a href="https://lucene.apache.org/core/core_9_0_0/core/org/apache/lucene/search/similarities/BM25Similarity.html" target="_blank" rel="noopener noreferrer">Apache Lucene — BM25Similarity</a></li>
+            <li><a href="https://nlp.stanford.edu/IR-book/" target="_blank" rel="noopener noreferrer">Manning et al. — <em>Introduction to Information Retrieval</em> (IIR)</a></li>
+            <li><a href="https://www.manning.com/books/relevant-search" target="_blank" rel="noopener noreferrer">Turnbull &amp; Berryman — <em>Relevant Search</em> (Manning)</a></li>
           </ul>
+
+
+
+
         </div>
         <nav class="article-nav" aria-label="Article navigation">
           <a href="index.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Search &amp; Retrieval Overview</span></a>
