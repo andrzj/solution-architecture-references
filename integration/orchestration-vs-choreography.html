@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Orchestration vs Choreography — SA References</title>
-  <meta name="description" content="Comparing central orchestrator vs distributed choreography models for coordinating multi-service workflows.">
+  <meta name="description" content="Orchestration centralizes multi-step workflow control in a coordinator; choreography spreads reactions across services via shared events—pick based on visibility, team ownership, and compensation complexity.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,146 +96,148 @@
             <span class="badge badge--muted">Microservices</span>
           </div>
           <h1 class="article-header__title">Orchestration vs Choreography</h1>
-          <p class="article-header__desc">Choosing between a central coordinator that commands services and a decentralized model where services react to domain events.</p>
-          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
+          <p class="article-header__desc">Orchestration keeps workflow control in a central coordinator; choreography lets each service react to events—choose based on visibility needs, ownership boundaries, and how hard rollback is.</p>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p><strong>Orchestration</strong> uses a central coordinator — an orchestrator — that explicitly commands each participating service in sequence or in parallel, waits for responses, and decides the next step. The orchestrator holds the full business process flow; individual services are ignorant of the larger workflow and only know how to execute their specific task when commanded. Implementations include BPMN workflow engines (Camunda, Flowable), dedicated workflow services (AWS Step Functions, Temporal, Conductor), or a purpose-built saga orchestrator service.</p>
-          <p><strong>Choreography</strong> distributes coordination logic across services: each service listens for domain events published by other services, reacts by performing its own work, and publishes new events that downstream services respond to. No single service knows the full workflow; the overall process emerges from the interactions of many independent services reacting to events. A Kafka topic becomes the shared communication channel; services subscribe to relevant topics and publish results to other topics. The Saga pattern can be implemented via either style.</p>
+          <p><strong>Orchestration</strong> coordinates a multi-step business process from a central component. The orchestrator invokes participating services (or activities), records outcomes, branches on results, and runs compensating steps when something fails. Participants expose task-shaped APIs; they do not need to know the full saga—only how to perform their step when asked. Workflow engines (Temporal, Camunda, AWS Step Functions) and dedicated orchestrator services implement this model.</p>
+          <p><strong>Choreography</strong> spreads coordination across services: one service publishes a domain event, others subscribe and react, then publish their own events. No single component holds the entire process graph; end-to-end behavior emerges from published contracts on a broker or log. The <a href="../distributed-systems/saga-pattern.html">Saga pattern</a> can be implemented either way—orchestration saga with an explicit coordinator, choreography saga with compensating events and idempotent consumers.</p>
+          <p>Neither style replaces the other. Orchestration optimizes for explicit state and operator visibility; choreography optimizes for loose coupling and independent deployment. Many estates use both: orchestrated sagas for money-moving flows, choreographed reactions for analytics and notifications.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In a monolith, multi-step business processes are implemented as in-process method calls — coordination is trivial because everything shares a transaction. In microservices, distributed transactions are expensive and fragile, so long-running business processes must be decomposed into a series of compensatable local transactions. The choice between orchestration and choreography determines where the process knowledge lives: centrally in an orchestrator, or distributed across services via shared event contracts.</p>
-          <p>Neither approach is universally superior. Orchestration provides operational clarity — you can visualize the state of any workflow instance in the orchestrator's UI, retry failed steps, and compensate from a single place. Choreography provides better team autonomy — each service team can deploy independently without coordinating with a central workflow team. The observable tendency is that simple, linear flows favor orchestration; complex, evolving event-driven architectures favor choreography.</p>
+          <p>Monoliths coordinate with in-process calls and often a single database transaction. Microservices forbid two-phase commit across boundaries; long-running processes become sequences of local commits with eventual alignment. Someone—or something—must decide what runs next, what to do on failure, and how to correlate partial progress.</p>
+          <p>Central orchestration answers “where is order 8472 in fulfillment?” with one query against workflow history. Choreography answers “how do we add a new consumer without redeploying producers?” by subscribing to an existing topic. The trade is visibility and controlled rollback versus autonomy and fewer shared runtime dependencies.</p>
+          <p>ESB-era hubs blurred integration and process control; modern guidance keeps orchestrators <em>thin</em>—flow and compensation only—and pushes domain rules into services. Choreography without design discipline devolves into undebuggable event chains. The decision is where process knowledge and operational tooling live, not whether you avoid distributed work.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Use Orchestration when:</strong> the business process has many steps with complex branching, timeouts, and compensation logic that would be hard to reason about if distributed across services.</li>
-            <li><strong>Use Orchestration when:</strong> you need workflow-level observability — the ability to query "what is the current state of order #12345's fulfillment process?" and see a visual flow diagram.</li>
-            <li><strong>Use Orchestration when:</strong> there is a single team owning the entire business process and the orchestrator represents a sensible aggregation of responsibility.</li>
-            <li><strong>Use Choreography when:</strong> different teams own different services and you want each team to deploy independently without coordinating with a central workflow team.</li>
-            <li><strong>Use Choreography when:</strong> the event model is already established (Kafka is the backbone) and services naturally publish domain events as part of their normal operation.</li>
-            <li><strong>Use Choreography when:</strong> new consumers can be added to react to existing events without modifying any existing service (open/closed principle for workflows).</li>
+            <li><strong>Use orchestration when</strong> steps have branching, timers, human approval, or ordered compensation that is hard to reconstruct from events alone.</li>
+            <li><strong>Use orchestration when</strong> support and SRE must query in-flight state, retry a failed step, or cancel one workflow instance without code archaeology.</li>
+            <li><strong>Use orchestration when</strong> one product team owns the end-to-end process and the orchestrator is a natural home for flow—not domain rules.</li>
+            <li><strong>Use choreography when</strong> independent teams own services and must ship without a central workflow release train.</li>
+            <li><strong>Use choreography when</strong> an <a href="../architecture-styles/event-driven-architecture.html">event backbone</a> already exists and services publish facts as part of normal operation.</li>
+            <li><strong>Use choreography when</strong> new reactions (search indexing, loyalty points) should attach to existing events without changing publishers.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Don't use a choreography approach for workflows with hard, complex compensation requirements (e.g., rollback 8 services in a specific order) — the lack of a central view makes debugging failures extremely difficult.</li>
-            <li>Don't use orchestration with a "smart orchestrator" that contains domain logic beyond flow control — this recreates the ESB "god object" antipattern at the workflow level.</li>
-            <li>Don't apply orchestration to simple event-driven use cases (a user signs up → send welcome email) where the extra machinery adds overhead with no benefit.</li>
-            <li>Don't use choreography when services become tightly coupled through shared event schemas that change frequently — the distributed coupling is harder to manage than central orchestration.</li>
+            <li><strong>Avoid pure choreography</strong> for multi-step financial rollback where compensation order and legal audit matter—without a saga audit projection or coordinator, failures lack a clear owner.</li>
+            <li><strong>Avoid fat orchestrators</strong> that encode pricing, eligibility, or inventory rules—those belong in domain services; otherwise you recreate the <a href="esb.html">ESB</a> “smart hub” at workflow scale.</li>
+            <li><strong>Avoid orchestration</strong> for trivial reactions (signup → welcome email) where a single consumer on one event suffices.</li>
+            <li><strong>Avoid choreography</strong> when event schemas churn weekly and every consumer must redeploy—stability may favor a versioned orchestration contract or fewer, broader events.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>In orchestration, clients or upstream services start a workflow; the engine schedules steps, persists history, and invokes workers. In choreography, producers append to a log; consumers in separate deployable units process at their own pace and emit downstream events. Correlation identifiers should appear in both models so logs and traces stitch the same business operation.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    orch["Orchestrator&lt;br/&gt;Temporal / Step Functions"]
-    s1["Service A"]
-    s2["Service B"]
-    s3["Service C"]
-    topic["Shared event topic"]
-    orch --> s1 --> s2 --> s3
-    s1 -.->|choreography| topic
-    s2 -.-> topic
-    s3 -.-> topic</div>
+    subgraph orch["Orchestration"]
+        wf["Workflow engine"]
+        pa["Payment"]
+        inv["Inventory"]
+        wf --> pa & inv
+    end
+    subgraph chor["Choreography"]
+        ord["Order service"]
+        bus["Event log"]
+        pay["Payment consumer"]
+        ord --> bus --> pay
+        pay --> bus
+    end</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
-  ORCHESTRATION (Temporal / Step Functions):
+  ORCHESTRATION:
   ┌─────────────────────────────────────────┐
-  │         Order Fulfillment Orchestrator  │
-  │  1. PaymentService.charge()  ──────────▶│ PaymentService
-  │  2. InventoryService.reserve() ────────▶│ InventoryService
-  │  3. ShippingService.schedule() ────────▶│ ShippingService
-  │  4. NotificationService.send() ────────▶│ NotificationService
-  │  (on fail: compensate in reverse order) │
+  │         Fulfillment workflow            │
+  │  1. charge payment   ────────────────▶  │
+  │  2. reserve stock    ────────────────▶  │
+  │  3. schedule ship      ────────────────▶  │
+  │  on failure: compensate in reverse      │
   └─────────────────────────────────────────┘
 
-  CHOREOGRAPHY (Kafka events):
-  OrderService
-    │ publishes: OrderPlaced
-    ▼
-  Kafka ──▶ PaymentService
-                │ publishes: PaymentCompleted
-                ▼
-            Kafka ──▶ InventoryService
-                          │ publishes: InventoryReserved
-                          ▼
-                      Kafka ──▶ ShippingService
-                                    │ publishes: ShipmentScheduled
-                                    ▼
-                                Kafka ──▶ NotificationService
+  CHOREOGRAPHY:
+  Order service ──publish──▶ Event log ──▶ Payment consumer
+                                ▲              │
+                                └──publish─────┘
+  Event log ──▶ Inventory consumer ──▶ … ──▶ Notification consumer
           </code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Orchestration centralizes workflow commands; choreography distributes steps via shared events each service consumes.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Orchestration: one engine commands explicit steps. Choreography: services publish and consume shared events with no central process owner.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
-              <h3>Orchestration Pros</h3>
+              <h3>Orchestration pros</h3>
               <ul>
-                <li>Centralized visibility: workflow state, history, and progress are queryable from one place.</li>
-                <li>Explicit compensation: the orchestrator owns rollback logic, making failure handling consistent and testable.</li>
-                <li>Timeout management built in: orchestrators can pause, wait for external events, and resume after days or weeks.</li>
-                <li>Easier to understand by new team members — the flow is explicit in code or a visual diagram.</li>
-                <li>Simpler debugging: failures are recorded in the workflow history with inputs, outputs, and error messages per step.</li>
+                <li>Instance state and step history live in one queryable store—ideal for support and compliance replay.</li>
+                <li>Compensation and timeouts are first-class; engines schedule retries and human tasks across days.</li>
+                <li>New engineers read the flow in one workflow definition instead of hunting emit/listen pairs.</li>
+                <li>Durable execution (event-sourced replay) survives worker crashes without duplicating side effects when activities are idempotent.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
-              <h3>Choreography Pros / Orchestration Cons</h3>
+              <h3>Choreography pros / orchestration risks</h3>
               <ul>
-                <li>Choreography enables team autonomy: services can be developed and deployed without coordinating with a central workflow team.</li>
-                <li>Choreography scales independently: each service scales based on its own event consumption rate, without a central bottleneck.</li>
-                <li>Adding new consumers to existing events requires no changes to existing services (open/closed principle).</li>
-                <li>Orchestration creates a central coupling point; if the orchestrator service is down, no workflows can progress.</li>
-                <li>Orchestrators can accumulate workflow logic that should live in domain services, becoming a new form of monolithic logic.</li>
+                <li>Teams deploy consumers independently; adding a subscriber does not require orchestrator changes.</li>
+                <li>Throughput scales with partitioned logs and consumer groups—not a single workflow cluster.</li>
+                <li>Orchestrator outage or misconfiguration can stall every in-flight process that depends on it.</li>
+                <li>Central workflow code can absorb domain logic if not guarded—governance must cap orchestrator scope.</li>
+                <li>Choreography without correlation IDs and a saga read model often lacks “where is my order?” answers operations expect.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For orchestration, Temporal is the leading open-source workflow orchestration platform. Workflows are written as code (Go, Java, Python, TypeScript) with durable execution — Temporal replays the workflow from a deterministic event history after failures, so in-progress workflows survive process restarts and infrastructure outages. Avoid putting I/O directly in workflow code; wrap all external calls in Activities (which Temporal schedules with retry policies). AWS Step Functions provides a managed alternative using JSON-defined state machines with native AWS service integrations.</p>
-          <p>For choreography, establish clear event schema contracts using Avro or Protobuf with a schema registry to prevent consumers from breaking when events evolve. Use consumer groups to allow multiple services to independently consume the same event stream. Implement correlation IDs on all events so distributed traces can reconstruct the full end-to-end flow across services. Build a "saga audit" read model — a projection that consumes all relevant events and reconstructs the current state of each business transaction — to provide the operational visibility that choreography otherwise lacks.</p>
+          <p><strong>Orchestration:</strong> Write workflows as deterministic control flow; perform I/O in activities or task workers with explicit retry policies. On Temporal, avoid non-deterministic calls inside workflow code—clock and randomness come from the engine. On Step Functions, keep state machines focused on integration and use activity ARNs or Lambda tasks for side effects; store business payloads by reference when histories grow large. Version workflow definitions so in-flight instances finish on the definition they started with.</p>
+          <p><strong>Choreography:</strong> Register event schemas (Avro, Protobuf) with compatibility rules. Design consumers to be idempotent and safe under at-least-once delivery. Propagate <a href="../communication-patterns/correlation-ids.html">correlation identifiers</a> on every message header. Build a <strong>saga audit</strong> projection—one read model that ingests all saga-related events and exposes current status—to recover operations visibility choreography does not provide by default. Document compensating events (“payment failed → publish <code>RefundRequested</code>”) and who emits them.</p>
+          <p><strong>Hybrid:</strong> Orchestrate the critical path (payment, inventory commit) and choreograph side effects (email, search, data warehouse). Boundaries stay clearer than putting every reaction inside one giant workflow.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Choreography spaghetti:</strong> As the number of services grows, event chains become impossible to follow; no one can explain the full flow of a business process without tracing through 10 different service codebases.</li>
-            <li><strong>Orchestrator becomes a bottleneck:</strong> A single orchestrator service handles all workflows and becomes a performance or availability bottleneck as traffic grows.</li>
-            <li><strong>Missing compensation in choreography:</strong> PaymentService charged the customer but InventoryService failed to reserve; without a central coordinator, no one is responsible for initiating a refund.</li>
-            <li><strong>Non-deterministic workflow code:</strong> A Temporal workflow uses <code>Date.now()</code> or a random number generator directly; replay produces different results, causing Temporal to throw non-determinism errors.</li>
-            <li><strong>Event versioning breaks choreography:</strong> PaymentService adds a required field to <code>PaymentCompleted</code>; InventoryService's consumer fails to deserialize the new version and stops processing, silently halting all order fulfillment.</li>
+            <li><strong>Event chain fog:</strong> Ten services each publish and listen; nobody can diagram the happy path without grep across repositories.</li>
+            <li><strong>Orphaned saga step:</strong> Payment succeeds; inventory consumer crashes; no compensating event or orchestrator step triggers a refund.</li>
+            <li><strong>Workflow non-determinism:</strong> Direct use of wall-clock or randomness in replay-based engines breaks recovery after restart.</li>
+            <li><strong>Breaking schema rollout:</strong> A required field is added to an event; one stale consumer stops processing and blocks the pipeline silently.</li>
+            <li><strong>Orchestrator capacity:</strong> All workflow traffic hits one region or cluster; hot partitions on the log are easier to scale than a saturated workflow control plane.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is this a linear, well-defined process (favors orchestration) or an open-ended, evolving event-driven interaction (favors choreography)?</li>
-            <li>Is operational visibility (current state of each in-flight instance) a critical requirement?</li>
-            <li>Do you have long-running workflows that span days or weeks (favors orchestration with durable execution)?</li>
-            <li>Do independent teams own different services in the workflow, and do they need deployment autonomy (favors choreography)?</li>
-            <li>Have you designed explicit compensation for failure scenarios in either approach?</li>
-            <li>Can you build a saga audit read model for choreography to provide end-to-end visibility?</li>
+            <li>Is the process mostly linear with defined failure handling (orchestration) or an evolving set of reactions (choreography)?</li>
+            <li>Must operations answer “current state of instance X” within seconds?</li>
+            <li>Will workflows run longer than a single request timeout (days, weeks)?</li>
+            <li>Do multiple teams own steps and need decoupled release cadences?</li>
+            <li>Are compensating actions explicit, tested, and owned—regardless of style?</li>
+            <li>For choreography, is there a saga audit or equivalent read model for visibility?</li>
+            <li>Is the orchestrator restricted to routing, timers, and compensation—not business rules?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce order fulfillment (Orchestration):</strong> An order fulfillment workflow in Temporal coordinates payment, inventory reservation, shipping scheduling, and notification with retry policies on each step and explicit compensation (refund + inventory release) on failure.</li>
-            <li><strong>Account registration (Choreography):</strong> A user registers; UserService publishes <code>UserRegistered</code>; EmailService sends a welcome email; CRMService creates a lead; AnalyticsService records the event. Each service independently reacts — new integrations can be added without touching UserService.</li>
-            <li><strong>Insurance claims processing (Orchestration):</strong> A claims workflow in Step Functions routes a submitted claim through fraud detection, coverage verification, adjudication, and payment, with human review tasks using Step Functions Wait for Callback tokens.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> runs checkout fulfillment in Temporal: charge, reserve, ship, and notify each as retried activities, with refund and release activities on a defined compensation path.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> publishes <code>TripCompleted</code>; billing, driver payout, and analytics consumers react independently—marketing can add a new subscriber without touching the trip service.</li>
+            <li><strong>Case study —</strong> <strong>Uber</strong> and other large platforms describe choreographed domain events for many operational flows, while payment and safety-critical paths often retain stricter centralized coordination—mixed models are normal at scale.</li>
+            <li><strong>Case study —</strong> AWS customers widely use Step Functions for human-in-the-loop processes (claims, provisioning) where wait states and visual execution history justify orchestration overhead.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="../distributed-systems/saga-pattern.html">Saga Pattern</a> — The pattern for managing distributed transactions via either orchestration or choreography.</li>
-            <li><a href="../architecture-styles/event-driven-architecture.html">Event-Driven Architecture</a> — The foundation for choreography-based workflows.</li>
-            <li><a href="esb.html">Enterprise Service Bus</a> — The classic orchestration hub; understand why modern architectures moved away from it.</li>
+            <li><a href="../distributed-systems/saga-pattern.html">Saga Pattern</a> — Distributed transactions as orchestrated or choreographed sagas with compensating steps.</li>
+            <li><a href="../architecture-styles/event-driven-architecture.html">Event-Driven Architecture</a> — Foundation for choreography and for event-carried state transfer.</li>
+            <li><a href="esb.html">Enterprise Service Bus</a> — Historical hub orchestration; compare with thin workflow engines and direct service APIs.</li>
+            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox Pattern</a> — Reliable event publication so choreographed steps see consistent facts.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://camunda.com/blog/2023/02/orchestration-vs-choreography/" target="_blank" rel="noopener noreferrer">Orchestration vs Choreography — Camunda blog</a></li>
-            <li><a href="https://microservices.io/patterns/data/saga.html" target="_blank" rel="noopener noreferrer">Saga Pattern — microservices.io (Chris Richardson)</a></li>
-            <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html" target="_blank" rel="noopener noreferrer">AWS Step Functions Developer Guide</a></li>
+            <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Saga — microservices.io (Chris Richardson)</a></li>
+            <li><a href="https://martinfowler.com/articles/201701-event-driven.html" rel="noopener noreferrer" target="_blank">What do you mean by “Event-Driven”? — Martin Fowler</a></li>
+            <li><a href="https://docs.temporal.io/workflows" rel="noopener noreferrer" target="_blank">Temporal Workflows documentation</a></li>
+            <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html" rel="noopener noreferrer" target="_blank">AWS Step Functions Developer Guide</a></li>
+            <li><a href="https://camunda.com/blog/2023/02/orchestration-vs-choreography/" rel="noopener noreferrer" target="_blank">Orchestration vs Choreography — Camunda</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
