@@ -103,11 +103,13 @@
           <p>An <strong>error budget</strong> is the allowed unreliability implied by a service level objective. If availability SLO is 99.9% over a rolling 30-day window, the budget is 0.1% of valid events — roughly 43 minutes of equivalent outage at steady traffic, or the matching proportion of failed requests. The budget is not a failure allowance to waste; it is the negotiated room to ship change, run experiments, and accept known risk without pretending perfection is free.</p>
           <p>Google SRE pairs each SLO with an <strong>error budget policy</strong>: rules for what happens at healthy, cautionary, critical, and exhausted budget states. Typical policies: plentiful budget permits normal release cadence and optional risky migrations; low budget triggers extra validation, change freezes on critical paths, and prioritisation of reliability backlog; exhausted budget halts non-emergency releases until measurement shows recovery. Policy converts an abstract percentage into behaviour product and engineering can agree on.</p>
           <p><strong>Burn rate</strong> measures how fast budget is spent: current error ratio divided by the ratio allowed by the SLO. A burn rate of 1 spends budget on pace; 14× means the entire window’s budget would be gone in about two days at the current rate. Multi-window burn alerting (workbook recipes) detects fast and slow burns without paging on every transient spike.</p>
+          <p>Latency SLOs consume budget through slow requests the same way availability SLOs consume budget through errors—define whether partial success counts as bad, and align histogram buckets with the threshold customers feel.</p>
           <p>Error budgets sit on top of <a href="sli-slo-sla.html">SLIs and SLOs</a> — they do not replace them. SLIs measure user experience; SLOs set targets; budgets and policies govern how teams respond when measurement drifts from target.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>“Five nines” slogans provide no decision criterion: should we ship Friday? The SRE model answers with budget remaining. Product wants velocity; operations wants stability — without a shared number, debates repeat every release. Error budgets give both sides the same ledger: incidents and risky launches spend budget; reliability projects and prudent pacing preserve it. When budget is healthy, teams have explicit permission to move fast; when it is not, data justifies slowing down.</p>
           <p>This also ends heroic reliability theatre — 100% uptime targets are impossible in distributed systems and incentivise hiding incidents. A finite budget makes trade-offs honest.</p>
+          <p>Budgets also fund learning: a controlled canary or chaos experiment may consume budget on purpose if the policy document says so. The point is consent and measurement, not pretending releases are free.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -115,6 +117,7 @@
             <li>Teams conflicting over release cadence — publish budget status in planning meetings and incident reviews.</li>
             <li>Platform teams serving many product teams — shared platform SLOs with budgets clarify when to pause infra changes.</li>
             <li>Organisations maturing from uptime percentages to SRE practice — budgets operationalise SLOs.</li>
+            <li>Regulated industries needing audit trails — policy states why a release shipped on yellow budget.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -125,6 +128,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Prometheus recording rules (or vendor equivalents) turn raw request histograms and status counters into SLI ratios. Those ratios feed Grafana or SLO dashboards that compute budget remaining, burn rate, and policy state. Alertmanager or ticketing integrations enforce policy thresholds; CI systems query the same API before promoting releases.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     sli["SLI measurement"]
@@ -195,6 +199,7 @@ ERROR BUDGET TRACKING DASHBOARD:
                 <li>Healthy budget explicitly authorises risky launches and tech debt payoff.</li>
                 <li>Burn-rate ties incidents to time-to-exhaustion, prioritising sustained harm over blips.</li>
                 <li>Aligns product and engineering on one reliability ledger.</li>
+                <li>Forces explicit conversation when marketing wants a launch during red budget.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -212,6 +217,8 @@ ERROR BUDGET TRACKING DASHBOARD:
           <p>Pick one or two journeys first. Compute budget remaining as <code>1 − (bad_events / valid_events) / (1 − SLO_target)</code> over the rolling window, or use tooling (Sloth, OpenSLO, commercial SLO products) that encodes the maths. Display budget percent, burn rate, and projected exhaustion date on the same dashboard product sees in reviews.</p>
           <p>Write policy thresholds: for example green &gt;50%, yellow 25–50%, red &lt;25%, frozen at 0%. Wire CI/CD or release tooling to query budget API — block canary promotion on red unless incident commander override with ticket. Attribute spend in postmortems (bad deploy, dependency, capacity, change failure) to guide investment.</p>
           <p>Pair policy with <a href="alerting-strategies.html">multi-window burn alerts</a> so teams learn about budget drain before users exhaust patience.</p>
+          <p>Publish budget status in the same forum product uses for roadmap—weekly or sprint review—not buried on a wall monitor. When multiple teams share a dependency, split budget attribution with agreement: upstream may own latency budget spend caused by their deploy even when the SLI is measured on the edge.</p>
+          <p>Revisit SLO targets quarterly using historical SLI distributions; targets set below what the service already achieves create permanent red dashboards and teach teams to ignore policy.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -220,6 +227,7 @@ ERROR BUDGET TRACKING DASHBOARD:
             <li><strong>Ignoring planned spend</strong>: Maintenance windows not excluded — false freezes or surprise breaches.</li>
             <li><strong>100% targets</strong>: Any glitch “violates” SLO; teams stop reporting honestly.</li>
             <li><strong>Budget without alerts</strong>: Product learns about pain from customers, not burn dashboards.</li>
+            <li><strong>Composite SLO without minimums</strong>: One green sub-journey hides a failing payment path inside an averaged scorecard.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -230,12 +238,14 @@ ERROR BUDGET TRACKING DASHBOARD:
             <li>Are burn-rate alerts configured for fast and slow consumption?</li>
             <li>Are postmortems tagged with budget spend category?</li>
             <li>Are SLO targets derived from historical performance with margin?</li>
+            <li>Is budget status visible to product stakeholders, not only SRE dashboards?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
             <li><strong>Illustrative scenario —</strong> After a payment incident consumes 70% of monthly budget, policy triggers a change freeze on payment services; product defers a marketing launch without executive escalation because the dashboard is shared.</li>
             <li><strong>Illustrative scenario —</strong> Authentication holds 2× expected budget; team schedules a database cutover with pre-approved spend cap; migration uses 35% of remaining budget as planned.</li>
+            <li><strong>Illustrative scenario —</strong> Quarterly review shows search holds surplus budget while checkout is red; portfolio planning shifts reliability engineers to payment dependency work with executive backing.</li>
             <li><strong>Case study —</strong> Google’s SRE book describes pairing error budgets with launch decisions so reliability and development share accountability for unreliability spend.</li>
           </ul>
 

@@ -104,9 +104,11 @@
           <p><strong>Continuous profiling</strong> samples what code is doing in production over time — which functions consume CPU, allocate heap, or contend on locks — and stores profiles as queryable time series. Unlike one-off <code>pprof</code> captures triggered during incidents, always-on profilers run at low overhead (often 1–3% CPU) so historical profiles exist when regressions appear.</p>
           <p>Common profile types include <strong>CPU</strong> (stack samples while on-CPU), <strong>heap/allocation</strong> (where bytes are allocated), <strong>goroutine or thread</strong> snapshots (concurrency leaks), and <strong>mutex/block</strong> profiles (lock contention). A <strong>flame graph</strong> visualises stacks: width is sample share, height is stack depth. Hot functions appear as wide plates near the top — the first place to look after a metric or trace says “this service got slower.”</p>
           <p>Profiling complements traces: a span shows that JSON serialisation took 300ms; a CPU profile shows <code>encoding/json</code> dominates samples during that window. Where platforms support it, linking profiles to <strong>W3C trace IDs</strong> (the same identifier in <code>traceparent</code>) narrows investigation from a slow trace to the functions active in that request class.</p>
+          <p><strong>Differential profiling</strong> subtracts baseline samples from a suspect window so incidental runtime noise drops away. That diff is often the fastest way to answer whether Tuesday’s deploy actually changed CPU shape or only coincided with a traffic mix shift.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Metrics flag regressions; traces localise slow spans; profiling names the functions and lines responsible. Without continuous data, teams replay incidents under artificial load or add speculative instrumentation. Parca, Pyroscope, and eBPF-based agents reduced the operational cost of keeping profiles always on, making code-level evidence a normal part of observability — sometimes called a “fourth pillar” beside metrics, logs, and traces.</p>
+          <p>Cost spikes in cloud bills often trace to a single allocation hot path or lock contention that metrics smooth over in averages. Continuous profiles make those regressions legible to engineers who never lived through the original rollout, not only to the author who added the feature.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -114,6 +116,7 @@
             <li>Post-deploy performance comparisons — diff profiles by version or commit label.</li>
             <li>Cost optimisation in cloud environments where inefficient hot paths directly increase compute bills.</li>
             <li>Concurrency debugging — goroutine or thread profiles exposing leaks and deadlocks.</li>
+            <li>Capacity planning — understanding headroom before autoscaling adds expensive instance classes.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -121,10 +124,12 @@
             <li>Latency-sensitive paths with untested profilers at aggressive sampling rates — validate overhead in staging first.</li>
             <li>As the only signal for request-level errors — profiles rarely explain business logic failures without traces and logs.</li>
             <li>When legal or policy constraints prohibit any production code introspection — rare, but verify compliance.</li>
+            <li>When the team lacks time to act on flame graphs — instrumentation debt will accumulate faster than insights.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>Applications expose profiles via SDK push (Pyroscope) or pull (<code>/debug/pprof</code>, Parca agent scraping). Profiles land in a profiling backend object store and are visualised in Grafana alongside metrics and traces.</p>
+          <p>Retention policy is part of architecture: long windows help month-over-month comparisons, but symbolised stacks consume object-storage budget. Tier services so payment and auth tiers keep ninety days while internal batch workers keep seven unless a regression is open.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     app["Application"]
@@ -157,6 +162,7 @@ CORRELATION:
                 <li>Historical profiles enable before/after deploy comparison by version labels.</li>
                 <li>Modern agents target ~1% overhead at default sampling, suitable for many production tiers.</li>
                 <li>eBPF cluster profilers can cover workloads you cannot modify with SDKs.</li>
+                <li>Diff views turn “something changed” metrics into named functions for code review.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -174,6 +180,8 @@ CORRELATION:
           <p>Start with CPU and in-use heap profiles on top-traffic services. Tag every profile with <code>service.name</code>, deployment version, and environment — the same resource attributes used in OpenTelemetry traces. When investigating a slow trace, filter profiles to the trace timestamp window and service; emerging OTel profiling signals aim to attach profiles directly to span contexts.</p>
           <p>Never expose <code>/debug/pprof</code> on public interfaces. Restrict with network policy and authentication. Prefer continuous agents over manual 30-second CPU captures during peak traffic unless on-call explicitly triggers them.</p>
           <p>For Go, import <code>net/http/pprof</code> only on admin listeners. For Python, pyroscope or py-spy at moderate Hz. Compare profiles in CI smoke tests only when overhead is measured — do not enable full continuous profiling in unit test pipelines by default.</p>
+          <p>During incidents, capture both CPU and allocation profiles for the affected service version label—not only the latest deploy. If traces show one route hot, filter profiles by route attribute tags where the agent supports it. Educate on-call with a known weekly drill: open a published benchmark flame graph and walk from root to leaf without declaring victory at wide parent frames.</p>
+          <p>Coordinate with security on symbol upload for stripped binaries; without debug info, profiles show opaque addresses that slow remediation.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -182,6 +190,7 @@ CORRELATION:
             <li><strong>Missing version labels</strong> — cannot diff Tuesday’s deploy against Monday’s baseline.</li>
             <li><strong>Profiling without traces</strong> — optimising the wrong code path that rarely serves user traffic.</li>
             <li><strong>Inlining blind spots</strong> — hotspot appears inside a generic runtime frame; use alternative unwinders or disable inlining only in staging.</li>
+            <li><strong>Profiling during benchmarks only</strong> — production mix includes cold paths benchmarks skip, so optimisations chase the wrong audience.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -198,6 +207,7 @@ CORRELATION:
           <ul>
             <li><strong>Illustrative scenario — JSON hotspot</strong>: CPU climbs after a library upgrade; flame graph shows deserialization dominating samples; revert or swap serializer restores baseline.</li>
             <li><strong>Illustrative scenario — goroutine leak</strong>: Memory grows over days; goroutine profile shows thousands blocked on HTTP clients without timeouts; adding context deadlines stabilises counts.</li>
+            <li><strong>Illustrative scenario — deploy diff</strong>: p99 latency rises after canary; differential profile between v1.4 and v1.5 shows new regex in middleware dominating CPU; canary halts before full promotion.</li>
             <li><strong>Case study — Google wide profiling</strong>: Google’s production profiling culture demonstrated that always-on sampling is viable at hyperscale when overhead is controlled.</li>
           </ul>
 

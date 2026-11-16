@@ -107,6 +107,7 @@
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Without health signals, platforms cannot distinguish a deadlocked JVM from a busy one, a pod still starting from one ready to serve, or a single bad instance from a fleet-wide dependency failure. Automated rollback, autoscaling, and service meshes depend on accurate readiness. Health endpoints are the minimum observability surface for <em>control plane</em> decisions — distinct from metrics and traces used for human diagnosis.</p>
+          <p>Probe success is not user happiness: a pod can be ready while still returning slow errors. Still, orchestrators must not send traffic to instances that cannot complete work. Pair health endpoints with SLI metrics and synthetic journeys so readiness flapping becomes an alert-worthy trend, not only kubelet noise.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -114,6 +115,7 @@
             <li>Load-balanced HTTP or gRPC services where backends must be removed from rotation cleanly.</li>
             <li>Slow-starting runtimes — always pair startup probes with realistic <code>failureThreshold</code> budgets.</li>
             <li>Progressive delivery — new pods must pass readiness before older replicas drain.</li>
+            <li>Stateful workloads with ordered startup — readiness gates membership in cluster quorum or replication set.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -125,6 +127,7 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>The kubelet probes pod HTTP paths on a schedule. Readiness failure updates EndpointSlice objects; liveness failure restarts the container. Service meshes may duplicate health concepts — keep application probes the source of truth.</p>
+          <p>External load balancers often poll the same paths with separate intervals and bodies. Align timeout budgets so an LB does not mark a backend down while Kubernetes still considers it ready, or vice versa. Document which component is authoritative for customer traffic during incidents.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     kubelet["Kubelet probes"]
@@ -162,6 +165,7 @@ READINESS JSON (conceptual):
                 <li>Clear separation between crash recovery (liveness) and dependency degradation (readiness).</li>
                 <li>Startup probes remove fragile mega <code>initialDelaySeconds</code> values across environments.</li>
                 <li>Rolling deploy safety — bad versions fail readiness before taking full traffic share.</li>
+                <li>Structured JSON health bodies document component state for support without shell access.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -179,6 +183,8 @@ READINESS JSON (conceptual):
           <p>Implement liveness in microseconds to low milliseconds — no network I/O. Readiness may call dependencies in parallel with short per-check timeouts (100–500ms total budget). Classify dependencies as required vs optional; only required failures should flip readiness to down.</p>
           <p>Debounce with <code>failureThreshold</code> and <code>successThreshold</code>. Use higher failure thresholds for liveness than readiness because restarts are more disruptive. For gRPC, use the gRPC health checking protocol where supported instead of bolting HTTP-only paths onto gRPC-only servers.</p>
           <p>Expose health on a dedicated admin port if main traffic paths carry auth middleware that would block kubelet probes. Include build version in readiness metadata for deploy verification, not in public responses.</p>
+          <p>Emit probe events or metrics when readiness toggles—counters for `DOWN` transitions help SRE spot chronic dependency flapping. Cache dependency probe results for a few seconds inside readiness handlers to absorb single-packet blips without lying about sustained outage. For worker queues, replace HTTP readiness with leader-election or backlog depth signals agreed with platform owners.</p>
+          <p>Review probe configuration whenever thread pools, connection limits, or GC tuning change; a faster service under load may need shorter readiness timeouts but longer startup thresholds.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -187,6 +193,7 @@ READINESS JSON (conceptual):
             <li><strong>Probe timeouts longer than period</strong> — overlapping probes stack load and skew failure detection.</li>
             <li><strong>Health endpoint on authenticated route</strong> — kubelet receives 401 forever; pod never becomes ready.</li>
             <li><strong>Optional dependency fails readiness</strong> — analytics client blip removes pods serving core API traffic.</li>
+            <li><strong>Mesh and kubelet disagree</strong> — sidecar ready while app readiness fails, sending traffic to broken combinations.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -197,12 +204,14 @@ READINESS JSON (conceptual):
             <li>Are failure thresholds tuned to ignore single flake failures?</li>
             <li>Are health endpoints reachable only inside the cluster or mesh?</li>
             <li>Do rollouts pause when new pods fail readiness?</li>
+            <li>Are readiness flapping rates exported for SLO-adjacent alerting?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
             <li><strong>Illustrative scenario — pool exhaustion</strong>: Readiness fails when DB pool is saturated; load balancer shifts traffic to healthier replicas; no restart storm.</li>
             <li><strong>Illustrative scenario — JVM warmup</strong>: Startup probe grants five minutes before liveness applies; pods finish class loading without restart loops.</li>
+            <li><strong>Illustrative scenario — LB mismatch</strong>: External LB health uses deep checks while liveness stays shallow; operators retune paths so traffic drains when DB pool is saturated instead of restarting pods.</li>
             <li><strong>Case study — Kubernetes probes</strong>: Built-in liveness/readiness semantics became the de facto pattern for cloud-native health across ecosystems.</li>
           </ul>
 
