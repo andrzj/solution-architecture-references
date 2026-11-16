@@ -109,6 +109,7 @@
           <p>Mutable tables discard history by default, yet audits, disputes, and post-incident analysis need to know how state evolved. Event stores make change the primary artifact: compliance can trace balance adjustments, engineers can reproduce pre-bug state by replay, and new read models can bootstrap from historical events without backfilling from opaque nightly dumps. Paired with <a href="../architecture-styles/cqrs.html">CQRS</a>, the write side stays event-centric while read sides optimize for each query pattern, as summarized on <a href="https://microservices.io/patterns/data/event-sourcing.html" rel="noopener noreferrer" target="_blank">microservices.io</a>.</p>
           <p>Treating events as the system of record also reframes integration: the same facts that rebuilt aggregate state can fan out to search indexes, warehouses, and partner webhooks once subscription plumbing exists. You still operate projections and lag monitors, but you avoid maintaining a separate “integration log” that can drift from authoritative writes.</p>
           <p>Financial, insurance, and healthcare estates often need tamper-evident timelines for regulators; a well-governed append-only log answers “who changed what, when, and under which command” without bolting audit tables onto every UPDATE statement after launch.</p>
+          <p>Event sourcing is not a default for every entity—CRUD remains fine when history and projections add no product value; adopt when audit, temporal queries, or multiple read models justify append-only complexity.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -201,6 +202,13 @@
           <p>Connect projectors with idempotent handlers and monitor lag. For cross-service integration, pair the store with outbox or log publishing patterns described in Kleppmann’s treatment of logs and derived data in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a>.</p>
           <p>Define <strong>snapshot policies</strong> per aggregate type: snapshot every N events, on idle timeouts, or before expensive batch reconciliations. Store snapshots in cheaper object storage when the vendor supports it, but keep stream metadata authoritative so replay can always verify snapshot checksums. Run periodic “replay from zero” tests in staging to catch projection code that assumes snapshots always exist.</p>
           <p>Document operational boundaries for support staff: correcting production mistakes means compensating events or reversal commands, never in-place edits to stored payloads. Breaking immutability voids audit claims and forces full projection rebuilds whose downtime is measured in hours.</p>
+          <p><strong>Streams vs tables:</strong> DDIA treats logs as the system of record with derived read models—event stores make that literal. Projections lag behind the stream; monitor consumer offset lag and rebuild duration after schema changes. Optimistic concurrency on stream version numbers prevents lost updates without distributed locks when clients append with expected revision checks.</p>
+          <p><strong>CDC contrast:</strong> Debezium captures OLTP mutations as events; event sourcing captures domain intent. Mixing them on one topic without clear naming confuses consumers about whether an update is a user command or a database replica image—keep physical CDC on integration buses, domain events on product streams unless a documented transform bridges them.</p>
+          <p><strong>Snapshots:</strong> periodic snapshots truncate replay time for cold projections—balance snapshot frequency against storage; after deploy, measure catch-up duration from snapshot plus tail events.</p>
+          <p><strong>Event design:</strong> past-tense facts (“EntityCreated”) aid ordering and idempotency; include schema version in payload metadata for upcasting. GDPR erasure may require tombstone events plus projection purges, not DELETE FROM stream tables.</p>
+          <p>Read-side denormalization is disposable—rebuild projections from the stream rather than patching read tables in place when logic changes.</p>
+          <p>Load tests should include projection catch-up after broker downtime—tail replay duration is the recovery metric stakeholders actually feel.</p>
+          <p>Upcasters must be unit-tested per schema version jump—skipping versions in production streams is a common replay failure after deploy.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -245,6 +253,7 @@
             <li><a href="https://microservices.io/patterns/data/event-sourcing.html" rel="noopener noreferrer" target="_blank">microservices.io — Event sourcing pattern</a></li>
             <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em> (logs, streams, derived data)</a></li>
             <li><a href="https://www.eventstore.com/docs" rel="noopener noreferrer" target="_blank">EventStoreDB — streams, subscriptions, and concurrency</a></li>
+            <li><a href="https://debezium.io/documentation/reference/stable/index.html" rel="noopener noreferrer" target="_blank">Debezium — change data capture</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

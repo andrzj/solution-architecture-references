@@ -108,6 +108,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Row stores lay out all columns of each record together, which makes fetching or updating one business entity efficient but forces aggregation queries to read many columns that the query never uses. Column stores lay out each column contiguously, so a query that sums one measure can read only that column and benefit from encodings tuned for repeated values. That layout trade-off is why analytical queries that feel trivial in a warehouse can time out or throttle a busy OLTP database.</p>
           <p>Writes tell the same story in reverse: updating a single row in a row store touches a compact record, while updating one row in a columnar layout may require rewriting multiple column files. OLTP and OLAP therefore evolved as separate specializations; unifying them without accepting compromise usually means HTAP complexity, read replicas with guardrails, or change-data-capture into a purpose-built analytical engine.</p>
+          <p>Financial close and regulatory reporting still tolerate batch latency many product teams reject for operational tiles—match engine choice to stated freshness, not to vendor HTAP marketing. Kleppmann’s derived-data narrative applies: analytical stores are rebuilt from operational truth, not alternate sources of record.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -193,6 +194,14 @@
           <p>On the OLTP side, treat the primary as a transaction system: index foreign keys, cap long-running sessions, and route BI to a replica, warehouse, or dedicated role with <code>statement_timeout</code> on PostgreSQL (see <a href="https://www.postgresql.org/docs/current/runtime-config-client.html" rel="noopener noreferrer" target="_blank">client connection settings</a>). PostgreSQL window functions and CTEs can serve moderate in-database reporting on bounded datasets—measure before provisioning a warehouse.</p>
           <p>For analytical freshness without HTAP, use change-data capture into Kafka or the warehouse loader (Debezium and similar) so fact tables update on a schedule or stream that matches dashboard SLAs. In columnar OLAP engines, align sort keys and partitions with the filters BI actually runs; omitting partition predicates on partitioned tables is a frequent source of runaway scan cost in BigQuery and analogous systems.</p>
           <p>When evaluating HTAP, document which queries route to the row store versus the columnar replica, how replication lag is measured, and who owns failure of the analytics path. <a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">CQRS</a> at the application layer often pairs naturally with OLTP/OLAP separation at the storage layer.</p>
+          <p><strong>Workload isolation:</strong> DDIA contrasts OLTP row stores with columnar scan engines—mixing heavy analytics on primary OLTP without guardrails starves checkout latency. Debezium CDC to columnar files or warehouse landing zones is the common compromise; snapshot and streaming modes define recovery after connector failure.</p>
+          <p><strong>When HTAP is justified:</strong> low-concurrency operational dashboards on fresh data may use vendor HTAP replicas—document maximum concurrent analysts and forbid ad hoc cross joins that bypass resource queues.</p>
+          <p><strong>Resource governance:</strong> warehouse engines use workload management or slots; OLTP killed by analyst SQL needs routing rules or read replicas, not hope. Postgres read replicas serve reporting only when queries tolerate replication lag displayed in BI headers.</p>
+          <p><strong>Schema shape:</strong> columnar engines favour narrow fact tables and late-binding dimensions; wide OLTP rows map poorly—normalize or flatten in the landing zone before claiming lakehouse performance.</p>
+          <p>Batch ETL windows remain valid for small orgs—CDC streaming is operational complexity you adopt when freshness SLAs beat nightly suffices.</p>
+          <p>BI tools should display replication lag on dashboards sourced from replicas so analysts interpret partial data knowingly.</p>
+          <p>Capacity reviews should separate OLTP connection pool headroom from warehouse slot usage—bursting either layer during month-end is a planning failure, not an surprise.</p>
+          <p>Query routing middleware needs audit logs when analysts are redirected from OLTP to replicas—forensics use them after accidental heavy scans.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -233,6 +242,7 @@
             <li><a href="https://www.cs.umd.edu/~abadi/papers/abadi-sigmod08.pdf" rel="noopener noreferrer" target="_blank">Daniel Abadi et al. — Column-Stores vs. Row-Stores (SIGMOD 2008)</a></li>
             <li><a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">Martin Fowler — CQRS</a></li>
             <li><a href="https://www.postgresql.org/docs/current/sql-select.html" rel="noopener noreferrer" target="_blank">PostgreSQL — <code>SELECT</code> (window functions and analytical SQL on OLTP)</a></li>
+            <li><a href="https://debezium.io/documentation/reference/stable/index.html" rel="noopener noreferrer" target="_blank">Debezium documentation</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

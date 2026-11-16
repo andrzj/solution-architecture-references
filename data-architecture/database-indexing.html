@@ -108,6 +108,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Heap tables are fast for bulk maintenance and simple full-table analytics, but OLTP paths that filter on a handful of columns pay linear cost in table size. Without indexes, a selective lookup on a billion-row ledger still reads the entire relation; foreign-key checks and cascades devolve into the same pattern. Indexes localize I/O to the matching row set and give the optimizer an alternative when estimated selectivity crosses its threshold.</p>
           <p>The hard part is not creating indexes but choosing the few that match real query shapes. Misaligned indexes waste disk, slow every mutation, and may never appear in plans if predicates wrap columns in functions or statistics lie. Sound practice pairs schema design with <a href="https://www.postgresql.org/docs/current/using-explain.html" rel="noopener noreferrer" target="_blank">EXPLAIN</a> evidence rather than indexing every column by convention.</p>
+          <p>DDIA’s discussion of read amplification explains why over-indexing hurts write-heavy services—treat indexes like features with owners and deprecation dates, not permanent schema clutter.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -209,6 +210,13 @@
           <p>Review <code>pg_stat_user_indexes</code> quarterly; drop duplicates and zero-scan indexes. For <code>jsonb</code> and FTS, pick operator classes deliberately—<a href="https://www.postgresql.org/docs/current/gin.html" rel="noopener noreferrer" target="_blank">GIN</a> and <a href="https://www.postgresql.org/docs/current/brin.html" rel="noopener noreferrer" target="_blank">BRIN</a> docs list tradeoffs between build time, query operators, and index size.</p>
           <p>Treat index design as a living contract with application queries: capture top statements from <code>pg_stat_statements</code>, tag them with expected plans, and regression-test EXPLAIN output in CI when migrations add predicates. When loads spike, temporarily raise <code>maintenance_work_mem</code> for index builds and validate autovacuum keeps pace so HOT updates do not collapse into full index tuple churn. For partitioning, align local indexes on each child with partition pruning predicates—global indexes on the parent are not the PostgreSQL model, so cross-partition sorts may need redesigned keys or federation.</p>
           <p>Hash indexes aside, prefer proving necessity with benchmarks on production-sized clones. Document each production index in schema metadata: owning team, query class served, expected selectivity band, and last verification date from EXPLAIN evidence so future migrations do not accidentally drop silent performance anchors.</p>
+          <p><strong>Postgres specifics:</strong> partial indexes and covering indexes (INCLUDE) can shrink btree size when queries filter on status or tenant predicates—see PostgreSQL docs on index-only scans. BRIN suits append-only time-series facts when correlation with physical heap order holds.</p>
+          <p><strong>MongoDB:</strong> compound index key order follows equality, sort, range rule from MongoDB manual; multikey indexes on arrays inflate write amplification. DDIA’s log-structured and B-tree discussion frames why index maintenance dominates write-heavy OLTP—measure insert p95 after each new secondary index, not just SELECT wins.</p>
+          <p><strong>Postgres maintenance:</strong> bloat and stale statistics cause plans to abandon good indexes—autovacuum tuning and <code>ANALYZE</code> after bulk loads belong beside index design. Unused indexes waste write path; pg_stat_user_indexes guides pruning quarterly.</p>
+          <p><strong>Anti-patterns:</strong> indexing every filter column on wide tables without composite planning; duplicate overlapping indexes satisfying the same query shape; leading-wildcard LIKE patterns that defeat btree anyway.</p>
+          <p>Load tests on clones at production row counts—OLTP with millions of rows behaves unlike empty-schema CI databases.</p>
+          <p>Schedule quarterly index reviews with EXPLAIN captures from top five latency queries per service—plans that flip from Index Scan to Seq Scan after a statistics change are early warnings before customer-visible regressions. MongoDB explain() on slow ops deserves the same cadence when document stores share the estate.</p>
+          <p>Autovacuum lag on Postgres manifests as index bloat before obvious user errors—monitor dead tuple thresholds on heavily updated tables.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -241,7 +249,7 @@
             <li><strong>Illustrative scenario —</strong> An order API paginates by <code>created_at</code> per <code>user_id</code>; a covering B-tree on <code>(user_id, created_at DESC) INCLUDE (total, status)</code> enables index-only scans for heavy shoppers.</li>
             <li><strong>Illustrative scenario —</strong> A compliance team scans last-quarter events from a multi-terabyte append-only log; BRIN on <code>recorded_at</code> keeps index size negligible while skipping unrelated heap ranges.</li>
             <li><strong>Illustrative scenario —</strong> Inbox queries touch only unread rows; a partial index matching <code>WHERE read = false</code> tracks the active slice instead of the full notifications heap.</li>
-            <li><strong>Case study —</strong> Practitioners commonly pair PostgreSQL’s <a href="https://www.postgresql.org/docs/current/btree-introduction.html" rel="noopener noreferrer" target="_blank">B-tree</a> documentation with Markus Winand’s <a href="https://use-the-index-luke.com/" rel="noopener noreferrer" target="_blank">Use The Index, Luke</a> when onboarding teams to systematic index reviews.</li>
+            <li><strong>Case study —</strong> Practitioners commonly pair PostgreSQL’s <a href="https://www.postgresql.org/docs/current/indexes-intro.html" rel="noopener noreferrer" target="_blank">B-tree</a> documentation with Markus Winand’s <a href="https://use-the-index-luke.com/" rel="noopener noreferrer" target="_blank">Use The Index, Luke</a> when onboarding teams to systematic index reviews.</li>
             <li><strong>Illustrative scenario —</strong> A tenant-aware SaaS routes every OLTP read through <code>WHERE tenant_id = $1</code>; a composite on <code>(tenant_id, external_id)</code> plus a partial unique index on active rows removes both full-table scans and duplicate integration keys.</li>
             <li><strong>Illustrative scenario —</strong> Search over product SKUs with fuzzy substring needs <code>pg_trgm</code> GIN on normalized text columns; exact-match catalog lookups stay on B-tree while exploratory admin search uses the trigram path.</li>
           </ul>
@@ -261,6 +269,8 @@
             <li><a href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html" rel="noopener noreferrer" target="_blank">PostgreSQL: Index-Only Scans and Covering Indexes</a></li>
             <li><a href="https://www.postgresql.org/docs/current/using-explain.html" rel="noopener noreferrer" target="_blank">PostgreSQL: Using EXPLAIN</a></li>
             <li><a href="https://use-the-index-luke.com/" rel="noopener noreferrer" target="_blank">Use The Index, Luke — SQL indexing for developers</a></li>
+            <li><a href="https://www.mongodb.com/docs/manual/indexes/" rel="noopener noreferrer" target="_blank">MongoDB — Indexes</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Designing Data-Intensive Applications — Martin Kleppmann</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
