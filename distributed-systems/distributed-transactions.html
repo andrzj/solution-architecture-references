@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Distributed Transactions — SA References</title>
-  <meta name="description" content="Two-phase commit mechanics, XA transactions, coordinator failure, and why distributed transactions are avoided in microservices.">
+  <meta name="description" content="A distributed transaction coordinates commit or abort across multiple resource managers; two-phase commit and XA preserve ACID at the cost of blocking, coupling, and fragile coordinator recovery.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,38 +96,37 @@
             <span class="badge badge--muted">Consistency</span>
           </div>
           <h1 class="article-header__title">Distributed Transactions</h1>
-          <p class="article-header__desc">Coordinating atomic operations across multiple independent data stores — the mechanics, the costs, and the modern alternatives.</p>
+          <p class="article-header__desc">A distributed transaction coordinates commit or abort across resource managers via two-phase commit and XA—strong atomicity at the cost of blocking, coupling, and fragile coordinator recovery.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-
-          <p>A distributed transaction commits or aborts work spanning multiple databases through a coordinator. Two-phase commit (2PC) is the classic pattern: prepare votes, then commit if all agree. It preserves ACID but blocks on coordinator or participant failures.</p>
+          <p>A <strong>distributed transaction</strong> is a coordinated unit of work that either commits or aborts across multiple independent resource managers—relational databases, message brokers, or other XA-capable stores—as if it were one atomic operation. The usual implementation is <strong>two-phase commit (2PC)</strong>: a transaction coordinator asks every participant to prepare (vote yes or no), then broadcasts a single commit or rollback decision once all votes are in. When every participant honors the protocol, you retain familiar ACID semantics across heterogeneous resources; when the coordinator or network fails at the wrong moment, participants can block in a prepared state holding locks until an operator or a recovered coordinator resolves the outcome.</p>
+          <p>Martin Kleppmann’s <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a> treats distributed transactions as powerful but fragile: they couple failure domains, extend lock duration over WAN round trips, and do not compose cleanly across independently deployed services. That trade-off is why most microservice architectures prefer sagas and other application-level consistency patterns instead of spanning 2PC across team boundaries.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Single-node databases achieve atomicity cheaply using write-ahead logs and local locks. Once data lives in separate systems — two relational databases, a database and a message queue, or databases in separate microservices — there is no single transaction log. Without coordination, a crash mid-operation leaves some participants committed and others not, creating permanent data inconsistency. Distributed transactions were introduced to provide the same atomicity guarantees engineers relied on in monolithic systems, even after distributing state across multiple nodes or services.</p>
+          <p>On a single machine, the database enforces atomicity with a local write-ahead log and lock manager. After you shard state across nodes—or split ownership across microservices—there is no shared log to roll back together. A crash between two local commits can leave one ledger updated and another untouched, which is unacceptable for settlement, inventory invariants, or paired publish-and-write operations. Distributed transactions answer that gap by externalizing the decision to a coordinator so all participants move forward or backward in lockstep, preserving the mental model of monolithic ACID even when data is physically distributed.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Resources are under the same vendor or infrastructure (e.g., two Oracle databases accessed via XA through the same transaction manager).</li>
-            <li>Correctness requirements are strict and financial/legal consequences of partial failures are severe (banking ledgers, payment settlement).</li>
-            <li>Participants already support XA (Java EE application servers, JMS brokers with XA support).</li>
-            <li>The transaction scope is small (two to three participants) and latency is acceptable.</li>
-            <li>You operate a tightly controlled private network where coordinator failure is manageable.</li>
+            <li>Participants live under one operational boundary and already expose XA or an equivalent prepare/commit interface through a shared transaction manager.</li>
+            <li>Regulatory or contractual rules require all-or-nothing updates across specific stores, and partial failure has legal or financial consequences.</li>
+            <li>The transaction touches a small, stable set of resource managers on a low-latency network where holding locks for multiple round trips is acceptable.</li>
+            <li>Operations staff can run, monitor, and recover a durable coordinator log with clear runbooks for in-doubt transactions.</li>
+            <li>You have verified end-to-end behavior under crash and partition scenarios—not only happy-path integration tests.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Microservices with separate databases owned by separate teams — XA couples services at the infrastructure level.</li>
-            <li>High-throughput systems where 2PC lock hold times create throughput bottlenecks.</li>
-            <li>Cloud-native architectures spanning services from multiple vendors or cloud regions.</li>
-            <li>Services using NoSQL stores that do not implement XA protocols.</li>
-            <li>Systems that must tolerate coordinator node failure without extended blocking.</li>
+            <li>Microservices each own a private database and release cadence; infrastructure-level XA ties availability and schema evolution across team boundaries.</li>
+            <li>Write throughput or user-facing latency budgets cannot tolerate locks held from prepare through commit across unreliable networks.</li>
+            <li>Some participants are managed services, serverless tiers, or document/key-value stores without reliable two-phase support.</li>
+            <li>You need partition tolerance without manual intervention—2PC is not a substitute for consensus, and a partitioned coordinator can block the whole flow.</li>
+            <li>A saga, outbox, or single-writer-per-aggregate design achieves adequate business consistency with less coupling.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Two-Phase Commit operates in two rounds of communication between a coordinator and N participants:</p>
+          <p>Two-phase commit separates the decision into a prepare phase (collect votes and force participants to durably record intent) and a commit phase (apply the global outcome). The sequence diagram below shows the happy path; an abort path mirrors Phase 2 with <code>ROLLBACK</code> if any vote is negative or the coordinator times out.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">sequenceDiagram
     participant C as Coordinator
@@ -163,74 +162,78 @@
                       <figcaption id="typical-architecture-caption">Two-phase commit: coordinator collects prepare votes, then commits or aborts all participants atomically.</figcaption>
                     </figure>
 
-          <p>XA is the standard C API / Java interface (JTA) that maps this protocol to specific resource managers. A transaction manager (e.g., Atomikos, Narayana, IBM TXSeries) drives the protocol and maintains a durable transaction log to recover after crashes.</p>
+          <p>The <strong>XA</strong> specification maps this protocol onto concrete resource managers through interfaces such as JTA in Java. A transaction manager drives prepare and commit, writes a durable coordinator log, and replays in-doubt branches after restart. Application servers typically embed managers such as Narayana or Atomikos; Spring’s <code>JtaTransactionManager</code> delegates to the same infrastructure.</p>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>True atomicity across heterogeneous data stores without application-level compensation logic.</li>
-                <li>Well-understood protocol with decades of production usage in enterprise systems.</li>
-                <li>Supported by most relational databases and enterprise messaging systems via XA.</li>
-                <li>Integrates naturally with existing ACID semantics developers already understand.</li>
+                <li>Delivers atomic commit or rollback across heterogeneous stores without hand-written compensation for every branch.</li>
+                <li>Reuses familiar ACID vocabulary that operators and auditors already understand.</li>
+                <li>Mature enterprise databases and JMS-style brokers expose XA when all participants share a controlled deployment.</li>
+                <li>Central coordinator log provides a single place to inspect in-flight global transactions.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Coordinator is a single point of failure — crash during Phase 2 leaves participants blocked holding locks indefinitely (the "blocking" problem).</li>
-                <li>Locks held across network round trips reduce throughput significantly at scale.</li>
-                <li>3PC avoids blocking but is rarely implemented due to increased complexity and still not partition-tolerant.</li>
-                <li>Tight coupling between services — schema and infrastructure changes in one participant affect all.</li>
-                <li>Poor fit for polyglot or cloud-native environments where XA support is absent or unreliable.</li>
+                <li>Coordinator failure during the commit window can leave participants blocked in <code>PREPARED</code> with locks held—the classic blocking problem Kleppmann documents in DDIA.</li>
+                <li>Lock duration stretches across multiple network round trips, which caps throughput on contended rows.</li>
+                <li>Three-phase commit variants reduce some blocking cases but add complexity and still fail under partitions.</li>
+                <li>Couples schema, uptime, and rollout of every participant in the global transaction.</li>
+                <li>Jepsen-style fault injection on real stacks often surfaces timeout, heuristic, and recovery edge cases that integration tests miss.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>The coordinator failure problem is the central challenge: if the coordinator crashes after collecting all YES votes but before sending COMMIT, participants are stuck in the prepared state holding locks and cannot determine the outcome without the coordinator recovering. Three-Phase Commit (3PC) adds a pre-commit phase to reduce blocking but still cannot handle network partitions (by the FLP impossibility result, no deterministic algorithm can). In practice, durable coordinator logs and automated recovery are the standard mitigation. Most modern Java EE / Jakarta EE containers use Narayana or Atomikos as JTA transaction managers; Spring's <code>JtaTransactionManager</code> delegates to them.</p>
-          <p>Ensure XA timeouts are tuned — default values are often far too long for interactive workloads.</p>
+          <p>Treat the coordinator log as part of your availability story: replicate it, back it up, and practice recovery of in-doubt transactions before production traffic depends on it. Participants need explicit XA timeouts aligned with client SLAs—factory defaults are often far longer than interactive callers tolerate. Heuristic outcomes (a participant committing or aborting alone after a timeout) should surface as critical alerts because they may diverge from the coordinator’s recorded decision.</p>
+          <p>Before adopting 2PC between services, compare against a <a href="saga-pattern.html">saga</a> with idempotent steps, a transactional <a href="../communication-patterns/transactional-outbox.html">outbox</a> for reliable publish, or a single consensus group (Raft/etcd) that owns the coupled state. Google’s <a href="https://research.google/pubs/pub39966/" rel="noopener noreferrer" target="_blank">Spanner</a> paper illustrates a different axis: externally consistent transactions backed by Paxos replication and a globally synchronized clock—not classic cross-database XA, but the same architectural question of when to pay for strong atomicity.</p>
+          <p>Chaos and partition testing (including analyses published by <a href="https://jepsen.io/" rel="noopener noreferrer" target="_blank">Jepsen</a> / Kyle Kingsbury) are worth running against any stack that claims transparent distributed transactions.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Coordinator crash in Phase 2:</strong> participants hold prepared-state locks indefinitely until coordinator recovers.</li>
-            <li><strong>Participant timeout:</strong> participant unilaterally aborts after waiting too long for Phase 2 decision, causing inconsistency if others already committed.</li>
-            <li><strong>Heuristic decisions:</strong> after timeout, participants may make unilateral commit/abort decisions (heuristic outcomes), which may diverge from the coordinator's intent.</li>
-            <li><strong>Network partition isolating coordinator:</strong> partition prevents coordinator from delivering COMMIT to a subset of participants.</li>
-            <li><strong>Transaction log loss:</strong> if coordinator log is lost before recovery, in-doubt transactions remain unresolved permanently.</li>
+            <li><strong>Coordinator loss after unanimous prepare:</strong> participants retain locks and wait for a coordinator that may not return promptly.</li>
+            <li><strong>Aggressive participant timeout:</strong> a slow participant aborts while others commit, breaking global atomicity.</li>
+            <li><strong>Heuristic commit or rollback:</strong> operators or libraries force a local outcome that does not match the coordinator log.</li>
+            <li><strong>Partitioned coordinator:</strong> one subset receives <code>COMMIT</code> while others never leave <code>PREPARED</code>.</li>
+            <li><strong>Lost coordinator log:</strong> in-doubt branches cannot be completed automatically and require manual reconciliation.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Do all participating stores support XA / two-phase commit protocols?</li>
-            <li>Is coordinator failure recovery acceptable (restart time, lock hold duration)?</li>
-            <li>Are the performance implications of distributed locks acceptable at your transaction rate?</li>
-            <li>Have you considered the Saga pattern as a lower-coupling alternative?</li>
-            <li>Is a transaction manager (Narayana, Atomikos) already in your stack, or does adding one increase operational burden?</li>
-            <li>Are network latencies between participants low and predictable?</li>
+            <li>Does every resource manager in scope implement prepare/commit reliably under your failure model?</li>
+            <li>Can you bound how long prepared locks may be held during coordinator outage?</li>
+            <li>Have you measured lock contention at peak transaction rates on shared rows?</li>
+            <li>Would a saga or outbox meet business rules with less cross-team coupling?</li>
+            <li>Is coordinator log durability, replication, and restore tested on a schedule?</li>
+            <li>Have you run partition or crash tests (chaos or Jepsen-style scenarios) on the full path?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Bank-to-bank transfer updating two Oracle databases in the same data centre via XA.</li>
-            <li>J2EE order processing system coordinating a relational database and a JMS message queue.</li>
-            <li>Mainframe financial batch jobs using CICS or IMS distributed transaction support.</li>
-            <li>SAP systems using XA to coordinate ERP database writes with connected systems.</li>
+            <li><strong>Illustrative scenario —</strong> A legacy settlement job updates two relational schemas in the same data centre through one JTA transaction manager so both ledgers commit or both roll back during end-of-day processing.</li>
+            <li><strong>Illustrative scenario —</strong> An application server writes an order row and enlists a JMS session in the same global transaction so message publication cannot succeed unless the database commit does.</li>
+            <li><strong>Case study —</strong> Mainframe CICS and IMS workloads have long used coordinated transaction entry to pair hierarchical databases with external updates; that history is why XA semantics remain entrenched in regulated batch estates.</li>
+            <li><strong>Case study —</strong> <a href="https://research.google/pubs/pub39966/" rel="noopener noreferrer" target="_blank">Google Spanner</a> provides globally ordered, externally consistent transactions via Paxos-backed shards and TrueTime—an alternative to stringing classical 2PC across unrelated operational databases.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="saga-pattern.html">Saga Pattern</a> — the primary microservices alternative to distributed transactions, using compensating transactions instead of 2PC.</li>
-            <li><a href="compensating-transactions.html">Compensating Transactions</a> — semantic undo operations that replace atomic rollback in eventually-consistent workflows.</li>
-            <li><a href="distributed-locking.html">Distributed Locking</a> — related coordination primitive; 2PC participants hold locks during prepared phase.</li>
+            <li><a href="saga-pattern.html">Saga Pattern</a> — sequences local commits with compensating rollbacks when cross-service 2PC is impractical.</li>
+            <li><a href="compensating-transactions.html">Compensating Transactions</a> — semantic undo steps that sagas invoke after partial forward progress.</li>
+            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — replicate coordinator state safely when a single node would be a brittle 2PC bottleneck.</li>
+            <li><a href="distributed-locking.html">Distributed Locking</a> — participants hold row or page locks through the prepared phase of 2PC.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/two-phase-commit.html" rel="noopener noreferrer" target="_blank">Two-Phase Commit — Martin Fowler's Patterns of Distributed Systems</a> — concise practical explanation of 2PC phases and blocking behavior.</li>
-            <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Saga — microservices.io</a> — preferred alternative when cross-service ACID transactions are too costly.</li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/saga" rel="noopener noreferrer" target="_blank">Saga design pattern — Azure Architecture Center</a> — orchestration vs. choreography guidance for long-running work.</li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> — distributed transactions, exactly-once semantics, and why sagas are the common microservices escape hatch.</li>
+            <li><a href="https://martinfowler.com/articles/patterns-of-distributed-systems/two-phase-commit.html" rel="noopener noreferrer" target="_blank">Two-Phase Commit — Martin Fowler</a> — phase breakdown, blocking behavior, and coordinator responsibilities.</li>
+            <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Saga — microservices.io (Chris Richardson)</a> — the usual application-level alternative when XA cannot span services.</li>
+            <li><a href="https://research.google/pubs/pub39966/" rel="noopener noreferrer" target="_blank">Spanner: Google’s Globally-Distributed Database</a> — strong distributed transactions without classical cross-vendor 2PC.</li>
+            <li><a href="https://jepsen.io/" rel="noopener noreferrer" target="_blank">Jepsen</a> — empirical fault-injection analyses of databases and coordination products (Aphyr).</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

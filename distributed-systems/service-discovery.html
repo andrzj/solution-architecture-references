@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Service Discovery — SA References</title>
-  <meta name="description" content="Client-side vs server-side service discovery, service registries (Consul, Eureka, etcd, Kubernetes DNS), health checks, zero-downtime registration, and service mesh integration.">
+  <meta name="description" content="Client-side vs server-side service discovery, Consul and Kubernetes DNS, health checks, graceful registration, and mesh-based endpoint delivery.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,33 +96,36 @@
             <span class="badge badge--muted">Infrastructure</span>
           </div>
           <h1 class="article-header__title">Service Discovery</h1>
-          <p class="article-header__desc">How services find each other dynamically in distributed environments — client-side vs server-side discovery, service registries, health checks, DNS-based discovery, and service mesh integration.</p>
-          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
+          <p class="article-header__desc">Mapping logical names to healthy instances — client-side and server-side discovery, Consul and Kubernetes DNS, health checks, and mesh control planes.</p>
+          <div class="article-header__meta"><span>⏱ 13 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-
-          <p>Service discovery maps a logical service name to live instance addresses. Clients may look up instances themselves (Eureka/Ribbon) or call through a load balancer that hides them (Kubernetes Service). Instances register on startup and deregister on shutdown or failed health checks.</p>
+          <p><strong>Service discovery</strong> maintains a live directory from service name (and optional metadata) to network locations of healthy instances. Producers <strong>register</strong> on startup; the registry <strong>deregisters</strong> on graceful shutdown or failed health checks; consumers <strong>resolve</strong> names before opening connections.</p>
+          <p>Patterns fall into <strong>client-side</strong> discovery (the caller queries Eureka/Consul, caches endpoints, load-balances in-process—Netflix Ribbon style) and <strong>server-side</strong> discovery (the caller hits a stable virtual IP or DNS name; a load balancer or kube-proxy chooses the backend). Kubernetes <code>Service</code> objects plus CoreDNS are the canonical managed-platform version; Consul couples DNS, HTTP, and Connect sidecars with <a href="gossip-protocols.html">Serf gossip</a> for failure awareness.</p>
+          <p>Checkout pods might scale on Kubernetes while warehouse jobs on another orchestrator register into a shared Consul catalog—clients resolve logical service names to healthy endpoints regardless of which control plane launched the instance.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In traditional deployments, services had stable hostnames or IP addresses configured in load balancers and application config files. In containerised microservices environments, this model breaks down: a single service may have dozens of instances with ephemeral IPs, instances spin up and down in seconds during scaling events or rolling deployments, and multiple versions may be simultaneously in service. Static configuration cannot track these changes. Service discovery automates the process of tracking service instances and their health, replacing manual load balancer management with a dynamic, self-updating registry.</p>
+          <p>Microservice and container schedulers recycle IP addresses continuously. Static config files and manual load-balancer edits cannot keep pace with rolling deploys, autoscaling, and multi-version canaries. Discovery automates that mapping and ties it to health so traffic does not land on processes still starting or already drained.</p>
+          <p>Kleppmann’s network and unbundling themes in <a href="https://dataintensive.net/" target="_blank" rel="noopener noreferrer">DDIA</a> apply: discovery is infrastructure that lets application code speak in service names while the platform tracks where instances actually run.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Containerised microservices running on Kubernetes, ECS, or Nomad where service IPs are ephemeral.</li>
-            <li>Auto-scaling groups where the number and identity of instances changes dynamically.</li>
-            <li>Multi-region deployments where services need to find region-local or global backends.</li>
-            <li>Blue/green and canary deployments where traffic must be selectively routed to specific versions.</li>
+            <li>Use platform-native discovery (Kubernetes Services, ECS Service Discovery, Cloud Map) when the scheduler already owns lifecycle events.</li>
+            <li>Use Consul or Eureka when workloads span VMs and containers and you need a shared registry with rich health checks.</li>
+            <li>Use mesh xDS (Istio, Linkerd) when you want discovery, mTLS, and retries without per-language client libraries.</li>
+            <li>Use DNS-based discovery for polyglot clients that cannot embed SDKs but understand SRV/A records.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Small-scale deployments with stable addresses — a load balancer with static backends is simpler and sufficient.</li>
-            <li>Serverless architectures where the cloud provider abstracts away instance addresses entirely.</li>
+            <li>Do not add a registry when a single HAProxy and three static backends suffice—operational surface should match churn.</li>
+            <li>Do not point serverless callers at instance IPs; use provider function URLs or API gateways instead.</li>
+            <li>Do not treat DNS alone as instant discovery—TTL and JVM caching introduce stale routes unless tuned.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Registration flows through health-checked catalog entries; resolution returns ready endpoints only. Headless Kubernetes services expose individual Pod DNS for StatefulSets (Cassandra, Kafka) while ClusterIP fronts stateless HTTP.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart LR
     SA["Client-side: Service A"] --> REG1["Registry lookup"] --> LB1["Client load balance"]
@@ -164,66 +167,67 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Handles dynamic instance lifecycle — no manual load balancer reconfiguration.</li>
-                <li>Health-check integration ensures traffic is only sent to passing instances.</li>
-                <li>Enables advanced routing: version-based, zone-aware, latency-based load balancing.</li>
-                <li>Foundation for service mesh traffic management without code changes in services.</li>
+                <li>Automates endpoint churn during deploys and autoscaling—no ticket-driven LB edits.</li>
+                <li>Health-gated catalogs keep cold-start pods and draining nodes off the hot path.</li>
+                <li>Metadata (version, AZ, weight) enables canary and zone-aware routing.</li>
+                <li>Mesh control planes reuse the same catalog for mTLS identities and retries.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Client-side discovery requires each language/framework to implement discovery logic and maintain a client library.</li>
-                <li>The registry itself is a critical dependency — its unavailability can prevent all service-to-service communication.</li>
-                <li>DNS-based discovery has TTL caching delays, which can route traffic to stopped instances during transitions.</li>
-                <li>Health check false positives can prematurely deregister a slow-but-functioning instance.</li>
+                <li>Client-side libraries multiply per language and must handle cache staleness.</li>
+                <li>Registry outages block registration and can strand new pods without cached fallbacks.</li>
+                <li>DNS TTL and aggressive JVM caching lengthen incident tails after scale-in.</li>
+                <li>Split views during partitions—clients must tolerate brief inconsistency or use quorum reads on metadata.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Consul</strong> provides service discovery with health checks, a key-value store, and multi-datacenter support. It uses a gossip protocol (Serf) for cluster membership and Raft for consistent KV state. Consul's DNS interface allows services to discover each other using standard DNS without a client library. Consul Connect adds service mesh mTLS between services using Envoy as a sidecar proxy.</p>
-          <p><strong>Kubernetes service discovery</strong> works via DNS (CoreDNS) and the Kubernetes API. Services are assigned a stable ClusterIP and DNS name; the kube-proxy routes ClusterIP traffic to healthy Pods via iptables or IPVS. For StatefulSets requiring direct Pod addressing (e.g., Cassandra), a headless service omits the ClusterIP and DNS resolves directly to Pod IPs. Kubernetes Endpoints/EndpointSlices track the current set of ready Pods.</p>
-          <p><strong>Zero-downtime registration:</strong> during deployment, a new instance should be fully initialised and pass health checks before being registered. During shutdown, it should be deregistered first, then the process should wait for in-flight requests to complete (graceful drain) before terminating. Kubernetes <code>readinessProbe</code> and <code>preStop</code> lifecycle hooks implement this pattern.</p>
-          <p><strong>Service mesh integration</strong> (Istio, Linkerd) takes service discovery to its logical conclusion — the data plane sidecar proxy (Envoy) receives service endpoints directly from the control plane (xDS API) and handles all routing, retries, mTLS, and observability transparently without any application-level discovery code.</p>
+          <p><strong>Consul:</strong> Agents register local services; servers replicate catalog via Raft; Serf propagates node health. DNS (<code>.service.consul</code>) offers L4-friendly discovery; Connect injects Envoy for L7 policies. Tag prepared queries for nearest healthy payment instance.</p>
+          <p><strong>Kubernetes:</strong> <code>Endpoints</code>/<code>EndpointSlice</code> objects track ready Pods; kube-proxy or CNI datapaths program rules. Use <code>readinessProbe</code> before marking ready; <code>preStop</code> sleeps while Endpoint removal propagates. Headless services expose per-Pod A records for stateful workloads while ClusterIP fronts stateless HTTP.</p>
+          <p><strong>Eureka pattern:</strong> Registry replicates in AP style; clients refresh on a schedule and apply client-side load balancing—acceptable when brief staleness is tolerated and the registry avoids strong global consistency costs.</p>
+          <p><strong>Graceful deploy:</strong> Register only after dependencies connect; deregister before SIGKILL; align <code>terminationGracePeriodSeconds</code> with longest in-flight checkout RPC.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Registry unavailability:</strong> if Consul or etcd goes down, clients with stale cached endpoints may continue working temporarily, but new instances cannot register and failed instances cannot deregister.</li>
-            <li><strong>DNS TTL caching:</strong> aggressive DNS caching by JVM (default: 30s or infinite with certain security settings) causes traffic to be sent to terminated instances long after deregistration.</li>
-            <li><strong>Health check misconfiguration:</strong> a health endpoint that always returns 200 regardless of actual readiness causes the registry to route traffic to unhealthy instances.</li>
-            <li><strong>Split-brain in registry:</strong> network partition can cause different Consul/etcd nodes to have different service lists; clients on different sides may see different healthy instances.</li>
+            <li><strong>Thundering herd on cold cache:</strong> registry flap causes every client to refresh simultaneously—rate-limit lookups and use watch/long-poll APIs.</li>
+            <li><strong>Liveness-only probes:</strong> JVM up but not accepting traffic—route payment failures until readiness fails.</li>
+            <li><strong>Stale DNS in Java:</strong> <code>InetAddress</code> caching keeps dead Pod IPs—set <code>networkaddress.cache.ttl</code> consciously or bypass DNS with mesh xDS.</li>
+            <li><strong>Cross-DC catalog drift:</strong> WAN federated Consul sees different health—prefer local prepared queries for latency-sensitive checkout.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is Kubernetes handling service discovery? If so, is CoreDNS/ClusterIP sufficient or do you need a service mesh?</li>
-            <li>Are services polyglot? Server-side discovery avoids per-language client library maintenance.</li>
-            <li>Are health checks accurately reflecting instance readiness (not just liveness)?</li>
-            <li>Is the service registry deployed with HA (e.g., 3-node Consul cluster) and monitored?</li>
-            <li>Have you configured graceful shutdown and deregistration before SIGTERM?</li>
+            <li>Does the scheduler already expose discovery, or do hybrid VMs need Consul/etcd?</li>
+            <li>Client-side or server-side resolution—and who owns retries/timeouts?</li>
+            <li>Do readiness checks prove dependency readiness (DB, cache), not just port open?</li>
+            <li>Is the registry HA with monitored Raft quorum or etcd health?</li>
+            <li>Does graceful shutdown wait for endpoint removal before process exit?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Netflix Eureka + Ribbon for client-side service discovery across hundreds of microservices.</li>
-            <li>HashiCorp Consul for service discovery with health checks in a Nomad cluster running mixed workloads.</li>
-            <li>Kubernetes CoreDNS resolving service names for Pod-to-Pod communication within a cluster.</li>
-            <li>AWS App Mesh with Envoy sidecars providing service discovery via Cloud Map for ECS services.</li>
+            <li><strong>Illustrative scenario — RideRelay checkout on Kubernetes:</strong> Payment Deployment scales; EndpointSlices update; checkout sidecar resolves ClusterIP; Istio xDS pushes new endpoints with mTLS before old Pods terminate.</li>
+            <li><strong>Case study —</strong> Netflix Eureka + Ribbon (client-side) at scale—with cache refresh trade-offs.</li>
+            <li><strong>Case study —</strong> HashiCorp Consul on Nomad with HTTP/TCP health checks for warehouse services.</li>
+            <li>AWS Cloud Map + App Mesh for ECS tasks discovering upstream gRPC hosts.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="distributed-coordination.html">Distributed Coordination</a> — Consul and etcd serve dual roles as service registries and distributed coordination primitives.</li>
-            <li><a href="gossip-protocols.html">Gossip Protocols</a> — Consul uses gossip (Serf) for cluster membership, which underpins its service discovery reliability.</li>
-            <li><a href="../architecture-styles/microservices.html">Microservices</a> — service discovery is a core infrastructure requirement for microservices architectures.</li>
+            <li><a href="gossip-protocols.html">Gossip Protocols</a> — Serf membership accelerates Consul failure detection.</li>
+            <li><a href="distributed-coordination.html">Distributed Coordination</a> — shared etcd/Consul clusters often back both discovery and locks.</li>
+            <li><a href="../deployment/service-mesh.html">Service Mesh</a> — discovery feeds Envoy/Linkerd data planes.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.nginx.com/blog/service-discovery-in-a-microservices-architecture/" rel="noopener noreferrer" target="_blank">Service Discovery in a Microservices Architecture — NGINX</a> — comprehensive overview of client vs server-side patterns.</li>
-            <li><a href="https://developer.hashicorp.com/consul/docs/concepts/service-discovery" rel="noopener noreferrer" target="_blank">Consul Service Discovery Documentation</a> — official Consul architecture and health check documentation.</li>
-            <li><a href="https://kubernetes.io/docs/concepts/services-networking/service/" rel="noopener noreferrer" target="_blank">Kubernetes Service — Kubernetes Docs</a> — DNS, ClusterIP, headless services, and EndpointSlices.</li>
+            <li><a href="https://microservices.io/patterns/client-side-discovery.html" rel="noopener noreferrer" target="_blank">Client-Side Service Discovery — microservices.io</a></li>
+            <li><a href="https://developer.hashicorp.com/consul/docs/concepts/service-discovery" rel="noopener noreferrer" target="_blank">Consul Service Discovery</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/services-networking/service/" rel="noopener noreferrer" target="_blank">Kubernetes Service — Kubernetes Docs</a></li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> (unreliable networks and service integration)</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

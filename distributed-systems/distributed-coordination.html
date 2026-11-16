@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Distributed Coordination — SA References</title>
-  <meta name="description" content="ZooKeeper znodes and watches, etcd key-value and lease API, Consul features, distributed config and leader election use cases, linearisability guarantees, and performance characteristics.">
+  <meta name="description" content="Consensus-backed coordination with ZooKeeper and etcd: linearisable metadata, watches, leases, recipes for leader election and locks, Consul overlap, and why Kubernetes keeps cluster state in etcd.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -95,137 +95,149 @@
             <span class="badge badge--primary">Distributed Systems</span>
           </div>
           <h1 class="article-header__title">Distributed Coordination</h1>
-          <p class="article-header__desc">ZooKeeper, etcd, and Consul as coordination primitives — znodes, watches, leases, and the use cases of distributed config, leader election, service discovery, and distributed locking.</p>
-          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
+          <p class="article-header__desc">How Raft- and ZAB-backed stores expose watches, ephemeral membership, and leases so clusters agree on small, critical metadata without turning every app into a consensus implementer.</p>
+          <div class="article-header__meta"><span>⏱ 14 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-
-          <p>Coordination services like ZooKeeper, etcd, and Consul give distributed processes shared configuration, locks, and leader election. They expose watches so clients react when cluster state changes. Kubernetes control plane components depend on etcd for this kind of coordination.</p>
+          <p><strong>Distributed coordination</strong> is the infrastructure that lets many processes agree on small pieces of shared metadata—who is the leader, which nodes are alive, what configuration is current—without each application embedding its own consensus protocol. Production systems usually reach for a <strong>coordination service</strong>: Apache ZooKeeper (hierarchical znodes and watches), etcd (versioned key-value with leases and multi-key transactions), or HashiCorp Consul (Raft-backed KV plus optional service registry and health checks).</p>
+          <p>Martin Kleppmann frames the underlying requirement in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a>: when you need every replica to observe the same order of events, you need <strong>total order broadcast</strong> or an equivalent consensus-backed log. Coordination services ship that capability as an API—<code>create</code>/<code>put</code>, <code>watch</code>, session-bound ephemeral keys—so operators store kilobytes of critical state, not customer rows. Kubernetes is the familiar proof point: the control plane persists all cluster objects in etcd and reconciles desired state from that single linearisable source of truth.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Building correct distributed coordination from scratch (leader election, distributed locking, cluster membership) requires implementing consensus algorithms correctly — a notoriously hard problem with subtle failure modes (see: split-brain, fencing tokens). Dedicated coordination services encapsulate this complexity behind a simple, well-tested API. Rather than every team implementing their own Paxos or Raft variant, they delegate coordination concerns to proven systems, focusing on their application logic.</p>
+          <p>Correct coordination—leader election without split brain, locks that actually exclude writers, membership that reflects real failures—reduces to consensus under crash faults. The FLP impossibility result shows you cannot build a perfect asynchronous consensus protocol; real systems add timing assumptions and accept bounded unavailability during partitions. Implementing Raft or ZAB yourself multiplies that risk: subtle bugs in membership changes, log truncation, or watch delivery show up only under production partitions.</p>
+          <p>Dedicated stores concentrate the hard parts behind a narrow contract. Kleppmann’s discussion of <strong>linearizability</strong> in DDIA applies directly: coordination metadata (epoch numbers, lock tokens, service registrations) is exactly the class of data where “read your latest write” and “everyone sees the same order” matter more than raw write throughput. Applications publish facts (“I am leader for term 7”, “config version 42”) and subscribe to changes; the service enforces ordering and durability.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Leader election for a single-primary database, scheduler, or worker process.</li>
-            <li>Distributed locks protecting shared resources that cannot be protected by database transactions.</li>
-            <li>Service registry for dynamic membership — tracking which instances are alive.</li>
-            <li>Distributed configuration management — cluster-wide config that services watch for changes.</li>
+            <li>Electing a single primary for databases, controllers, schedulers, or batch job runners where duplicate primaries would corrupt external state.</li>
+            <li>Distributed locks or semaphores when the guarded resource lacks compare-and-swap or transactional guards—typically paired with fencing tokens on the storage side.</li>
+            <li>Cluster membership and service registry metadata that must reflect process death quickly (ephemeral znodes, lease-bound keys).</li>
+            <li>Versioned configuration or feature flags that many instances should read consistently and react to via watches instead of polling.</li>
+            <li>Barrier, queue, and rendezvous recipes where all participants must observe the same transition (ZooKeeper recipes, etcd <code>Txn</code> patterns).</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Not a general-purpose database — data must be small (etcd recommends &lt;8 GB total, key-value pairs &lt;1.5 MB).</li>
-            <li>Not suitable for high-throughput data storage — throughput is bounded by consensus latency (hundreds to low thousands of writes/sec).</li>
-            <li>Do not use as a message queue, cache, or blob store.</li>
+            <li>Application or analytics data at megabyte values or terabyte totals—etcd’s guidance (~8&nbsp;GB cluster data, ~1.5&nbsp;MB per key) exists because consensus replication is the wrong price curve for bulk storage.</li>
+            <li>High-frequency data-plane writes (per-request counters, session caches, event streams)—throughput tops out in the low thousands of linearisable writes per second per cluster.</li>
+            <li>Problems solved with idempotent consumers, CRDTs, or gossip where eventual agreement is acceptable and stronger coordination would shrink availability.</li>
+            <li>Two-node “HA” without a tie-breaker—quorum needs an odd count (3, 5, 7); even pairs cannot survive symmetric partition safely.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-                    <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-                      <div class="architecture-diagram__render mermaid">flowchart TB
-    ZK["ZooKeeper znodes /election watches"]
-    ETCD["etcd PUT GET WATCH TXN lease locks"]
-    CON["Consul service registry + KV + health"]
-    ZK & ETCD & CON --> USE["Leader election config locks service mesh"]</div>
-                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>ZooKeeper Node Types
-          ═════════════════════
-            /config              ← persistent node (configuration)
-            /config/db-url       ← persistent node (value)
-            /election            ← persistent node (parent)
-            /election/n-0000001  ← ephemeral sequential (candidate 1)
-            /election/n-0000002  ← ephemeral sequential (candidate 2)
-          
-            Watch mechanism:
-              Client watches /election → notified when child created/deleted
-              Lowest sequential node = current leader
-              On leader crash: ephemeral node deleted → watchers notified
-          
-          etcd Key Operations
-          ════════════════════
-            PUT /config/db-url "postgres://..."
-            GET /config/db-url
-            WATCH /config/           ← streams all changes under prefix
-            PUT /lock/my-service --lease=<id>  ← TTL-bound ownership
-            TXN [IF key == ""] THEN [PUT key val] ← atomic CAS
-          
-          Consul Features
-          ════════════════
-            Service registration with health checks
-            Key-Value store (similar to etcd)
-            Sessions (TTL-based leases for locking)
-            DNS interface for service discovery
-            Connect (service mesh with mTLS via Envoy)</code></pre></details>
-                      <figcaption id="typical-architecture-caption">Coordination services expose watches, ephemeral nodes, and transactional keys for distributed configuration and locking.</figcaption>
-                    </figure>
+          <p>Clients treat the coordination cluster as a small, strongly consistent metadata plane; watches push notifications so workers react to leader changes or config updates without tight polling loops.</p>
+          <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
+            <div class="architecture-diagram__render mermaid">flowchart LR
+    subgraph apps["Application processes"]
+      W1["Worker"]
+      W2["Worker"]
+      C["Controller"]
+    end
+    subgraph coord["Coordination cluster"]
+      ETCD["etcd / ZooKeeper"]
+    end
+    W1 -->|"PUT lease / ephemeral znode"| ETCD
+    W2 -->|"WATCH prefix"| ETCD
+    C -->|"read linearisable + elect leader"| ETCD
+    ETCD -->|"watch events"| W1
+    ETCD -->|"watch events"| W2</div>
+            <details class="architecture-diagram__fallback">
+              <summary>View text diagram</summary>
+              <pre class="architecture-diagram__canvas"><code>ZooKeeper leader election (ephemeral sequential)
+          ═══════════════════════════════════════════
+            /election                ← persistent parent
+            /election/candidate-00001  ← ephemeral (Node A, leader)
+            /election/candidate-00002  ← ephemeral (Node B, watches 00001)
+            /election/candidate-00003  ← ephemeral (Node C, watches 00002)
 
+            Lowest sequence holds leadership; session loss deletes znode → next watcher promotes.
+
+          etcd coordination API (v3)
+          ══════════════════════════
+            PUT /config/app "v42"              → linearisable write (Raft)
+            GET /config/app --consistency=...   → quorum read when required
+            WATCH /config/ --prefix             → stream revisions after snapshot
+            PUT /locks/job --lease=9a3f...       → TTL-bound lock key
+            TXN compare version THEN put ELSE get  → compare-and-swap across keys
+
+          Kubernetes control plane
+          ════════════════════════
+            API server ──► etcd (all resource objects)
+            Controllers / scheduler ──► watches + writes via API server
+            Optional: app-level Lease objects for in-cluster leader election</code></pre>
+            </details>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Processes write small, ordered facts into a quorum-replicated store and subscribe with watches; Kubernetes centralises the same pattern via etcd behind the API server.</figcaption>
+          </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Linearisable reads and writes — strong consistency guarantees backed by Raft/ZAB consensus.</li>
-                <li>Watch/notification API eliminates polling — clients react to changes immediately.</li>
-                <li>Ephemeral nodes and TTL leases provide automatic cleanup on client failure.</li>
-                <li>Battle-tested at scale: etcd underpins Kubernetes, ZooKeeper underpins Kafka and HBase.</li>
+                <li>Linearisable metadata under crash faults—backed by Raft (etcd, Consul) or ZAB (ZooKeeper), matching the consistency model DDIA associates with coordination and locking.</li>
+                <li>Watch-driven notification removes hot polling paths; clients re-sync after reconnect with a fresh read plus re-registered watch.</li>
+                <li>Ephemeral znodes and leases tie keys to liveness—failed holders drop out of membership without manual cleanup.</li>
+                <li>Mature operational playbooks: etcd for Kubernetes, ZooKeeper’s decade of Kafka/HBase recipes, Consul for multi-DC service metadata.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Throughput bottleneck — consensus overhead limits write throughput to hundreds–low thousands of ops/sec.</li>
-                <li>Not horizontally scalable for reads without additional caching or follower reads.</li>
-                <li>Cluster quorum requirement: a 3-node cluster can tolerate 1 failure; 5-node tolerates 2. Not suitable for small deployments wanting 2-node HA.</li>
-                <li>ZooKeeper is operationally complex and has a JVM-based client model; etcd's Go-native simpler API has largely replaced it for new projects.</li>
+                <li>Write scalability stops at consensus latency—one leader replicates each entry; expect hundreds to low thousands of linearisable writes per second, not millions.</li>
+                <li>Quorum sizing trades fault tolerance for blast radius: lose majority and the cluster stops accepting writes until operators recover or replace nodes.</li>
+                <li>Client complexity: one-shot watches, session timeouts, and retry storms during partitions are easy to get wrong in application code.</li>
+                <li>Operational cost: fast SSD WAL, odd-member clusters, backup/restore drills, and version upgrades are mandatory—not optional “day two” tasks.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>ZooKeeper</strong> exposes a hierarchical znode filesystem. Znodes can be persistent (survive client disconnection), ephemeral (deleted when the creating client session ends), or sequential (node name gets a monotonically increasing suffix). These primitives compose into recipes: leader election (lowest sequential ephemeral node wins), group membership (ephemeral children of a parent node), distributed queues, and barriers. ZooKeeper's ZAB protocol provides total order broadcast with linearisable reads on quorum nodes.</p>
-          <p><strong>etcd</strong> provides a flat key-value API with prefix-based ranging and watches. Its MVCC (Multi-Version Concurrency Control) model retains a compactable history of all writes, enabling snapshot-based watches. Leases (TTL-bound tokens) allow any key to be associated with a lease; if the lease is not renewed before TTL expiry, all associated keys are atomically deleted. Transactions (<code>TXN</code>) provide conditional multi-key atomic operations.</p>
-          <p>etcd's gRPC API is cleaner than ZooKeeper's bespoke protocol, and it is the standard coordination store for Kubernetes.</p>
-          <p><strong>Performance characteristics:</strong> A 3-node etcd cluster on commodity hardware typically handles 2,000–5,000 write ops/sec, with read throughput much higher when using linearisable reads from the leader. ZooKeeper performs similarly. Both are far below what a standalone database or cache can handle — they are not intended for data-plane operations. Configuration and coordination data is typically small and infrequently changed, so these limits are rarely binding.</p>
+          <p><strong>ZooKeeper</strong> models a filesystem of znodes with ACLs, sequential naming, and session-bound ephemerals. Official <a href="https://zookeeper.apache.org/doc/current/recipes.html" rel="noopener noreferrer" target="_blank">recipes</a> document leader election, locks, queues, and barriers in terms of those primitives. ZAB provides total order on state changes; clients typically read from a quorum follower for scalability but use synchronous reads when they need the latest committed write. JVM clients must handle session expiration explicitly—any ephemeral node disappears when the session dies.</p>
+          <p><strong>etcd</strong> exposes a flat key space with revision numbers, range watches, and gRPC streaming. <a href="https://etcd.io/docs/v3.5/learning/api/" rel="noopener noreferrer" target="_blank">Leases</a> renew with keep-alive RPCs; associated keys vanish when TTL expires—ideal for locks and worker heartbeats. Multi-key <code>Txn</code> blocks implement compare-and-swap without race-prone read-modify-write loops. For Kubernetes clusters, prefer the built-in <a href="https://kubernetes.io/docs/concepts/architecture/leases/" rel="noopener noreferrer" target="_blank">Lease</a> and API machinery before colocating a second etcd solely for app metadata.</p>
+          <p><strong>Consul</strong> layers DNS and HTTP service discovery on the same Raft log as its KV store. Sessions (TTL leases) back lock primitives; Connect adds mesh TLS. Choose Consul when you want discovery and coordination from one HA cluster; choose standalone etcd when Kubernetes or custom gRPC clients already standardise on etcd v3.</p>
+          <p><strong>Guarantees versus assumptions:</strong> Kleppmann stresses that a lock is only as safe as the resource it protects—pair lease-based locks with monotonic fencing tokens on databases or object stores. Treat coordination latency as part of failover time: election plus watch propagation often spans seconds, not milliseconds.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Watch event loss during reconnect:</strong> ZooKeeper and etcd watches are one-shot; clients must re-establish watches and re-read state after reconnection to avoid missing events during the gap.</li>
-            <li><strong>etcd disk I/O saturation:</strong> etcd writes all entries to a WAL before acknowledging. On systems with high write latency (e.g., NFS or overloaded disks), etcd latency spikes and may lose leadership. etcd requires fast local SSDs.</li>
-            <li><strong>Session expiry and lock release:</strong> if a lock holder's session expires (network partition, GC pause), the lock is released. The holder must detect this and stop performing the critical section — fencing tokens address this.</li>
-            <li><strong>Unbounded key growth:</strong> systems that write unique keys without compaction fill etcd's keyspace, degrading performance and eventually hitting the storage limit.</li>
+            <li><strong>Missed watch windows:</strong> watches do not replay history; after reconnect, list or get the current state, then re-register the watch from the latest revision or zxid.</li>
+            <li><strong>etcd I/O stalls:</strong> WAL fsync on slow or networked disks drives leader churn and <code>etcdserver: request timed out</code> errors—keep data dir on local NVMe.</li>
+            <li><strong>Session or lease expiry while still working:</strong> long GC pauses or asymmetric partitions expire the session; the holder must stop mutating external systems—fencing rejects stale writers.</li>
+            <li><strong>Keyspace bloat:</strong> unbounded unique keys (per-request IDs stored in etcd) inflate MVCC history until compaction and quotas break scheduling latency SLOs.</li>
+            <li><strong>Split-brain at the application layer:</strong> two clients both believe they lead because only one side talks to quorum; always gate side effects on epoch or revision validated by storage.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are you using Kubernetes? etcd is already present — leverage it via Kubernetes primitives (Leases, ConfigMaps) rather than running a separate coordination cluster.</li>
-            <li>Do you need service discovery in addition to coordination? Consul provides both with a unified API.</li>
-            <li>How large is your coordination data? If &gt;1 MB per value, a coordination service is the wrong tool.</li>
-            <li>Have you tested watch reconnection logic and session expiry behaviour under network partition?</li>
-            <li>Is the coordination cluster on local fast SSDs? Network-attached storage is unsupported for etcd WAL.</li>
+            <li>Is strong consistency required, or would an idempotent, eventually consistent design suffice?</li>
+            <li>On Kubernetes, can Leases, ConfigMaps, or the API server satisfy the use case without a separate ZooKeeper/etcd cluster?</li>
+            <li>Will values stay small and change infrequently—well inside etcd/ZooKeeper sizing guidance?</li>
+            <li>Do downstream systems enforce fencing tokens (or equivalent) so expired lock holders cannot corrupt data?</li>
+            <li>Are watch handlers idempotent and tested under kill -9, network partition, and rolling upgrades?</li>
+            <li>Is the coordination cluster odd-sized, on fast local disks, with monitored quorum health and restore drills?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Kubernetes using etcd for all cluster state (Pod definitions, deployments, service configurations) with Raft consensus across etcd nodes.</li>
-            <li>Apache Kafka using ZooKeeper (replaced by KRaft in Kafka 3.x) for broker leader election and partition assignment coordination.</li>
-            <li>HBase using ZooKeeper for region server master election and distributed coordination of region assignments.</li>
-            <li>Consul used by HashiCorp Nomad for job scheduler leader election, cluster membership, and service registration.</li>
+            <li><strong>Case study —</strong> Kubernetes persists Deployments, Pods, and Leases in etcd; controllers and the scheduler reconcile exclusively from that store (see the <a href="https://kubernetes.io/docs/concepts/overview/components/" rel="noopener noreferrer" target="_blank">control plane overview</a>).</li>
+            <li><strong>Case study —</strong> Pre-KRaft Apache Kafka used ZooKeeper for broker registration, controller election, and topic partition leadership.</li>
+            <li><strong>Case study —</strong> Apache HBase relies on ZooKeeper for master election and region assignment coordination.</li>
+            <li><strong>Case study —</strong> HashiCorp Nomad elects its scheduler leader and tracks allocations through Consul’s Raft-backed state.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — ZooKeeper uses ZAB; etcd and Consul use Raft; understanding consensus is prerequisite to reasoning about coordination service guarantees.</li>
-            <li><a href="leader-election.html">Leader Election</a> — coordination services are the most common implementation substrate for leader election in practice.</li>
-            <li><a href="distributed-locking.html">Distributed Locking</a> — coordination services provide the primitives (ephemeral nodes, leases, CAS) for correct distributed locks.</li>
+            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — coordination services are operationalised Raft/ZAB; their limits are consensus limits.</li>
+            <li><a href="leader-election.html">Leader Election</a> — ephemeral sequential znodes and etcd elections are the default implementation pattern.</li>
+            <li><a href="distributed-locking.html">Distributed Locking</a> — leases and CAS transactions provide locks; fencing completes the safety story Kleppmann describes.</li>
+            <li><a href="service-discovery.html">Service Discovery</a> — Consul and etcd often hold both membership metadata and coordination keys in one cluster.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://zookeeper.apache.org/doc/r3.9.2/zookeeperOver.html" rel="noopener noreferrer" target="_blank">ZooKeeper Overview — Apache</a> — official architecture documentation covering znodes, watches, and guarantees.</li>
-            <li><a href="https://etcd.io/docs/v3.5/learning/api/" rel="noopener noreferrer" target="_blank">etcd v3 API Documentation</a> — comprehensive API reference for KV, lease, and watch operations.</li>
-            <li><a href="https://www.usenix.org/legacy/event/atc10/tech/full_papers/Hunt.pdf" rel="noopener noreferrer" target="_blank">ZooKeeper: Wait-free coordination for Internet-scale systems — Hunt et al.</a> — the original ZooKeeper paper.</li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> — linearizability, total order broadcast, fault tolerance, and locking assumptions.</li>
+            <li><a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="noopener noreferrer" target="_blank">How to do distributed locking — Martin Kleppmann</a> — why TTL locks need fencing on the guarded resource.</li>
+            <li><a href="https://www.usenix.org/legacy/event/atc10/tech/full_papers/Hunt.pdf" rel="noopener noreferrer" target="_blank">ZooKeeper: Wait-free coordination for Internet-scale systems — Hunt et al.</a> — original architecture and watch semantics.</li>
+            <li><a href="https://etcd.io/docs/v3.5/op-guide/" rel="noopener noreferrer" target="_blank">etcd Operations guide</a> — sizing, defragmentation, disaster recovery, and performance tuning.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

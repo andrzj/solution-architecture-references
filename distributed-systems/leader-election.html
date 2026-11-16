@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Leader Election — SA References</title>
-  <meta name="description" content="Algorithms and patterns for safely electing a single leader in a distributed cluster — bully algorithm, Raft election, ZooKeeper ephemeral nodes, fencing tokens, and TTL-based leases.">
+  <meta name="description" content="Safely electing a single coordinator—Raft terms and majority votes, consensus-backed stores, lease-based failover, and fencing tokens when timeouts alone are not enough.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -96,133 +96,146 @@
             <span class="badge badge--muted">Coordination</span>
           </div>
           <h1 class="article-header__title">Leader Election</h1>
-          <p class="article-header__desc">Safely designating exactly one node as the leader in a distributed cluster — algorithms, fencing tokens, TTL-based leases, and split-brain prevention.</p>
-          <div class="article-header__meta"><span>⏱ 9 min read</span></div>
+          <p class="article-header__desc">Safely designating exactly one coordinator in a cluster — Raft terms and majority votes, consensus-backed coordination stores, lease-based promotion, and fencing tokens when TTL alone is not enough.</p>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Leader election picks one node in a cluster to coordinate writes, locks, or scheduled jobs. Followers watch the leader and promote a replacement when the leader dies. Kafka partition leaders and single-writer databases rely on this pattern.</p>
+          <p><strong>Leader election</strong> is the process by which a distributed group picks one member as the authoritative coordinator for a period—handling writes, assigning partitions, running control loops, or holding a cluster-wide lock. Followers observe the leader and trigger a new election when the leader stops or appears unreachable. Martin Kleppmann’s <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a> (DDIA) treats <em>leader-based replication</em> as the default way strong databases and logs achieve a single serial order; election is how that leadership role is granted and revoked safely.</p>
+          <p>Election is not merely “who has the lock”: it must run under partitions and crashes so that two nodes do not both believe they are leader, or so that a stale leader cannot corrupt shared state. Raft bakes election into consensus via monotonic <em>terms</em> and majority votes; ZooKeeper and etcd expose election recipes on top of replicated logs; simpler lease-based schemes trade operational ease for weaker guarantees unless paired with <strong>fencing tokens</strong> at the resources being guarded.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Many coordination problems — replication, lock management, partition assignment, scheduled job execution — are simpler with a single authoritative node. Without a designated leader, every node must coordinate with every other node for every decision (O(n²) communication). Leader election concentrates decision-making, reducing coordination overhead to O(n) for follower-to-leader communication. The challenge is ensuring exactly one leader exists at any time, even across network partitions and process failures.</p>
+          <p>Many coordination problems—replicated logs, metadata stores, job schedulers, partition leadership—have a natural single-writer shape. Delegating decisions to one leader cuts cross-node chatter from pairwise negotiation to linear fan-in (clients → leader → followers). The hard part is fault tolerance: any timeout-based “the leader is dead” guess can be wrong under slow GC, long I/O, or partial network loss, which is why production designs lean on majority quorums (as in Raft’s <code>RequestVote</code> RPCs) or on consensus-backed stores rather than ad hoc heartbeats alone.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>A single coordinator is needed for a distributed task: primary database writes, distributed job scheduling, partition leader in Kafka.</li>
-            <li>A service needs a primary replica to accept writes while secondaries replicate asynchronously.</li>
-            <li>Periodic tasks (distributed cron) must run on exactly one node to avoid duplicate execution.</li>
-            <li>You need a single authoritative cache invalidator or event processor.</li>
+            <li>You need a single writer or serializer for a replicated log, database primary, or metadata service (DDIA’s leader-based replication model).</li>
+            <li>Partitioned systems (streaming, sharded storage) require one elected leader <em>per shard</em> to order operations for that shard.</li>
+            <li>Control-plane components (Kubernetes controllers, cluster schedulers) must run reconciliation on exactly one active instance.</li>
+            <li>Distributed cron or background sweeps must not double-run across horizontally scaled app instances.</li>
+            <li>You can accept brief unavailability during failover rather than risking divergent primaries.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Leaderless designs (CRDTs, gossip-based eventual consistency) are sufficient and provide better availability.</li>
-            <li>The coordination overhead of election is not justified for the task.</li>
-            <li>You need to scale writes horizontally — a single leader creates a write bottleneck.</li>
+            <li>Leaderless replication with tunable quorums (Dynamo-style) meets availability and consistency goals without a permanent elected primary.</li>
+            <li>Conflict-free replicated data types (CRDTs) or gossip convergence remove the need for a central coordinator.</li>
+            <li>Write throughput must scale out within one logical dataset—a single leader caps horizontal write scaling for that group.</li>
+            <li>Election adds latency and infrastructure (etcd/ZooKeeper) that outweigh benefits for embarrassingly parallel workloads.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>ZooKeeper ephemeral nodes are a common leader election pattern:</p>
+          <p>Raft’s election sub-protocol is the reference design for safe promotion: followers become candidates when they miss heartbeats; the candidate increments its term and requests votes from a <strong>majority</strong>; the winner becomes leader for that term and begins append-only replication. Consensus stores (etcd, Consul) implement this internally; application code typically watches keys or leases instead of speaking Raft directly.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
-                      <div class="architecture-diagram__render mermaid">flowchart TB
-    A["Node A candidate-0001 leader"] --> B["Node B watches A"]
-    B --> C["Node C watches B"]
-    A -.->|"crash deletes ephemeral node"| B
-    B -.->|"becomes leader"| C</div>
-                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>ZooKeeper Leader Election via Ephemeral Sequential Nodes
-          ═════════════════════════════════════════════════════════
+                      <div class="architecture-diagram__render mermaid">sequenceDiagram
+    participant F1 as Follower 1
+    participant F2 as Follower 2
+    participant F3 as Follower 3
+    Note over F1,F3: Leader heartbeats stop
+    F2->>F2: Election timeout fires
+    F2->>F1: RequestVote term=5
+    F2->>F3: RequestVote term=5
+    F1-->>F2: Grant vote
+    F3-->>F2: Grant vote
+    Note over F2: Majority grants Leader term 5
+    F2->>F1: AppendEntries heartbeat
+    F2->>F3: AppendEntries heartbeat</div>
+                      <details class="architecture-diagram__fallback"><summary>View text diagram</summary><pre class="architecture-diagram__canvas"><code>Raft leader election (3-node cluster)
+          ══════════════════════════════════════
           
-          All candidates create: /election/candidate-XXXXXXXX (sequential)
+          Normal: Leader (term 4) sends periodic AppendEntries to followers.
           
-            Node A creates: /election/candidate-0000000001
-            Node B creates: /election/candidate-0000000002
-            Node C creates: /election/candidate-0000000003
+          Leader fails or partition isolates it:
+            → Followers stop receiving heartbeats
+            → Randomised election timeout expires on Follower B
+            → B becomes candidate, term ← 5, votes for self
+            → B sends RequestVote(term=5) to A and C
+            → Majority (2 of 3) grants vote → B is leader for term 5
           
-          Leader = node holding the lowest-numbered znode
+          Stale leader on minority partition:
+            → Cannot win majority votes in higher term
+            → Must step down when it sees AppendEntries with term ≥ its own
           
-            → Node A is leader (has candidate-0000000001)
-            → Node B watches candidate-0000000001
-            → Node C watches candidate-0000000002 (watches next lower)
-          
-          Node A crashes → its ephemeral znode is deleted automatically
-            → Node B's watch fires → Node B becomes leader
-            → Node C watches candidate-0000000002 (now B's node)
-          
-          Fencing token: leader is assigned epoch/term number.
-          Storage guards reject writes with outdated epoch.</code></pre></details>
-                      <figcaption id="typical-architecture-caption">ZooKeeper leader election: lowest sequential ephemeral znode wins; watchers promote the next node on failure.</figcaption>
+          Fencing: storage or downstream services accept only writes tagged
+          with the highest seen term/epoch (Kleppmann, DDIA Ch. 9).</code></pre></details>
+                      <figcaption id="typical-architecture-caption">Raft election: a candidate needs a majority of grants; higher terms fence out stale leaders.</figcaption>
                     </figure>
 
-          <p>In Raft, leader election is built into the consensus protocol: nodes use randomised election timeouts; the first to time out sends <code>RequestVote</code> RPCs; a candidate gaining majority votes becomes the leader for that term.</p>
+          <p>An alternate pattern uses coordination-service recipes: candidates create <strong>ephemeral sequential</strong> znodes; the lowest sequence number is leader; others watch their predecessor. On session loss the ephemeral node vanishes and the watch fires. This is how many pre-Raft stacks ran Kafka controller election and similar control metadata—today often replaced by KRaft’s internal Raft log or etcd-backed operators.</p>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Simplifies coordination — followers defer to a single authoritative node.</li>
-                <li>Reduces inter-node communication compared to fully decentralised coordination.</li>
-                <li>ZooKeeper and etcd provide battle-tested, off-the-shelf leader election primitives.</li>
-                <li>Fencing tokens provide safety even when the old leader has not yet realised it has been replaced.</li>
+                <li>Establishes a single serialization point per shard or cluster—clients and followers know where to send writes.</li>
+                <li>Consensus-backed election (Raft terms, ZAB epochs) ties leadership to replicated logs so promotion and replication advance together.</li>
+                <li>Off-the-shelf recipes on etcd, Consul, and ZooKeeper avoid home-grown failure detectors for most control-plane workloads.</li>
+                <li>Fencing tokens and lease APIs let downstream storage reject stale leaders without trusting network heartbeats alone.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Leader is a single point of failure for writes; follower promotion takes time (seconds to tens of seconds).</li>
-                <li>Split-brain risk: a slow or partitioned leader may believe it is still the leader and continue writing.</li>
-                <li>Extra infrastructure dependency if using ZooKeeper or etcd for election.</li>
-                <li>Bully algorithm is simple but generates O(n²) messages in large clusters.</li>
+                <li>Write throughput for one logical partition caps at one leader’s capacity until you shard leadership.</li>
+                <li>Failover windows—election, log catch-up, client redirect—add seconds of write unavailability unless you dual-route reads carefully.</li>
+                <li>TTL-only leadership without fencing invites zombie writers after GC pauses or partitions (Kleppmann’s critique).</li>
+                <li>Ring-election heuristics (bully, ring) trade simplicity for chatty O(n²) traffic unsuited to large fleets.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Fencing tokens</strong> are the key safety mechanism for preventing split-brain damage. Each time a new leader is elected, it receives a monotonically increasing token (term number, epoch, or ZooKeeper session ID). The leader includes this token in every write request to storage. The storage system rejects writes with tokens lower than the highest it has seen, preventing a zombie (old) leader from overwriting data after a new leader has been elected.</p>
-          <p><strong>TTL-based leases with heartbeats:</strong> the leader holds a lease that expires after a TTL unless renewed via heartbeat. Followers will not act as leader until the lease expires. The leader must stop acting as leader before its lease expires if it loses connectivity. This approach works well with Redis (SET NX PX) or Kubernetes leader election via ConfigMap/Lease annotations.</p>
-          <p>Ensure clocks are reasonably synchronised — clock drift can cause a lease to expire on the leader's clock before the TTL has elapsed on followers.</p>
-          <p><strong>Epoch numbers</strong> serve as fencing tokens in Kafka, where each partition has a leader epoch written to ZooKeeper (pre-KRaft) or to the metadata log (KRaft mode). Consumers and other brokers reject writes from brokers with outdated epochs.</p>
+          <p><strong>Prefer consensus-backed election</strong> when correctness matters: Kubernetes controllers use the Lease API backed by etcd’s Raft log; Consul and etcd expose session/lock primitives with linearisable semantics. DDIA emphasises that election safety and replication ordering are two facets of the same consensus problem—implementing one without the other invites subtle bugs.</p>
+          <p><strong>Raft tuning:</strong> election timeouts must exceed typical round-trip time and GC pauses but stay short enough for tolerable failover. Randomise timeouts (150–300 ms is a common starting band on LAN) to avoid split votes. Jepsen’s analyses of etcd, Consul, and other Raft stacks repeatedly surface mis-tuned timeouts and membership changes as sources of leadership flapping—not algorithm failure in the abstract, but operational edge cases worth load-testing.</p>
+          <p><strong>Fencing tokens</strong> (DDIA Ch. 8–9; Kleppmann’s distributed locking essay) close the gap when a zombie leader outlives its lease. Each election bumps a monotonic token—Raft <em>term</em>, Kafka <em>leader epoch</em>, or a lock-service counter. Downstream storage (object store, block device, relational primary) must reject operations whose token is lower than the maximum already observed, even if the client still believes it is leader.</p>
+          <p><strong>TTL leases and heartbeats</strong> (Redis <code>SET NX PX</code>, database advisory leases, Kubernetes Lease renewals) are acceptable for <em>efficiency</em> leadership—deduplicating cron, throttling work—when duplicate execution is wasteful but not corrupting. For <em>correctness</em> leadership over mutable shared state, leases alone are insufficient without fencing or majority quorum on the write path.</p>
+          <p><strong>Observability:</strong> expose current term/epoch, last successful heartbeat, and leader identity to metrics and logs. Alert on rapid leadership churn; correlate with network partitions and deployment events.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Split-brain without fencing:</strong> network partition causes a new leader to be elected while the old leader is still running, both accepting writes.</li>
-            <li><strong>False failure detection:</strong> a slow or GC-paused leader is incorrectly declared dead, triggering an unnecessary election and disrupting in-flight operations.</li>
-            <li><strong>Thundering herd:</strong> all nodes detect leader failure simultaneously and spam election messages, delaying new leader selection.</li>
-            <li><strong>TTL too short:</strong> frequent re-elections under load due to heartbeat timeouts caused by CPU saturation or GC pauses.</li>
-            <li><strong>TTL too long:</strong> slow failover when the leader genuinely fails, causing extended unavailability.</li>
+            <li><strong>Stale leader on minority partition:</strong> the old primary keeps serving until storage fencing or client quorum checks reject it—otherwise divergent logs accumulate.</li>
+            <li><strong>Split vote loops:</strong> symmetric election timeouts in Raft leave a term without a winner until randomized backoff breaks the tie.</li>
+            <li><strong>Premature step-down:</strong> a single dropped heartbeat triggers election while the leader is still healthy, causing needless leadership churn.</li>
+            <li><strong>Quorum loss:</strong> too many replicas down at once; no candidate can gather majority votes and the control plane freezes.</li>
+            <li><strong>Unsafe membership change:</strong> overlapping majorities during voter reconfiguration admit two leaders with valid-looking terms.</li>
+            <li><strong>Lease without token check:</strong> Redis/etcd lease expires during a long STW GC; the holder resumes work unaware a peer took over.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are fencing tokens (epoch numbers) implemented to prevent split-brain writes?</li>
-            <li>Is the election timeout tuned relative to your network latency and GC pause budget?</li>
-            <li>Does your storage layer validate fencing tokens before accepting writes?</li>
-            <li>Is there a runbook for scenarios where no leader can be elected (quorum loss)?</li>
-            <li>Have you tested leader election under network partitions and GC pauses?</li>
-            <li>Is there monitoring for leader changes and election frequency?</li>
+            <li>Is leadership per shard or global—and does each shard have an independent election path?</li>
+            <li>Does correctness demand consensus election, or is an efficiency lease acceptable if duplicates are idempotent?</li>
+            <li>Do guarded resources enforce monotonic fencing tokens (terms, epochs) on every mutating call?</li>
+            <li>Are heartbeat and election timeouts validated against measured WAN RTT and JVM pause p99?</li>
+            <li>Is there an operator runbook for quorum loss and forced step-down without manual split-brain?</li>
+            <li>Do metrics and logs expose current leader identity, term, and election rate with alerts on flapping?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>Kafka partition leaders elected via ZooKeeper (or KRaft) — the leader handles all produce and fetch requests for that partition.</li>
-            <li>Kubernetes controller-manager and scheduler use leader election via Lease API to ensure only one instance runs active reconciliation loops.</li>
-            <li>Database primary election in PostgreSQL streaming replication managed by Patroni (using etcd or Consul).</li>
-            <li>Distributed cron job: multiple application instances compete; winner runs the scheduled task.</li>
+            <li><strong>Case study —</strong> Apache Kafka KRaft mode elects a controller and per-partition leaders via an internal Raft metadata quorum; broker <em>leader epochs</em> fence stale brokers after failover.</li>
+            <li><strong>Case study —</strong> Kubernetes control-plane components (controller-manager, scheduler, cloud-controller-manager) use Lease objects in etcd so only one replica actively reconciles cluster state.</li>
+            <li><strong>Case study —</strong> Patroni promotes a PostgreSQL standby to primary after detecting leader failure, coordinating through DCS quorum (etcd, Consul, or ZooKeeper).</li>
+            <li><strong>Illustrative scenario —</strong> A horizontally scaled billing service runs nightly aggregation on whichever instance wins an etcd session-based election; duplicates would inflate metrics but not corrupt ledger rows, so leases suffice without storage fencing.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — Raft embeds leader election as part of the consensus protocol.</li>
-            <li><a href="distributed-locking.html">Distributed Locking</a> — leader election is implemented using a distributed lock that only one node holds.</li>
-            <li><a href="split-brain.html">Split Brain Problem</a> — the central hazard that leader election and fencing tokens are designed to prevent.</li>
+            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — election is Raft’s bootstrap; committed logs depend on the same quorum math.</li>
+            <li><a href="distributed-locking.html">Distributed Locking</a> — many stacks implement “who is leader” as a held lock or lease with a fencing counter.</li>
+            <li><a href="split-brain.html">Split Brain Problem</a> — dual primaries are what safe election and fencing aim to prevent.</li>
+            <li><a href="quorum-patterns.html">Quorum Reads &amp; Writes</a> — majority overlap blocks minority partitions from electing writable primaries in some designs.</li>
+            <li><a href="distributed-coordination.html">Distributed Coordination</a> — etcd, Consul, and ZooKeeper package election atop replicated state machines.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="noopener noreferrer" target="_blank">How to Do Distributed Locking — Martin Kleppmann</a> — covers fencing tokens and why TTL-based approaches are insufficient alone.</li>
-            <li><a href="https://zookeeper.apache.org/doc/current/recipes.html#sc_leaderElection" rel="noopener noreferrer" target="_blank">ZooKeeper Leader Election Recipe — Apache ZooKeeper Docs</a> — official ZooKeeper ephemeral node election approach.</li>
-            <li><a href="https://kubernetes.io/blog/2016/01/simple-leader-election-with-kubernetes/" rel="noopener noreferrer" target="_blank">Simple Leader Election with Kubernetes — Kubernetes Blog</a> — practical example using Kubernetes Lease API.</li>
+            <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em></a> — leader-based replication, partitions, and coordination failure modes (Ch. 5–9).</li>
+            <li><a href="https://raft.github.io/raft.pdf" rel="noopener noreferrer" target="_blank">In Search of an Understandable Consensus Algorithm — Ongaro &amp; Ousterhout</a> — Raft leader election and safety rules.</li>
+            <li><a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="noopener noreferrer" target="_blank">How to Do Distributed Locking — Martin Kleppmann</a> — fencing tokens and limits of TTL-only leadership.</li>
+            <li><a href="https://jepsen.io/analyses" rel="noopener noreferrer" target="_blank">Jepsen Analyses</a> — empirical partition tests of Raft-backed systems (etcd, Consul, and others).</li>
+            <li><a href="https://zookeeper.apache.org/doc/current/recipes.html#sc_leaderElection" rel="noopener noreferrer" target="_blank">ZooKeeper Leader Election Recipe</a> — ephemeral sequential znode pattern.</li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
