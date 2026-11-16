@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Push Notifications — SA References</title>
-  <meta name="description" content="APNs and FCM architecture, device token lifecycle, notification payload design, silent notifications, analytics, and opt-in UX best practices.">
+  <meta name="description" content="Push architecture with Apple APNs and Firebase FCM: HTTP/2 provider APIs, device token lifecycle, payload and deep-link design, silent delivery limits, analytics, and permission UX.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -98,40 +98,51 @@
           </div>
           <h1 class="article-header__title">Push Notifications</h1>
           <p class="article-header__desc">End-to-end architecture for push notifications: APNs and FCM infrastructure, device token lifecycle, payload design, silent push, delivery analytics, and opt-in UX patterns.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>There are two categories of push notification: <strong>visual notifications</strong> that appear in the notification tray and alert the user, and <strong>silent/background notifications</strong> (APNs: <code>content-available: 1</code>; FCM: data-only messages) that wake the app in the background to perform an operation (such as triggering a sync) without displaying anything to the user. The two types have different delivery guarantees, rate limits, and use cases.</p>
+          <p><strong>Mobile push notifications</strong> are server-initiated messages delivered through platform-operated channels: <strong>Apple Push Notification service (APNs)</strong> on iOS, iPadOS, watchOS, and macOS, and <strong>Firebase Cloud Messaging (FCM)</strong> on Android and as a cross-platform relay when the iOS app uses the Firebase SDK. Your backend never talks to the handset directly—it sends an authenticated HTTP/2 request to APNs or FCM with a device token (or topic subscription), and the OS wakes or alerts the app.</p>
+          <p>Two delivery classes matter in architecture. <strong>User-visible notifications</strong> (APNs alert/sound/badge; FCM messages with a <code>notification</code> payload) appear in the system shade and require user permission on modern iOS and Android 13+. <strong>Background / data-only</strong> messages (APNs <code>content-available: 1</code> with appropriate <code>apns-push-type</code>; FCM data-only) can trigger limited background work but are throttled and must not carry time-critical business logic alone.</p>
+          <p>Push sits beside your mobile APIs: token registration, topic opt-in, and notification-open deep links are part of the same security and versioning story as REST (see <a href="mobile-api-design.html">Mobile API Design</a>).</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Before push notifications existed, apps used polling — making regular API requests to check for new data. Polling is battery-inefficient (network radio activation is one of the most expensive mobile power operations), wastes server capacity, and introduces latency equal to the polling interval. Push notifications eliminate polling by allowing the server to initiate contact precisely when there is something to communicate, with the platform managing the delivery channel efficiently.</p>
+          <p>Polling and aggressive foreground refresh keep the cellular radio active and waste power—among the most expensive operations on a phone. Push lets the server signal “something changed” at event time so the OS batches delivery and the app fetches details on demand.</p>
+          <p>Platform push infrastructure also solves long-lived connection management, certificate rotation at scale, and device reachability when apps are suspended. Building a proprietary persistent socket fleet for consumer devices rarely beats APNs/FCM for cost, reliability, and store policy compliance.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Real-time alerts: order shipped, message received, ride arriving, payment confirmed.</li>
-            <li>Re-engagement: cart abandonment reminders, scheduled digest notifications, personalised recommendations.</li>
-            <li>Silent sync triggers: notify the app that new content is available, triggering a background sync.</li>
-            <li>Transactional communications where email latency is unacceptable (OTP codes, security alerts).</li>
+            <li>Transactional events users expect immediately: messages, delivery status, fraud alerts, appointment reminders.</li>
+            <li>Re-engagement with explicit user-controlled categories (marketing vs account alerts).</li>
+            <li>Low-frequency background sync hints when combined with <a href="offline-first.html">offline-first</a> workers—not as the sole sync mechanism.</li>
+            <li>VoIP / Live Activities / communication notifications where Apple’s dedicated push types apply.</li>
+            <li>Broadcast segments via FCM topics or APNs broadcast capabilities (with consent and unsubscribe paths).</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Silent notifications should not be used as a replacement for foreground data fetching — they are rate-limited and not guaranteed to be delivered.</li>
-            <li>Notification spam (more than one non-critical notification per day per user) destroys opt-in rates and drives uninstalls.</li>
-            <li>Do not put sensitive data directly in the notification payload — payload can be logged by intermediate systems; fetch sensitive details from the API on notification tap instead.</li>
+            <li>Sub-second interactive data (live maps, gaming state)—use WebSockets or in-app polling while foregrounded.</li>
+            <li>Guaranteed delivery of business-critical state—push is best-effort; persist outcomes server-side and reconcile on app open.</li>
+            <li>High-frequency silent sync—iOS and Android throttle background pushes; expect delayed or coalesced delivery.</li>
+            <li>Secrets in clear text in the payload—treat notification bodies as untrusted display surfaces (align with <a href="https://mas.owasp.org/MASTG/0x04g-testing-network-communication/" target="_blank" rel="noopener noreferrer">OWASP MASTG network communication tests</a>).</li>
+            <li>Mandatory marketing pushes without granular opt-out—violates platform policies and erodes opt-in.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Registration flows upward (app → your API → token store); delivery flows downward (event → notification service → APNs/FCM → OS). Many teams isolate outbound push in a worker with rate limiting and dead-letter handling for invalid tokens.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    app["App registers token"]
-    apns["APNs / FCM"]
-    backend["Backend push service"]
-    device["Device delivery"]
-    app --> apns
-    backend --> apns --> device</div>
+    app["Mobile app"]
+    api["Mobile API token registry"]
+    ns["Notification service"]
+    fcm["FCM HTTP v1"]
+    apns["APNs HTTP/2"]
+    dev["Device OS"]
+    app --> api
+    ns --> fcm --> dev
+    ns --> apns --> dev
+    app -. register .-> fcm
+    app -. register .-> apns</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -219,9 +230,23 @@ NOTIFICATION PAYLOAD DESIGN
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>Opt-in UX:</strong> iOS requires explicit permission before showing any visual notifications. The permission dialog can only be shown once — if the user declines, re-requesting requires navigating to Settings. Best practice: do not request permission on first launch. Instead, show a custom pre-permission prompt explaining the value ("We'll notify you when your order ships and when your driver is nearby") and only call <code>requestAuthorization</code> after the user agrees to the custom prompt.</p>
-          <p>This context-setting increases opt-in rates from ~40% to 70%+ in studies. On Android 13+, the same explicit permission is required (POST_NOTIFICATIONS).</p>
-          <p><strong>Notification analytics:</strong> Track three events per notification: <em>sent</em> (your backend sent to APNs/FCM), <em>delivered</em> (device received — requires iOS notification service extension / FCM delivery receipt), and <em>opened</em> (user tapped). The funnel reveals issues: high sent + low delivered = token hygiene problem; high delivered + low opened = content relevance problem. Use a notification ID in the payload to correlate these events in your analytics pipeline.</p>
+          <h3>APNs provider setup</h3>
+          <p>Use token-based authentication with a <code>.p8</code> key (preferred over legacy certificates). Send to the correct environment host (sandbox vs production). Set <code>apns-topic</code> to your bundle ID, <code>apns-push-type</code> to <code>alert</code>, <code>background</code>, or <code>voip</code> as appropriate, and match <code>apns-priority</code> to urgency (10 for visible alerts, 5 for background). See Apple’s <a href="https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns" target="_blank" rel="noopener noreferrer">sending notification requests to APNs</a>.</p>
+
+          <h3>FCM HTTP v1</h3>
+          <p>Migrate off legacy server keys to the HTTP v1 API with OAuth2 service-account credentials. Structure messages with separate <code>notification</code> (display) and <code>data</code> (always delivered to the app) sections; use <code>android</code> and <code>apns</code> blocks for platform overrides. Handle batch responses and per-token errors for cleanup.</p>
+
+          <h3>Token and identity model</h3>
+          <p>Store <code>(user_id, device_id, platform, token, app_version, updated_at)</code>. Upsert on every registration call; invalidate on logout. For multi-device users, fan out sends or target the most recently active device for non-critical alerts.</p>
+
+          <h3>Payload and deep links</h3>
+          <p>Include a stable <code>notification_id</code>, deep-link URL or app-specific route, and enough display text for the tray without another round trip for the common case. Fetch sensitive detail after open via authenticated API. Use <a href="https://developer.apple.com/documentation/usernotifications/unnotificationcontentextension" target="_blank" rel="noopener noreferrer">Notification Service Extension</a> on iOS to enrich media safely.</p>
+
+          <h3>Opt-in UX</h3>
+          <p>On iOS, show a value explanation before the system permission sheet; one denial forces Settings detours. On Android 13+, request <code>POST_NOTIFICATIONS</code> in context. Align categories with in-app notification preferences synced to the server.</p>
+
+          <h3>Analytics funnel</h3>
+          <p>Log <em>enqueued</em>, <em>accepted_by_platform</em> (HTTP 2xx from APNs/FCM), <em>delivered</em> (where platform receipts exist), and <em>opened</em>. Correlate with <code>notification_id</code>. Drops between accepted and opened usually indicate token rot or irrelevant copy.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -243,9 +268,9 @@ NOTIFICATION PAYLOAD DESIGN
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce:</strong> Order status notifications (processing → shipped → out for delivery → delivered) each with tracking deep link; silent notification triggers cart sync when backend detects price change on a saved item.</li>
-            <li><strong>Ride-hailing:</strong> High-priority APNs alert when driver is 2 minutes away; silent FCM data message every 10 seconds updates driver location on map (rate within FCM limits).</li>
-            <li><strong>News app:</strong> Breaking news uses high-priority alert notification; daily digest uses scheduled low-priority notification delivered during user's local morning.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> sends order-shipped alerts with tracking deep links; a low-priority data message nudges cart sync overnight when saved-item prices change.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> uses high-priority APNs for “driver arriving” and in-app WebSocket for live map position while foregrounded—avoiding abusive silent push frequency.</li>
+            <li><strong>Illustrative scenario —</strong> A breaking-news product batches digest pushes by user locale at 07:00 local time via FCM topic conditions.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -257,9 +282,13 @@ NOTIFICATION PAYLOAD DESIGN
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://developer.apple.com/documentation/usernotifications/setting-up-a-remote-notification-server" target="_blank" rel="noopener noreferrer">Setting Up a Remote Notification Server — Apple Developer</a></li>
-            <li><a href="https://firebase.google.com/docs/cloud-messaging/concept-options" target="_blank" rel="noopener noreferrer">About FCM messages — Firebase documentation</a></li>
-            <li><a href="https://developer.apple.com/videos/play/wwdc2021/10120/" target="_blank" rel="noopener noreferrer">Send communication and Time Sensitive notifications — WWDC 2021</a></li>
+            <li><a href="https://developer.apple.com/documentation/usernotifications/setting_up_a_remote_notification_server" target="_blank" rel="noopener noreferrer">Setting up a remote notification server — Apple UserNotifications</a></li>
+            <li><a href="https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns" target="_blank" rel="noopener noreferrer">Sending notification requests to APNs — Apple Developer</a></li>
+            <li><a href="https://firebase.google.com/docs/cloud-messaging" target="_blank" rel="noopener noreferrer">Firebase Cloud Messaging overview — Google</a></li>
+            <li><a href="https://firebase.google.com/docs/cloud-messaging/concept-options" target="_blank" rel="noopener noreferrer">About FCM message types — Firebase</a></li>
+            <li><a href="https://firebase.google.com/docs/cloud-messaging/http-server-ref" target="_blank" rel="noopener noreferrer">FCM HTTP v1 API reference — Firebase</a></li>
+            <li><a href="https://developer.apple.com/videos/play/wwdc2021/10091/" target="_blank" rel="noopener noreferrer">WWDC21 — Send push notifications using command-line tools</a></li>
+            <li><a href="https://mas.owasp.org/MASTG/0x04g-testing-network-communication/" target="_blank" rel="noopener noreferrer">OWASP MASTG — Testing network communication (push and API hygiene)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

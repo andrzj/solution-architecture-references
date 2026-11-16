@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mobile API Design — SA References</title>
-  <meta name="description" content="Designing APIs optimised for mobile clients: BFF pattern, payload optimisation, HTTP/2 multiplexing, request batching, API versioning, and push notification architecture.">
+  <meta name="description" content="Designing APIs for mobile clients: BFF and experience APIs, sparse fieldsets, HTTP caching, delta sync contracts, long-lived app versioning, and FCM/APNs token registration at the edge.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,42 +99,48 @@
           </div>
           <h1 class="article-header__title">Mobile API Design</h1>
           <p class="article-header__desc">Designing backend APIs that account for the unique constraints of mobile clients: limited bandwidth, battery concerns, intermittent connectivity, and the need to serve multiple client shapes.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
+          <p><strong>Mobile API design</strong> is the practice of shaping HTTP (and occasional binary) interfaces so phone and tablet clients can render screens with minimal radio use, predictable latency on poor networks, and contracts that remain valid across app versions users refuse to upgrade. It spans payload size, round-trip count, cache semantics, sync-friendly list endpoints, and edge concerns such as registering <a href="https://firebase.google.com/docs/cloud-messaging" target="_blank" rel="noopener noreferrer">Firebase Cloud Messaging (FCM)</a> and <a href="https://developer.apple.com/documentation/usernotifications" target="_blank" rel="noopener noreferrer">Apple Push Notification service (APNs)</a> device tokens.</p>
+          <p>Architecturally, teams usually combine a <strong>mobile BFF</strong> or experience API (see <a href="../api-design/backend-for-frontend.html">Backend for Frontend</a>) with domain services that stay client-agnostic. The mobile layer aggregates per-screen data in parallel, applies sparse field selection, and returns DTOs mapped to UI models—not full domain graphs. Transport choices (<a href="https://www.rfc-editor.org/rfc/rfc9113.html" target="_blank" rel="noopener noreferrer">HTTP/2</a> or HTTP/3 multiplexing, <code>Accept-Encoding: br, gzip</code>, conditional GET with <code>ETag</code>) reduce bytes and connection churn; optional Protocol Buffers or gRPC on selected hot paths trade tooling cost for smaller payloads.</p>
+          <p>Mobile API design also encodes <strong>lifecycle constraints</strong>: apps cannot be force-updated, offline queues replay on flaky networks, and notification-driven refresh must not assume the app is foregrounded. Those constraints affect versioning, idempotency keys on writes, and how much context you embed in push-related registration endpoints.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Generic REST APIs designed for desktop or server-to-server communication are often poorly suited to mobile clients. They return large, richly detailed JSON payloads when the mobile client needs only a fraction of the fields. They require multiple sequential requests to fetch the data needed for a single screen (N+1 requests). They are not designed to be called from battery-constrained devices where each HTTP connection setup has a meaningful energy cost.</p>
-          <p>The BFF pattern and the optimisation techniques in this article exist to bridge this gap: the mobile client gets data in the shape it needs, at the granularity it requires, with the fewest round trips.</p>
+          <p>Generic REST APIs built for web dashboards or partner integrations often return wide JSON documents, assume always-on connectivity, and encourage chatty composition on the client. On mobile, each TLS handshake and idle timeout on the cellular radio consumes battery; sequential waterfalls inflate time-to-interactive on high-latency links; and oversized responses waste metered data.</p>
+          <p>Without deliberate mobile API design, product teams compensate with aggressive client caching hacks, duplicate business rules in the app, or polling loops that drain battery. A BFF or mobile-tuned surface moves aggregation server-side, keeps domain services narrow, and lets architects enforce pagination, field masks, and stable list contracts once—benefiting every screen.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Apps with multiple client types (iOS, Android, web) that have different data needs for the same domain objects.</li>
-            <li>Apps targeting developing markets where bandwidth is expensive and 2G/3G is common.</li>
-            <li>Apps with complex home screens that aggregate data from multiple backend services.</li>
-            <li>Apps where battery life is a competitive differentiator (fitness trackers, always-on apps).</li>
-            <li>Any app that sends server-initiated notifications (order updates, chat messages, breaking news).</li>
+            <li>Multiple client types (iOS, Android, web, TV) that need different field sets or aggregation for the same domain.</li>
+            <li>Home or hub screens that fan out to several microservices and must load in one or two round trips.</li>
+            <li>Markets where bandwidth is costly or connectivity is intermittent—payload and cache discipline matter for retention.</li>
+            <li>Products where battery impact is visible (navigation, fitness, background location, frequent refresh).</li>
+            <li>Apps that register for push and need authenticated token-management APIs co-located with user session handling.</li>
+            <li>Offline-first or sync-heavy apps that need cursor-based delta endpoints and conflict-aware writes (see <a href="offline-first.html">Offline-First Design</a>).</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>A BFF per client type adds an extra service to deploy and maintain — do not add this overhead for simple apps with a single client type.</li>
-            <li>Binary serialisation (Protocol Buffers) adds tooling complexity; for most apps, JSON with gzip compression is sufficient.</li>
-            <li>Request batching adds client-side complexity; if most screens require a single API call, batching is unnecessary.</li>
+            <li>A single mobile platform with one thin client—a shared REST API plus query parameters may suffice without a dedicated BFF.</li>
+            <li>Low-traffic internal tools where operational overhead of another service exceeds UX gain.</li>
+            <li>Teams without capacity to run, secure, and on-call a BFF—fix domain boundaries before adding adaptation layers.</li>
+            <li>Binary protocols on every endpoint when gzip JSON already meets SLOs—protobuf/gRPC is a targeted optimisation, not a default.</li>
+            <li>GraphQL or batching solely to avoid designing proper list and detail resources—start with resource-oriented contracts.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Traffic flows from native clients through a gateway (TLS, auth, rate limits) into a mobile BFF that parallel-fetches domain services, registers push tokens, and returns screen-specific payloads. Notification delivery uses a separate outbound path to FCM/APNs (see <a href="push-notifications.html">Push Notifications</a>).</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    ios["iOS app"]
-    android["Android app"]
-    iosbff["iOS BFF"]
-    andbff["Android BFF"]
-    core["Core domain APIs"]
-    ios --> iosbff --> core
-    android --> andbff --> core</div>
+    gw["API Gateway"]
+    mob["Mobile BFF"]
+    core["Domain services"]
+    push["Notification service&lt;br/&gt;FCM Admin / APNs HTTP2"]
+  gw --> mob --> core
+    mob --> push
+    ios["iOS / Android"] --> gw</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>
@@ -219,33 +225,52 @@ PUSH NOTIFICATION ARCHITECTURE
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p><strong>API versioning for mobile:</strong> Mobile apps cannot be force-updated — old versions remain in production for months or years after a new version is released. This means the mobile API must maintain backwards compatibility or version explicitly. Use <code>Accept: application/vnd.myapp.v2+json</code> header versioning (or URL path versioning <code>/v2/</code>) and maintain at least the current and previous major version. Define a sunset policy (e.g., N-2 versions supported) and communicate it to users via in-app update prompts when an old API version is approaching deprecation.</p>
-          <p><strong>Handling FCM token rotation:</strong> When the FCM SDK refreshes a device token, the app must send the new token to your backend. Implement a <code>FirebaseMessagingService.onNewToken(token)</code> handler (Android) or <code>Messaging.messaging().apnsToken</code> observer (iOS) that calls your backend's token registration endpoint. Your backend's notification sending logic must handle the <code>UNREGISTERED</code> and <code>INVALID_ARGUMENT</code> error codes from FCM by deleting stale tokens from the database — failing to do so causes silent notification delivery failures and inflates your registered device count.</p>
+          <h3>Screen-oriented aggregation</h3>
+          <p>Define explicit endpoints or GraphQL operations per major screen (<code>GET /mobile/home</code>, <code>GET /mobile/order/{id}/tracking</code>). Fan out to domain services concurrently with a parent deadline; return partial data with <code>degraded: true</code> flags when non-critical dependencies fail rather than failing the entire response.</p>
+
+          <h3>Sparse fields and pagination</h3>
+          <p>Support field masks (<code>?fields=id,title,thumbnail_url</code>) or fixed list DTOs so card views never download detail graphs. Use cursor pagination for infinite scroll; never rely on deep offsets on mobile lists (see <a href="../api-design/api-pagination.html">API Pagination</a>).</p>
+
+          <h3>Compression, HTTP/2+, and caching</h3>
+          <p>Enable Brotli or gzip at the CDN and origin. Prefer HTTP/2 or HTTP/3 to multiplex parallel reads on one connection. Mark stable reads with <code>Cache-Control</code> and validators; the client should send <code>If-None-Match</code> to receive <code>304</code> bodies on repeat visits.</p>
+
+          <h3>Versioning and compatibility</h3>
+          <p>Ship mobile clients you cannot revoke—plan for N and N−1 major API versions. Use path (<code>/v2/</code>) or vendor <code>Accept</code> types; avoid breaking field renames without additive periods. Pair deprecations with minimum app version gates only for security fixes, not routine features.</p>
+
+          <h3>Token registration APIs</h3>
+          <p>Expose an authenticated <code>PUT /devices/push-token</code> (or equivalent) accepting platform (<code>apns</code> | <code>fcm</code>), token string, app version, and locale. On Android, handle <code>onNewToken</code> in <code>FirebaseMessagingService</code>; on iOS, observe APNs device token updates and FCM mapping when using Firebase. Store tokens per user and device row; dedupe on token value. When sending via FCM HTTP v1, delete rows on <code>UNREGISTERED</code>; for APNs, remove on HTTP <code>410 Gone</code> with <code>reason=Unregistered</code>.</p>
+
+          <h3>Writes on unreliable networks</h3>
+          <p>Accept <code>Idempotency-Key</code> headers on POST/PATCH from mobile clients so offline replay does not double-charge or duplicate orders. Return stable error bodies the app can persist in an outbox queue.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Chatty API:</strong> A screen that requires 5+ sequential API calls to assemble its data creates high latency on mobile; consolidate into a single BFF endpoint for the screen.</li>
-            <li><strong>Oversized payloads:</strong> Returning full entity objects (including deeply nested relationships) when the client only needs id + name + image_url; implement sparse fieldsets or a BFF response shape.</li>
-            <li><strong>No retry logic:</strong> Mobile networks drop requests; the client must implement exponential back-off and retry for idempotent operations.</li>
-            <li><strong>Stale FCM tokens:</strong> Sending to expired tokens wastes quota and causes delivery failures; clean up tokens flagged as invalid by the FCM error response.</li>
-            <li><strong>Silent push for foreground data:</strong> Using silent/background notifications to deliver critical data — these are throttled by iOS and Android and are not guaranteed to be delivered promptly.</li>
+            <li><strong>Waterfall screens</strong> — five sequential GETs before first paint; fix with BFF aggregation or HTTP/2 parallel client calls with a single loading state.</li>
+            <li><strong>Desktop-shaped JSON</strong> — nested graphs and nullable blobs on list endpoints; define mobile list DTOs with stable field names.</li>
+            <li><strong>No idempotency on writes</strong> — duplicate submissions when the client retries after a timeout.</li>
+            <li><strong>Breaking changes without versioning</strong> — old app builds crash on missing fields; use additive schemas and contract tests.</li>
+            <li><strong>Token table rot</strong> — FCM/APNs errors ignored; delivery metrics look healthy while reach collapses.</li>
+            <li><strong>Polling instead of push</strong> — background timers for inbox counts; burns battery and fights store review guidelines.</li>
+            <li><strong>Ignoring certificate and ATS policy</strong> — cleartext exceptions for “quick fixes”; see <a href="mobile-security.html">Mobile Security</a> for transport requirements.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is gzip/Brotli compression enabled on all API responses?</li>
-            <li>Are HTTP/2 connections supported by the API server and CDN?</li>
-            <li>For screens aggregating data from multiple services, is a BFF or GraphQL aggregation layer in place?</li>
-            <li>Is API versioning strategy defined before the first mobile release?</li>
-            <li>Is device token lifecycle (registration, rotation, expiry) handled end-to-end?</li>
-            <li>Are push notification payloads designed to be actionable without requiring additional API calls?</li>
+            <li>Is Brotli or gzip enabled end-to-end through CDN and origin?</li>
+            <li>Does each primary screen load with at most two round trips under nominal conditions?</li>
+            <li>Is there a documented mobile API versioning and sunset policy before store release?</li>
+            <li>Are list endpoints cursor-paginated with bounded page sizes?</li>
+            <li>Is push token registration authenticated, idempotent, and tied to device records?</li>
+            <li>Do write endpoints accept idempotency keys from the mobile outbox?</li>
+            <li>Are contract or consumer-driven tests run when domain services change?</li>
+            <li>Is notification-triggered refresh distinguished from user-initiated refresh in analytics?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>News app:</strong> Article list screen uses sparse fieldsets (<code>?fields=id,title,thumbnail,published_at,category</code>) to fetch only what the list view displays; full article body is fetched on tap.</li>
-            <li><strong>Ride-hailing app:</strong> BFF aggregates driver location, surge pricing, and estimated arrival in a single <code>/home-screen</code> endpoint, replacing 3 sequential calls on the client. Silent push updates driver position in the background; visual push confirms booking.</li>
-            <li><strong>B2B app targeting South-East Asian markets:</strong> Protocol Buffers used instead of JSON; payload reduced from 180KB to 45KB per sync; observable reduction in data costs reported in user feedback.</li>
+            <li><strong>Illustrative scenario —</strong> A news product’s list API returns only <code>id</code>, <code>headline</code>, <code>hero_image_url</code>, and <code>published_at</code>; article body loads on tap with ETag caching.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> mobile BFF exposes <code>/v1/rider/home</code> combining active trip, payment instrument summary, and promo banner; FCM data messages nudge the map layer while the user is in-app.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> catalogue sync uses protobuf on a single nightly delta endpoint for field sellers on 3G, while storefront checkout stays JSON over HTTP/2 for easier debugging.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -257,9 +282,13 @@ PUSH NOTIFICATION ARCHITECTURE
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://firebase.google.com/docs/cloud-messaging" target="_blank" rel="noopener noreferrer">Firebase Cloud Messaging — Google documentation</a></li>
-            <li><a href="https://developer.apple.com/documentation/usernotifications" target="_blank" rel="noopener noreferrer">UserNotifications framework — Apple Developer</a></li>
-            <li><a href="https://developer.apple.com/news/articles/2024/10/02/optimizing-network-performance-for-mobile-apps.html" target="_blank" rel="noopener noreferrer">Optimising network performance for mobile — Apple Developer News</a></li>
+            <li><a href="https://samnewman.io/patterns/architectural/bff/" target="_blank" rel="noopener noreferrer">Sam Newman — Backends for Frontends pattern</a></li>
+            <li><a href="https://learn.microsoft.com/azure/architecture/patterns/backends-for-frontends" target="_blank" rel="noopener noreferrer">Microsoft Azure Architecture Center — Backends for Frontends</a></li>
+            <li><a href="https://developer.apple.com/news/?id=v8a3a89s" target="_blank" rel="noopener noreferrer">Apple Developer — Optimizing Your App’s Network Performance and Battery Life</a></li>
+            <li><a href="https://developer.android.com/develop/connectivity/network-ops" target="_blank" rel="noopener noreferrer">Android Developers — Manage network usage</a></li>
+            <li><a href="https://firebase.google.com/docs/cloud-messaging/http-server-ref" target="_blank" rel="noopener noreferrer">FCM HTTP v1 API reference — Firebase</a></li>
+            <li><a href="https://developer.apple.com/documentation/usernotifications/setting_up_a_remote_notification_server" target="_blank" rel="noopener noreferrer">Setting up a remote notification server — Apple UserNotifications</a></li>
+            <li><a href="https://www.rfc-editor.org/rfc/rfc9113.html" target="_blank" rel="noopener noreferrer">RFC 9113 — HTTP/2</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
