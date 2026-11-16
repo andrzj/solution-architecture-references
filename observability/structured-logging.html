@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Structured Logging — SA References</title>
-  <meta name="description" content="Emitting logs as machine-parseable key-value pairs for reliable search and correlation.">
+  <meta name="description" content="Structured logging is the practice of writing log records as machine-parseable fields (typically JSON) with stable schemas, OpenTelemetry trace correlation, and cardinality-aware design for Loki, Elasticsearch, or SIEM pipelines.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,27 +99,34 @@
             <span class="badge badge--primary">Observability & Operations</span>
           </div>
           <h1 class="article-header__title">Structured Logging</h1>
-          <p class="article-header__desc">Emitting logs as machine-parseable key-value pairs for reliable search and correlation.</p>
+          <p class="article-header__desc">Structured logging replaces free-text lines with schema-bound JSON events so teams can filter, alert, and pivot into traces—aligned with OpenTelemetry, Grafana Loki, and SRE-style incident workflows.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: <code>{"level":"error","msg":"payment failed","order_id":"o-1","trace_id":"abc"}</code> instead of a prose sentence.</p>
+          <p><strong>Structured logging</strong> is the practice of emitting each log record as a machine-parseable set of named fields—almost always one JSON object per line—rather than as free-form prose intended for human eyes only. A structured event carries a stable schema: severity, timestamp, service identity, human-readable message, error codes, duration, and domain identifiers such as order or tenant IDs. Compare an unstructured line like <code>ERROR: payment failed for user after 3 retries</code> with a structured record <code>{"level":"error","message":"payment failed","retries":3,"trace_id":"4bf92f35","service":"checkout-api"}</code>; the latter can be filtered, aggregated, and joined with traces without regular expressions.</p>
+          <p>Structured logging is the application-layer contract that makes <a href="logging-architecture.html">logging architecture</a> and <a href="log-aggregation.html">log aggregation</a> work. OpenTelemetry extends the contract by attaching trace context to log records so Grafana can move from a Prometheus latency panel to Tempo traces to Loki lines that share the same <code>trace_id</code>. Charity Majors argues that rich, wide events—not minimalist printf strings—are what make observability possible in production; structured fields are how you capture that width without drowning in text.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Regex on plain logs breaks at scale. Structured fields power dashboards, alerts, and join with traces using shared correlation ids.</p>
+          <p>At scale, grep and regex parsing fail silently when developers change wording or add fields. Structured logging moves parsing to the edge—the application or a validated schema—so downstream systems (Loki LogQL, Elasticsearch KQL, SIEM rules, or Honeycomb-style analytics) operate on typed data. The Google SRE book treats useful logs as part of monitoring distributed systems: they must answer who, what, and when with fields tight enough to alert on, not essays that require a human transliterator during an outage.</p>
+          <p>Correlation across services is the other driver. When every hop logs the same request or trace identifier, investigators reconstruct async workflows without guessing time windows. Without structure, that correlation devolves into brittle string matching.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All production services.</li>
-            <li>Cross-service workflows needing join keys.</li>
-            <li>Security and audit pipelines.</li>
+            <li>Every production service that participates in on-call, SLO measurement, or security monitoring.</li>
+            <li>Multi-step workflows spanning APIs, queues, and batch jobs that must share trace or business identifiers.</li>
+            <li>Compliance and audit pipelines that need predictable fields for retention, redaction, and access control.</li>
+            <li>Teams standardizing on OpenTelemetry logs export or Grafana Loki where labels stay low-cardinality and payload fields stay in the JSON body.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Logging entire payloads with secrets.</li>
-            <li>High-cardinality unique fields per line.</li>
+            <li>Do not emit entire payloads, credentials, or personally identifiable information as structured fields without classification and redaction.</li>
+            <li>Do not invent unbounded keys per request (for example one field per user ID as a JSON property name); that is high cardinality in disguise and breaks indexing budgets in Loki and Elasticsearch alike.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The application logger renders one JSON object per event, enriches it with OpenTelemetry trace context, and hands it to a collector that routes to durable storage.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     app["Application logger"]
@@ -137,63 +144,72 @@
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Structured logging: one JSON object per event with correlation fields for search and trace linking.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Fast indexed search.</li>
-            <li>Stable parsing in SIEM.</li>
-            <li>Easy metric derivation.</li>
-            <li>Works with OpenTelemetry logs.</li>
+                <li>Indexed and label-scoped search in Loki or Elasticsearch is fast because filters target fields, not regex over raw text.</li>
+                <li>SIEM and compliance rules consume predictable JSON instead of fragile grok patterns.</li>
+                <li>Log-derived metrics—such as error counts by <code>error_code</code>—complement Prometheus counters without double-instrumenting every branch.</li>
+                <li>OpenTelemetry log bridges map the same fields to OTLP, keeping vendor portability alongside metrics and traces.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Schema drift if ungoverned.</li>
-            <li>Larger bytes per event.</li>
-            <li>Developer friction without libraries.</li>
-            <li>PII fields need redaction.</li>
+                <li>Schema drift across teams breaks dashboards unless you publish and enforce a common model (ECS, OTel conventions, or internal).</li>
+                <li>JSON lines are larger than minimal strings; volume grows unless levels and sampling are governed.</li>
+                <li>Without ergonomic libraries (zap, log4j2 JSON layout, pino, structlog), developers revert to string concatenation.</li>
+                <li>Structured fields make it easier to accidentally log secrets; governance must precede scale.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Adopt a schema (ECS or internal); provide SDK wrappers; lint in CI for required fields on critical paths.</p>
-          <p>Use log levels consistently; sample verbose debug in production.</p>
+          <p>Pick a schema and stick to it. Align field names with OpenTelemetry semantic conventions where possible (<code>service.name</code>, <code>http.response.status_code</code>, <code>exception.type</code>) so Grafana datasources map cleanly. Configure the logging framework to write JSON to stdout in UTC with a single newline per event—container platforms and Promtail expect that shape.</p>
+          <p>Inject <code>trace_id</code> and <code>span_id</code> via OpenTelemetry logging appenders or context variables, not ad-hoc thread locals. Use consistent level semantics: ERROR for operator action, WARN for recoverable anomalies, INFO for lifecycle events, DEBUG sampled in production. Add CI checks that critical paths include required fields, and cap log bytes per request so a bug cannot emit megabytes per call.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Stringly-typed JSON</strong> in message only.</li>
-            <li><strong>Dynamic keys</strong> exploding mappings.</li>
-            <li><strong>Logging PII</strong> without classification.</li>
-            <li><strong>Clock skew</strong> breaking ordering.</li>
+            <li><strong>JSON only in the message string</strong>: Wrapping JSON inside a <code>msg</code> field leaves pipelines blind; top-level keys must be real fields.</li>
+            <li><strong>Dynamic keys</strong>: Logging <code>{"user_12345":"failed"}</code> explodes mappings; use <code>user_id</code> as a key and a scalar value.</li>
+            <li><strong>Secrets and PII in structured fields</strong>: Typed data copies faster into indexes and SIEMs—mask before emit.</li>
+            <li><strong>Clock skew</strong>: Non-UTC or unsynchronized clocks reorder events across nodes; always emit ISO-8601 UTC.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>JSON logs to stdout?</li>
-            <li>trace_id on every request?</li>
-            <li>Schema documented?</li>
-            <li>PII redaction at source?</li>
-            <li>Log volume budgets per service?</li>
-            <li>CI checks for required fields?</li>
+            <li>Does every production service emit one JSON object per line to stdout?</li>
+            <li>Are OpenTelemetry trace and span identifiers on all request-scoped records?</li>
+            <li>Is the field schema documented and reviewed in code review?</li>
+            <li>Are sensitive attributes redacted or hashed at the logger?</li>
+            <li>Does each service have an agreed log volume budget and DEBUG sampling policy?</li>
+            <li>Does CI fail builds that omit required fields on payment, auth, or data-mutation paths?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Go</strong>: zap with production encoder.</li>
-            <li><strong>Java</strong>: Logstash JSON layout.</li>
-            <li><strong>Node</strong>: pino with serializers.</li>
+            <li><strong>Illustrative scenario — checkout API</strong>: A payment service logs <code>error_code</code>, <code>provider</code>, and <code>trace_id</code>; on-call filters Loki for errors during a Prometheus SLO burn and opens the matching Tempo trace.</li>
+            <li><strong>Illustrative scenario — Go microservice</strong>: Uber zap production encoder writes JSON to stdout; Promtail ships to Grafana Loki with low-cardinality labels (<code>app</code>, <code>env</code>) and high-cardinality data in the line.</li>
+            <li><strong>Case study — Honeycomb event model</strong>: Charity Majors advocates wide, structured events for exploratory debugging; structured logging in your own stack is the portable subset of that idea in Loki or Elasticsearch.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="logging-architecture.html">Logging Architecture</a> — Pipeline context.</li>
-            <li><a href="distributed-tracing.html">Distributed Tracing</a> — Shared trace ids.</li>
-            <li><a href="log-aggregation.html">Log Aggregation</a> — Central storage.</li>
+            <li><a href="logging-architecture.html">Logging Architecture</a> — End-to-end pipeline and retention design.</li>
+            <li><a href="log-aggregation.html">Log Aggregation</a> — Shippers, stores, and query interfaces.</li>
+            <li><a href="distributed-tracing.html">Distributed Tracing</a> — Trace identifiers shared with log records.</li>
+            <li><a href="opentelemetry.html">OpenTelemetry</a> — OTLP logs and context injection.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.structlog.org/en/stable/" target="_blank" rel="noopener noreferrer">structlog documentation</a></li>
-            <li><a href="https://github.com/uber-go/zap" target="_blank" rel="noopener noreferrer">Uber zap logger</a></li>
-            <li><a href="https://www.elastic.co/guide/en/ecs/current/index.html" target="_blank" rel="noopener noreferrer">Elastic Common Schema</a></li>
+            <li><a href="https://opentelemetry.io/docs/specs/otel/logs/" target="_blank" rel="noopener noreferrer">OpenTelemetry Logs</a></li>
+            <li><a href="https://grafana.com/docs/loki/latest/logql/" target="_blank" rel="noopener noreferrer">Grafana Loki: LogQL</a></li>
+            <li><a href="https://sre.google/sre-book/monitoring-distributed-systems/" target="_blank" rel="noopener noreferrer">Google SRE Book: Monitoring Distributed Systems</a></li>
+            <li><a href="https://charity.wtf/2020/03/03/observability-is-a-many-splendored-thing/" target="_blank" rel="noopener noreferrer">Charity Majors: Observability Is a Many-Splendored Thing</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
