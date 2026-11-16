@@ -104,33 +104,34 @@
 
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The Retry pattern automatically re-executes a failed operation after a brief wait, under the assumption that the failure is transient — caused by a momentary network hiccup, a short-lived service overload, or a rate-limit response — and will likely resolve itself without structural intervention. The pattern wraps the call site with retry logic that tracks attempt count, evaluates whether the failure is retryable, and applies a delay strategy between attempts. Most production retry implementations use exponential backoff with jitter (see the next article) rather than a fixed wait interval, to prevent all retrying callers from hitting the downstream service simultaneously.</p>
-          <p>Retry is distinct from polling or idempotent replay: it applies at the call site immediately after a failure, within a single logical operation, rather than being driven by a background scheduler. The pattern is ubiquitous in HTTP clients, gRPC stubs, database drivers, and message broker SDKs — but when applied naively without caps or selectivity, it can amplify load on already struggling systems rather than relieve them.</p>
+          <p><strong>The Retry pattern</strong> is a client-side resilience mechanism that re-executes a failed operation after a bounded delay when the failure is classified as <em>transient</em> and the operation is <em>idempotent</em> (or otherwise safe to repeat). Azure Architecture Center defines it as an automatic response to failures that are likely to resolve without changing request payload or infrastructure. Polly and Resilience4j express the same idea as a declarative retry policy: maximum attempts, backoff, predicates on exception types, and optional integration with circuit breakers.</p>
+          <p>In production, a retry is never “try again forever.” Google’s SRE material on <em>handling overload</em> treats aggressive clients as part of the failure mode: each attempt must honor a <strong>per-call timeout</strong>, respect server signals such as HTTP 429 and <code>Retry-After</code>, and stop before retries convert a brief blip into a load amplifier. AWS’s Builders Library guidance on timeouts and retries pairs bounded retries with jittered backoff so recovering fleets are not hit by synchronized waves.</p>
+          <p>Retry applies at the <strong>call boundary</strong> within a single logical operation (HTTP/gRPC stub, SDK wrapper, database driver)—not as a substitute for message-broker redelivery or batch schedulers. Michael Nygard’s <em>Release It!</em> warns that uncontrolled retries are a classic source of <strong>cascading failure</strong>; retries belong in a deliberate stack with timeouts, backoff, circuit breaking, and bulkheads.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Distributed systems experience transient failures constantly: a load balancer briefly drops a connection during a rolling restart, a DNS resolver times out under burst load, a managed database instance fails over and is unreachable for three seconds, or an upstream API returns HTTP 503 because it is momentarily throttled. Without automatic retries, every such brief disruption becomes a visible error for the calling client. The Retry pattern absorbs these brief failures transparently, dramatically improving perceived reliability without any structural change to the downstream system.</p>
-          <p>The pattern also aligns with the design philosophy of autonomous services: a caller should not require manual operator intervention every time a downstream dependency experiences a brief blip. Combined with exponential backoff and circuit breakers, retries form the first tier of resilience defence for inter-service communication.</p>
+          <p>Distributed systems routinely see failures that disappear in seconds: connection resets during rollouts, brief DNS saturation, managed-database failovers, or upstream 503 responses while autoscaling adds capacity. Without retries, those events burn error budget and page humans for problems that self-heal. SRE practice assumes partial failure is normal; callers should absorb transients when doing so is safe and within latency budgets.</p>
+          <p>Without classification, caps, and backoff, retries do the opposite of help. Every caller hammering a struggling dependency extends the outage—exactly the retry-storm dynamic Nygard and AWS document. A mature retry policy is selective (retry only what can succeed), bounded (attempt limit plus overall deadline), and observable (metrics on retry rate and retry success).</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>The operation is <strong>idempotent</strong> — executing it multiple times produces the same result as executing it once (GET requests, PUT with full resource, Kafka producer with idempotent flag).</li>
-            <li>The error is <strong>transient</strong> — HTTP 429 Too Many Requests, HTTP 503 Service Unavailable, connection timeouts, DNS resolution failures, or database connection pool exhaustion that clears quickly.</li>
-            <li>The downstream service is expected to recover on its own without external action (e.g., rolling deployment completing, autoscaling adding capacity).</li>
-            <li>The operation has a defined maximum latency budget that can accommodate a small number of retries without exceeding the overall SLA.</li>
-            <li>You are calling external APIs (cloud SDKs, payment gateways) that explicitly document retry-safe endpoints.</li>
+            <li>Operations are <strong>idempotent</strong> or protected by idempotency keys (safe GET/PUT, deduplicated writes, Kafka idempotent producer).</li>
+            <li>Errors are <strong>transient</strong>: timeouts, connection resets, HTTP 429/503/504, throttling, brief pool exhaustion.</li>
+            <li>The caller has <strong>latency headroom</strong> in its SLO—total time including retries stays within the user-facing budget.</li>
+            <li>SDK or platform defaults exist (AWS/GCP/Azure clients) and you are tuning them to match your SLOs, not disabling safety limits.</li>
+            <li>Retries are composed with <strong>circuit breakers</strong> and <strong>fallbacks</strong> so sustained outages fail fast instead of looping.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>The operation is <strong>not idempotent</strong> — retrying a payment charge, a non-idempotent POST, or a state machine transition could cause duplicate side effects.</li>
-            <li>The failure is <strong>permanent</strong> — HTTP 400 Bad Request (malformed input), HTTP 401 Unauthorized, HTTP 403 Forbidden, HTTP 404 Not Found, or HTTP 422 Unprocessable Entity will not resolve with retries and should surface immediately.</li>
-            <li>The downstream is in a prolonged outage — unbounded retries under sustained failure amplify load; a circuit breaker should open instead.</li>
-            <li>The retry budget has been exhausted — continuing to retry beyond the cap wastes resources and increases tail latency for the caller.</li>
-            <li>The SLA does not have headroom — if a 200 ms p99 budget leaves no room for even one retry, fail fast instead.</li>
+            <li>Operations are <strong>not idempotent</strong> (charges, one-shot POSTs, irreversible state transitions) without explicit deduplication.</li>
+            <li>Failures are <strong>permanent</strong>: HTTP 4xx validation/auth errors will not heal with time.</li>
+            <li>The dependency is in <strong>sustained outage</strong>—open the circuit breaker and route to fallback instead of retrying.</li>
+            <li>Your deadline is tighter than one retry plus backoff—<strong>fail fast</strong> and surface the error.</li>
+            <li>Message brokers already redeliver—stacking application retries on broker retries without understanding combined semantics.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Transient HTTP errors trigger bounded retries with backoff before surfacing failure to the caller.</p>
+          <p>Call-site wrapper classifies errors, sleeps with backoff, and stops at max attempts before returning failure upstream.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">sequenceDiagram
     participant Cl as Client
@@ -148,30 +149,17 @@
               <pre class="architecture-diagram__canvas"><code>Retry Flow with Exponential Backoff
 ═════════════════════════════════════════════════════
 
-Client                   Retry Wrapper              Downstream
-  │                           │                          │
-  │──── call() ──────────────►│                          │
-  │                           │──── attempt 1 ──────────►│
-  │                           │◄─── 503 ─────────────────│
-  │                           │                          │
-  │                           │  [transient? YES]        │
-  │                           │  [attempt ≤ maxRetries?] │
-  │                           │  wait: base * 2^0 + jitter│
-  │                           │                          │
-  │                           │──── attempt 2 ──────────►│
-  │                           │◄─── 503 ─────────────────│
-  │                           │  wait: base * 2^1 + jitter│
-  │                           │                          │
-  │                           │──── attempt 3 ──────────►│
-  │                           │◄─── 200 OK ──────────────│
-  │◄── success ───────────────│                          │
+Client → Retry wrapper → Downstream
+  attempt 1 → 503 (transient)
+  wait: base × 2^n + jitter
+  attempt 2 → 200 OK → success
 
-Error Classification
-────────────────────
-  Retry    → 429, 503, 504, connection timeout, DNS error
-  No Retry → 400, 401, 403, 404, 422, business logic errors</code></pre>
+Retryable: 429, 503, 504, timeouts, connection errors
+No retry: 400, 401, 403, 404, 422, business rule violations
+
+Stack: timeout → retry (cap) → circuit breaker → fallback</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Retry wrapper retries 429/503/timeouts with jitter; 4xx client errors fail immediately without retry.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Bounded retry with jittered backoff on transient errors; permanent 4xx and business faults fail immediately.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -179,72 +167,73 @@ Error Classification
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Transparently absorbs transient failures without surfacing errors to users or callers.</li>
-                <li>Simple to implement and available in most HTTP and gRPC client libraries out of the box.</li>
-                <li>Dramatically improves availability metrics when downstream services have brief restarts or brief throttle windows.</li>
-                <li>Decouples the caller from having to implement manual retry logic at the business layer.</li>
-                <li>Composable with circuit breakers and fallbacks for layered resilience.</li>
+                <li>Improves perceived availability for transient faults without changing downstream architecture.</li>
+                <li>Available in mainstream libraries (Resilience4j, Polly, AWS SDK, gRPC retry policies).</li>
+                <li>Reduces noise in on-call when paired with proper error taxonomy and SLO budgets.</li>
+                <li>Composable first layer in Azure’s recommended resilience pipeline (retry → breaker → bulkhead).</li>
+                <li>Respects platform hints when <code>Retry-After</code> headers are honored.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Amplifies load on an already struggling downstream when not capped by a retry budget or circuit breaker.</li>
-                <li>Increases tail latency — a caller waiting through three retries with backoff may experience 10× the normal p99 latency.</li>
-                <li>Dangerous for non-idempotent operations — duplicate charges, duplicate inserts, duplicate emails are common retry bugs.</li>
-                <li>Retry storms occur when many callers simultaneously retry against the same service — jitter and circuit breakers must both be used.</li>
-                <li>Masks root causes — metrics showing high retry rates may obscure underlying infrastructure problems that need fixing.</li>
+                <li>Increases tail latency and multiplies load on failing dependencies when uncapped.</li>
+                <li>Dangerous without idempotency—duplicate side effects are among the costliest production bugs.</li>
+                <li>Masks chronic dependency degradation if retry metrics are not monitored.</li>
+                <li>Retry storms synchronize with fixed or un-jittered backoff schedules.</li>
+                <li>Does not replace fixing root causes or designing for overload (SRE handling-overload guidance).</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Always classify errors before retrying. Maintain two distinct sets: retryable errors (transient) and non-retryable errors (permanent). Retrying on a 400 Bad Request wastes resources and delays surfacing a bug; retrying on a 401 can lock accounts. In HTTP, 429 and 503 responses should also be checked for a <code>Retry-After</code> header and that interval respected rather than overriding it with your own backoff schedule.</p>
-          <p>Set a hard cap on retry count — three to five attempts is typical for synchronous request paths. Beyond that, open a circuit breaker. A <em>retry budget</em> approach limits the total fraction of requests that are retries (e.g., no more than 10% of all outgoing calls may be retries), preventing runaway retry amplification under sustained load. Libraries like Resilience4j (Java), Polly (.NET), and tenacity (Python) provide built-in retry policies with configurable predicates, backoff strategies, and attempt limits.</p>
-          <p>AWS SDK clients implement adaptive retries by default, which adjust retry rate based on observed error rates.</p>
-          <p>For messaging systems, retries are typically handled at the broker level via re-delivery policies; do not add application-layer retries on top without understanding the combined effect on delivery count and DLQ routing.</p>
+          <p>Maintain two explicit exception or status-code sets: <strong>retryable</strong> and <strong>non-retryable</strong>. In HTTP, treat 429/503 as retryable only when the operation is idempotent; never retry most 4xx. Configure <strong>per-attempt timeouts</strong> shorter than the end-to-end deadline (AWS Builders Library: timeouts are not optional decoration—they define worst-case resource holding time).</p>
+          <p>Cap attempts (often three to five on synchronous paths) and enforce an <strong>overall deadline</strong>. Use exponential backoff with jitter between attempts; see the dedicated backoff article. Consider a <strong>retry budget</strong> (limit fraction of outbound traffic that may be retries) to protect shared dependencies during incidents.</p>
+          <p>Resilience4j <code>Retry</code> and Polly <code>WaitAndRetryAsync</code> support predicates, backoff suppliers, and event callbacks for metrics. Wire retries <em>before</em> circuit breakers in the decoration order so breakers see aggregated failure rates. Export <code>retries_total</code>, <code>retry_success_total</code>, and latency histograms including retry attempts.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Retrying non-idempotent operations:</strong> duplicate payments, duplicate database inserts, duplicate emails sent to customers — the most damaging retry bug in production.</li>
-            <li><strong>No error classification:</strong> retrying on 400, 401, or 404 which will never succeed, wasting latency budget.</li>
-            <li><strong>Retry storms:</strong> hundreds of clients simultaneously failing and retrying at the same interval, causing the target to remain overloaded indefinitely.</li>
-            <li><strong>Missing circuit breaker:</strong> retries continue indefinitely during a prolonged outage, saturating thread pools and cascading to the caller's callers.</li>
-            <li><strong>Ignoring Retry-After header:</strong> hammering a rate-limited API every 100 ms instead of respecting the backoff hint it provides.</li>
+            <li><strong>Retrying non-idempotent writes</strong> — duplicate payments, emails, or inventory movements.</li>
+            <li><strong>No timeout on each attempt</strong> — threads blocked until the global deadline; cascading pool exhaustion per <em>Release It!</em></li>
+            <li><strong>Retrying permanent errors</strong> — 400/401/404 loops waste budget and hide bugs.</li>
+            <li><strong>Ignoring Retry-After</strong> — violates upstream throttle contract and deepens overload.</li>
+            <li><strong>No breaker or budget</strong> — retries continue through prolonged outages, amplifying failure.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is every operation protected by this retry policy idempotent? Have you verified no duplicate side effects can occur?</li>
-            <li>Does your error classifier distinguish transient (retryable) from permanent (non-retryable) errors by HTTP status code and exception type?</li>
-            <li>Is the maximum retry count bounded (e.g., 3–5 attempts for synchronous paths)?</li>
-            <li>Is exponential backoff with jitter applied to avoid synchronized retry waves?</li>
-            <li>Is a circuit breaker wired after the retry policy to halt retries during sustained outages?</li>
-            <li>Are retry metrics (retry rate, retry success rate) exposed and alerted on to surface hidden problems?</li>
-            <li>Does your retry policy respect <code>Retry-After</code> headers from rate-limited upstream APIs?</li>
+            <li>Is every retried operation idempotent or covered by an idempotency key?</li>
+            <li>Are per-attempt timeouts and a global deadline configured?</li>
+            <li>Is error classification explicit (status codes, gRPC codes, exception types)?</li>
+            <li>Are max attempts, backoff with jitter, and optional retry budget set per dependency?</li>
+            <li>Does a circuit breaker halt retries during sustained failure?</li>
+            <li>Are retry rate and retry-success metrics dashboards and alerts in place?</li>
+            <li>Does the policy respect <code>Retry-After</code> on 429/503 responses?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>An e-commerce checkout service retrying a payment gateway call that returned 503 during a brief gateway restart — the charge is idempotent because an idempotency key is sent with every request.</li>
-            <li>A microservice retrying a database read that timed out during a brief primary failover in an RDS Multi-AZ configuration.</li>
-            <li>An AWS Lambda function retrying an S3 PutObject call that failed with a 500 error from the S3 regional endpoint under burst load.</li>
-            <li>A gRPC client retrying a UNAVAILABLE status code from a service mesh sidecar when the upstream pod was momentarily unready during a rolling deploy.</li>
+            <li><strong>Case study — AWS SDK defaults:</strong> Service clients ship adaptive retry modes that combine attempt caps with backoff; teams tune mode and max attempts to match service SLOs rather than disabling retries entirely.</li>
+            <li><strong>Illustrative scenario — payment authorization:</strong> Checkout retries a 503 from a card processor using an idempotency key; after three attempts the circuit opens and the UI offers “try again later” without double-charging.</li>
+            <li><strong>Illustrative scenario — mesh egress:</strong> A gRPC client retries <code>UNAVAILABLE</code> during a rolling pod restart, then stops when the breaker records sustained failures from the target cluster.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="exponential-backoff.html">Exponential Backoff with Jitter</a> — the delay strategy that should accompany every retry policy.</li>
-            <li><a href="circuit-breaker.html">Circuit Breaker</a> — halts retries once failure rates exceed a threshold, preventing retry storms.</li>
-            <li><a href="bulkhead-pattern.html">Bulkhead Pattern</a> — isolates retry thread pools so a retry storm against one dependency cannot exhaust shared resources.</li>
-            <li><a href="../foundations/idempotency.html">Idempotency</a> — the safety property that makes retries safe to apply.</li>
+            <li><a href="exponential-backoff.html">Exponential Backoff with Jitter</a> — delay schedule between retry attempts.</li>
+            <li><a href="circuit-breaker.html">Circuit Breaker</a> — stops retries when failure is sustained.</li>
+            <li><a href="bulkhead-pattern.html">Bulkhead Pattern</a> — isolates retry/thread pools per dependency.</li>
+            <li><a href="../foundations/idempotency.html">Idempotency</a> — safety property that makes retries permissible.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/retry" rel="noopener noreferrer" target="_blank">Retry pattern — Azure Architecture Center</a> — authoritative reference with implementation guidance.</li>
-            <li><a href="https://resilience4j.readme.io/docs/retry" rel="noopener noreferrer" target="_blank">Resilience4j Retry documentation</a> — Java library with predicate-based retry, backoff, and metrics.</li>
-            <li><a href="https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/" rel="noopener noreferrer" target="_blank">Exponential Backoff and Jitter — AWS Architecture Blog</a> — the canonical treatment of backoff strategies and jitter algorithms.</li>
+            <li><a href="https://sre.google/sre-book/handling-overload/" rel="noopener noreferrer" target="_blank">Google SRE Book — Handling overload</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/retry" rel="noopener noreferrer" target="_blank">Retry pattern — Azure Architecture Center</a></li>
+            <li><a href="https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/" rel="noopener noreferrer" target="_blank">AWS Builders Library — Timeouts, retries, and backoff with jitter</a></li>
+            <li><a href="https://resilience4j.readme.io/docs/retry" rel="noopener noreferrer" target="_blank">Resilience4j — Retry</a></li>
+            <li><a href="https://www.pollydocs.org/strategies/retry" rel="noopener noreferrer" target="_blank">Polly — Retry strategy</a></li>
+            <li><a href="https://pragprog.com/titles/mnee2/release-it-second-edition/" rel="noopener noreferrer" target="_blank">Release It! — Michael Nygard</a></li>
           </ul>
         </div>
 
