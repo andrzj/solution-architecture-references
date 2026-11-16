@@ -143,20 +143,35 @@
     dlq --> opts["Alarm, analyze, replay, or discard"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>DLQ Flow (queue-style broker)
-══════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>Dead Letter Queue Flow — Amazon SQS
+═══════════════════════════════════════════════════════
 
-  Producer → Main queue → Consumer
-                  ↑            │ throws / nack
-                  └─ redeliver ┘
-                  │
-         receive count &gt; max
-                  ▼
-            Dead letter queue
-                  │
-      ┌───────────┼───────────────┐
-      │ alarm     │ replay tool   │ manual review
-      └───────────┴───────────────┘</code></pre>
+Producer → Main Queue → Consumer
+                │           │ processing fails
+                │           │ (exception thrown)
+                │           ↓ message visibility timeout expires
+                │       Message returned to queue
+                │           │
+                │       Attempt 2 → fails
+                │       Attempt 3 → fails
+                │           │ maxReceiveCount (3) exceeded
+                │           ▼
+                │       Dead Letter Queue
+                │           │
+                │    ┌──────┴──────────────────────┐
+                │    │ DLQ Processing Options:       │
+                │    │  1. CloudWatch alarm on depth │
+                │    │  2. DLQ consumer for analysis │
+                │    │  3. Manual inspection tool    │
+                │    │  4. Replay after code fix     │
+                │    │  5. Discard + structured log  │
+                │    └──────────────────────────────┘
+                │
+SQS RedrivePolicy config:
+  {
+    "deadLetterTargetArn": "arn:aws:sqs:...:MyQueue-DLQ",
+    "maxReceiveCount": 3
+  }</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Failed messages cycle on the main queue until a retry budget expires, then land in a DLQ for human or automated recovery.</figcaption>
           </figure>

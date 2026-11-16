@@ -145,15 +145,37 @@
     c2 -->|miss| c3["Empty list for UI"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Fallback chain (recommendations)
+              <pre class="architecture-diagram__canvas"><code>Fallback Decision Tree
+═══════════════════════════════════════════════════════
 
-Primary ML service → fail / breaker open
-  1. Redis cache (TTL 30m)
-  2. Static popular items
-  3. Empty list + UI copy
+  Request for Product Recommendations
+        │
+        ▼
+  ┌─────────────────────────┐
+  │  Call Recommendation     │
+  │  Service (primary)       │
+  └───────────┬─────────────┘
+              │
+     ┌────────┴──────────┐
+     │ Success?           │ Failed / Circuit Open / Timeout
+     ▼                   ▼
+  Return results    ┌─────────────────────────────┐
+                    │ Fallback Chain               │
+                    │                             │
+                    │  1. Redis cache             │
+                    │     (last 30 min results)   │
+                    │          │ miss             │
+                    │          ▼                  │
+                    │  2. Pre-computed static     │
+                    │     "popular items" list    │
+                    │          │ not available    │
+                    │          ▼                  │
+                    │  3. Return empty list []    │
+                    │     + UI shows "No recs"   │
+                    └─────────────────────────────┘
 
-Metrics: fallback_activations_total, staleness age
-Alert if activation rate &gt; baseline</code></pre>
+Staleness TTL: cached fallback is used if age &lt; 30 min.
+Monitor: fallback_activations_total metric + alert if &gt; 5%</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Primary failure walks a short local chain: cache, static default, then safe empty response with monitored activation rate.</figcaption>
           </figure>

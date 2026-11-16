@@ -142,20 +142,34 @@
     classify --> reject["Rejected — HTTP 503 Retry-After"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>Priority-Based Load Shedding
-════════════════════════════
+              <pre class="architecture-diagram__canvas"><code>Load Shedding with Priority Admission Control
+════════════════════════════════════════════════
 
-  Request → Gateway → Priority (P0..P3) → Admission
-                              │
-                 load signals ┘
-                 (queue depth, p99 latency, in-flight)
-
-  P0: health / payments     → admit unless hard limit
-  P1: interactive reads   → shed at high watermark
-  P2: writes / exports      → shed earlier
-  P3: batch / webhooks      → shed first
-
-  Rejected: HTTP 503, Retry-After: N, optional X-Reason header</code></pre>
+Incoming Requests → Load Measurement → Admission Decision
+                         │
+              ┌──────────┴──────────┐
+              │  Load Signals:       │
+              │  • CPU utilisation   │
+              │  • Queue depth       │
+              │  • p99 latency       │
+              │  • Active threads    │
+              └──────────┬──────────┘
+                         │ overload detected
+                         ▼
+         Priority Classification
+         ┌─────────────────────────────┐
+         │ P0: Health checks / payments│ ← always admit
+         │ P1: User reads (browse)     │ ← shed if CPU &gt; 90%
+         │ P2: User writes (orders)    │ ← shed if CPU &gt; 80%
+         │ P3: Background sync / audit │ ← shed if CPU &gt; 70%
+         └─────────────────────────────┘
+                         │
+         ┌───────────────┴──────────────┐
+         │ Admitted                      │ Rejected
+         ▼                              ▼
+   Process normally              HTTP 503
+                                 Retry-After: 5
+                                 (client backs off)</code></pre>
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">The edge measures saturation, applies priority rules, and rejects low-value work before it consumes application capacity.</figcaption>
           </figure>
