@@ -206,6 +206,9 @@
           <p><strong>CDN purges:</strong> Cloudflare supports purge by URL, prefix, hostname, and <a href="https://developers.cloudflare.com/cache/how-to/purge-cache/#purge-by-cache-tags">cache tags</a>; Fastly uses <a href="https://www.fastly.com/documentation/guides/concepts/edge-state/cache/#surrogate-keys">surrogate keys</a> with soft and hard purge. Purge APIs are rate-limited—batch by tag during bulk catalog updates instead of one request per object. Expect global propagation in seconds to tens of seconds; monitor API responses and retry failures.</p>
           <p><strong>Races:</strong> A slow reader can repopulate stale data after your delete. Mitigate with version fields in cached payloads, short TTL caps, or CDC-driven invalidation ordered on the replication stream so deletes never precede visible writes.</p>
           <p><strong>Memcached invalidation:</strong> Memcached exposes only <code>delete</code>—no pub/sub—so invalidation is either client-driven after write or lazy TTL. Multi-tier apps often pair Memcached blobs with Redis pub/sub coordinating app-local caches; document which tier owns authoritative freshness.</p>
+          <p><strong>Delete vs repopulate races:</strong> Facebook’s memcached paper describes a <em>lease</em>: on miss, the cache returns a small token; <code>SET</code> succeeds only with a valid lease, preventing a slow reader from installing stale JSON after another writer deleted the key. In Redis ecosystems the same idea appears as single-flight locks or version checks in the cached blob.</p>
+          <p><strong>Versioned keys and double-delete:</strong> Embed <code>version</code> or <code>updated_at</code> in the value; readers ignore cache entries older than the row they just wrote. The double-delete pattern deletes before write, commits, then deletes again after a short sleep to catch repopulate races in flight—use sparingly on hero keys where leases are impractical.</p>
+          <p><strong>CDC-driven invalidation:</strong> Stream row changes from Debezium, logical replication, or DynamoDB Streams into a consumer that maps primary keys to cache tags. Ordering invalidation on the replication log keeps deletes behind visible commits—especially when read replicas still lag. Event consumers should be idempotent: the same change may redeliver after a crash.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -251,6 +254,7 @@
             <li><a href="https://docs.fastly.com/en/guides/purging" target="_blank" rel="noopener noreferrer">Fastly — purging guide</a></li>
             <li><a href="https://martinfowler.com/bliki/TwoHardThings.html" target="_blank" rel="noopener noreferrer">Martin Fowler — two hard things</a></li>
             <li><a href="https://memcached.org/" rel="noopener noreferrer" target="_blank">Memcached</a></li>
+            <li><a href="https://www.usenix.org/conference/nsdi13/technical-sessions/presentation/nishtala" rel="noopener noreferrer" target="_blank">Scaling Memcache at Facebook (NSDI 2013)</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
