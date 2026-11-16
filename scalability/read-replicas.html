@@ -210,6 +210,10 @@
           <p><strong>Read-your-writes routing:</strong> Three practical options: (1) sticky primary for N seconds after any write in the session; (2) return the PostgreSQL LSN or MySQL GTID with the write response and only read from a replica whose position is ≥ that token; (3) offload hot keys to <a href="caching-strategies.html">Redis</a> on the write path so the next read never touches a lagging replica. Pair replicas with a short-TTL cache only when invalidation on write is explicit—replicas are not a substitute for cache coherence.</p>
           <p><strong>Connection pools:</strong> Size write and read pools independently. Replicas often need more connections because they absorb fan-out traffic; the primary pool should stay small enough that long transactions cannot starve writers. Use separate DSNs or proxy rules so migrations and DDL never target replicas.</p>
           <p>For eventually consistent reads (leaderboards, recommendations), document the maximum acceptable lag in the API contract and route those endpoints only to replicas whose lag gauge is within bounds.</p>
+          <p><strong>Tail latency:</strong> Dean and Barroso’s “Tail at Scale” argument applies to replica pools—if routing ignores lag, one slow follower can dominate p99 even when median replication health looks fine. Prefer lag-aware load balancing or drop degraded replicas from rotation before clients observe nine-second reads on an otherwise healthy cluster.</p>
+          <p><strong>Measuring lag:</strong> PostgreSQL exposes replay lag in <code>pg_stat_replication</code>; MySQL uses seconds behind primary / GTID gap; Aurora publishes <code>ReplicaLag</code>. Define SLAs per query class and exclude followers that breach them from read pools.</p>
+          <p><strong>Read-your-writes:</strong> Sticky sessions to the primary for a few seconds after write; or return LSN/GTID with the write response and block reads on replicas until <code>replay_lag</code> catches up to that token; or read-through Redis on the hot entity. Pick one contract and test mobile clients that parallelize POST+GET.</p>
+          <p><strong>Promotion risk:</strong> Async failover can promote a follower that has not applied the latest WAL—document RPO and rehearse promotion with chaos tests. Synchronous quorum replicas narrow the gap at the cost of write latency; weigh that against financial or inventory reads that cannot tolerate torn histories.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -251,8 +255,9 @@
             <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Aurora.Replication.html" target="_blank" rel="noopener noreferrer">Amazon Aurora — replication with Aurora Replicas</a></li>
             <li><a href="https://www.postgresql.org/docs/current/hot-standby.html" target="_blank" rel="noopener noreferrer">PostgreSQL — hot standby and streaming replication</a></li>
             <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy.html" target="_blank" rel="noopener noreferrer">Amazon RDS Proxy — connection pooling and routing</a></li>
-            <li><a href="https://proxysql.com/documentation/read-write-split-howto/" target="_blank" rel="noopener noreferrer">ProxySQL — read/write split how-to</a></li>
+            <li><a href="https://github.com/sysown/proxysql/wiki" target="_blank" rel="noopener noreferrer">ProxySQL documentation wiki</a></li>
             <li><a href="https://redis.io/docs/manual/patterns/" target="_blank" rel="noopener noreferrer">Redis — caching patterns (complement replicas for hot reads)</a></li>
+            <li><a href="https://research.google/pubs/pub43438/" rel="noopener noreferrer" target="_blank">The Tail at Scale — Dean &amp; Barroso</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
