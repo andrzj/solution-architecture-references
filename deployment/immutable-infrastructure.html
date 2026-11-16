@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Immutable Infrastructure — SA References</title>
-  <meta name="description" content="Never modifying running servers — replace, not repair.">
+  <meta name="description" content="Immutable infrastructure: versioned artifacts, replace-not-repair rollouts on Kubernetes and VM fleets, golden images, digest-pinned deploys, and GitOps reconciliation without configuration drift.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -88,7 +88,7 @@
     <nav class="breadcrumb" aria-label="Breadcrumb">
       <a href="../index.html">Home</a>
       <span class="breadcrumb__sep" aria-hidden="true">›</span>
-      <a href="index.html">Deployment & Delivery</a>
+      <a href="index.html">Deployment &amp; Delivery</a>
       <span class="breadcrumb__sep" aria-hidden="true">›</span>
       <span class="breadcrumb__current">Immutable Infrastructure</span>
     </nav>
@@ -96,107 +96,136 @@
       <div class="article-body">
         <div class="article-header">
           <div class="article-header__tags">
-            <span class="badge badge--primary">Deployment & Delivery</span>
+            <span class="badge badge--primary">Deployment &amp; Delivery</span>
           </div>
           <h1 class="article-header__title">Immutable Infrastructure</h1>
-          <p class="article-header__desc">Never modifying running servers — replace, not repair.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">Treat servers and containers as disposable: ship versioned artifacts, roll forward by replacing instances, and forbid in-place mutation so every environment reproduces from known-good builds.</p>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: a new container image digest rolls out via Kubernetes; failed nodes are terminated, not SSH-fixed.</p>
+          <p><strong>Immutable infrastructure</strong> means production instances are never patched, tuned, or configured live. When behavior must change, the pipeline builds a new <strong>artifact</strong>—container image by digest, VM image, or launch template version—and the orchestrator <strong>replaces</strong> running instances with ones created from that artifact. Old instances are terminated, not “fixed.”</p>
+          <p>On <strong>Kubernetes</strong>, immutability is natural: a Deployment rollout creates new Pods from an updated image spec; kubelet does not mutate container filesystems in place. On <strong>VM fleets</strong>, autoscaling groups or instance refresh swap nodes when the AMI or cloud-init bundle version changes. <strong>Packer</strong> and image pipelines bake OS hardening and agents into golden images so bootstrapping is identical every time.</p>
+          <p>Immutability pairs with <strong>declarative desired state</strong> (GitOps, IaC): what runs in production is whatever version control and CI promoted—not whatever an operator typed over SSH last Tuesday.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Snowflake servers drift from configuration, hide CVE patches, and resist reproducibility. Immutability makes deployments predictable and auditable.</p>
+          <p>Mutable servers become snowflakes: manual sysctl tweaks, one-off package installs, and emergency hotfixes diverge from documentation. Drift hides missing security patches, breaks autoscaling symmetry, and makes incidents non-reproducible (“works on node 7”). Replacing whole instances from signed artifacts gives auditors a clear bill of materials, makes rollback a redeploy of the previous digest, and forces teams to encode changes in pipelines instead of tribal shell history.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Container and VM fleets at scale.</li>
-            <li>Compliance requiring known-good images.</li>
-            <li>GitOps-driven environments.</li>
+            <li>Container platforms and cloud VM fleets where orchestrators can roll replacements safely.</li>
+            <li>Regulated environments that require provenance, image signing, and SBOM attachments per release.</li>
+            <li>GitOps or IaC-driven estates where controllers reconcile declared versions continuously.</li>
+            <li>Security programs that patch by rebuilding base images and redeploying—not apt-get on production.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Stateful pets without orchestrated replacement.</li>
-            <li>Emergency break-glass without automation to rebuild.</li>
+            <li><strong>Stateful pets without automation:</strong> Databases or legacy VMs that cannot be recreated from automation still need migration paths before immutability applies to compute.</li>
+            <li><strong>No reliable build pipeline:</strong> If CI cannot produce artifacts in minutes, hotfixes stall; fix delivery before forbidding SSH.</li>
+            <li><strong>Edge or air-gapped nodes:</strong> Slow artifact distribution may force staged mutability until sync mechanisms mature.</li>
+            <li><strong>Break-glass only culture:</strong> Immutability fails if leaders routinely reward manual prod edits without post-incident codification.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The loop is always the same: merge triggers build, build produces a pinned artifact, deploy controller swaps instances, telemetry validates, then old revisions drain. Data layers stay outside immutable compute where possible.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    change["Config change"]
-    build["Build new image"]
-    deploy["Deploy replacement"]
-    retire["Terminate old instances"]
-    change --> build --> deploy --> retire</div>
+    git["Git / IaC change"]
+    ci["CI build + scan + sign"]
+    reg["Registry / AMI gallery"]
+    roll["Rolling replace&lt;br/&gt;(K8s / ASG / refresh)"]
+    old["Retire old instances"]
+    git --> ci --> reg --> roll --> old</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>IMMUTABLE REPLACE:
+              <pre class="architecture-diagram__canvas"><code>IMMUTABLE DEPLOY LOOP:
 
-  Config change --> build new image
-                      |
-                      v
-              deploy replacement
-                      |
-              terminate old instances</code></pre>
+  Git merge (app + infra)
+        |
+        v
+  CI: build image / Packer AMI
+      scan, sign, SBOM, push by DIGEST
+        |
+        v
+  Deploy: K8s Deployment rollout OR ASG instance refresh
+        |
+        v
+  Health gates (probes / LB checks)
+        |
+        v
+  Terminate replaced instances (no SSH patch)</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Immutable infrastructure: never patch running servers; rebuild artifacts and replace instances wholesale.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Changes flow through build artifacts; production advances by replacing instances, not mutating them.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Eliminates configuration drift.</li>
-            <li>Fast rollback to prior artifact.</li>
-            <li>Security patches via rebuild.</li>
-            <li>Supports declarative IaC.</li>
+                <li>Stops configuration drift; prod matches the artifact CI tested.</li>
+                <li>Rollback is redeploying a prior digest or launch template version.</li>
+                <li>Patch cadence maps to image rebuilds with scannable, signable outputs.</li>
+                <li>Aligns with declarative IaC and GitOps reconciliation loops.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Stateful data requires separate strategy.</li>
-            <li>Image build pipeline dependency.</li>
-            <li>Slower hotfix if build broken.</li>
-            <li>Discipline required — no SSH fixes.</li>
+                <li>Stateful data and migrations need separate, carefully orchestrated processes.</li>
+                <li>Pipeline outages block all change—including urgent security fixes.</li>
+                <li>Rebuild times and image storage costs grow with fleet size and layer churn.</li>
+                <li>Requires cultural enforcement: SSH edits must be exceptional and audited.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Golden images in CI with signing and SBOM. Use infrastructure pipelines; disable SSH except break-glass with audit.</p>
-          <p>Store desired state in Git; controllers reconcile continuously.</p>
+          <p>Pin images by <strong>digest</strong> or immutable tags in manifests—not floating <code>:latest</code>. Keep environment-specific config in ConfigMaps, Secrets, or external parameter stores injected at deploy time; do not bake per-environment URLs into images unless unavoidable.</p>
+          <p>Run golden-image pipelines (Packer, cloud image builders) on a schedule and on CVE signals; promote only scanned artifacts. For Kubernetes, prefer RollingUpdate or GitOps sync with health checks and PDBs. For VMs, use launch template versions with instance refresh or blue/green ASG swaps.</p>
+          <p>Disable routine SSH; use break-glass with session recording when absolutely necessary, then capture the fix in IaC and rebuild. Store desired state in Git; let Flux or Argo CD correct manual kubectl drift.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Mutable hotfix</strong> reintroduces drift.</li>
-            <li><strong>Untagged :latest</strong> — unknown versions running.</li>
-            <li><strong>Config baked into image</strong> per environment.</li>
-            <li><strong>Pet databases</strong> on immutable compute wrongly.</li>
+            <li><strong>Mutable hotfix:</strong> Operator patches a live node; next rollout wipes the fix and repeats the incident.</li>
+            <li><strong>Floating tags:</strong> <code>:latest</code> or unpinned AMIs make “what is running?” unanswerable during audits.</li>
+            <li><strong>Config in image:</strong> Twelve-factor violations force per-env image matrices instead of one portable artifact.</li>
+            <li><strong>Data on cattle:</strong> Treating databases like disposable pods without backup/restore automation causes data loss on replace.</li>
+            <li><strong>Skipped health gates:</strong> Fast replace without probes routes traffic to half-booted instances.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Artifacts versioned and signed?</li>
-            <li>No manual SSH changes policy?</li>
-            <li>IaC describes desired state?</li>
-            <li>Rollback is redeploy old artifact?</li>
-            <li>Image scanning in CI?</li>
-            <li>Secrets injected at runtime?</li>
+            <li>Are all production artifacts versioned, scanned, and optionally signed?</li>
+            <li>Is SSH or console edit banned except audited break-glass?</li>
+            <li>Does IaC or GitOps describe the only approved desired state?</li>
+            <li>Is rollback defined as redeploying a known prior artifact?</li>
+            <li>Are secrets and config injected at runtime, not baked into images?</li>
+            <li>Is stateful data managed outside immutable compute with tested backups?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Kubernetes</strong>: Replace pods on image change only.</li>
-            <li><strong>EC2 ASG</strong>: Rolling refresh on new launch template.</li>
-            <li><strong>Packer</strong>: Golden AMI pipeline weekly.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> promotes container digests via GitOps; any manual <code>kubectl set image</code> is reverted within minutes by Flux.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> refreshes an EC2 ASG weekly from a new Packer AMI; instances never receive in-place yum updates in production.</li>
+            <li><strong>Case study —</strong> Netflix’s immutable AMI and container practices and Google’s Borg/Cell models popularized replace-over-repair at hyperscale—useful references for artifact promotion discipline.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="infrastructure-as-code.html">Infrastructure as Code</a> — Declarative desired state.</li>
-            <li><a href="gitops.html">GitOps</a> — Reconciliation loop.</li>
-            <li><a href="rolling-deployments.html">Rolling Deployments</a> — How replacements roll.</li>
+            <li><a href="infrastructure-as-code.html">Infrastructure as Code</a> — Declarative definitions for artifacts and fleets.</li>
+            <li><a href="gitops.html">GitOps</a> — Continuous reconciliation to declared versions.</li>
+            <li><a href="rolling-deployments.html">Rolling Deployments</a> — How orchestrators replace instances in waves.</li>
+            <li><a href="container-orchestration.html">Container Orchestration</a> — Kubernetes workload rollouts and PDBs.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://martinfowler.com/bliki/ImmutableServer.html" target="_blank" rel="noopener noreferrer">Martin Fowler — ImmutableServer</a></li>
-            <li><a href="https://developer.hashicorp.com/terraform/intro" target="_blank" rel="noopener noreferrer">HashiCorp — Immutable infrastructure</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/compute-decision-tree" target="_blank" rel="noopener noreferrer">Azure compute decision tree</a></li>
+            <li><a href="https://www.hashicorp.com/blog/infrastructure-as-code" target="_blank" rel="noopener noreferrer">HashiCorp — Immutable infrastructure and IaC</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/containers/images/#image-pull-policy" target="_blank" rel="noopener noreferrer">Kubernetes — Container images and pull policy</a></li>
+            <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-instance-refresh.html" target="_blank" rel="noopener noreferrer">AWS — EC2 Auto Scaling instance refresh</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
