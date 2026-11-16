@@ -103,27 +103,31 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p><strong>Serverless architecture</strong> on cloud is an execution and integration model where the provider runs and scales compute, and teams pay for invocations, duration, and attached managed services rather than reserved instances. The common face is <strong>functions-as-a-service</strong> (AWS Lambda, Azure Functions, Google Cloud Functions), triggered by HTTP, queues, object events, or schedules.</p>
-          <p>A full serverless system composes FaaS with consumption-priced data plane services — API gateways, object storage, message queues, NoSQL stores, and serverless relational tiers (Aurora Serverless, Cosmos serverless). Functions stay stateless; durable state lives in managed stores. Scale-to-zero is the default economic property: no traffic means no compute charge for that function.</p>
+          <p><strong>Serverless architecture</strong> is an execution and integration model where the cloud provider runs and scales compute, and teams pay for invocations, duration, and attached managed services rather than reserved instances. The familiar compute face is <strong>functions-as-a-service (FaaS)</strong>—AWS Lambda, Azure Functions, Google Cloud Functions—where each invocation receives a sandboxed runtime, billing stops when the handler returns, and concurrency scales without capacity planning.</p>
+          <p>A complete serverless system composes FaaS with consumption-priced data and integration services: API gateways, object storage, queues, streams, NoSQL stores, and autoscaling relational tiers (Aurora Serverless, Cosmos serverless). Functions remain stateless; durable state and workflow progress live in managed stores or orchestrators. Platform limits matter in design: Lambda’s default timeout ceiling, memory-to-CPU coupling, package size caps, and account concurrency budgets bound what belongs in functions versus what should run on <strong>container serverless</strong> (Fargate, Cloud Run) or <strong>workflow engines</strong> (Step Functions, Durable Functions).</p>
+          <p>Scale-to-zero is the default economic property—no traffic means no compute charge for that function—while bursty workloads can fan out to thousands of parallel invocations within account limits. The architecture trades operational control for elasticity and metered pricing; successful designs externalise state, keep handlers short and idempotent, and choose the right compute tier when FaaS constraints bite.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Provisioned servers bill around the clock while many workloads are intermittent — webhooks, file transforms, nightly reports.</p>
-          <p>Offloading patching, scaling, and runtime lifecycle to the provider lets small teams ship event-driven features without operating clusters, as long as workload shape fits platform limits.</p>
+          <p>Traditional compute bills for reserved capacity, not work performed. A service that peaks at lunchtime and idles overnight still pays the same hourly rate for both periods; for webhooks, file transforms, scheduled reports, and integration glue, idle cost often dominates execution cost. FaaS removes that idle bill and shifts patching, scaling, and runtime lifecycle to the provider.</p>
+          <p>Event-driven integration is the natural fit: object uploads triggering transforms, queue messages driving fulfillment, EventBridge or Pub/Sub rules chaining pipeline steps, and HTTP requests entering through API gateways. Each event maps to bounded handler work; billing tracks actual usage. When handler duration, package size, or connection patterns exceed FaaS comfort, teams compose <strong>Lambda plus Step Functions</strong> for durable multi-step flows, or <strong>Fargate or Cloud Run</strong> tasks for longer containerized work—still without operating a fixed server fleet for every spike.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Event pipelines: uploads, queue messages, streaming records, or webhooks that fan out to short handlers.</li>
-            <li>HTTP APIs with spiky traffic where idle VMs or pods would dominate cost.</li>
-            <li>Scheduled or low-duty automation replacing cron on always-on instances.</li>
-            <li>Integration glue between managed services with idempotent, stateless steps.</li>
+            <li>Event pipelines: uploads, queue messages, streaming records, or webhooks that fan out to short, idempotent handlers.</li>
+            <li>HTTP APIs with spiky or unpredictable traffic where always-on VMs or pods would dominate cost.</li>
+            <li>Scheduled automation—nightly exports, cleanup jobs, compliance reports—replacing cron on idle instances.</li>
+            <li>Integration glue between managed services where each step is stateless and failure can retry safely.</li>
+            <li>Multi-step business flows orchestrated with Step Functions or Durable Functions while individual steps stay function-sized.</li>
+            <li>Prototypes and MVPs where delivery speed and zero cluster operations outweigh fine-grained runtime control.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Jobs longer than platform timeouts (for example 15 minutes on Lambda) or needing persistent in-memory state.</li>
-            <li>Sustained high throughput where provisioned containers are cheaper than per-invocation pricing.</li>
-            <li>Sub-100 ms p99 latency without provisioned concurrency, warm pools, or a non-serverless tier.</li>
-            <li>Heavy connection-oriented database access without a pooler (RDS Proxy, Hyperdrive, etc.).</li>
+            <li><strong>Long-running compute:</strong> Jobs beyond platform timeouts (for example Lambda’s 15-minute ceiling) or needing hours of CPU belong in Fargate tasks, batch services, or workflows—not a single oversized function.</li>
+            <li><strong>Sustained high throughput:</strong> At steady utilization, per-invocation pricing can exceed reserved containers; model break-even before committing the whole tier to FaaS.</li>
+            <li><strong>Stateful in-memory workflows:</strong> Shared process state, sticky sessions, or heavy connection pools do not survive scale-out—externalise state or use long-lived containers.</li>
+            <li><strong>Ultra-low tail latency:</strong> Cold starts and invocation overhead hurt sub-100 ms p99 unless provisioned concurrency, SnapStart, or a non-serverless tier carries the critical path.</li>
+            <li><strong>Relational access without pooling:</strong> Thousands of concurrent functions opening raw database connections exhaust <code>max_connections</code>—use RDS Proxy, Hyperdrive, or similar before production load.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -181,59 +185,75 @@ Cold Start Mitigation
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Pay only while code runs; native scale-out and scale-to-zero.</li>
-                <li>No OS or runtime fleet to patch; security and capacity are provider-managed.</li>
-                <li>Tight integration with event sources and managed data services.</li>
+                <li>Pay only while code runs; scale-to-zero and burst scale-out are native, not bolt-on autoscaling policies.</li>
+                <li>No OS or runtime fleet to patch; security baselines and capacity are provider-managed within your IAM boundary.</li>
+                <li>First-class integration with cloud event sources—storage notifications, queues, schedules, and HTTP front doors.</li>
+                <li>Rapid deployment cycles: new function versions roll out in seconds via CI/CD and infrastructure-as-code.</li>
+                <li>Composes cleanly with managed data and workflow services for end-to-end pipelines without self-hosted brokers.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Cold starts and invocation overhead affect tail latency.</li>
-                <li>Timeouts, memory, and package limits bound feasible workloads.</li>
-                <li>Debugging is request-scoped; tracing and structured logs are mandatory.</li>
+                <li>Cold starts (often hundreds of milliseconds on JVM runtimes; tens to low hundreds on Python/Node) affect tail latency without mitigation.</li>
+                <li>Hard limits on duration, memory, payload size, and deployment package weight exclude some workloads unless paired with Fargate or workflows.</li>
+                <li>Debugging is request-scoped; distributed tracing and structured logging are mandatory, not optional.</li>
+                <li>Database connection storms appear quickly at high concurrency without proxy pooling.</li>
+                <li>Platform coupling deepens when functions, triggers, and IAM policies proliferate without shared libraries and standards.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Initialize expensive clients (SDKs, pool handles) outside the handler so warm containers reuse them. Keep deployment packages small; for Java consider SnapStart; for user-facing paths use provisioned concurrency or minimum instances where the platform supports it.</p>
-          <p>Front relational databases with a pooler (RDS Proxy, etc.). Set function timeout above downstream p95 but below client deadlines. For queue triggers, size visibility timeout to at least six times function timeout. Use dead-letter queues and idempotent handlers for async paths. Align designs with the <a href="https://docs.aws.amazon.com/wellarchitected/latest/serverless-applications-lens/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected Serverless Applications Lens</a> pillars (operational excellence, security, reliability, performance, cost).</p>
+          <p>Initialize expensive clients—SDK construction, configuration loading—outside the handler entry so warm execution environments reuse them. Shrink deployment artifacts with tree-shaking and minimal dependencies; smaller packages improve cold-start time. For Java on Lambda, evaluate <strong>SnapStart</strong> on supported runtimes to restore pre-initialized snapshots instead of cold JVM boot. For user-facing synchronous paths, use <strong>provisioned concurrency</strong> or platform minimum instances where supported; distinguish that from <strong>reserved concurrency</strong>, which caps a function’s share of account concurrency to prevent starvation of other functions.</p>
+          <p><strong>Cold-start mitigation</strong> combines artifact size, runtime choice, concurrency warming, and architecture: keep VPC-attached functions only where required, prefer public endpoints or PrivateLink patterns when latency allows, and measure p99 with production-like package sizes—not “hello world” benchmarks. When cold starts remain unacceptable for a subset of routes, split read-heavy latency-sensitive paths to provisioned functions while async work stays on standard concurrency.</p>
+          <p>Front relational databases with <strong>RDS Proxy</strong> or equivalent poolers; enable IAM database authentication where supported to avoid long-lived passwords in environment variables. Set function timeout above downstream p95 latency but below upstream client deadlines. For queue triggers, size SQS visibility timeout to at least six times function timeout. Use dead-letter queues, idempotent handlers, and deduplication keys on async paths.</p>
+          <p><strong>Lambda/Fargate patterns:</strong> Use Lambda for short, event-shaped units of work; when CPU or duration exceeds FaaS comfort, trigger <strong>Fargate</strong> (or Cloud Run) tasks from Step Functions, EventBridge, or queue consumers for batch transcode, report generation, or containerized batch without maintaining a fixed cluster size. <strong>Step Functions</strong> (or Durable Functions) model multi-step workflows with built-in retries, branching, and human tasks while keeping each Lambda step within timeout and memory limits—orchestrate instead of chaining dozens of synchronous invokes. Align designs with the <a href="https://docs.aws.amazon.com/wellarchitected/latest/serverless-applications-lens/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected Serverless Applications Lens</a> pillars across operations, security, reliability, performance, and cost.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Connection storms:</strong> Concurrent invocations exhaust database <code>max_connections</code> — pool at the proxy layer.</li>
-            <li><strong>Timeout retry loops:</strong> Short timeouts plus aggressive retries amplify downstream load — cap retries and use circuit breakers.</li>
-            <li><strong>Duplicate queue processing:</strong> Visibility timeout shorter than handler duration — increase timeout or shorten work units.</li>
-            <li><strong>Payload limits:</strong> Large bodies inline instead of claim-check via object storage references.</li>
+            <li><strong>Connection pool exhaustion:</strong> Concurrent invocations each open a new database connection and exceed <code>max_connections</code>—terminate at RDS Proxy or a pooler, not at the database listener.</li>
+            <li><strong>Timeout cascade:</strong> Default short timeouts plus blind retries amplify load on struggling downstreams—set timeouts from measured percentiles and cap retries with circuit breakers.</li>
+            <li><strong>SQS visibility misconfiguration:</strong> Visibility shorter than handler duration causes duplicate processing—raise visibility or split work into smaller messages.</li>
+            <li><strong>Cold-start latency ignored on critical paths:</strong> Marketing campaigns or flash sales hit uncached cold JVM starts—pre-warm with provisioned concurrency or schedule scaling ahead of known peaks.</li>
+            <li><strong>Payload limit violations:</strong> Synchronous six-megabyte and asynchronous 256-kilobyte invocation caps force failures when teams pass large blobs inline—use claim-check via object storage references.</li>
+            <li><strong>Account concurrency starvation:</strong> One viral function consumes the regional concurrency pool—reserve concurrency for tier-1 functions and request limit increases with operational justification.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is traffic intermittent enough that invocation pricing beats always-on compute?</li>
-            <li>Do all handlers finish within platform time and memory limits?</li>
-            <li>Are cold-start p99 and warm latency measured with production-like artifacts?</li>
-            <li>Are async failures routed to DLQs with replay procedures?</li>
+            <li>Is traffic intermittent enough that invocation pricing beats always-on compute at modeled peak and average load?</li>
+            <li>Do all handlers finish within platform time, memory, and package limits—or is Step Functions/Fargate already in the design?</li>
+            <li>For relational access, is a connection pooler configured and load-tested at expected burst concurrency?</li>
+            <li>Are cold-start p99 and warm latency measured with production artifacts and dependency graphs?</li>
+            <li>Is distributed tracing (X-Ray, OpenTelemetry) enabled across function chains and workflow steps?</li>
+            <li>Are async failures routed to DLQs with replay procedures and alerts on depth?</li>
+            <li>For multi-step flows, does Step Functions (or equivalent) own retries and state instead of recursive Lambda invokes?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario — object pipeline:</strong> Object storage event invokes a resize function; output written to a second bucket; downstream queue triggers indexing.</li>
-            <li><strong>Illustrative scenario — webhook intake:</strong> API gateway validates signatures, enqueues events, returns 202; workers process at consumer pace.</li>
+            <li><strong>Illustrative scenario — object pipeline:</strong> Object storage events invoke a resize function; outputs land in a processed bucket; a queue consumer triggers indexing and metadata updates without an always-on worker fleet.</li>
+            <li><strong>Illustrative scenario — webhook intake:</strong> API gateway validates HMAC signatures, enqueues payloads, returns 202 immediately; downstream functions process at consumer pace with DLQ coverage for poison messages.</li>
+            <li><strong>Illustrative scenario — Step Functions plus Fargate:</strong> A nightly workflow starts in Step Functions; short validation runs in Lambda; a heavy PDF render task runs on Fargate; completion writes status to a managed store and notifies subscribers.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="serverless-platforms.html">Serverless Platforms</a> — Lambda, Functions, Cloud Run, and Knative trade-offs.</li>
+            <li><a href="serverless-platforms.html">Serverless Platforms</a> — Lambda, Functions, Cloud Run, Fargate, and Knative trade-offs.</li>
             <li><a href="cloud-native-design.html">Cloud-Native Design Principles</a> — Stateless, disposable processes and managed-first data.</li>
+            <li><a href="auto-scaling-patterns.html">Auto-Scaling Patterns</a> — KEDA and cluster autoscaling for workloads that cannot use FaaS.</li>
             <li><a href="../architecture-styles/event-driven-architecture.html">Event-Driven Architecture</a> — Events as the primary integration style.</li>
+            <li><a href="../architecture-styles/serverless.html">Serverless Architecture Style</a> — Broader style coverage beyond FaaS compute.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/serverless-applications-lens/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected — Serverless Applications Lens</a></li>
             <li><a href="https://docs.aws.amazon.com/lambda/latest/dg/best-practices.html" target="_blank" rel="noopener noreferrer">AWS Lambda — Best practices</a></li>
+            <li><a href="https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html" target="_blank" rel="noopener noreferrer">AWS Step Functions — Developer Guide</a></li>
             <li><a href="https://cloud.google.com/architecture/serverless-overview" target="_blank" rel="noopener noreferrer">Google Cloud — Serverless architecture overview</a></li>
+            <li><a href="https://cloud.google.com/functions/docs/bestpractices/tips" target="_blank" rel="noopener noreferrer">Cloud Functions — best practices</a></li>
           </ul>
 
         </div>
