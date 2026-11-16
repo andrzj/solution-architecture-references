@@ -101,10 +101,13 @@
           <p><strong>Golden Hammer</strong> is the habit of solving every new problem with a tool the team already trusts, even when the problem’s shape does not fit that tool. Familiarity feels like pragmatism: one stack to hire for, one on-call rotation, one vendor relationship. The anti-pattern appears when that reflex overrides explicit comparison with purpose-built options.</p>
           <p>In a logistics-style dispatch domain, a stream broker often earns its place on the event path: assignment and delivery facts decouple yard operations from billing and analytics, as described in <a href="../architecture-styles/event-driven-architecture.html">Event-Driven Architecture</a>. Golden Hammer appears when that success morphs into an <strong>everything-on-the-bus</strong> mandate — ephemeral session state, operational email triggers, nightly CSV exports, and ad hoc search over free-text notes routed through the same cluster.</p>
           <p>Each choice was defensible in isolation. Collectively they turned Kafka into a general-purpose datastore and job scheduler, complete with consumer lag firefights and compaction topics that were never designed for query patterns. The fix is not to abandon Kafka where it shines, but to match tool to access pattern before reflex kicks in — the same discipline Refactoring Guru describes for the <a href="https://en.wikipedia.org/wiki/Golden_hammer" target="_blank" rel="noopener noreferrer">Golden hammer (anti-pattern)</a>.</p>
+          <p>The pattern feels like pragmatism: one stack to hire for, one on-call rotation, fewer integration surfaces. Those benefits are real when the tool’s domain matches the problem. The damage starts when teams paper over mismatch—polling tables as queues, compacted topics as caches, connectors as search—burning engineering effort for worse performance and heavier operations than a purpose-built component would have cost.</p>
+          <p>Golden Hammer also appears at architectural altitude: microservices mandated for a modest CRUD surface, event sourcing on domains with no replay requirement, or Kubernetes for batch jobs that would run more cheaply as cron or a managed function. Familiarity distorts judgment until every proposal sounds like a variation of the incumbent hammer.</p>
 
           <h2 id="why-it-exists">Why it emerges</h2>
-          <p>Teams that have already funded broker expertise, schema governance, and on-call runbooks face sunk cost and organizational convenience: reusing that investment feels cheaper than onboarding a cache, a managed queue, or a search engine for a one-off requirement.</p>
+          <p>Teams that have already funded broker expertise, schema governance, and on-call runbooks face sunk cost and organizational convenience: reusing that investment feels cheaper than onboarding a cache, a managed queue, or a search engine for a one-off requirement. Organizational sunk cost justifies broad application—the training budget must show ROI across every new workload.</p>
           <p>Platform standards amplify the effect. When architecture review treats “everything async” as the default moral choice, engineers frame synchronous HTTP or a relational cache as regression even for request–response paths that need an answer in the same call.</p>
+          <p>Expertise monoculture sharpens the bias. Ten engineers who know the broker deeply and nobody credible on OpenSearch or Redis shifts the cost calculus: a suboptimal incumbent path can still win on staffing even when mismatch is severe—until operational pain forces a late migration under deadline pressure.</p>
           <p>Vendor breadth matters too. A cloud or broker vendor’s “platform” story rewards consolidating spend on one ecosystem. That is rational until proprietary ergonomics stretch a hammer into domains where another tool would reduce toil — a pattern that often foreshadows <a href="vendor-lock-in.html">Vendor Lock-in</a>.</p>
 
           <h2 id="when-to-use">How it manifests</h2>
@@ -114,14 +117,20 @@
             <li>Architecture reviews concluded that another topic plus connector could substitute for search or workflow engines without benchmarking latency or operational cost.</li>
             <li>Custom glue — cron-driven replay jobs, bespoke DLQs, application-side deduplication — compensated for missing broker primitives on the wrong workload.</li>
             <li>Incidents were explained as “we need more partitions” rather than “this workload should not live on the bus.”</li>
+            <li>New requirements are framed as “another topic” rather than evaluating whether access pattern, consistency, or query shape warrants a different store.</li>
+            <li>Custom schedulers, deduplication tables, and hand-rolled DLQs compensate for primitives the wrong tier should provide natively.</li>
+            <li>Architecture reviews cite operational familiarity instead of latency, retention, or query requirements when approving designs.</li>
+            <li>Performance tuning focuses on partitioning and broker JVM flags rather than asking whether the workload belongs on the bus at all.</li>
           </ul>
 
           <h2 id="when-not-to-use">How to recognize it early</h2>
           <ul>
             <li><strong>Workaround language:</strong> When the design discussion jumps immediately to “we’ll poll the topic” or “we’ll compact another log,” the team may be fitting Kafka (or any incumbent) to the wrong shape.</li>
+            <li><strong>Feature requests for the wrong layer:</strong> Asking for ACID semantics from a cache, or relevance-ranked search from a compacted log, means fighting the tool’s design instead of selecting for the access pattern.</li>
             <li><strong>Missing fitness criteria:</strong> Absent written boundaries for when the bus is mandatory versus when a database, cache, or RPC path is acceptable, every proposal sounds like a variation of the same hammer.</li>
             <li><strong>Expertise monoculture:</strong> If no reviewer can describe a credible alternative without outsourcing, familiarity—not requirements—may be driving the call.</li>
             <li><strong>Disproportionate ops load:</strong> A component whose Kafka footprint (retention, ACLs, consumer groups) dwarfs its business value is often a Golden Hammer deployment.</li>
+            <li><strong>Scale cliff:</strong> Acceptable performance in staging that collapses at production throughput often exposes fundamental limits of the wrong data or messaging primitive.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical manifestation</h2>
@@ -192,8 +201,8 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Consequences</h3>
               <ul>
-                <li><strong>Performance ceilings:</strong> Broker-backed “queues” and “caches” on hot paths add end-to-end latency that purpose-built components would have avoided.</li>
-                <li><strong>Operational debt:</strong> Teams reimplemented visibility timeouts, idempotent consumers, and poison-message handling in application code — primitives managed brokers provide natively.</li>
+                <li><strong>Performance ceilings:</strong> Broker-backed “queues” and “caches” on hot paths add end-to-end latency that purpose-built components would have avoided. Gap between thousands of messages per second on a hacked queue and millions on a real broker becomes critical as volume grows.</li>
+                <li><strong>Operational debt:</strong> Teams reimplemented visibility timeouts, idempotent consumers, and poison-message handling in application code — primitives managed brokers provide natively. The job-table pattern on relational stores recreates distributed locking, DLQs, and consumer groups by hand.</li>
                 <li><strong>Missed ecosystems:</strong> Search, scheduling, and caching products bring connectors, SLOs, and community playbooks you do not get by bending one incumbent tool.</li>
                 <li><strong>Attraction risk:</strong> Engineers who specialize in stream processing rarely want to maintain cron-driven topic janitors for batch CSV exports.</li>
               </ul>
@@ -202,7 +211,7 @@
               <h3>Remediation strategies</h3>
               <ul>
                 <li><strong>Technology fitness functions:</strong> Document access pattern, consistency, and retention requirements; state when Kafka is required and when it is optional.</li>
-                <li><strong>ADRs with alternatives:</strong> Record where the bus remains the right fit and where a new cache or scheduler was not shoehorned into a topic.</li>
+                <li><strong>ADRs with alternatives:</strong> Record where the bus remains the right fit and where a new cache or scheduler was not shoehorned into a topic. Writing “we chose X over Y because…” forces genuine comparison.</li>
                 <li><strong>Benchmark spikes:</strong> For latency-sensitive paths, compare a thin spike on the incumbent hammer against one purpose-built candidate before standardizing.</li>
                 <li><strong>Incremental extraction:</strong> Wrap topic-based shortcuts behind ports; swap adapters to Redis, OpenSearch, or a managed queue without rewriting domain logic.</li>
               </ul>
@@ -211,12 +220,15 @@
 
           <h2 id="implementation-notes">Detailed analysis</h2>
           <p>Event buses remain the right default for fan-out domain events. Golden Hammer begins when unrelated teams publish directly to shared clusters without domain ownership or review against <a href="../foundations/architecture-principles.html">architecture principles</a>.</p>
-          <p>Relational Golden Hammer — using Postgres LISTEN/NOTIFY or polling tables as queues — is the structurally identical mistake with different branding. The neutral diagram above lists Postgres because the failure mode is the same: one engine asked to be cache, bus, search, and time-series store at once.</p>
-          <p>Symmetric over-application happens when a team that lives in Elasticsearch or Kubernetes routes every workload through that stack. The antidote is unchanged: lead with problem characteristics, then shortlist tools — including ones you already operate — on evidence rather than affection.</p>
+          <p>Relational Golden Hammer — using Postgres LISTEN/NOTIFY or polling tables as queues — is the structurally identical mistake with different branding. The neutral diagram above lists Postgres because the failure mode is the same: one engine asked to be cache, bus, search, and time-series store at once. Operating and debugging a home-grown queue on SQL typically exceeds the cost of adopting a dedicated broker early.</p>
+          <p><code>tsvector</code> and GIN indexes handle modest full-text needs, but they lack BM25-style relevance, faceting, synonym expansion, and predictable planning at large corpus size. Teams that defer OpenSearch end up building a search DSL on SQL, then migrate under deadline with months of debt.</p>
+          <p>Symmetric over-application happens when a team that lives in Elasticsearch or Kubernetes routes every workload through that stack—even simple request–response calls that HTTP would serve more reliably. The antidote is unchanged: lead with problem characteristics (access pattern, consistency, scale, query complexity), then shortlist tools on evidence rather than affection.</p>
+          <p>Platform mandates can turn a successful pattern into policy: once Kubernetes hosts the main product, internal APIs, cron-style jobs, and one-off ETL scripts inherit Helm charts and scheduling puzzles that a function or script host would avoid. Document explicit escape hatches for workloads that fail the hammer’s fitness criteria so teams do not need a waiver fight for every sensible exception.</p>
+          <p>In logistics estates, preserve Kafka for domain events that genuinely decouple yards, billing, and notifications. Retire topic misuse for TTL session state, mailbox fan-out, and batch reconciliation—the workloads where lag SLOs and retention dollars buy little compared with a cache, scheduler, or warehouse SQL job. That split is maintenance discipline, not technology zealotry.</p>
 
           <h2 id="common-failure-modes">Escalation patterns</h2>
           <ul>
-            <li><strong>Good-enough trap:</strong> Low-volume Kafka misuses work in staging; production scale exposes consumer lag and retention cost long after the architectural window to choose a better fit closed.</li>
+            <li><strong>Good-enough trap:</strong> Low-volume Kafka misuses work in staging; production scale exposes consumer lag and retention cost long after the architectural window to choose a better fit closed. Gradual slowdowns get blamed on tuning instead of fit until migration is far more expensive.</li>
             <li><strong>Wrapper proliferation:</strong> Abstraction layers that hide topic semantics become load-bearing; migrating off the hammer means rewriting those wrappers too.</li>
             <li><strong>Certification gravity:</strong> Hiring and promotion reward deep Kafka skill, shrinking the bench that can evaluate simpler options credibly.</li>
             <li><strong>Vendor encouragement:</strong> Broker vendors sell “streaming platforms”; their incentives align with broad topic adoption even when a lighter integration would serve the workload better.</li>
@@ -227,6 +239,7 @@
             <li>Were alternatives evaluated on this component’s access pattern, or was Kafka assumed before requirements were written?</li>
             <li>Is there an ADR or benchmark comparing the incumbent tool to a purpose-built option for this workload?</li>
             <li>Does operating this component require reimplementing broker or cache features in application code?</li>
+            <li>Does performance stay within the technology’s documented strengths, or did heavy tuning barely reach acceptable latency?</li>
             <li>If you greenfielded this service today, would the same technology choice survive a blank-slate review?</li>
             <li>Has one hammer been applied to three or more distinct problem classes where different tools might fit better?</li>
           </ul>
@@ -235,6 +248,9 @@
           <ul>
             <li><strong>Illustrative scenario — Northwind everything-on-Kafka:</strong> At <strong>Northwind Logistics</strong>, dispatch success on Apache Kafka led to an everything-on-Kafka phase: session state, email fan-out, and finance batch jobs each became topics. Consumer lag during month-end and operational toil on compacted “cache” topics forced a deliberate split: domain events stay on Kafka; TTL state and schedules moved to fit-for-purpose services.</li>
             <li><strong>Illustrative scenario — Northwind dispatch (appropriate Kafka):</strong> <code>LoadAssigned</code> and <code>ShipmentDelivered</code> still fan out to billing and driver notification without synchronous coupling — the original event-driven win preserved while peripheral misuses were retired.</li>
+            <li><strong>Illustrative scenario — MySQL job queue:</strong> A SaaS team used MySQL for background email and webhook jobs. Polling load and missing consumer-group semantics blocked independent worker scaling; moving to RabbitMQ required rewriting dispatch infrastructure—a multi-month project avoidable with the right queue from the start.</li>
+            <li><strong>Illustrative scenario — Redis as primary store:</strong> A startup stored profiles, orders, catalogs, and audit trails only in Redis because founders knew it well. Reporting that needed joins forced a painful PostgreSQL migration and full schema redesign.</li>
+            <li><strong>Illustrative scenario — Kubernetes for all workloads:</strong> A platform team mandated cluster deployment for cron jobs, internal CLIs, and small APIs. Teams spent weeks on charts and scheduling for services that would have been cheaper as managed functions or simple VM scripts, while incident noise rose with no proportional reliability gain.</li>
           </ul>
 
           <h2 id="related-patterns">Related anti-patterns</h2>
@@ -245,8 +261,9 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
+            <li><a href="https://refactoring.guru/antipatterns/golden-hammer" target="_blank" rel="noopener noreferrer">Refactoring Guru — Golden Hammer</a></li>
             <li><a href="https://en.wikipedia.org/wiki/Golden_hammer" target="_blank" rel="noopener noreferrer">Golden hammer — overview</a></li>
-            <li><a href="https://martinfowler.com/articles/cant-buy-integration.html" target="_blank" rel="noopener">Martin Fowler – You Can't Buy Integration</a></li>
+            <li><a href="https://martinfowler.com/articles/cant-buy-integration.html" target="_blank" rel="noopener noreferrer">Martin Fowler — You Can't Buy Integration</a></li>
             <li><a href="https://www.oreilly.com/library/view/software-architecture-patterns/9781491971437/" target="_blank" rel="noopener">Mark Richards – Software Architecture Patterns (O'Reilly)</a></li>
           </ul>
         </div>
