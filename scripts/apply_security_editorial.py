@@ -18,6 +18,19 @@ SLUGS = [
     "identity-and-access-management",
     "authentication",
     "authorization-models",
+    "secret-management",
+    "secure-sdlc",
+    "security-headers",
+    "supply-chain-security",
+    "api-security",
+    "container-security",
+    "incident-response",
+    "data-security",
+    "encryption",
+    "encryption-patterns",
+    "jwt-best-practices",
+    "key-management",
+    "network-security",
 ]
 
 
@@ -88,38 +101,36 @@ def apply_slug(slug: str) -> None:
     master = subprocess.check_output(
         ["git", "show", f"origin/master:security/{slug}.html"], text=True
     )
-    for blob, name in [
-        (master_figure(slug), "figure"),
-    ]:
-        fig_m = re.search(
-            r'<div class="architecture-diagram__render mermaid">(.*?)</div>',
-            master,
-            re.DOTALL,
-        )
-        fig_n = re.search(
-            r'<div class="architecture-diagram__render mermaid">(.*?)</div>',
-            new_text,
-            re.DOTALL,
-        )
-        if fig_m.group(1) != fig_n.group(1):
-            raise RuntimeError(f"{slug}: mermaid not byte-identical")
-        can_m = re.search(
-            r'<pre class="architecture-diagram__canvas"><code>(.*?)</code></pre>',
-            master,
-            re.DOTALL,
-        )
-        can_n = re.search(
-            r'<pre class="architecture-diagram__canvas"><code>(.*?)</code></pre>',
-            new_text,
-            re.DOTALL,
-        )
-        if can_m.group(1) != can_n.group(1):
-            raise RuntimeError(f"{slug}: canvas not byte-identical")
+    fig_m = re.search(
+        r'<div class="architecture-diagram__render mermaid">(.*?)</div>',
+        master,
+        re.DOTALL,
+    )
+    fig_n = re.search(
+        r'<div class="architecture-diagram__render mermaid">(.*?)</div>',
+        new_text,
+        re.DOTALL,
+    )
+    if fig_m.group(1) != fig_n.group(1):
+        raise RuntimeError(f"{slug}: mermaid not byte-identical")
+    can_m = re.search(
+        r'<pre class="architecture-diagram__canvas"><code>(.*?)</code></pre>',
+        master,
+        re.DOTALL,
+    )
+    can_n = re.search(
+        r'<pre class="architecture-diagram__canvas"><code>(.*?)</code></pre>',
+        new_text,
+        re.DOTALL,
+    )
+    if can_m.group(1) != can_n.group(1):
+        raise RuntimeError(f"{slug}: canvas not byte-identical")
     print(f"OK {slug}: words {nw}/{mw} ({ratio:.1%})")
 
 
 def main() -> int:
-    for slug in SLUGS:
+    targets = sys.argv[1:] if len(sys.argv) > 1 else SLUGS
+    for slug in targets:
         apply_slug(slug)
     return 0
 

@@ -104,24 +104,27 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>A <strong>key management system (KMS)</strong> is the central service that generates, stores, distributes, rotates, and revokes cryptographic keys used for encryption and signing. In cloud estates the managed offerings—<strong>AWS KMS</strong>, <strong>Azure Key Vault</strong>, and <strong>Google Cloud KMS</strong>—host <strong>customer master keys (CMKs)</strong> in FIPS 140-validated hardware security modules (HSMs). Applications rarely hold long-lived master keys; they request data keys, wrap or unwrap them, and persist only ciphertext plus encrypted key material (envelope encryption).</p>
-          <p><a href="https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final" target="_blank" rel="noopener noreferrer">NIST SP 800-57</a> defines key lifecycle states and recommends separation of duties, access logging, and scheduled rotation. <a href="https://csrc.nist.gov/publications/detail/sp/800-130/final" target="_blank" rel="noopener noreferrer">NIST SP 800-130</a> frames a KMS as a policy-enforced control point for encrypt, decrypt, and sign operations.</p>
+          <p><strong>Key management</strong> governs generation, distribution, use, rotation, backup, and destruction of cryptographic keys. <strong>Customer master keys (CMKs)</strong> in cloud KMS or keys in <strong>HSMs</strong> anchor trust; applications use envelope encryption rather than embedding key material. NIST SP 800-57 defines key states (pre-activation, active, suspended, deactivated, destroyed) and rotation expectations.</p>
+          <p>Distinct from <a href="secret-management.html">secret management</a>, which handles passwords and API tokens, key management focuses on symmetric and asymmetric keys powering TLS, data encryption, and signing—with stricter residency, FIPS, and dual-control requirements.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Ciphertext is only as strong as key custody. Hard-coded secrets in Git, shared `.env` files, and unrotated keystores dominate real-world breach write-ups. A KMS centralises generation, policy, rotation, and audit—requirements spelled out in NIST SP 800-57 and SP 800-130. Immutable decrypt logs and dual-control ceremonies give responders and auditors a clear trail when data must be recovered or access revoked.</p>
+          <p>Encrypted data is only as strong as key hygiene. Keys checked into Git, shared in tickets, or never rotated convert cryptography into theatre. Auditors ask for proof of rotation, access logging, and separation of duties on HSM admin. Central KMS with IAM policies provides attributable decrypt events and automated annual rotation for symmetric CMKs.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Volume, bucket, and database encryption requiring CMKs or HSM-backed keys.</li>
-            <li>Code-signing, document-signing, and high-value TLS private key protection.</li>
-            <li>Envelope encryption for application-level secrets and PII columns.</li>
+            <li>Any production use of cloud KMS, database TDE, TLS server certs, or code signing.</li>
+            <li>Regulations requiring FIPS 140-2 Level 3 or dedicated HSM tenants.</li>
+            <li>Multi-region DR needing replicated keys with clear primary and replica roles.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Non-sensitive local dev fixtures—still never commit real keys; use disposable test material.</li>
-            <li>API tokens and database passwords—route those through secrets managers, not CMK slots meant for data keys.</li>
+            <li>Do not import homemade keys into KMS without entropy and policy review.</li>
+            <li>Avoid per-developer CMKs—use account or workload-scoped keys with IAM.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>Applications call KMS to generate data keys, encrypt locally, and persist only wrapped key material—master keys never leave the HSM boundary described in NIST key-management tiers.</p>
+          <p>CMKs in KMS anchor envelope encryption; HSM-backed roots satisfy high-assurance rotation and audit requirements.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     app["Application"]
@@ -148,65 +151,71 @@
             </details>
             <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Envelope encryption with a KMS: generate and wrap data keys centrally; applications never persist plaintext keys.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>HSM-backed CMKs resist extraction better than filesystem keystores.</li>
-            <li>Per-operation IAM policies enforce least privilege on encrypt and decrypt.</li>
-            <li>Automatic rotation retains prior versions for legacy ciphertext reads.</li>
-            <li>Central audit streams feed detections for anomalous decrypt volume.</li>
+                <li>Central audit of every encrypt/decrypt operation.</li>
+                <li>Automatic symmetric key rotation on supported CMKs.</li>
+                <li>HSM backends meet high assurance customer requirements.</li>
+                <li>Envelope pattern limits exposure of raw key material in apps.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>API quotas and regional latency affect hot paths without caching discipline.</li>
-            <li>Per-request billing accumulates at high throughput without data-key reuse.</li>
-            <li>Bring-your-own-key and multi-cloud topologies increase integration friction.</li>
-            <li>Ceremony design (M-of-N, break-glass) requires governance investment.</li>
+                <li>KMS quotas and latency affect high-throughput apps.</li>
+                <li>Multi-region key strategy adds cost and complexity.</li>
+                <li>Asymmetric key rotation requires certificate orchestration.</li>
+                <li>Cloud lock-in concerns for on-prem hybrid estates.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Standardise on envelope encryption: generate data keys via KMS, encrypt payloads in memory, store ciphertext plus encrypted data key and <code>key_id</code>. Cache plaintext data keys briefly with tight TTL; never persist them. Partition CMKs by environment, tenant tier, and data class; map policies to NIST key-usage separation guidance.</p>
-          <p>Forward all KMS audit events to SIEM; baseline decrypt rates per service and alert on spikes. Document scheduled rotation, emergency revocation, and dual-control for code-signing keys.</p>
+          <p>Use separate CMKs per environment and sensitivity tier; deny decrypt from CI except dedicated roles. Enable rotation on symmetric CMKs; document manual rotation for asymmetric signing keys with overlapping validity windows. Store HSM admin credentials in break-glass procedure separate from daily ops.</p>
+          <p>Integrate cert-manager or ACME for TLS cert lifecycle. For multi-region, use multi-Region keys or replicate with documented failover drills. Monitor KMS CloudTrail or equivalent for anomalous decrypt spikes.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Immediate key deletion</strong> without waiting period—permanent data loss.</li>
-            <li><strong>Wildcard decrypt IAM</strong> granting every workload access to every CMK.</li>
-            <li><strong>Debug logging of plaintext DEKs</strong> during integration troubleshooting.</li>
-            <li><strong>No rotation after offboarding</strong>—former operators retain effective access via stale keys.</li>
+            <li><strong>One CMK, many services</strong>—over-broad decrypt IAM policies.</li>
+            <li><strong>Disabled rotation</strong>—years-old symmetric keys without justification.</li>
+            <li><strong>Pending deletion panic</strong>—accidental key schedule destroys data.</li>
+            <li><strong>Cross-account CMK without trust review</strong>—partner decrypts all data.</li>
+            <li><strong>Manual cert renewal forgotten</strong>—production TLS outages.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are master keys confined to KMS/HSM with no export to disk?</li>
-            <li>Does application data use envelope encryption rather than embedded CMKs?</li>
-            <li>Is rotation cadence documented and automated where supported?</li>
-            <li>Are decrypt and admin events monitored with anomaly detection?</li>
-            <li>Are tenant-isolated keys available for regulated customers?</li>
-            <li>Is break-glass usage time-boxed, approved, and reviewed?</li>
+            <li>Are CMKs scoped per environment with least-privilege IAM?</li>
+            <li>Is automatic rotation enabled or documented for each key type?</li>
+            <li>Are HSM or multi-Region requirements satisfied for regulated data?</li>
+            <li>Is every decrypt logged to immutable audit storage?</li>
+            <li>Are TLS and signing certificates renewed before expiry automatically?</li>
+            <li>Was key compromise runbook tested in the last year?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>PCI cardholder environments</strong>: Dedicated CMK with quarterly rotation and segmented decrypt IAM.</li>
-            <li><strong>Multi-tenant SaaS</strong>: Per-tenant DEKs wrapped under a platform CMK with usage metering.</li>
-            <li><strong>Supply chain signing</strong>: HSM-protected code-signing keys with dual approval workflows.</li>
+            <li><strong>Illustrative scenario — RDS TDE</strong>: Customer-managed CMK; annual rotation; decrypt limited to DBA break-glass role.</li>
+            <li><strong>Illustrative scenario — code signing</strong>: Hardware-protected signing key; dual approval for releases.</li>
+            <li><strong>Illustrative scenario — multi-Region DR</strong>: Multi-Region KMS key with rehearsed failover decrypt path.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="encryption.html">Encryption at Rest &amp; Transit</a> — Consuming keys for storage and TLS.</li>
-            <li><a href="encryption-patterns.html">Encryption Patterns</a> — Field-level and mutual TLS designs.</li>
-            <li><a href="secret-management.html">Secret Management</a> — Non-cryptographic credential lifecycle.</li>
+            <li><a href="encryption.html">Encryption at Rest &amp; Transit</a> — Consumer of CMKs.</li>
+            <li><a href="encryption-patterns.html">Encryption Patterns</a> — Envelope and mTLS designs.</li>
+            <li><a href="secret-management.html">Secret Management</a> — Non-key credential lifecycle.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final" target="_blank" rel="noopener noreferrer">NIST SP 800-57 Part 1 Rev. 5</a></li>
-            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-130/final" target="_blank" rel="noopener noreferrer">NIST SP 800-130 — Cryptographic Key Management Framework</a></li>
-            <li><a href="https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html" target="_blank" rel="noopener noreferrer">AWS KMS Concepts</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/key-vault/keys/about-keys" target="_blank" rel="noopener noreferrer">Azure Key Vault — Keys overview</a></li>
-            <li><a href="https://cloud.google.com/kms/docs" target="_blank" rel="noopener noreferrer">Google Cloud KMS Documentation</a></li>
+            <li><a href="https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final" target="_blank" rel="noopener noreferrer">NIST SP 800-57</a></li>
+            <li><a href="https://docs.aws.amazon.com/kms/latest/developerguide/rotate-keys.html" target="_blank" rel="noopener noreferrer">AWS KMS Key Rotation</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/key-vault/keys/about-keys" target="_blank" rel="noopener noreferrer">Azure Key Vault Keys</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
