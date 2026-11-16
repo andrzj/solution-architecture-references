@@ -111,22 +111,23 @@
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Proximity search: "find the 10 nearest pharmacies to my current location."</li>
-            <li>Containment search: "find all users within a service coverage area polygon."</li>
-            <li>Heatmap visualisation: density of events, users, or assets on a geographic map.</li>
-            <li>Geofencing and event triggering: detect when a tracked entity enters or exits a defined polygon.</li>
-            <li>Delivery route optimisation: spatial joins between order locations and delivery zones.</li>
+            <li>Radius and “nearest K” proximity: pharmacies, chargers, or colleagues within a few kilometres of a live GPS fix.</li>
+            <li>Polygon containment: users, assets, or orders inside a service area, census tract, or regulatory boundary.</li>
+            <li>Map heatmaps and density tiles when you must aggregate millions of points without shipping raw coordinates to the browser.</li>
+            <li>Geofences that fire workflows when trackers cross <code>geo_shape</code> boundaries stored in Elasticsearch or OpenSearch.</li>
+            <li>Spatial joins between delivery stops and zone polygons, often alongside Lucene text ranking on the same cluster.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Very small datasets</strong>: For fewer than 10,000 points, an in-memory Haversine loop or a simple database computed column is simpler than a geospatial index.</li>
-            <li><strong>Non-geographic similarity</strong>: If your coordinate space is not geographic (e.g., 2D game coordinates), use standard 2D range queries rather than Haversine-based geo indexes.</li>
-            <li><strong>Complex routing and graph problems</strong>: Shortest-path routing requires a graph database or routing engine (OSRM, Valhalla); geospatial indexes only answer spatial proximity and containment queries.</li>
-            <li><strong>High-precision indoor positioning</strong>: GPS-based geo_point fields have metre-level precision outdoors; indoor positioning systems require different infrastructure.</li>
+            <li><strong>Tiny point sets</strong>: Below roughly 10k points, an in-app Haversine sort or SQL distance column beats standing up BKD-backed geo indexes.</li>
+            <li><strong>Non-geographic 2D spaces</strong>: Game or chart coordinates are not WGS84; use numeric range filters instead of Haversine geo types.</li>
+            <li><strong>Turn-by-turn routing</strong>: Shortest-path and traffic-aware routes belong in OSRM, Valhalla, or graph stores—not in Lucene proximity queries alone.</li>
+            <li><strong>Indoor sub-metre precision</strong>: Smartphone GPS and <code>geo_point</code> fields suffice outdoors; BLE/UWB indoor stacks need different ingestion and indexes.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Production stacks usually pair <code>geo_point</code> or <code>geo_shape</code> mappings on Elasticsearch or OpenSearch—indexed via Lucene BKD trees—with optional H3 pre-keys when QPS exceeds what pure <code>geo_distance</code> filters tolerate. Vespa and other engines expose similar spatial predicates if you already colocate ranking there.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     idx["Index with geo_point"]
@@ -226,21 +227,21 @@ POSTGIS PATTERN:
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>WGS84 coordinate order confusion</strong>: GeoJSON specifies [longitude, latitude] while Elasticsearch geo_point defaults to {lat, lon} object form; mixing them silently indexes inverted coordinates that produce wrong distance results.</li>
-            <li><strong>Large geo_shape polygons</strong>: Indexing a highly detailed coastline polygon with thousands of vertices is extremely expensive; simplify polygons to the precision you actually need before indexing.</li>
-            <li><strong>Unbounded distance filter</strong>: A geo_distance query without a maximum radius will scan the entire index if no other filter is applied, causing timeout under load.</li>
-            <li><strong>Grid aggregation over-precision</strong>: Requesting geotile_grid at precision 18 over 100M documents returns billions of cells, exhausting memory before returning results.</li>
-            <li><strong>Antimeridian polygon bugs</strong>: Polygons that cross the ±180° longitude line require special handling (splitting into two polygons); naive polygon construction produces a shape that wraps the wrong way around the globe.</li>
+            <li><strong>Lon/lat inversion</strong>: GeoJSON expects [longitude, latitude]; Elasticsearch and OpenSearch <code>geo_point</code> objects use {lat, lon}. Swapping axes silently warps distance sorts.</li>
+            <li><strong>Oversized geo_shape footprints</strong>: Coastlines or cadastral parcels with huge vertex counts balloon Lucene postings; Douglas–Peucker simplify before bulk index.</li>
+            <li><strong>Radius filters without caps</strong>: An unscoped <code>geo_distance</code> clause on a busy index becomes a full segment scan and trips query timeouts.</li>
+            <li><strong>Geo grid precision runaway</strong>: <code>geotile_grid</code> or hex grids at extreme zoom over hundred-million-point indexes allocate more buckets than the coordinating node can hold.</li>
+            <li><strong>Dateline-spanning polygons</strong>: Shapes crossing ±180° need splitting; a single ring otherwise “wraps” the long way and misclassifies containment.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is coordinate field type correct (geo_point for points, geo_shape for polygons/lines)?</li>
-            <li>Are coordinate order conventions consistently [lon, lat] for GeoJSON or {lat, lon} for Elasticsearch?</li>
-            <li>Have distance queries been given a maximum radius bound to prevent full-index scans?</li>
-            <li>Have geo_shape polygons been simplified to a reasonable vertex count?</li>
-            <li>Has the antimeridian edge case been tested with coordinates near ±180°?</li>
-            <li>For very high QPS, have H3-based pre-indexed cells been considered?</li>
+            <li>Are points on <code>geo_point</code> and regions on <code>geo_shape</code> with CRS WGS84 (EPSG:4326) explicit in mappings?</li>
+            <li>Do ingest pipelines and client SDKs agree on axis order for GeoJSON vs Elasticsearch object form?</li>
+            <li>Does every proximity query ship a maximum distance or bounding box to bound BKD traversal?</li>
+            <li>Are polygons simplified to the display or business precision you actually enforce?</li>
+            <li>Have you regression-tested fixtures east and west of the antimeridian?</li>
+            <li>At extreme QPS, are H3 (or S2) cell arrays indexed for membership filters instead of per-query Haversine?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -252,9 +253,9 @@ POSTGIS PATTERN:
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="full-text-search.html">Full-Text Search</a> — Often combined with geo filters for local search (text + proximity).</li>
-            <li><a href="faceted-search.html">Faceted Search</a> — Geo grid aggregations are a spatial variant of faceted aggregation.</li>
-            <li><a href="search-infrastructure.html">Search Infrastructure</a> — Cluster capacity planning with geo_shape indexes requires extra storage headroom.</li>
+            <li><a href="full-text-search.html">Full-Text Search</a> — Lucene BM25 on names and categories stacked with <code>geo_distance</code> for “near me” ranking.</li>
+            <li><a href="faceted-search.html">Faceted Search</a> — <code>geohash_grid</code>, geotiles, and H3 buckets are spatial analogues to term facets.</li>
+            <li><a href="search-infrastructure.html">Search Infrastructure</a> — Shard sizing and heap plans must account for bulky <code>geo_shape</code> segments on Elasticsearch or OpenSearch clusters.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>

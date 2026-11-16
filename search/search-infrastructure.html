@@ -110,22 +110,23 @@
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Any production Elasticsearch or OpenSearch deployment serving user-facing queries where availability and performance matter.</li>
-            <li>Time-series data (logs, events, metrics) where a tiered storage strategy dramatically reduces cost.</li>
-            <li>Indexes that will require periodic schema changes or re-ranking logic updates (alias-based reindex).</li>
-            <li>Multi-tenant deployments where different customers have different data volumes and SLAs.</li>
-            <li>High-write-throughput scenarios (event ingestion) where separating write and query workloads prevents interference.</li>
+            <li>Customer-facing Elasticsearch or OpenSearch clusters where red/yellow shard states directly hit revenue or SLO dashboards.</li>
+            <li>Log and event indexes whose volume justifies hot-warm-cold ILM on Lucene segments plus object-store cold tiers.</li>
+            <li>Catalogs that evolve mappings, analyzers, or HNSW fields and need alias swaps instead of hard-coded index names.</li>
+            <li>SaaS search with uneven tenant sizes where coordinators and shard routing isolate noisy neighbours.</li>
+            <li>High-ingest telemetry where dedicated ingest or data tiers keep bulk Lucene merges from contending with query threads.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Managed services with no direct cluster access</strong>: Elastic Cloud and OpenSearch Service abstract most of these concerns; follow their managed service best practices instead.</li>
-            <li><strong>Small-scale deployments</strong>: A single-node Elasticsearch instance serving a small internal tool does not need ILM, dedicated master nodes, or hot-warm-cold tiers.</li>
-            <li><strong>Non-Elasticsearch engines</strong>: If you are using Algolia, Typesense, or Meilisearch, these are managed services with their own capacity and configuration models.</li>
-            <li><strong>Temporary or POC deployments</strong>: Invest in infrastructure design only when you have confirmed the search feature will go to production.</li>
+            <li><strong>Fully managed clouds</strong>: Elastic Cloud, OpenSearch Service, and similar hosts absorb master quorum and tiering—follow their playbooks instead of hand-rolling topology.</li>
+            <li><strong>Single-node sandboxes</strong>: A lone dev Elasticsearch node for an internal widget rarely warrants ILM, fleet masters, or frozen tiers.</li>
+            <li><strong>Alternate search SaaS</strong>: Algolia, Vespa Cloud, or Meilisearch ship their own capacity models; this pattern maps to self-managed Lucene fleets.</li>
+            <li><strong>Throwaway prototypes</strong>: Defer shard math until product owners commit to production search traffic.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Dedicated master-eligible nodes hold cluster state; data nodes host Lucene shards (and optional OpenSearch k-NN / Vespa-style vector segments); coordinating nodes front scatter-gather while ILM rolls indices across hot, warm, and cold hardware.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     master["Dedicated master nodes"]
@@ -221,22 +222,22 @@ INDEX ALIAS PATTERN:
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Shard over-allocation</strong>: Creating an index with 50 shards for 1GB of data creates 50 × nodes segments in memory, increasing heap overhead and slowing queries.</li>
-            <li><strong>Master node instability</strong>: Co-locating master-eligible and data roles on the same node means a heavy indexing burst can prevent master elections, causing the entire cluster to go red.</li>
-            <li><strong>ILM stalling</strong>: ILM policies fail silently when the cluster has yellow health (unassigned shards); always monitor ILM errors separately from cluster health.</li>
-            <li><strong>No alias indirection</strong>: Hardcoding index names in application code makes mapping changes require downtime; establish the alias pattern from day one.</li>
-            <li><strong>Heap at 90%+</strong>: Sustained heap above 90% triggers frequent GC pauses, increasing query p99 latency from milliseconds to seconds and potentially crashing the node.</li>
+            <li><strong>Micro-shard sprawl</strong>: Dozens of tiny primaries per gigabyte inflate Lucene segment metadata and JVM overhead on every data node.</li>
+            <li><strong>Master on overloaded data</strong>: Mixing master-eligible and heavy indexing roles risks election loss and cluster-wide red status during bulk merges.</li>
+            <li><strong>ILM blocked by yellow health</strong>: Unassigned replicas stall rollover; watch <code>ilm/explain</code>, not only cluster green lights.</li>
+            <li><strong>Index names in application config</strong>: Skipping aliases forces downtime when remapping <code>dense_vector</code> or analyzer changes—swap aliases atomically instead.</li>
+            <li><strong>Heap plus vector RAM pressure</strong>: Lucene caches and HNSW graphs competing for the same host drive GC storms and p99 query spikes past seconds.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are dedicated master nodes configured (3 instances, quorum-based election)?</li>
-            <li>Is shard count estimated at 10–50GB per shard with headroom for growth?</li>
-            <li>Are all production indexes accessed via aliases rather than direct index names?</li>
-            <li>Is an ILM policy defined for time-series indexes with rollover, tier migration, and delete phases?</li>
-            <li>Is JVM heap set to ≤50% of RAM and ≤30GB per node?</li>
-            <li>Is there a snapshot policy (daily to S3/GCS) and has restore been tested?</li>
-            <li>Are coordinator nodes deployed to isolate scatter-gather load from data nodes?</li>
+            <li>Do three dedicated master nodes (or managed equivalent) isolate cluster state from indexing load?</li>
+            <li>Does each primary shard target ~10–50GB with room for HNSW or <code>geo_shape</code> growth?</li>
+            <li>Do applications read and write only through aliases wired in CI/CD?</li>
+            <li>Does every time-series index have ILM rollover, warm migration, freeze/snapshot, and delete tested in staging?</li>
+            <li>Is JVM heap ≤50% of RAM, ≤31GB, with vector indexes sized off-heap where OpenSearch/Vespa allow?</li>
+            <li>Are automated snapshots to object storage scheduled and restore drills documented?</li>
+            <li>Do coordinating nodes (or ingest pipelines) absorb fan-out so data nodes stay search-focused?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -248,9 +249,9 @@ INDEX ALIAS PATTERN:
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="full-text-search.html">Full-Text Search</a> — The indexing and query features built on top of this infrastructure.</li>
-            <li><a href="search-relevance-tuning.html">Search Relevance Tuning</a> — Requires stable infrastructure for reproducible relevance experiments.</li>
-            <li><a href="../data-architecture/database-indexing.html">Database Indexing</a> — Analogous considerations for relational and NoSQL index design.</li>
+            <li><a href="full-text-search.html">Full-Text Search</a> — Lucene analyzers and BM25 tuning assume the cluster topology you provision here.</li>
+            <li><a href="search-relevance-tuning.html">Search Relevance Tuning</a> — Shadow aliases and frozen tiers need stable infra before offline eval runs.</li>
+            <li><a href="../data-architecture/database-indexing.html">Database Indexing</a> — Shard and B-tree sizing parallels for systems feeding Elasticsearch or OpenSearch ingest.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>

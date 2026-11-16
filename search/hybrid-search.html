@@ -112,22 +112,23 @@
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>General-purpose enterprise or product search where query types range from exact codes to natural-language intent.</li>
-            <li>RAG pipelines where missed retrieval is unacceptable and the document corpus contains both structured metadata and unstructured prose.</li>
-            <li>Multilingual corpora where the query and documents may be in different languages (semantic), but entity names must match exactly (keyword).</li>
-            <li>Technical documentation search combining keyword lookup for API names and semantic retrieval for conceptual questions.</li>
-            <li>Any system where you have already deployed BM25 and want to add semantic capability incrementally without replacing the existing stack.</li>
+            <li>Mixed-intent search boxes where shoppers type SKUs, brand tokens, and conversational product descriptions in one session.</li>
+            <li>RAG and support copilots when a missed chunk causes hallucination and corpora mix IDs, tables, and narrative prose.</li>
+            <li>Multilingual knowledge bases: embeddings handle cross-language recall while Lucene analyzers preserve exact entity strings.</li>
+            <li>Developer portals that must literal-match API symbols yet semantic-match “how do I paginate?” style questions.</li>
+            <li>Incremental adoption: you already run Elasticsearch or OpenSearch BM25 and can add HNSW <code>dense_vector</code> (or Vespa tensor) fields beside existing mappings.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Pure keyword search domains</strong>: Log search, serial number lookup, and regex-based queries gain nothing from vector search and pay unnecessary infrastructure cost.</li>
-            <li><strong>Latency-sensitive pipelines</strong>: Running two parallel retrieval paths increases median latency by 20–50%; if you are targeting &lt;20ms response, the overhead may be unacceptable.</li>
-            <li><strong>Low-budget systems</strong>: Maintaining both a vector index and an inverted index doubles infrastructure complexity and cost.</li>
-            <li><strong>Simple similarity use cases</strong>: Pure "more like this" or recommendation features need only dense retrieval and do not benefit from BM25 fusion.</li>
+            <li><strong>Structured lookup only</strong>: Log grep, IMEI search, and regex filters need no HNSW graph or embedding pipeline overhead.</li>
+            <li><strong>Sub-20ms SLOs</strong>: Parallel BM25 plus kNN often adds tens of milliseconds; a single Lucene path may be the only viable budget.</li>
+            <li><strong>Cost-minimal stacks</strong>: Dual indexes (inverted + vector) on Elasticsearch, OpenSearch, or Vespa double RAM, rebuild time, and on-call surface.</li>
+            <li><strong>Pure similarity feeds</strong>: “More like this” and item-to-item recommenders rarely need BM25 fusion—ANN alone is enough.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>A single query fans out to Lucene BM25 and to HNSW kNN—native in Elasticsearch 8.9+, OpenSearch k-NN, or Vespa hybrid profiles—then RRF or weighted fusion merges ranked lists before optional cross-encoder reranking.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     q["User query"]
@@ -208,21 +209,21 @@
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Score normalisation instability</strong>: Min-max normalisation in linear fusion is sensitive to outlier BM25 scores; a single very high-scoring exact match can compress all other scores near zero.</li>
-            <li><strong>Alpha weight decay</strong>: An alpha tuned on historical queries degrades as query distribution shifts (e.g., seasonal product launches change the keyword mix).</li>
-            <li><strong>Sequential retrieval paths</strong>: Implementing BM25 first, then ANN on the BM25 results (re-ranking only) is not hybrid search — it excludes documents that scored low on BM25 but would rank highly semantically.</li>
-            <li><strong>Inconsistent candidate pool sizes</strong>: Fetching top-10 from BM25 and top-100 from ANN then fusing gives disproportionate weight to the ANN path; match candidate pool sizes.</li>
-            <li><strong>Embedding pipeline lag</strong>: New documents indexed into BM25 but not yet embedded create a recall gap in the vector path, causing hybrid fusion to degrade until embeddings catch up.</li>
+            <li><strong>Linear score collapse</strong>: Min–max normalising Lucene BM25 beside cosine kNN lets one outlier document squash the rest of the fused list.</li>
+            <li><strong>Stale fusion weights</strong>: α tuned on last quarter’s queries drifts when marketing or catalog seasons change how people phrase intent.</li>
+            <li><strong>BM25-then-kNN re-ranking</strong>: Filtering ANN to BM25 candidates drops semantically strong docs that lacked keyword overlap—true hybrid runs both legs independently.</li>
+            <li><strong>Mismatched rank windows</strong>: top-10 lexical plus top-100 vector fusion overweights the HNSW path; align <code>rank_window_size</code> and k.</li>
+            <li><strong>Embedding lag behind Lucene refresh</strong>: Fresh docs visible to BM25 but not yet in the vector index produce one-legged fusion until the encoder catches up.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have you measured retrieval recall for BM25-only and vector-only before deciding to build hybrid?</li>
-            <li>Are both retrieval paths queried in parallel to minimise latency impact?</li>
-            <li>Have you chosen RRF (robust, no tuning) or linear interpolation (requires judgment lists)?</li>
-            <li>Are candidate pool sizes balanced across the two retrieval paths?</li>
-            <li>Is the embedding pipeline synchronised with the BM25 index (no lag)?</li>
-            <li>Have you measured end-to-end latency of the hybrid path under production QPS?</li>
+            <li>Have offline metrics compared BM25-only, vector-only, and fused recall on your query log?</li>
+            <li>Do coordinating nodes issue BM25 and kNN requests concurrently with a shared deadline?</li>
+            <li>Is fusion RRF (Elasticsearch/OpenSearch/Vespa native) unless you own judgment lists for α tuning?</li>
+            <li>Are lexical and dense candidate pools the same depth before merge?</li>
+            <li>Does the embedding job keep pace with Lucene ingest (same alias, same document IDs)?</li>
+            <li>Have you load-tested p95/p99 hybrid latency at expected QPS with HNSW graphs warm in RAM?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -234,9 +235,9 @@
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="full-text-search.html">Full-Text Search</a> — The BM25 component of hybrid search.</li>
-            <li><a href="semantic-search.html">Semantic Search</a> — The dense vector component of hybrid search.</li>
-            <li><a href="search-relevance-tuning.html">Search Relevance Tuning</a> — Measuring and improving the combined relevance of hybrid results.</li>
+            <li><a href="full-text-search.html">Full-Text Search</a> — Lucene inverted-index leg that supplies exact-token recall in hybrid stacks.</li>
+            <li><a href="semantic-search.html">Semantic Search</a> — HNSW or Vespa tensor leg that covers paraphrase and vocabulary mismatch.</li>
+            <li><a href="search-relevance-tuning.html">Search Relevance Tuning</a> — Offline NDCG and click models to validate fusion against BM25 and vector baselines.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
