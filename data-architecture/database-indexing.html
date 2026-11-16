@@ -103,6 +103,7 @@
           <h2 id="what-it-is">What it is</h2>
           <p><strong>Database indexing</strong> maintains auxiliary access paths—B-tree nodes, inverted lists, block summaries—so the engine can find rows by key or predicate without scanning every page in the heap. Each index adds storage and must be updated on writes; in exchange, selective reads drop from sequential scans over the full table to bounded tree or bitmap walks.</p>
           <p>This article centers on <strong>PostgreSQL</strong>, where the planner chooses sequential scan, index scan, bitmap index scan, or index-only scan from statistics and cost estimates. The <a href="https://www.postgresql.org/docs/current/indexes.html" rel="noopener noreferrer" target="_blank">indexes</a> and <a href="https://www.postgresql.org/docs/current/indexes-types.html" rel="noopener noreferrer" target="_blank">index types</a> chapters map access methods to predicates: B-tree for equality, range, and sort; GIN for arrays, <code>jsonb</code>, and full-text; GiST for geometry and ranges; BRIN for very large, physically ordered tables. Partial indexes, <code>INCLUDE</code> covering columns, and expression indexes extend the same model.</p>
+          <p>At scale the gap is stark: a million-row heap may still satisfy occasional admin queries with a sequential scan, but the same filter on a hundred-million-row ledger without an index can pin disks for tens of seconds. <strong>B-tree</strong> remains the default access method—balanced pages that support equality, inequalities, <code>IN</code>, prefix <code>LIKE</code>, and <code>ORDER BY</code> when key order matches sort order. <strong>Hash</strong> indexes target equality only and rarely beat a well-maintained B-tree in PostgreSQL; treat them as a niche unless benchmarks prove otherwise. <strong>GIN</strong> builds inverted lists per composite element (array entries, JSON keys, lexemes), which powers containment and full-text operators that B-trees cannot represent. <strong>GiST</strong> handles geometry, range overlap, and nearest-neighbor predicates where ordering is approximate or multidimensional. <strong>BRIN</strong> stores per-block min/max summaries and shines when insert order correlates with filter columns on append-mostly facts.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Heap tables are fast for bulk maintenance and simple full-table analytics, but OLTP paths that filter on a handful of columns pay linear cost in table size. Without indexes, a selective lookup on a billion-row ledger still reads the entire relation; foreign-key checks and cascades devolve into the same pattern. Indexes localize I/O to the matching row set and give the optimizer an alternative when estimated selectivity crosses its threshold.</p>
@@ -115,6 +116,9 @@
             <li>When a hot read path can be satisfied with an index-only scan via <code>INCLUDE</code> or a tight composite key aligned to <code>WHERE</code> and <code>ORDER BY</code>.</li>
             <li>When JSON containment, array membership, or full-text operators appear in predicates and need GIN (or GiST for nearest-neighbor or range overlap).</li>
             <li>When append-only time-ordered tables are huge and range queries align with physical insert order, making BRIN a compact alternative to B-tree.</li>
+            <li>When staging or batch tables will graduate to production traffic and you want indexes in place before the first customer query after cutover.</li>
+            <li>When uniqueness or exclusion constraints (for example duplicate prevention on natural keys) require a backing index the planner can exploit for lookups.</li>
+            <li>When GiST-backed PostGIS or range types appear in geographic or scheduling predicates that B-tree cannot index meaningfully.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -123,6 +127,9 @@
             <li>Do not add indexes “just in case”; each one amplifies write latency and vacuum work on churny tables.</li>
             <li>Do not assume presence implies usage—verify plans after deploy and drop indexes with persistently zero <code>idx_scan</code> in <code>pg_stat_user_indexes</code>.</li>
             <li>Do not duplicate redundant indexes on the same leading columns; PostgreSQL maintains both without prioritizing either.</li>
+            <li>Do not index volatile computed columns that change every row touch unless the expression is truly stable and documented with <code>IMMUTABLE</code> discipline.</li>
+            <li>Do not create GIN on wide JSON documents before profiling which keys filters use—blanket GIN on large payloads slows writes without helping dominated predicates.</li>
+            <li>Do not rely on multicolumn statistics alone to rescue a fundamentally misordered composite index; redesign the key or split access paths instead.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -175,21 +182,23 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Turns selective reads from O(table size) heap scans into logarithmic or bitmap-bounded access for the matching row set.</li>
-                <li>Covering and index-only scans remove heap fetches when visibility map conditions allow, shaving latency on repetitive OLTP reads.</li>
-                <li>Partial indexes shrink working set and maintenance cost when business logic concentrates on a stable subset of rows.</li>
-                <li>BRIN delivers enormous space savings on monotonic time-series compared with B-tree while preserving acceptable range performance.</li>
-                <li>GIN unlocks containment and search operators that would otherwise force full-table scans on document-like columns.</li>
+                <li>Turns selective reads from scans proportional to heap size into tree walks or bitmap combinations bounded by matching row counts, which keeps p99 latency flat as tables grow.</li>
+                <li>Covering and index-only scans remove heap fetches when the visibility map marks pages all-visible, shaving microseconds per row on hot OLTP paths that repeatedly fetch the same narrow projection.</li>
+                <li>Partial indexes shrink working set and maintenance cost when business logic concentrates on a stable subset of rows such as open tickets, active subscriptions, or unprocessed events.</li>
+                <li>BRIN delivers enormous space savings on monotonic time-series compared with B-tree while preserving acceptable range performance when queries honor correlation with physical insert order.</li>
+                <li>GIN unlocks containment, membership, and full-text operators that would otherwise force full-table scans on document-like columns or wide array fields.</li>
+                <li>Unique indexes double as integrity enforcement and fast conflict detection on natural or business keys during concurrent upserts and batch loads.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Every index participates in write amplification; over-indexed OLTP tables show up as lock contention and elevated autovacuum cost.</li>
-                <li>B-tree and GIN structures bloat after heavy updates; without <code>VACUUM</code> and occasional <code>REINDEX CONCURRENTLY</code>, scans read dead pages.</li>
-                <li>The <a href="https://www.postgresql.org/docs/current/planner-optimizer.html" rel="noopener noreferrer" target="_blank">planner</a> may still choose sequential scan for wide result sets or bad cardinality estimates.</li>
-                <li>GIN builds are slow and writes are heavier than B-tree; bulk ingest into GIN-heavy tables needs planning.</li>
-                <li>Composite indexes honor left-prefix rules; secondary-column-only filters need separate indexes or redesigned queries.</li>
+                <li>Every index participates in write amplification; over-indexed OLTP tables show up as lock contention, buffer churn, and elevated autovacuum cost during update-heavy windows.</li>
+                <li>B-tree and GIN structures bloat after heavy updates; without <code>VACUUM</code> and occasional <code>REINDEX CONCURRENTLY</code>, scans read dead pages and inflate I/O despite nominally healthy index definitions.</li>
+                <li>The <a href="https://www.postgresql.org/docs/current/planner-optimizer.html" rel="noopener noreferrer" target="_blank">planner</a> may still choose sequential scan for wide result sets, correlated subqueries, or bad cardinality estimates after migration or bulk load.</li>
+                <li>GIN builds are slow and writes are heavier than B-tree; bulk ingest into GIN-heavy tables needs staging strategies, deferred index creation, or maintenance_work_mem tuning.</li>
+                <li>Composite indexes honor left-prefix rules; secondary-column-only filters need separate indexes, expression keys, or redesigned queries that lead with the indexed prefix.</li>
+                <li>Index maintenance windows on large tables may require hours of <code>CREATE INDEX CONCURRENTLY</code> and still block if operators underestimate disk headroom during builds.</li>
               </ul>
             </div>
           </div>
@@ -198,6 +207,8 @@
           <p>Instrument with <code>EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)</code> on statements that matter for SLOs. Compare estimated versus actual row counts; sustained divergence triggers <code>ANALYZE</code> or targeted statistics extensions. Read the official guidance on <a href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html" rel="noopener noreferrer" target="_blank">index-only scans</a> and <a href="https://www.postgresql.org/docs/current/indexes-partial.html" rel="noopener noreferrer" target="_blank">partial indexes</a> before defaulting to full-table B-trees.</p>
           <p>Build production indexes with <code>CREATE INDEX CONCURRENTLY</code> and track progress via <code>pg_stat_progress_create_index</code>. Order composite keys: equality columns first, then range, then sort columns mirroring the query. Expression indexes (for example <code>LOWER(email)</code>) belong in the migration that introduces wrapped predicates—not as retroactive band-aids.</p>
           <p>Review <code>pg_stat_user_indexes</code> quarterly; drop duplicates and zero-scan indexes. For <code>jsonb</code> and FTS, pick operator classes deliberately—<a href="https://www.postgresql.org/docs/current/gin.html" rel="noopener noreferrer" target="_blank">GIN</a> and <a href="https://www.postgresql.org/docs/current/brin.html" rel="noopener noreferrer" target="_blank">BRIN</a> docs list tradeoffs between build time, query operators, and index size.</p>
+          <p>Treat index design as a living contract with application queries: capture top statements from <code>pg_stat_statements</code>, tag them with expected plans, and regression-test EXPLAIN output in CI when migrations add predicates. When loads spike, temporarily raise <code>maintenance_work_mem</code> for index builds and validate autovacuum keeps pace so HOT updates do not collapse into full index tuple churn. For partitioning, align local indexes on each child with partition pruning predicates—global indexes on the parent are not the PostgreSQL model, so cross-partition sorts may need redesigned keys or federation.</p>
+          <p>Hash indexes aside, prefer proving necessity with benchmarks on production-sized clones. Document each production index in schema metadata: owning team, query class served, expected selectivity band, and last verification date from EXPLAIN evidence so future migrations do not accidentally drop silent performance anchors.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -206,6 +217,10 @@
             <li><strong>Unindexed foreign key:</strong> Parent deletes scan entire child tables, producing surprise wait events under concurrency.</li>
             <li><strong>Stale statistics after bulk load:</strong> Plans flip to sequential scan until <code>ANALYZE</code> catches up, masking otherwise valid indexes.</li>
             <li><strong>Redundant index sprawl:</strong> Multiple overlapping composites inflate storage and slow vacuum without improving plans.</li>
+            <li><strong>OR predicates across columns:</strong> Disjunctive filters often defeat a single composite; bitmap OR combinations help when each branch has its own index, otherwise redesign with UNION or partial indexes per branch.</li>
+            <li><strong>Implicit type coercion:</strong> Comparing a text column to integer literals may block index use until casts align with indexed expression definitions.</li>
+            <li><strong>Long idle transactions:</strong> Open snapshots prevent vacuum from reclaiming dead tuples, bloating indexes even when application traffic is quiet.</li>
+            <li><strong>Monitoring blind spots:</strong> Teams watch CPU but not index bloat until sequential scans reappear weeks after a mis-tuned autovacuum threshold change.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -216,6 +231,9 @@
             <li>Has EXPLAIN ANALYZE confirmed index use for each performance-critical statement?</li>
             <li>Are unused or duplicate indexes identified via <code>pg_stat_user_indexes</code> and removed on a schedule?</li>
             <li>Are new production indexes created concurrently with a rollback plan if build fails?</li>
+            <li>Does each critical index have an owner and documented query class in schema metadata or runbooks?</li>
+            <li>After bulk loads, is <code>ANALYZE</code> scheduled before traffic returns so plans reflect new row counts?</li>
+            <li>Are partition-local indexes created on every child before attaching partitions to avoid sequential scans on new ranges?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -224,6 +242,8 @@
             <li><strong>Illustrative scenario —</strong> A compliance team scans last-quarter events from a multi-terabyte append-only log; BRIN on <code>recorded_at</code> keeps index size negligible while skipping unrelated heap ranges.</li>
             <li><strong>Illustrative scenario —</strong> Inbox queries touch only unread rows; a partial index matching <code>WHERE read = false</code> tracks the active slice instead of the full notifications heap.</li>
             <li><strong>Case study —</strong> Practitioners commonly pair PostgreSQL’s <a href="https://www.postgresql.org/docs/current/btree-introduction.html" rel="noopener noreferrer" target="_blank">B-tree</a> documentation with Markus Winand’s <a href="https://use-the-index-luke.com/" rel="noopener noreferrer" target="_blank">Use The Index, Luke</a> when onboarding teams to systematic index reviews.</li>
+            <li><strong>Illustrative scenario —</strong> A tenant-aware SaaS routes every OLTP read through <code>WHERE tenant_id = $1</code>; a composite on <code>(tenant_id, external_id)</code> plus a partial unique index on active rows removes both full-table scans and duplicate integration keys.</li>
+            <li><strong>Illustrative scenario —</strong> Search over product SKUs with fuzzy substring needs <code>pg_trgm</code> GIN on normalized text columns; exact-match catalog lookups stay on B-tree while exploratory admin search uses the trigram path.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

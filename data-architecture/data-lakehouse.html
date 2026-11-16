@@ -103,9 +103,11 @@
           <h2 id="what-it-is">What it is</h2>
           <p>A <strong>data lakehouse</strong> is an architecture that keeps cheap object storage as the system of record while adding warehouse-like table semantics on top: ACID commits, schema evolution, snapshot history, and SQL access through engines such as Spark, Trino, or managed SQL warehouses. Instead of maintaining a separate copy in a proprietary warehouse for every curated dataset, teams register open tables—usually Parquet data files plus a format-specific metadata layer—and let multiple consumers query the same physical data.</p>
           <p>The enabling formats are <a href="https://docs.delta.io/latest/index.html" rel="noopener noreferrer" target="_blank">Delta Lake</a> (transaction log alongside Parquet), <a href="https://iceberg.apache.org/docs/latest/" rel="noopener noreferrer" target="_blank">Apache Iceberg</a> (catalog-neutral table spec with broad engine support), and <a href="https://hudi.apache.org/docs/overview/" rel="noopener noreferrer" target="_blank">Apache Hudi</a> (incremental upserts and CDC-friendly layouts). Choice depends on your query engines, upsert patterns, and catalog strategy—not on a single vendor default.</p>
+          <p>Lakehouses extend <a href="data-lake.html">data lake</a> zone discipline—bronze landing, silver validation, gold curation—while letting gold tables serve SQL and notebooks from governed open storage instead of mandatory reload into a proprietary warehouse cluster for every consumer. Where latency and RBAC requirements still favor a dedicated <a href="data-warehouse.html">warehouse</a>, teams often hybridize: lakehouse tables remain canonical, while select marts sync into optimized engines for executive dashboards.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Classic lake-plus-warehouse stacks duplicate data, run brittle copy pipelines between tiers, and drift when loads fail silently. Lakehouses collapse curated analytics onto governed lake tables so batch, streaming, BI, and ML share one lineage. The pattern does not remove the need for dimensional modeling or semantic layers; it removes an extra physical hop when open formats and compute are mature enough to meet latency and governance goals.</p>
+          <p>Operating two physical tiers also doubles storage bills and reconciliation toil: the warehouse copy lags the lake copy, engineers debate which row counts are authoritative, and erasure workflows must touch both paths. Collapsing curated datasets onto ACID lake tables makes snapshot history, compaction, and catalog lineage address a single object-store layout teams already fund for raw retention.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -187,6 +189,7 @@
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Anchor on one catalog (Glue, Hive metastore, Nessie, Unity, or equivalent) visible to every engine you plan to support. Pick Iceberg when multi-engine neutrality matters, Delta when Databricks is the control plane, Hudi when CDC upserts dominate. Document that choice in platform ADRs so new teams do not fork formats per project.</p>
           <p>Automate maintenance: compact small files, rewrite manifests when planners slow, and expire snapshots according to legal retention—not “forever by default.” Test schema evolution against downstream readers before promoting breaking changes. Align with <a href="https://iceberg.apache.org/docs/latest/" rel="noopener noreferrer" target="_blank">Iceberg</a>, <a href="https://docs.delta.io/latest/index.html" rel="noopener noreferrer" target="_blank">Delta</a>, and <a href="https://hudi.apache.org/docs/overview/" rel="noopener noreferrer" target="_blank">Hudi</a> documentation for procedure names and concurrency semantics on your chosen runtime.</p>
+          <p>Register every production table in a <a href="data-cataloging.html">data catalog</a> with owners and <a href="data-contracts.html">contracts</a> at silver or gold promotion. Partition for expected filter predicates—event date, tenant, region—rather than copying OLTP keys by habit. Benchmark representative BI queries early; if p95 latency misses executive SLAs, plan a selective sync to warehouse-optimized storage instead of pretending cold object latency will suffice.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -195,6 +198,7 @@
             <li><strong>Concurrent write conflicts:</strong> Optimistic commits fail under contention; jobs without retry logic leave partitions stale.</li>
             <li><strong>Catalog inconsistency:</strong> Lifecycle rules delete objects behind the table format’s back; metadata points at missing files and queries fail.</li>
             <li><strong>Schema evolution breakage:</strong> Hardcoded client schemas miss new required columns added by producers.</li>
+            <li><strong>Hybrid drift:</strong> A warehouse sync job lags behind lakehouse commits, so two teams report different revenue totals from supposedly identical gold models.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>

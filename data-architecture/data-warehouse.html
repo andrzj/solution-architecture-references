@@ -103,9 +103,11 @@
           <h2 id="what-it-is">What it is</h2>
           <p>A <strong>data warehouse</strong> is a centralized analytical datastore optimized for read-heavy reporting: large scans, joins across history, and repeatable aggregations that would contend with live transactions on an OLTP database. Data is modeled for business questions—facts and dimensions, conformed keys, and governed metrics—rather than for single-row updates. Cloud warehouses separate storage from elastic compute so many concurrent analysts can query shared history without resizing operational databases.</p>
           <p>Modeling traditions include Ralph Kimball’s <strong>dimensional modeling</strong> (star and snowflake schemas tuned for BI tools) and Bill Inmon’s <strong>enterprise warehouse</strong> (normalized hub from which subject-area marts derive). Contemporary stacks usually blend both: raw staging replicas, a transformation layer (often dbt) that builds tested models, and presentation marts or a semantic layer where “revenue” means one definition everywhere.</p>
+          <p>Facts record measurable events at explicit grain (one line per order line, one row per daily active user); dimensions describe who, what, where, and when. <strong>Conformed dimensions</strong>—shared customer or product keys—let finance and marketing dashboards join without rebuilding incompatible surrogates. <strong>Slowly changing dimensions</strong> capture history when attribute changes matter for reporting: overwrite for corrections, effective-dated rows for audit trails, or limited prior-value columns when only the last change is legally relevant.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Row-oriented OLTP engines excel at concurrent short transactions but force aggregation queries to touch many columns stored with each record. Columnar warehouse layouts store each attribute contiguously so a query summing one measure reads only that column and benefits from encodings tuned for repeated values, as Martin Kleppmann describes in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a>. Heavy reporting on the production primary still competes for the same buffer pool and I/O as checkout and billing, which is why mature architectures land operational changes in a dedicated <a href="oltp-vs-olap.html">OLAP</a> tier fed by ELT or streaming loads.</p>
+          <p>Warehouses also centralize policy: row-level security, masking, and retention windows apply once instead of per replica. Analysts iterate on SQL without ship cycles in application code, while engineers keep OLTP schemas normalized for write integrity. That separation is less about technology fashion than about protecting transactional SLAs while still answering questions that require scanning years of history.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -165,21 +167,23 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Columnar layouts, compression, and MPP execution align with aggregation-heavy SQL.</li>
-                <li>Isolates analytics from OLTP so reporting does not steal resources from transactional paths.</li>
-                <li>A well-governed model can publish one definition of core metrics across BI tools and APIs.</li>
-                <li>Elastic cloud warehouses scale compute for bursts without resizing operational databases.</li>
-                <li>Mature ingestion, transformation (dbt), and BI integrations reduce bespoke glue code.</li>
+                <li>Columnar layouts, compression, and MPP execution align with aggregation-heavy SQL and large fan-in joins across conformed dimensions.</li>
+                <li>Isolates analytics from OLTP so reporting does not steal buffer cache or I/O bandwidth from transactional paths during month-end crunches.</li>
+                <li>A well-governed model can publish one definition of core metrics across BI tools, notebooks, and reverse-ETL APIs.</li>
+                <li>Elastic cloud warehouses scale compute for bursts without resizing operational databases or provisioning oversized read replicas.</li>
+                <li>Mature ingestion, transformation (dbt), and BI integrations reduce bespoke glue code and make schema drift visible in pull requests.</li>
+                <li>Time-travel or snapshot semantics on some engines simplify regulatory reproduction of reported numbers without mining application logs.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Batch or micro-batch loads introduce staleness that must be negotiated with dashboard SLAs.</li>
-                <li>Schema and contract changes require coordinated migrations across facts, dimensions, and downstream dashboards.</li>
-                <li>Scan-heavy queries without partition discipline inflate cost in consumption-priced engines.</li>
-                <li>Unstructured and highly volatile semi-structured sources still need lake or lakehouse landing.</li>
-                <li>Source quality problems propagate unless tests, alerts, and ownership exist on every mart.</li>
+                <li>Batch or micro-batch loads introduce staleness that must be negotiated with dashboard SLAs and executive meeting cadences.</li>
+                <li>Schema and contract changes require coordinated migrations across facts, dimensions, and downstream dashboards tied to the same conformed keys.</li>
+                <li>Scan-heavy queries without partition discipline inflate cost in consumption-priced engines where billed bytes dominate the budget.</li>
+                <li>Unstructured and highly volatile semi-structured sources still need lake or lakehouse landing before relational models can enforce grain and types.</li>
+                <li>Source quality problems propagate unless tests, alerts, and ownership exist on every mart that finance treats as authoritative.</li>
+                <li>Privileged analyst access concentrates sensitive attributes in one place, raising governance work compared with fragmented OLTP silos.</li>
               </ul>
             </div>
           </div>
@@ -187,6 +191,7 @@
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>Manage transformations as software: versioned SQL in dbt (or equivalent), with <code>sources</code>, staging, intermediate, and mart layers. Test uniqueness, not-null, and relationships before promoting models that power executive metrics. Document grain on every fact table so join errors are obvious during review.</p>
           <p>Choose slowly changing dimension types deliberately—Type 1 overwrites, Type 2 preserves history with effective dates, Type 3 keeps limited prior values. Match partitioning and clustering (or sort keys) to filters BI actually runs; missing partition predicates on time-series facts is a recurring cost and latency trap. Pair warehouse access with column masking or tokenization where PII appears, and surface freshness in the catalog next to each mart.</p>
+          <p>Stage ingestion should land raw replicas with lineage timestamps; transforms never mutate staging in place without auditable jobs. For incremental facts, watermark on change timestamps or CDC sequence numbers and document late-arriving rows—returns and chargebacks routinely violate naive “event time equals ingest time” assumptions. Snowflake-style transient tables, BigQuery partition expiration, and explicit archival to cold storage keep storage bills predictable without deleting compliance windows.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -195,6 +200,8 @@
             <li><strong>SCD Type 2 explosion:</strong> High-churn dimensions grow unbounded; analysts forget effective-date filters and scans balloon.</li>
             <li><strong>Unbounded scans:</strong> Ad hoc queries omit date filters on partitioned facts and bill entire history every run.</li>
             <li><strong>Stale data without alerting:</strong> A failed nightly job leaves dashboards on yesterday’s slice until a human notices during a decision meeting.</li>
+            <li><strong>Grain mismatch joins:</strong> Summing fact lines already at daily grain against hourly events double-counts activity and inflates conversion metrics.</li>
+            <li><strong>Surrogate key churn:</strong> Rebuilding dimensions without preserving natural keys breaks longitudinal cohort analysis across mart reloads.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>

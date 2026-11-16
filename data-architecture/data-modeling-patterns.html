@@ -116,6 +116,9 @@
             <li><strong>EAV</strong> only for genuinely user-defined attribute dictionaries with extreme sparsity; plan pivot views or search indexes if filters must stay SQL-friendly.</li>
             <li><strong>Wide-column time ordering</strong> when ingest is append-mostly per entity and queries are “latest N” or “range for device X,” following Cassandra’s <a href="https://cassandra.apache.org/doc/stable/cassandra/developing/data_modeling.html" target="_blank" rel="noopener noreferrer">query-first modeling</a> rules.</li>
             <li><strong>Document embedding</strong> when MongoDB’s one-to-few pattern holds: children are always read with the parent and seldom updated independently.</li>
+            <li><strong>Single Table Inheritance (STI)</strong> when subtypes share most columns and row volume stays moderate; use discriminators and partial indexes rather than nullable swamps without discipline.</li>
+            <li><strong>Class Table Inheritance (CTI)</strong> when each subtype has many dedicated columns and you want typed child tables with joins only when specialization is queried.</li>
+            <li><strong>Graph sidecar</strong> when many-to-many relationships dominate reads and a relational join path exceeds latency budgets for recommendation or authorization traversals.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -194,21 +197,23 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Explicit pattern choice documents which queries are cheap, reducing “surprise slow reports” after data volume grows.</li>
-                <li>JSONB hybrid preserves migration-free extension fields while keeping fiscal and identity columns strongly typed and indexable in PostgreSQL.</li>
-                <li>Materialized paths and nested sets turn subtree membership into range or prefix predicates—friendly to covering indexes and read replicas.</li>
-                <li>Query-first Cassandra keys align with DDIA’s emphasis on partitioning by known access paths, yielding predictable ingest on commodity clusters.</li>
-                <li>MongoDB embedding matches Fowler’s aggregate-root thinking for entity-local reads without cross-shard joins on every page view.</li>
+                <li>Explicit pattern choice documents which queries are cheap, reducing “surprise slow reports” after data volume grows and keeping data-path assumptions visible in architecture reviews.</li>
+                <li>JSONB hybrid preserves migration-free extension fields while keeping fiscal and identity columns strongly typed and indexable in PostgreSQL for auditors and reconciliation jobs.</li>
+                <li>Materialized paths and nested sets turn subtree membership into range or prefix predicates—friendly to covering indexes, read replicas, and cache keys derived from path prefixes.</li>
+                <li>Query-first Cassandra keys align with DDIA’s emphasis on partitioning by known access paths, yielding predictable ingest throughput on commodity clusters without surprise hotspot shards.</li>
+                <li>MongoDB embedding matches Fowler’s aggregate-root thinking for entity-local reads without cross-shard joins on every page view, which lowers latency for product-detail experiences.</li>
+                <li>Polymorphic modeling with clear ADR rationale lets teams evolve bounded contexts without forcing every service into identical relational templates.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>EAV and polymorphic tables push integrity and reporting complexity into views, ETL, or search indexes—not into the declarative schema.</li>
-                <li>Nested sets and some path models penalize frequent structural edits; operational org charts may thrash under concurrent moves.</li>
-                <li>Hybrid polyglot stacks multiply backup, versioning, and transactional boundaries—exactly the cost Fowler warns about under polyglot persistence.</li>
-                <li>Cassandra and similar stores forbid ad hoc analytics on the hot path; new questions often mean new tables or pipeline exports.</li>
-                <li>JSONB and document payloads need contract tests or catalog metadata; without them, producers ship incompatible shapes silently.</li>
+                <li>EAV and polymorphic tables push integrity and reporting complexity into views, ETL, or search indexes—not into the declarative schema where CHECK constraints would live.</li>
+                <li>Nested sets and some path models penalize frequent structural edits; operational org charts may thrash under concurrent moves unless moves batch during maintenance windows.</li>
+                <li>Hybrid polyglot stacks multiply backup, versioning, and transactional boundaries—exactly the cost Fowler warns about under polyglot persistence when every feature needs another datastore skill on call.</li>
+                <li>Cassandra and similar stores forbid ad hoc analytics on the hot path; new questions often mean new tables, batch exports, or warehouse pipelines instead of exploratory SQL.</li>
+                <li>JSONB and document payloads need contract tests or catalog metadata; without them, producers ship incompatible shapes silently until downstream consumers fail in production.</li>
+                <li>Over-embedding in documents creates oversized working sets and BSON size pressure when regulatory exports require per-field redaction at rest.</li>
               </ul>
             </div>
           </div>
@@ -225,6 +230,8 @@
             <li><strong>Hot Cassandra partitions:</strong> Single-key partitions absorb unbounded history; compaction debt and read latency spike on noisy neighbors.</li>
             <li><strong>Unindexed JSONB filters:</strong> Containment predicates without <code>jsonb_path_ops</code> GIN behave like sequential scans at million-row scale.</li>
             <li><strong>Historical orders with live product embeds:</strong> Denormalized product text inside order documents forces impossible fan-out when marketing updates copy—snapshot product fields at purchase time instead.</li>
+            <li><strong>STI without partial indexes:</strong> Sparsely populated subtype columns inflate table width and confuse vacuum; partial indexes per discriminator restore scan selectivity.</li>
+            <li><strong>Graph without uniqueness on edge keys:</strong> Duplicate relationship rows make traversal idempotent checks expensive and break merge logic in authorization graphs.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -242,6 +249,8 @@
             <li><strong>Illustrative scenario —</strong> A marketplace stores SKU, price, and inventory in relational tables, pushes category facets into JSONB with GIN, and publishes change events so search indexes stay eventually consistent with the OLTP source.</li>
             <li><strong>Illustrative scenario —</strong> A content hierarchy uses adjacency for edits and <code>ltree</code> for menu rendering; nightly jobs verify path consistency against <code>parent_id</code> before cache warming.</li>
             <li><strong>Case study —</strong> Operators at Netflix-scale have published Cassandra models that shard viewing events by profile and time bucket—useful reference when modeling high-volume per-user timelines without relational bloat.</li>
+            <li><strong>Illustrative scenario —</strong> A healthcare platform stores immutable clinical facts relationally, models flexible provider-defined forms in JSONB with schema registry validation, and mirrors relationship queries into a graph for care-team routing.</li>
+            <li><strong>Illustrative scenario —</strong> A ticketing product uses adjacency for workflow state, materialized path for SLA rollups, and exports dimensional snapshots nightly because nested-set reparents are rare after initial import.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

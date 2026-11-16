@@ -107,6 +107,8 @@
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Mutable tables discard history by default, yet audits, disputes, and post-incident analysis need to know how state evolved. Event stores make change the primary artifact: compliance can trace balance adjustments, engineers can reproduce pre-bug state by replay, and new read models can bootstrap from historical events without backfilling from opaque nightly dumps. Paired with <a href="../architecture-styles/cqrs.html">CQRS</a>, the write side stays event-centric while read sides optimize for each query pattern, as summarized on <a href="https://microservices.io/patterns/data/event-sourcing.html" rel="noopener noreferrer" target="_blank">microservices.io</a>.</p>
+          <p>Treating events as the system of record also reframes integration: the same facts that rebuilt aggregate state can fan out to search indexes, warehouses, and partner webhooks once subscription plumbing exists. You still operate projections and lag monitors, but you avoid maintaining a separate “integration log” that can drift from authoritative writes.</p>
+          <p>Financial, insurance, and healthcare estates often need tamper-evident timelines for regulators; a well-governed append-only log answers “who changed what, when, and under which command” without bolting audit tables onto every UPDATE statement after launch.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -115,6 +117,7 @@
             <li>When the domain is naturally workflow- or transaction-centric (orders, payments, policies, collaborative documents).</li>
             <li>When you anticipate new read models and want to rebuild them from the canonical event log instead of one-off migrations.</li>
             <li>When CQRS separates command processing from queries and the write model is event-sourced.</li>
+            <li>When multiple downstream teams need different materialized views of the same canonical history—billing, fulfillment, and support often want incompatible shapes from one order stream.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -123,6 +126,7 @@
             <li>Do not adopt without training: aggregate boundaries and event granularity are expensive to fix after production traffic appends immutably.</li>
             <li>Do not query the store like a reporting database; business questions go through projections, materialized views, or warehouse exports.</li>
             <li>Do not ignore erasure law: plan crypto-shredding, retention, or legal holds before writing irrecoverable PII into immutable streams.</li>
+            <li>Do not treat the event log as a message broker replacement unless retention, ordering guarantees, and consumer scaling match what Kafka or Pulsar already provide for pub/sub traffic.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -176,6 +180,7 @@
                 <li>Multiple projections can subscribe to the same streams, enabling new views without rewriting the write model.</li>
                 <li>Stored domain events can feed integration when outbox or log-based publishing is designed carefully.</li>
                 <li>Debugging benefits from replaying the exact event sequence that preceded a failure.</li>
+                <li>Compliance reviewers gain ordered evidence without retrofitting CDC onto legacy CRUD tables that never logged intent.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
@@ -194,6 +199,8 @@
           <p>Use <strong>optimistic concurrency</strong> on append: pass the stream version observed at load time; reject conflicting writes so callers reload and retry. EventStoreDB exposes this as <code>expectedRevision</code>; relational implementations use unique constraints on (stream_id, sequence).</p>
           <p>Version events explicitly (<code>OrderCreated_v2</code> metadata) and implement <strong>upcasters</strong> that translate older payloads during replay. Prefer additive evolution and new event types over mutating semantics of historical types. Schedule snapshot creation for hot aggregates and document retention for snapshots separately from events.</p>
           <p>Connect projectors with idempotent handlers and monitor lag. For cross-service integration, pair the store with outbox or log publishing patterns described in Kleppmann’s treatment of logs and derived data in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank"><em>Designing Data-Intensive Applications</em></a>.</p>
+          <p>Define <strong>snapshot policies</strong> per aggregate type: snapshot every N events, on idle timeouts, or before expensive batch reconciliations. Store snapshots in cheaper object storage when the vendor supports it, but keep stream metadata authoritative so replay can always verify snapshot checksums. Run periodic “replay from zero” tests in staging to catch projection code that assumes snapshots always exist.</p>
+          <p>Document operational boundaries for support staff: correcting production mistakes means compensating events or reversal commands, never in-place edits to stored payloads. Breaking immutability voids audit claims and forces full projection rebuilds whose downtime is measured in hours.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -202,6 +209,7 @@
             <li><strong>Upcaster not implemented for schema change:</strong> Deployments deserialize legacy events with new code and crash mid-replay.</li>
             <li><strong>Forgotten snapshot cleanup:</strong> Snapshot storage grows without lifecycle rules while events remain the legal source of truth.</li>
             <li><strong>Accidental event store mutation:</strong> Manual edits to stored events break audit guarantees and invalidate projections.</li>
+            <li><strong>Dual-write drift:</strong> Teams publish integration events to a broker separately from appends; broker succeeds while the database transaction rolls back, or the reverse—classic inconsistency without transactional outbox.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -212,14 +220,15 @@
             <li>Are upcasting rules defined and tested before the first incompatible event change ships?</li>
             <li>Is there a snapshot cadence for long-lived aggregates?</li>
             <li>Is erasure or retention for PII in events documented with legal review?</li>
+            <li>Are projector failure alerts wired to on-call with runbooks for rebuild, rewind, and idempotent replay?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> A ledger records credits and debits as events; balance is a fold over the stream; auditors replay any account to the end of a reporting period.</li>
-            <li><strong>Illustrative scenario —</strong> An order service appends lifecycle events; customer support projections show the exact sequence that led to a failed shipment.</li>
-            <li><strong>Illustrative scenario —</strong> A collaborative editor stores operations as events and rebuilds document revisions by replay for conflict diagnosis.</li>
-            <li><strong>Case study —</strong> Fowler’s <a href="https://martinfowler.com/eaaDev/EventSourcing.html" rel="noopener noreferrer" target="_blank">Event Sourcing</a> essay and the <a href="https://microservices.io/patterns/data/event-sourcing.html" rel="noopener noreferrer" target="_blank">microservices.io</a> pattern page remain the common references for when to persist events as the system of record; Kleppmann’s log-oriented discussion in <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">DDIA</a> connects the idea to stream processing and derived views.</li>
+            <li><strong>Banking ledger:</strong> Credits and debits append as immutable facts; end-of-day balance is computed by folding the stream. Regulators request full account timelines without reconstructing them from nightly snapshots.</li>
+            <li><strong>Order management:</strong> Creation, line-item changes, payment capture, and shipment milestones each append once. Support tooling subscribes to the same stream to narrate order incidents; a new analytics projection replays five years of history to populate a margin dashboard.</li>
+            <li><strong>Collaborative editing:</strong> Insert and delete operations append; any revision rebuilds from event zero for debugging merge conflicts; operational transforms layer atop the log for live concurrency.</li>
+            <li><strong>Further reading —</strong> Fowler’s <a href="https://martinfowler.com/eaaDev/EventSourcing.html" rel="noopener noreferrer" target="_blank">Event Sourcing</a> essay and the <a href="https://microservices.io/patterns/data/event-sourcing.html" rel="noopener noreferrer" target="_blank">microservices.io</a> pattern page anchor vocabulary; Kleppmann’s <a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">DDIA</a> connects append-only logs to stream processing and derived views.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -227,6 +236,7 @@
             <li><a href="../architecture-styles/event-sourcing.html">Event Sourcing</a> — Pattern the event store implements on the write path.</li>
             <li><a href="../architecture-styles/cqrs.html">CQRS</a> — Separates command-side events from query-side projections.</li>
             <li><a href="../communication-patterns/event-streaming.html">Event Streaming</a> — Integrates persisted events with brokers for cross-service consumers.</li>
+            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — Atomically commits business writes and outbound integration messages when the store shares a database with OLTP rows.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
