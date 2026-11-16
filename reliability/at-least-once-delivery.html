@@ -102,31 +102,33 @@
         </div>
 
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>At-least-once delivery is a messaging guarantee in which the broker commits to delivering a message to the consumer at least one time — but possibly more than once. If the broker does not receive a positive acknowledgement (ACK) from the consumer within a defined visibility timeout, it assumes the consumer failed and redelivers the message to another consumer or the same consumer on retry. This redelivery can happen multiple times in the presence of failures: network partitions, consumer crashes, slow processing that exceeds visibility timeout, or abnormal shutdowns before the consumer sends its ACK.</p>
-          <p>At-least-once is the default delivery mode for most production-grade message brokers: SQS (standard), RabbitMQ with manual ACK, and Kafka with consumer offset management all implement at-least-once by default. At-at-most-once delivery (fire-and-forget) is simpler but loses messages on failure. Exactly-once delivery eliminates duplicates but is costly and bounded. At-least-once is the pragmatic middle ground: no message loss, duplicates possible, consumer must be idempotent. Most production message-driven architectures operate on at-least-once delivery with idempotent consumers.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p>At-least-once delivery is a messaging guarantee in which the broker commits to delivering a message to the consumer at least one time—but possibly more than once. If the broker does not receive a positive acknowledgement (ACK) from the consumer within a defined visibility timeout, it assumes the consumer failed and redelivers the message to another consumer or the same consumer on retry. Redelivery can happen multiple times in the presence of failures: network partitions, consumer crashes, slow processing that exceeds visibility timeout, or abnormal shutdown before the consumer sends its ACK.</p>
+          <p>At-least-once is the default delivery mode for most production-grade message brokers: SQS (standard), RabbitMQ with manual ACK, and Kafka with consumer offset management all implement at-least-once by default. At-most-once delivery (fire-and-forget) is simpler but loses messages on failure. Exactly-once delivery eliminates duplicates but is costly and bounded in scope. At-least-once is the pragmatic middle ground: no message loss, duplicates possible, consumer must be idempotent. Most production message-driven architectures operate on at-least-once delivery with idempotent consumers.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In a distributed system with unreliable networks and fallible processes, there is no way for a broker to know with certainty whether a consumer received, processed, and committed a message successfully without an acknowledgement. Network packets can be lost in either direction (delivery or ACK). Consumer processes can crash after processing but before sending ACK. To guarantee that no message is lost, the broker must retry delivery until it receives an ACK — which necessarily means it may redeliver messages that were actually processed successfully but whose ACK was lost.</p>
-          <p>At-least-once delivery accepts this tradeoff: it eliminates message loss at the cost of occasional duplicates.</p>
+          <p>In a distributed system with unreliable networks and fallible processes, there is no way for a broker to know with certainty whether a consumer received, processed, and committed a message successfully without an acknowledgement. Network packets can be lost in either direction (delivery or ACK). Consumer processes can crash after processing but before sending ACK. To guarantee that no message is lost, the broker must retry delivery until it receives an ACK—which necessarily means it may redeliver messages that were actually processed successfully but whose ACK was lost.</p>
+          <p>At-least-once delivery accepts this tradeoff: it eliminates message loss at the cost of occasional duplicates. Engineering effort shifts to consumer design: deduplication keys, unique constraints, transactional outbox patterns, and visibility-timeout tuning so retries happen when work truly failed—not while work is still running on another worker.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Any system where message loss is unacceptable (orders, payments, notifications, state changes) — the default choice for reliable messaging.</li>
-            <li>Systems where consumer processing is or can be made idempotent — at-least-once + idempotent consumer is the most common pattern in production systems.</li>
-            <li>Kafka-based pipelines where consumer offsets provide the at-least-once guarantee and Transactional Outbox or idempotency keys handle duplicate side effects.</li>
+            <li>Any system where message loss is unacceptable (orders, payments, notifications, state changes)—the default choice for reliable messaging.</li>
+            <li>Systems where consumer processing is or can be made idempotent—at-least-once plus idempotent consumer is the most common pattern in production systems.</li>
+            <li>Kafka-based pipelines where consumer offsets provide the at-least-once guarantee and transactional outbox or idempotency keys handle duplicate side effects.</li>
             <li>Event-driven architectures where events drive downstream state updates and each event carries a stable event ID for deduplication.</li>
+            <li>Workflow orchestration and saga steps where compensating actions exist but losing the triggering event would leave durable state inconsistent.</li>
+            <li>Integration boundaries where upstream cannot replay history on demand and the broker is the system of record for in-flight work.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>When consumer operations are inherently non-idempotent and cannot be made idempotent — use exactly-once semantics instead.</li>
-            <li>High-frequency telemetry, metrics, or analytics events where occasional loss is acceptable and the overhead of ACK is not worthwhile — use at-most-once.</li>
-            <li>When the consumer system cannot tolerate any duplicate data, even transient duplicates visible before deduplication catches them — requires exactly-once or synchronous deduplication at the consumer.</li>
+            <li>When consumer operations are inherently non-idempotent and cannot be made idempotent—use exactly-once semantics or synchronous request–response within a certified boundary.</li>
+            <li>High-frequency telemetry, metrics, or analytics events where occasional loss is acceptable and the overhead of ACK is not worthwhile—use at-most-once.</li>
+            <li>When the consumer system cannot tolerate any duplicate data, even transient duplicates visible before deduplication catches them—requires exactly-once or synchronous deduplication at the consumer.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>The broker acknowledges only after the consumer commits its side effect; on crash before ACK, redelivery plus idempotent writes preserve effect exactly once.</p>
+          <p>The consumer commits business state with an idempotency key, then ACKs; redelivery after crash is absorbed by deduplication at the datastore layer.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">sequenceDiagram
     participant B as Broker
@@ -173,7 +175,7 @@ Redeliver msg ────► Receive duplicate
 ◄───── ACK ──────────
 Delete from queue       ✓ Exactly-once effect, at-least-once delivery</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">At-least-once delivery: ACK after durable write; crash before ACK triggers redelivery absorbed by idempotent consumer logic.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Acknowledge only after durable write; duplicates hit the same idempotency key without changing outcome.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -181,68 +183,72 @@ Delete from queue       ✓ Exactly-once effect, at-least-once delivery</code></
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Guarantees no message loss — every message is eventually processed as long as consumers are available.</li>
-                <li>Default and well-supported by all major message brokers — no special configuration required.</li>
+                <li>Guarantees no message loss—every message is eventually processed as long as consumers are available and retention has not expired.</li>
+                <li>Default and well-supported by all major message brokers—no special wire protocol work beyond explicit ACK semantics.</li>
                 <li>Simple to reason about: the broker handles reliability; the consumer handles idempotency.</li>
-                <li>No performance overhead of distributed transactions required by exactly-once semantics.</li>
-                <li>Well-understood failure modes — duplicate processing is predictable and testable.</li>
+                <li>No performance overhead of distributed transactions required by exactly-once semantics at the broker.</li>
+                <li>Well-understood failure modes—duplicate processing is predictable and testable with chaos and fault injection.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Requires all consumers to implement idempotency — a correctness requirement that must be maintained as the system evolves.</li>
-                <li>Duplicate messages under normal operation are rare but not zero — systems must be tested for correct duplicate handling under failure conditions.</li>
-                <li>Visibility timeout tuning is critical: too short causes excessive redeliveries for slow consumers; too long means failed consumer takes longer to recover.</li>
-                <li>Deduplication stores (used to track processed message IDs) must be highly available and fast, or they become a bottleneck.</li>
+                <li>Requires all consumers to implement idempotency—a correctness requirement that must be maintained as the system evolves and new handlers are added.</li>
+                <li>Duplicate messages under normal operation are rare but not zero—systems must be tested for correct duplicate handling under failure conditions.</li>
+                <li>Visibility timeout tuning is critical: too short causes excessive redeliveries for slow consumers; too long means a failed consumer takes longer to recover.</li>
+                <li>Deduplication stores (used to track processed message IDs) must be highly available and fast, or they become a bottleneck and single point of failure.</li>
+                <li>Duplicate side effects during races between parallel redeliveries require careful transaction ordering and unique constraints.</li>
+                <li>Operational load from DLQs when poison messages exhaust retries—pairs with poison message handling discipline.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For SQS, set the visibility timeout to 6× the expected maximum processing time for a single message. If processing takes up to 10 seconds, set visibility timeout to 60 seconds. Use <code>ChangeMessageVisibility</code> to extend the timeout for messages that require longer processing. Set message retention period long enough that a temporary consumer outage (deployment, incident) does not cause messages to expire before processing resumes — 4 days is the default; 14 days is the maximum.</p>
-          <p>Implement idempotency in the consumer using a deduplication key stored in a Redis set, DynamoDB table, or relational DB unique constraint. For SQS standard queues, use the <code>MessageId</code> (UUID assigned by SQS) as the deduplication key. For SQS FIFO, use the <code>MessageDeduplicationId</code>. For Kafka, use a combination of topic name + partition + offset as a stable, globally unique message ID.</p>
-          <p>Structure the deduplication check + business logic + deduplication mark as an atomic unit: check-then-act requires care to avoid race conditions in concurrent consumer environments.</p>
+          <p>For SQS, set the visibility timeout to 6× the expected maximum processing time for a single message. If processing takes up to 10 seconds, set visibility timeout to 60 seconds. Use <code>ChangeMessageVisibility</code> to extend the timeout for messages that require longer processing. Set message retention period long enough that a temporary consumer outage (deployment, incident) does not cause messages to expire before processing resumes—four days is the default; 14 days is the maximum when in doubt.</p>
+          <p>Implement idempotency in the consumer using a deduplication key stored in a Redis set, DynamoDB table, or relational DB unique constraint. For SQS standard queues, use the <code>MessageId</code> (UUID assigned by SQS) as the deduplication key when business identity is unknown. For SQS FIFO, use <code>MessageDeduplicationId</code>. For Kafka, use a combination of topic name, partition, and offset as a stable, globally unique message ID, or a business key when producers control identity.</p>
+          <p>Structure the deduplication check, business logic, and deduplication mark as an atomic unit where possible: database unique constraints plus <code>ON CONFLICT DO NOTHING</code> patterns avoid check-then-act races in concurrent consumer environments. Test redelivery explicitly in integration suites: kill the consumer after write but before ACK and assert no duplicate charges or notifications. Pair with DLQs when <code>maxReceiveCount</code> exhausts on genuine failures.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
             <li><strong>Visibility timeout too short:</strong> slow consumers time out repeatedly, causing the message to be redelivered to other consumers concurrently, leading to parallel duplicate processing that idempotency must handle correctly.</li>
             <li><strong>Non-idempotent consumer:</strong> the consumer applies side effects without a deduplication check, causing duplicates (double charges, duplicate inserts, duplicate notifications) when messages are redelivered.</li>
-            <li><strong>Deduplication store unavailable:</strong> if the Redis deduplication store is down, the consumer either fails all processing (availability impact) or processes without deduplication (correctness risk).</li>
+            <li><strong>Deduplication store unavailable:</strong> if the Redis deduplication store is down, the consumer either fails all processing (availability impact) or processes without deduplication (correctness risk)—choose fail-closed vs fail-open explicitly.</li>
             <li><strong>ACK lost but processing complete:</strong> consumer processed the message and committed results, but the ACK was lost (network issue), causing the broker to redeliver. Without idempotency, this causes a duplicate.</li>
-            <li><strong>Long processing with no heartbeat:</strong> consumer processes a complex message for 20 minutes but visibility timeout is 30 seconds — the broker redelivers to another consumer at 31 seconds while processing is still ongoing.</li>
+            <li><strong>ACK-before-commit:</strong> consumer ACKs before durable write completes; message is deleted from queue though processing never durably stored—message loss masquerading as success.</li>
+            <li><strong>Long processing with no heartbeat:</strong> consumer processes a complex message for 20 minutes but visibility timeout is 30 seconds—the broker redelivers to another consumer while the first attempt is still running.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is every consumer operation idempotent — safe to execute multiple times with the same result?</li>
+            <li>Is every consumer operation idempotent—safe to execute multiple times with the same result?</li>
             <li>Is visibility timeout set to at least 6× the expected maximum per-message processing time?</li>
-            <li>Is there a deduplication mechanism (idempotency key + DB constraint or deduplication store) in place?</li>
-            <li>Are duplicate scenarios tested in integration tests — not just happy path?</li>
+            <li>Is there a deduplication mechanism (idempotency key plus DB constraint or deduplication store) in place?</li>
+            <li>Are duplicate scenarios tested in integration tests—not just happy path?</li>
             <li>Is the deduplication store highly available and fast enough not to be a bottleneck?</li>
             <li>Is there a DLQ configured for messages that exceed <code>maxReceiveCount</code> after genuine failures?</li>
             <li>Is message retention set long enough to survive planned downtime (deployments, incidents)?</li>
+            <li>Do long-running handlers extend visibility or emit heartbeats so in-flight work is not double-scheduled?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>An SQS-based order processing consumer: each order message has a unique order ID; the consumer performs <code>INSERT INTO orders (...) ON CONFLICT (order_id) DO NOTHING</code> to ensure the same order is never created twice even under redelivery.</li>
-            <li>A Kafka consumer for user analytics events: each event has a UUID; the consumer checks a Redis bloom filter for seen event IDs before processing, skipping duplicates efficiently at scale.</li>
-            <li>A notification consumer that sends emails: the consumer checks a <code>notifications_sent</code> table keyed by (user_id, notification_id) before sending; idempotent at the application layer prevents duplicate emails on redelivery.</li>
+            <li><strong>Illustrative scenario — order ingestion:</strong> <code>INSERT INTO orders … ON CONFLICT (order_id) DO NOTHING</code> absorbs SQS redelivery after deploy restarts.</li>
+            <li><strong>Illustrative scenario — analytics:</strong> Bloom-filter dedup in Redis skips duplicate event UUIDs at millions of events per hour.</li>
+            <li><strong>Illustrative scenario — email notify:</strong> A <code>notifications_sent</code> table keyed by (user_id, template_id) prevents duplicate sends on redelivery.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="exactly-once-delivery.html">Exactly-Once Delivery</a> — the stronger guarantee that eliminates duplicates at the infrastructure level.</li>
-            <li><a href="../foundations/idempotency.html">Idempotency</a> — the consumer-side pattern that makes at-least-once delivery safe.</li>
-            <li><a href="dead-letter-queues.html">Dead Letter Queues</a> — where messages go after exhausting at-least-once retries.</li>
+            <li><a href="exactly-once-delivery.html">Exactly-Once Delivery</a> — stronger broker-level guarantee with higher cost.</li>
+            <li><a href="../foundations/idempotency.html">Idempotency</a> — consumer-side requirement for safe at-least-once.</li>
+            <li><a href="dead-letter-queues.html">Dead Letter Queues</a> — destination after retry exhaustion.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html" rel="noopener noreferrer" target="_blank">Amazon SQS Developer Guide — AWS Documentation</a> — visibility timeout, redelivery, and message lifecycle.</li>
-            <li><a href="https://kafka.apache.org/documentation/#semantics" rel="noopener noreferrer" target="_blank">Kafka Documentation — Message Delivery Semantics</a> — Kafka's delivery semantics and idempotent producer configuration.</li>
-            <li><a href="https://sre.google/sre-book/table-of-contents/" target="_blank" rel="noopener noreferrer">Google SRE book</a></li>
+            <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html" rel="noopener noreferrer" target="_blank">Amazon SQS visibility timeout — AWS Documentation</a></li>
+            <li><a href="https://kafka.apache.org/documentation/#semantics" rel="noopener noreferrer" target="_blank">Kafka message delivery semantics</a></li>
+            <li><a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/IdempotentReceiver.html" rel="noopener noreferrer" target="_blank">Idempotent Receiver — Enterprise Integration Patterns</a></li>
           </ul>
         </div>
 

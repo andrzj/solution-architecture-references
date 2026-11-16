@@ -104,31 +104,36 @@
 
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>The Fallback pattern defines an alternative execution path that activates when the primary path fails — whether due to an exception, a circuit breaker opening, a bulkhead rejection, or a timeout. The fallback does not fix the failure; instead, it provides a partial, degraded, or default response that allows the overall request to complete with reduced functionality rather than failing entirely. Fallbacks range from returning a cached last-known-good response, to calling a simpler secondary service, to returning a static default value or an empty list.</p>
-          <p>In Resilience4j, a fallback function is registered on a decorated callable; when any exception type in a configured list is thrown, the framework routes the call to the fallback instead of propagating the exception. The fallback itself should be simple, fast, and side-effect-free — it must not make additional network calls that could themselves fail. A chained fallback can call a secondary cache, but that chain should be shallow and have its own timeout to prevent compounding failure depth.</p>
+          <p><strong>The Fallback pattern</strong> defines an alternate response path when the primary path cannot complete successfully—because of exceptions, timeouts, an open circuit breaker, or bulkhead rejection. The fallback does not repair the dependency; it returns a <em>degraded but useful</em> outcome: cached data, a static default, a simplified computation, or an explicit empty result the UI can render.</p>
+          <p>Azure resilience guidance treats fallback as the completion step of retry and circuit-breaker chains. Resilience4j registers fallback methods on decorated callables; Polly uses <code>FallbackAsync</code> policies. The fallback must be <strong>fast, local, and ideally side-effect-free</strong>—a fallback that performs another unreliable network call deepens the failure tree Nygard warns about in <em>Release It!</em></p>
+          <p>Graceful degradation is the product philosophy; fallback is the implementation hook at the call site. Google’s SRE framing favors measurable user-visible availability: partial pages beat hard 500s when non-critical features fail.</p>
+          <p>In Resilience4j, a fallback function is registered on a decorated callable; when any exception type in a configured list is thrown, the framework routes the call to the fallback instead of propagating the exception. A chained fallback can call a secondary cache, but that chain should stay shallow and have its own timeout so failure depth does not compound.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Users experience a total error far more negatively than they experience reduced functionality. An e-commerce product page that shows "Recommendations unavailable" is substantially better than a 500 error that prevents the page from loading at all. The Fallback pattern enables this partial availability by explicitly modelling the degraded state as a first-class outcome rather than treating it as an exceptional edge case. Teams that design fallbacks upfront — as part of their service contract — tend to build more resilient systems because they are forced to reason about which features are genuinely critical and which can be omitted under pressure.</p>
+          <p>Users tolerate missing recommendations or stale catalog snippets more than complete request failure. Designing fallbacks forces teams to classify features by criticality during architecture, not only during outages. When breakers open or budgets burn, fallbacks keep core journeys working while dependencies recover.</p>
+          <p>Users experience a total error far more negatively than reduced functionality. An e-commerce product page that shows “Recommendations unavailable” is substantially better than a 500 error that prevents the page from loading at all. The pattern models degraded state as a first-class outcome rather than an exceptional edge case teams only discuss during incidents.</p>
+          <p>Fallback activation rate is also a leading indicator: sustained elevation means the primary path or its SLO needs engineering attention, not wider fallback coverage.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Non-critical features (recommendations, social feeds, analytics widgets) where an empty or default response is acceptable.</li>
-            <li>Read operations where cached data from minutes or hours ago is still useful (product prices, user profiles, configuration).</li>
-            <li>Operations backed by a secondary system (hot standby, read replica, CDN-cached static resource) that can be substituted for the primary.</li>
-            <li>External API calls where a sensible default exists (e.g., defaulting to standard shipping when a rates API is down).</li>
-            <li>Any call path where the cost of total failure is substantially higher than the cost of serving slightly stale or incomplete data.</li>
+            <li>Non-critical enrichments (recommendations, social feeds, analytics widgets) where an empty or default response is acceptable.</li>
+            <li>Read operations where cached data from minutes or hours ago is still useful (product prices, user profiles, configuration) with disclosed or bounded TTL.</li>
+            <li>Operations backed by a secondary system (hot standby, read replica, CDN-cached static resource) that can substitute for the primary.</li>
+            <li>External API calls where a sensible default exists (for example standard shipping when a rates API is down).</li>
+            <li>Any path already protected by circuit breaker or bulkhead—define what happens when those trip, especially when total failure cost exceeds slightly stale data.</li>
+            <li>Feature flags and config with safe defaults when control plane is unreachable.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Write operations where there is no safe default — silently discarding a write is almost always wrong; fail explicitly instead.</li>
-            <li>Operations where a wrong default is more harmful than an error (e.g., defaulting to "user is authorised" when the authorisation service is down).</li>
-            <li>When the fallback itself makes external calls without its own circuit breaker — a fallback that can fail adds a second layer of failure to handle.</li>
-            <li>As a substitute for fixing the underlying reliability problem — high fallback activation rates are a signal the primary path needs work, not that the fallback is a permanent solution.</li>
+            <li>Write operations where there is no safe default—silently discarding a write is almost always wrong; fail explicitly or queue for later replay.</li>
+            <li>Operations where a wrong default is more harmful than an error (for example defaulting to “user is authorised” when the authorisation service is down).</li>
+            <li>Fallback chains that call additional remote services without their own breakers and timeouts.</li>
+            <li>As a substitute for fixing chronic primary-path unreliability when activation rate is routinely high—a fallback is mitigation, not a permanent safety net.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
-          <p>On primary failure the caller walks a short chain: cache, static defaults, then safe empty response.</p>
+          <p>On primary failure the caller walks a short chain: cache, static defaults, then safe empty response. Fallback executes synchronously at the call site; each step must stay within the remaining latency budget for the overall request.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     req["Request recommendations"]
@@ -172,7 +177,7 @@
 Staleness TTL: cached fallback is used if age &lt; 30 min.
 Monitor: fallback_activations_total metric + alert if &gt; 5%</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Recommendation call falls through Redis cache, static popular list, then empty list with monitored fallback rate.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Primary failure walks a short local chain: cache, static default, then safe empty response with monitored activation rate.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -180,27 +185,29 @@ Monitor: fallback_activations_total metric + alert if &gt; 5%</code></pre>
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Converts hard failures into soft degradation, dramatically improving user-visible availability.</li>
-                <li>Forces architects to explicitly classify which features are critical vs. non-critical during design time.</li>
-                <li>Works naturally with circuit breakers — the circuit opens and the fallback activates without any request reaching the failing downstream.</li>
-                <li>Cached fallbacks can actually improve latency compared to the primary path during normal operation.</li>
-                <li>Enables progressive enhancement: the primary path provides rich functionality; the fallback provides basic functionality.</li>
+                <li>Converts hard failures into soft degradation, improving user-visible availability and protecting top-line SLOs.</li>
+                <li>Forces architects to classify which features are critical versus non-critical during design time.</li>
+                <li>Works naturally with circuit breakers—the circuit opens and the fallback activates without further requests reaching the failing downstream.</li>
+                <li>Cache-backed fallbacks can improve steady-state latency compared with the primary path during normal operation.</li>
+                <li>Enables progressive enhancement: the primary path provides rich functionality; the fallback provides basic functionality while dependencies recover.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Stale fallback data can mislead users — a product shown as "in stock" from a cached response when it is actually out of stock.</li>
-                <li>Adds code complexity — every primary call needs a corresponding fallback implementation, tested independently.</li>
+                <li>Stale fallback data can mislead users—a product shown as in stock from cache when it is actually out of stock.</li>
+                <li>Adds code complexity—every primary call needs a corresponding fallback implementation, tested independently.</li>
                 <li>High fallback activation rates can mask a deeper reliability problem that needs fixing.</li>
-                <li>Fallback chains can become complex and themselves become a maintenance burden.</li>
+                <li>Fallback chains can become complex and themselves become a maintenance burden in postmortems.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Fallback staleness is one of the most important design decisions. Define a Time-To-Live for each cached fallback based on how rapidly the data changes and how harmful stale data is. Product prices might tolerate a 5-minute cache; user permissions should not use a cached fallback at all. Track the age of fallback data and include it in the response metadata or as a UI indicator so downstream consumers and users can make informed decisions.</p>
-          <p>Monitor the fallback activation rate as a separate metric (<code>fallback_activations_total</code>) and alert when it exceeds a baseline threshold (e.g., 2% of requests). A sudden spike in fallback activation is often the first indicator of a new dependency problem before circuit breakers trip. Log the specific exception type that triggered each fallback activation to enable rapid root cause identification.</p>
+          <p>Fallback staleness is one of the most important design decisions. Define a time-to-live for each cached fallback based on how rapidly the data changes and how harmful stale data is. Product prices might tolerate a five-minute cache; user permissions should not use a cached fallback at all. Track the age of fallback data and include it in response metadata or as a UI indicator so downstream consumers and users can make informed decisions.</p>
+          <p>Define <strong>staleness TTL</strong> per cached fallback—permissions and prices need tighter bounds than marketing tiles. Include metadata (<code>stale=true</code>, <code>cached_at</code>) for API consumers and UIs that must disclose freshness.</p>
+          <p>Monitor the fallback activation rate as a separate metric (<code>fallback_activations_total</code>) labeled by dependency and reason (timeout, breaker, bulkhead). Alert when it exceeds a baseline threshold (for example 2% of requests). A sudden spike is often the first indicator of a new dependency problem before circuit breakers trip. Log the specific exception type that triggered each fallback activation for rapid root-cause identification. Polly and Resilience4j callbacks make this straightforward.</p>
+          <p>Keep fallbacks O(1) local: in-memory defaults, local cache, preloaded static assets. If a secondary remote read is unavoidable, give it an aggressive timeout and its own breaker. AWS Builders Library narratives on resilient APIs often assume cache-first read models specifically to enable fallback.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -208,25 +215,26 @@ Monitor: fallback_activations_total metric + alert if &gt; 5%</code></pre>
             <li><strong>No staleness TTL:</strong> a cached fallback returns data that is hours or days old, misleading users with severely outdated information.</li>
             <li><strong>Silent fallback without logging:</strong> fallbacks activate quietly with no metrics or alerts, and the team has no visibility into a degrading dependency.</li>
             <li><strong>Fallback for write operations:</strong> a write fallback silently drops the write, causing data loss that the user believes has been persisted.</li>
-            <li><strong>Over-fallback:</strong> fallbacks are applied so broadly that users routinely see degraded state even when the primary path is healthy, normalising partial functionality.</li>
+            <li><strong>Over-fallback:</strong> fallbacks apply so broadly that users routinely see degraded state even when the primary path is healthy, normalising partial functionality.</li>
+            <li><strong>Unsafe security defaults</strong> — open circuit implies open access.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
             <li>Is there a clearly defined fallback response for every protected call path that can fail?</li>
             <li>Is the fallback free of network calls or other external dependencies that could themselves fail?</li>
-            <li>Is a staleness TTL defined for any cached fallback data?</li>
+            <li>Is a staleness TTL defined for any cached fallback data, per data class?</li>
             <li>Is fallback activation rate tracked as a metric and alerted on?</li>
             <li>Are write operations excluded from fallback policies (or fail-fast instead of silently dropping writes)?</li>
-            <li>Have you verified that the fallback is itself tested under the same conditions that would activate it?</li>
+            <li>Have you verified that the fallback is tested under the same conditions that would activate it, including chaos or game-day exercises?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>A product page API returning a cached list of recommendations from Redis when the ML recommendation service circuit breaker opens.</li>
-            <li>A shipping rate calculator returning "standard shipping: $5.99" as a static default when the carrier rate API times out during checkout.</li>
-            <li>A user profile service returning a minimal profile (name, email only) from a local cache when the extended profile service is unavailable.</li>
-            <li>A feature flag service returning hardcoded "off" values for all flags when the feature flag provider is unreachable, ensuring safe default behaviour.</li>
+            <li><strong>Illustrative scenario — product page:</strong> Recommendation service fails; API serves Redis-cached last results, then static popular products, then empty carousel with copy—page still loads.</li>
+            <li><strong>Illustrative scenario — shipping quote:</strong> Carrier API times out; checkout uses configured flat-rate fallback with banner that final rate may adjust.</li>
+            <li><strong>Illustrative scenario — user profile:</strong> Extended profile service unavailable; API returns a minimal profile (name and email only) from a local cache.</li>
+            <li><strong>Illustrative scenario — feature flags:</strong> Control plane unreachable; SDK serves last-known flags from disk with hardcoded safe defaults for kill-switch features.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -234,13 +242,16 @@ Monitor: fallback_activations_total metric + alert if &gt; 5%</code></pre>
             <li><a href="circuit-breaker.html">Circuit Breaker</a> — the trigger that activates the fallback when a dependency is persistently failing.</li>
             <li><a href="graceful-degradation.html">Graceful Degradation</a> — the broader strategy of which fallbacks are a specific implementation mechanism.</li>
             <li><a href="bulkhead-pattern.html">Bulkhead Pattern</a> — a bulkhead rejection also triggers the fallback path.</li>
+            <li><a href="retry-pattern.html">Retry Pattern</a> — retries exhaust before fallback on transient failure.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://resilience4j.readme.io/docs/getting-started-3" rel="noopener noreferrer" target="_blank">Resilience4j Fallback documentation</a> — fallback functions with Resilience4j circuit breaker and bulkhead integration.</li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/retry" rel="noopener noreferrer" target="_blank">Retry pattern — Azure Architecture Center</a> — covers retry with fallback combinations.</li>
-            <li><a href="https://sre.google/sre-book/table-of-contents/" target="_blank" rel="noopener noreferrer">Google SRE book</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/circuit-breaker" rel="noopener noreferrer" target="_blank">Circuit Breaker pattern — Azure Architecture Center (fallback integration)</a></li>
+            <li><a href="https://resilience4j.readme.io/docs/getting-started-3" rel="noopener noreferrer" target="_blank">Resilience4j — Fallback</a></li>
+            <li><a href="https://www.pollydocs.org/strategies/fallback" rel="noopener noreferrer" target="_blank">Polly — Fallback strategy</a></li>
+            <li><a href="https://sre.google/sre-book/handling-overload/" rel="noopener noreferrer" target="_blank">Google SRE Book — Handling overload</a></li>
+            <li><a href="https://pragprog.com/titles/mnee2/release-it-second-edition/" rel="noopener noreferrer" target="_blank">Release It! — Michael Nygard</a></li>
           </ul>
         </div>
 

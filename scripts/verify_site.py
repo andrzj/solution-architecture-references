@@ -55,6 +55,7 @@ FICTIONAL_CHECK_CATEGORIES = frozenset(
         "mobile",
         "observability",
         "platform-engineering",
+        "reliability",
     }
 )
 
