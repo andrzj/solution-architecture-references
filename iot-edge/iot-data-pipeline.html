@@ -112,10 +112,12 @@
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Any IoT system generating continuous sensor telemetry (temperature, pressure, vibration, power, location).</li>
-            <li>Operational monitoring dashboards requiring real-time device status views.</li>
-            <li>Predictive maintenance: anomaly detection on sensor streams to predict equipment failure.</li>
-            <li>Energy management: aggregating power consumption data across large building or vehicle fleets.</li>
+            <li>Fleets emit time-ordered telemetry continuously and operators need range queries by device and timestamp—not ad hoc relational joins.</li>
+            <li>Dashboards and paging must reflect near-real-time device health while historical analytics run on the same event stream.</li>
+            <li>Predictive maintenance or anomaly workflows need rolling windows, joins, or scoring that stream processors handle better than cron ETL.</li>
+            <li>Energy, environmental, or mobility programmes aggregate consumption or occupancy across many sites with auditable retention tiers.</li>
+            <li>You have—or plan—managed IoT ingest plus a durable log (Kinesis, Kafka, Event Hubs) so devices are decoupled from analytics cadence.</li>
+            <li>Compliance or product analytics require replayable archives when schema, models, or regulations change after raw data was first captured.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -245,19 +247,21 @@ EDGE PRE-AGGREGATION
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Time-series databases provide 10–100x better storage efficiency and query performance for telemetry data compared to relational databases.</li>
-                <li>Hot/cold path split allows real-time dashboards and alerts without affecting analytical query performance.</li>
-                <li>Edge pre-aggregation dramatically reduces ingestion costs and bandwidth requirements.</li>
-                <li>Kinesis + Flink provides an elastic, managed streaming backbone that scales to millions of messages per second without infrastructure management.</li>
+                <li>TSDBs and columnar lakes are built for tag cardinality, compression, and time-range scans—OLTP row stores struggle at fleet scale.</li>
+                <li>Explicit hot and cold paths isolate dashboard load from heavy Athena or Spark jobs on historical Parquet.</li>
+                <li>Log-backed ingest supports replay, backfill, and quarantine without touching firmware when cloud logic changes.</li>
+                <li>Managed stream analytics (Flink on Kinesis, ASA) scale shards and state with demand when jobs are partitioned sensibly.</li>
+                <li>Edge rollups upstream of the broker lower recurring per-message cost when diagnostics do not require full raw resolution in cloud.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Multiple stores (TSDB + S3 + DynamoDB) increases architectural complexity and operational surface area.</li>
-                <li>Time-series databases are specialised — team must learn new query languages (InfluxQL, Flux, KQL) in addition to SQL.</li>
-                <li>Edge aggregation loses raw data unless the raw stream is also archived — downsampled data may be insufficient for future diagnostic needs.</li>
-                <li>Flink's exactly-once semantics require careful checkpoint configuration; misconfiguration can lead to duplicates or data loss.</li>
+                <li>Operating TSDB, stream buffer, lake, and sometimes latest-state stores multiplies backup, access control, and on-call scope.</li>
+                <li>InfluxQL, Flux, KQL, and Flink SQL each have learning curves beyond team SQL unless standards are enforced.</li>
+                <li>Pre-aggregation at gateways sacrifices forensic detail unless a parallel raw archive is funded and governed.</li>
+                <li>Late-arriving device timestamps demand watermarks and documented side-output policy—easy to misconfigure under backfill.</li>
+                <li>Cardinality explosions from unbounded tags or high-cardinality device IDs can negate TSDB economics without downsampling policy.</li>
               </ul>
             </div>
           </div>
@@ -289,24 +293,30 @@ EDGE PRE-AGGREGATION
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> <strong>FieldOps</strong> operates 5,000 machines × 20 vibration sensors at 1&nbsp;Hz; gateways emit 10-second rollups; Kinesis → Flink flags rolling-average anomalies → SNS opens CMMS work orders; Timestream backs a 60-day operations wall while Parquet on S3 feeds retraining.</li>
-            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> ingests 500k smart-meter intervals per quarter-hour; IoT rules write billing-grade series to Timestream and archive Parquet for demand-forecast features; Athena supports regulatory month-close reporting.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>FieldOps</strong> operates a large vibration-monitoring fleet; gateways emit short-window rollups; Kinesis → Flink flags rolling-average anomalies → SNS opens CMMS work orders; Timestream backs operations dashboards while Parquet on S3 feeds retraining.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> ingests smart-meter intervals at regular cadence; IoT rules write billing-grade series to Timestream and archive Parquet for demand-forecast features; Athena supports regulatory month-close reporting.</li>
             <li><strong>Case study —</strong> Public AWS and InfluxData documentation describes Timestream and InfluxDB 3 architectures for high-cardinality telemetry; Flink’s event-time model is the reference for late-arriving industrial backfill.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="iot-architecture.html">IoT Architecture</a> — MQTT ingestion and IoT Core rules engine that feed this pipeline.</li>
-            <li><a href="edge-computing.html">Edge Computing</a> — Edge pre-aggregation reduces the volume entering this pipeline.</li>
-            <li><a href="../big-data/lambda-architecture.html">Lambda Architecture</a> — IoT hot/cold path is an instance of the Lambda architecture pattern.</li>
-            <li><a href="../data-architecture/index.html">Data Architecture</a> — Time-series storage, data lakes, and stream processing patterns.</li>
+            <li><a href="iot-architecture.html">IoT Architecture</a> — Broker, rules, and registry tier that routes device traffic into streaming backends.</li>
+            <li><a href="edge-computing.html">Edge Computing</a> — Gateway placement and buffering before cloud ingress.</li>
+            <li><a href="edge-processing.html">Edge Processing</a> — Downsampling and threshold rules that reduce messages entering the pipeline.</li>
+            <li><a href="telemetry-ingestion.html">Telemetry Ingestion</a> — Ordering, deduplication, and backpressure where devices meet the cloud.</li>
+            <li><a href="../integration/streaming-integration.html">Streaming Integration</a> — Event-time semantics and idempotent sinks continued past the IoT boundary.</li>
+            <li><a href="../big-data/lambda-architecture.html">Lambda Architecture</a> — Speed and batch layers as a pattern for hot path plus historical recompute.</li>
+            <li><a href="../data-architecture/time-series-databases.html">Time-Series Databases</a> — TSDB selection, retention, and downsampling policies.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://docs.aws.amazon.com/timestream/latest/developerguide/what-is-timestream.html" target="_blank" rel="noopener noreferrer">Amazon Timestream — Developer Guide</a></li>
+            <li><a href="https://docs.aws.amazon.com/iot/latest/developerguide/iot-rules.html" target="_blank" rel="noopener noreferrer">AWS IoT Core — Rules engine</a></li>
             <li><a href="https://docs.influxdata.com/influxdb/v3.0/" target="_blank" rel="noopener noreferrer">InfluxDB 3.0 Documentation</a></li>
+            <li><a href="https://docs.timescale.com/" target="_blank" rel="noopener noreferrer">TimescaleDB — Documentation</a></li>
             <li><a href="https://nightlies.apache.org/flink/flink-docs-stable/" target="_blank" rel="noopener noreferrer">Apache Flink Documentation</a></li>
+            <li><a href="https://flink.apache.org/2020/03/27/flink1.11_event_time.html" target="_blank" rel="noopener noreferrer">Apache Flink — Event time and watermarks</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
