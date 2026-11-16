@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Feature Flags — SA References</title>
-  <meta name="description" content="Feature Flags: kill switches, percentage rollout, user segment targeting, LaunchDarkly/Unleash/Flagsmith, technical debt from flag accumulation, and operational hygiene.">
+  <meta name="description" content="Feature flags (feature toggles): Fowler toggle types, release vs deploy decoupling, targeting, lifecycle, and flag debt hygiene.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -95,109 +95,62 @@
             <span class="badge badge--primary">Deployment &amp; Delivery</span>
           </div>
           <h1 class="article-header__title">Feature Flags</h1>
-          <p class="article-header__desc">Kill switches, percentage rollout, and user segment targeting enable deployment decoupled from release. LaunchDarkly, Unleash, and Flagsmith implementations, plus managing flag debt over time.</p>
+          <p class="article-header__desc">Feature flags decouple deployment from release using Fowler’s toggle taxonomy—release, experiment, ops, and permission toggles—with lifecycle discipline and safe evaluation.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          <p>The essential types of feature flags: <strong>Release toggles</strong> gate incomplete features for trunk-based development — deployed but not yet enabled; <strong>Experiment toggles</strong> enable A/B testing by routing user segments to different code paths; <strong>Ops toggles</strong> are kill switches for risky or performance-sensitive code paths that can be disabled in production without deployment; <strong>Permission toggles</strong> control feature access by user role or subscription tier.</p>
-          <p>A feature flag evaluation context includes: the <strong>flag key</strong> (e.g., <code>new-checkout-flow</code>), the <strong>user/entity context</strong> (user ID, email, account tier, geography), and optionally the <strong>environment</strong> (dev/staging/production). The flag management system evaluates rules against the context to return a boolean or multivariate value. Targeting rules can implement: boolean on/off, percentage rollout (10% of users by user ID hash), user whitelist (named users or user segments), attribute-based targeting (users in EU, accounts on Pro tier), and combinations thereof.</p>
-          <p>The leading flag management platforms are <strong>LaunchDarkly</strong> (SaaS, market leader, extensive SDK ecosystem, experimentation), <strong>Unleash</strong> (open source, self-hosted option, simpler feature set), and <strong>Flagsmith</strong> (open source with hosted option, also supports remote config). Self-hosted solutions using Redis + a thin SDK are viable for teams wanting to avoid SaaS dependency. The critical requirement for any flag system is <strong>low-latency evaluation</strong> (flags evaluated per-request must not add latency), typically achieved by streaming flag configuration to in-process caches with millisecond evaluation time.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p><strong>Feature flags</strong> (feature toggles) are runtime switches that choose which code path or capability is active for a request, user cohort, or environment—without redeploying application binaries. Martin Fowler’s <a href="https://martinfowler.com/articles/feature-toggles.html" rel="noopener noreferrer" target="_blank">Feature Toggles</a> article groups toggles into four complementary types, each with different lifetime and ownership expectations.</p>
+          <p><strong>Release toggles</strong> hide incomplete work on trunk so teams can integrate continuously while keeping features dark in production. <strong>Experiment toggles</strong> route traffic across variants for A/B tests and multivariate experiments. <strong>Ops toggles</strong> act as circuit breakers or kill switches for risky integrations—payment processors, new storage backends, or model inference paths—so operators can mitigate without waiting for a deploy pipeline. <strong>Permission toggles</strong> expose capabilities by entitlement (tier, role, region) at runtime; they resemble product configuration but should not replace server-side authorization for sensitive data.</p>
+          <p>A flag evaluation supplies a <strong>flag key</strong>, an <strong>evaluation context</strong> (user ID, attributes, environment), and a <strong>safe default</strong> when the control plane is unreachable. Rules implement boolean on/off, percentage rollout via stable hashing (same user stays in the same bucket as percentage increases), attribute predicates, and allowlists. Platforms such as LaunchDarkly, Unleash, and Flagsmith stream configuration to in-process SDK caches so hot-path evaluation stays sub-millisecond; the critical design constraint is that per-request evaluation must not synchronously call a remote API.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Feature flags solve the coupling between code deployment and feature availability. Without flags, releasing a feature requires: all the code to be complete, tested, and ready; a deployment to production; and accepting that all users immediately see the new feature. This forces large, risky batched releases. Feature flags decompose this into: deploy code continuously (the feature is dark), enable the feature incrementally (percentage rollout), and observe outcomes before full rollout.</p>
-          <p>Combined with trunk-based development, flags enable teams to deploy many times per day while each individual feature rolls out on its own schedule with independent risk control.</p>
+          <p>Traditional release trains bundle many changes behind a single production deploy: code must be “done,” risk is concentrated, and rollback reverts everything together. Feature flags invert the coupling—code ships on an engineering cadence while product and operations decide when behavior becomes visible. That separation enables trunk-based development, dark launches, and incremental exposure with observability between steps.</p>
+          <p>Fowler also emphasizes <strong>toggle lifecycle</strong>: release toggles should be short-lived and removed once a feature is fully on; ops toggles may persist longer but need owners; experiment toggles tie to experiment conclusions. Without lifecycle discipline, flags become permanent configuration forks and compound testing cost.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Trunk-based development where incomplete features need to be in the main branch but not yet user-visible.</li>
-            <li>Progressive rollout — enabling features for 1% → 10% → 100% of users over days or weeks with monitoring at each stage.</li>
-            <li>Kill switches for high-risk integrations (third-party payment processors, ML models) that may need to be disabled instantly without deployment.</li>
-            <li>Beta access and graduated rollout to specific user segments before general availability.</li>
+            <li>Trunk-based delivery where incomplete features must land in main but stay invisible until ready.</li>
+            <li>Gradual exposure—1% → 10% → 100%—with monitoring and business metrics between steps.</li>
+            <li>Kill switches for third-party or high-blast-radius dependencies that must be disable-able in seconds.</li>
+            <li>Entitlement or regional rollout where attributes in the evaluation context gate behavior.</li>
+            <li>Coordinated migrations (dual-write periods) where application logic must flip between old and new paths under operator control.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Long-lived configuration — feature flags that stay enabled/disabled for years are better modelled as runtime configuration.</li>
-            <li>Access control that requires strict enforcement — feature flags are not a security boundary; use proper authorization checks for permission enforcement.</li>
+            <li>Long-lived product configuration that rarely changes—model it as configuration or entitlements in the domain layer, not ephemeral release toggles.</li>
+            <li>Security-sensitive access control where client-side or easily spoofed evaluation would bypass payment or privacy rules.</li>
+            <li>Replacing infrastructure-level traffic management when the goal is version-level routing—use <a href="canary-releases.html">canary releases</a> or a service mesh instead.</li>
+            <li>Teams unwilling to schedule toggle removal; accumulating flags is worse than infrequent batched releases.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Applications embed a flag SDK that maintains a local rules snapshot. Operators change targeting in a dashboard; changes stream to servers; each request evaluates flags in-process with deterministic defaults on failure.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    sdk["App SDK"]
-    svc["Flag service"]
-    rules["Targeting rules"]
-    users["Users / cohorts"]
-    sdk --> svc --> rules
-    rules --> users</div>
+    dash["Control plane / dashboard"]
+  stream["Config stream"]
+    sdk["App SDK cache"]
+    rules["Rules engine"]
+    app["Application request path"]
+    dash --> stream --> sdk
+    sdk --> rules
+    rules --> app</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>LAUNCHDARKLY SDK PATTERN:
-  import ldclient
-  from ldclient import Context
+              <pre class="architecture-diagram__canvas"><code>FOWLER TOGGLE TYPES (lifetime hint):
+  Release     — days to weeks; remove after full rollout
+  Experiment  — duration of experiment; archive variant code
+  Ops         — months; owned by SRE / platform
+  Permission  — product lifetime; migrate to entitlements when stable
 
-  # SDK initialises, streams flag config from LaunchDarkly
-  # Evaluations are local (in-process) — no network call per eval
-  client = ldclient.get()
-
-  # Simple boolean flag
-  def checkout(user_id: str, account_tier: str):
-      ctx = Context.builder(user_id)
-              .set("accountTier", account_tier)
-              .build()
-
-      if client.variation("new-checkout-flow", ctx, False):
-          return new_checkout_flow()
-      else:
-          return legacy_checkout_flow()
-
-  # Multivariate flag (A/B/C test)
-  def get_recommendation_algorithm(user_id: str):
-      ctx = Context.builder(user_id).build()
-      algorithm = client.variation(
-          "recommendation-algo",
-          ctx,
-          "collaborative"  # default value
-      )
-      # Returns: "collaborative", "content-based", or "hybrid"
-      return RecommendationEngine(algorithm)
-
-UNLEASH TARGETING RULES (YAML config):
-  feature: new-checkout-flow
-  enabled: true
-  strategies:
-    - name: gradualRolloutUserId
-      parameters:
-        percentage: "10"     # 10% of users
-        groupId: "checkout"
-    - name: userWithId
-      parameters:
-        userIds: "user_abc123,user_def456"  # Beta users
-
-FLAG MANAGEMENT SYSTEM ARCHITECTURE:
-  ┌───────────────────────────────────────┐
-  │  Flag Management Dashboard            │
-  │  (LaunchDarkly / Unleash / Flagsmith) │
-  └──────────────┬────────────────────────┘
-                 │ Stream flag config (SSE/WebSocket)
-  ┌──────────────▼────────────────────────┐
-  │  Application Server                   │
-  │  ┌────────────────────────────────┐   │
-  │  │  In-Process Flag Cache (SDK)   │   │
-  │  │  Evaluations: ~0.1ms           │   │
-  │  └────────────────────────────────┘   │
-  │  Per-request flag evaluation:         │
-  │    variation("flag-key", context)     │
-  └───────────────────────────────────────┘
-
-PERCENTAGE ROLLOUT (consistent hashing):
-  User ID hash → bucket (0-99)
-  Flag at 10% → enable if bucket &lt; 10
-  Flag at 20% → enable if bucket &lt; 20
-  (Same user always in same bucket — consistent experience)</code></pre>
+EVALUATION FLOW:
+  Dashboard change --> stream (SSE / webhook) --> in-process cache
+  Request --> build context (user id, attrs) --> variation(key, context, default)
+  Default MUST match last-known-stable behavior when offline</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Feature flags decouple deploy from release: SDK evaluates targeting rules streamed from the flag service.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Feature flags: a control plane streams rules to an in-process SDK that evaluates toggles on the request path with safe defaults.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -205,60 +158,66 @@ PERCENTAGE ROLLOUT (consistent hashing):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Decouples deployment from release: code ships on developer schedule, feature enables on product/ops schedule — removes release as a coordination bottleneck.</li>
-                <li>Instant kill switch: risky features can be disabled in seconds from a dashboard without a deployment, reducing MTTR for feature-related incidents from 30 minutes (deployment) to 10 seconds.</li>
-                <li>Targeted rollout: beta user programs, geographic rollouts, and percentage-based gradual exposure are all possible without code changes.</li>
+                <li>Decouples deploy cadence from customer-visible release, shrinking batch size and coordination overhead.</li>
+                <li>Instant mitigation via ops toggles—seconds to disable a path versus minutes for artifact rollback.</li>
+                <li>Supports experiments and cohort rollouts without maintaining long-lived feature branches.</li>
+                <li>Enables dark launches and soak time with production traffic before full exposure.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Flag debt: accumulated flags that are never cleaned up increase code complexity exponentially — two flags create four code paths; ten flags create up to 1,024 combinations, making the system difficult to reason about and test.</li>
-                <li>SaaS dependency risk: feature flag platforms are in the critical path for request evaluation; LaunchDarkly or Unleash outages can impact the ability to enable emergency features or respond to incidents.</li>
-                <li>Testing complexity: testing all flag combinations thoroughly is impractical; teams often only test the "flag on" and "flag off" states, missing interactions between flags.</li>
+                <li>Flag debt multiplies code paths and test matrices; Fowler warns that stale release toggles become liabilities.</li>
+                <li>Control-plane or SDK misconfiguration can strand users on defaults—or unexpectedly enable new behavior.</li>
+                <li>Client-side flags are not a trust boundary; server-side checks remain mandatory for authorization.</li>
+                <li>Observability must tag flag state; otherwise incidents during rollouts are impossible to diagnose.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Every feature flag must have an owner and expiry plan. When a flag is created, record: the flag key, owner team, purpose (release toggle / ops toggle / experiment), expected removal date, and the acceptance condition (fully rolled out to 100% for 30 days without issues → remove). Treat flag cleanup as a first-class engineering task scheduled in the sprint after successful full rollout. Stale flags — where the branch the flag gates is no longer the current code path — are particularly dangerous because removing them requires archaeology to determine which path is now canonical.</p>
-          <p>For SDK design, always provide a <strong>safe default value</strong> for every flag evaluation. The default is returned when the SDK cannot reach the flag service, when the flag key doesn't exist, or when an evaluation error occurs. Design defaults to match the pre-flag behavior (usually the old/stable code path), so SDK disconnection degrades to the last known stable behavior rather than enabling new, potentially broken features.</p>
+          <p>Register every toggle with an owner, type (release/experiment/ops/permission), creation date, and <strong>removal criteria</strong>—for example, “100% for 14 days with no SLO regression, then delete flag and dead code.” Schedule removal in the same sprint that completes rollout. Prefer static configuration for ops toggles that rarely change, but keep the evaluation API uniform so applications do not branch on ad hoc environment variables.</p>
+          <p>Always pass a <strong>safe default</strong> to <code>variation</code> calls: on outage, behavior should match the last stable path. Use consistent percentage hashing so increasing rollout does not reshuffle existing users. Emit flag key and resolved value into traces or structured logs (never PII in flag names). For mobile or thick clients, treat flags as hints only—enforce entitlements on the server.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Flag debt accumulation</strong>: 200 flags in the codebase after 2 years with no cleanup discipline; engineers afraid to remove flags because they don't know if something depends on them; code is riddled with dead branches and if-else spaghetti.</li>
-            <li><strong>Synchronous flag evaluation</strong>: SDK configured to make a network call per evaluation rather than using in-process cache; P99 latency increases by 50ms per request; team adds flags to hot paths without understanding performance model.</li>
-            <li><strong>Flag as security control</strong>: Team uses a feature flag to gate a premium feature; flag evaluation is client-side or easily bypassed; paying customers' features accessible without payment by toggling the flag in browser DevTools.</li>
+            <li><strong>Stale release toggles:</strong> Hundreds of permanent <code>if (flag)</code> branches; engineers fear deletion because ownership was never recorded.</li>
+            <li><strong>Network evaluation on hot paths:</strong> Per-request HTTP to the flag vendor; latency and availability become coupled to product traffic.</li>
+            <li><strong>Flags as authorization:</strong> Premium APIs gated only by a client-readable flag; trivial to bypass.</li>
+            <li><strong>Inconsistent hashing:</strong> Changing rollout strategy resets cohorts, breaking experiments and user trust.</li>
+            <li><strong>Missing observability:</strong> Rollout succeeds in the dashboard but incidents cannot be tied to flag state in metrics.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does every flag have an owner, purpose, and expiry/removal criteria documented?</li>
-            <li>Is flag evaluation in-process (cached) rather than network-call-per-request?</li>
-            <li>Are safe default values defined for all flags (fallback when service unreachable)?</li>
-            <li>Is there a flag lifecycle process enforcing cleanup within a defined period post-rollout?</li>
-            <li>Are flags NOT used as the sole security enforcement mechanism for sensitive features?</li>
-            <li>Is flag state included in request context for observability (tracing, logging)?</li>
+            <li>Is each toggle classified with Fowler’s type and a documented removal or review date?</li>
+            <li>Does evaluation use an in-process cache with streaming updates—not remote calls per request?</li>
+            <li>Are defaults defined so outage reverts to stable behavior?</li>
+            <li>Is there a scheduled cleanup task after full rollout?</li>
+            <li>Are sensitive capabilities enforced server-side independently of flag state?</li>
+            <li>Do traces or logs include flag keys and resolved values for rollouts in flight?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Dark launch of ML recommendation engine</strong>: New recommendation service deployed behind a flag; activated for internal users for 2 weeks to validate quality; then 1% of external users for A/B test measuring click-through rate; metric shows 12% improvement; progressively rolled to 100% over 2 weeks without a dedicated release event.</li>
-            <li><strong>Infrastructure migration kill switch</strong>: Team migrates from PostgreSQL to CockroachDB; ops toggle <code>use-cockroachdb</code> defaults off; migration tested at 10% read traffic; when a CockroachDB cluster issue emerges at 3am, on-call engineer disables flag from dashboard in 5 seconds, routing all traffic back to PostgreSQL.</li>
-            <li><strong>Regional compliance requirement</strong>: GDPR feature required for EU users before product team has capacity to remove old behavior globally; permission toggle enables new GDPR-compliant flow targeting users where <code>geo=EU</code>, leaving other regions on existing flow until full rollout is planned.</li>
+            <li><strong>Illustrative scenario —</strong> Meridian Commerce ships a redesigned checkout behind a release toggle; traffic moves 5% → 25% → 100% over two weeks while error-rate dashboards gate each step; the toggle and branch are removed once conversion holds steady.</li>
+            <li><strong>Illustrative scenario —</strong> Northwind Logistics enables a new carrier-rate provider under an ops toggle; when the provider times out during peak season, operations disable the toggle in the control plane while PostgreSQL remains authoritative—no redeploy required.</li>
+            <li><strong>Case study —</strong> Fowler’s <a href="https://martinfowler.com/articles/feature-toggles.html" rel="noopener noreferrer" target="_blank">Feature Toggles</a> remains the reference taxonomy for release versus experiment versus ops toggles and toggle lifecycle hygiene in continuous delivery.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="canary-releases.html">Canary Releases</a> — Infrastructure-level percentage routing; flags operate at application layer.</li>
-            <li><a href="ci-cd-pipelines.html">CI/CD Pipelines</a> — Trunk-based development enabled by feature flags in pipelines.</li>
+            <li><a href="progressive-delivery.html">Progressive Delivery</a> — Combines flags with traffic-shaped deploys and metric gates.</li>
+            <li><a href="canary-releases.html">Canary Releases</a> — Infrastructure-level percentage routing between binary versions.</li>
+            <li><a href="rollback-strategies.html">Rollback Strategies</a> — Flag-off is often the fastest mitigation layer.</li>
+            <li><a href="ci-cd-pipelines.html">CI/CD Pipelines</a> — Trunk-based pipelines assume flags for incomplete features.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://martinfowler.com/articles/feature-toggles.html" target="_blank" rel="noopener noreferrer">Feature Toggles — Martin Fowler</a></li>
-            <li><a href="https://docs.getunleash.io/" target="_blank" rel="noopener noreferrer">Unleash Documentation</a></li>
-            <li><a href="https://launchdarkly.com/blog/feature-flag-best-practices/" target="_blank" rel="noopener noreferrer">Feature Flag Best Practices — LaunchDarkly</a></li>
+            <li><a href="https://martinfowler.com/articles/feature-toggles.html" rel="noopener noreferrer" target="_blank">Martin Fowler — Feature Toggles</a></li>
+            <li><a href="https://docs.getunleash.io/" rel="noopener noreferrer" target="_blank">Unleash Documentation</a></li>
+            <li><a href="https://launchdarkly.com/blog/feature-flag-best-practices/" rel="noopener noreferrer" target="_blank">LaunchDarkly — Feature flag best practices</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

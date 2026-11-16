@@ -96,43 +96,47 @@
             <span class="badge badge--warning">Advanced</span>
           </div>
           <h1 class="article-header__title">Service Mesh</h1>
-          <p class="article-header__desc">Sidecar proxy architecture with Envoy, Istio and Linkerd control planes, mutual TLS for service-to-service authentication, fine-grained traffic management for canary deployments, and mesh-based observability.</p>
-          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
+          <p class="article-header__desc">Deploying a service mesh on Kubernetes: Istio and Linkerd control planes, sidecar or ambient datapaths, certificate-driven mTLS, traffic policies for progressive delivery, and mesh-native metrics without changing application code.</p>
+          <div class="article-header__meta"><span>⏱ 12 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          <p>It is implemented through the <strong>sidecar proxy pattern</strong>: a transparent proxy (typically Envoy) is injected as a sidecar container into every pod. All inbound and outbound network traffic for the application container passes through this proxy.</p>
-          <p>The proxies form the <strong>data plane</strong> — they handle actual traffic. They are centrally configured by a <strong>control plane</strong> which distributes policies (TLS certificates, routing rules, retry policies) to all proxies without application code changes.</p>
-          <p><strong>Istio</strong> is the most feature-rich service mesh, with a control plane (<strong>istiod</strong>) that manages certificate authority (mTLS), traffic policy distribution, and telemetry collection. Istio uses Envoy as its data plane proxy and provides extensive traffic management features: weight-based routing, header-based routing, fault injection, circuit breaking, and retries. <strong>Linkerd</strong> is a lighter-weight alternative focused on simplicity and lower operational overhead — its data plane uses a Rust-based micro-proxy (linkerd2-proxy) with significantly lower per-request latency than Envoy and a simpler configuration model. <strong>Cilium Service Mesh</strong> uses eBPF instead of sidecar proxies for even lower overhead, operating at the kernel level.</p>
-          <p>The core capabilities: <strong>Mutual TLS (mTLS)</strong> — every service is issued a certificate (SPIFFE identity); all service-to-service communication is encrypted and mutually authenticated; services can cryptographically verify they are talking to the intended service; mTLS is enabled cluster-wide without any application code changes. <strong>Traffic management</strong> — the mesh controls how traffic is routed: weight-based splits for canary deployments, header-based routing for A/B testing, retry policies, timeouts, and circuit breaking at the proxy level. <strong>Observability</strong> — all traffic metrics (request rate, error rate, latency) are emitted by the proxies automatically;</p>
-          <p>distributed tracing spans are propagated; this "golden metrics" data is available for every service pair without application instrumentation.</p>
+          <p>A <strong>service mesh</strong> is a dedicated infrastructure layer that handles service-to-service connectivity—encryption, identity, routing, resilience, and telemetry—outside application binaries. On Kubernetes it is usually installed as cluster software: a <strong>control plane</strong> distributes policy and certificates; a <strong>data plane</strong> proxy intercepts pod traffic (classic <strong>sidecar</strong> pattern or newer <strong>ambient</strong> node-level paths in Istio).</p>
+          <p><strong>Istio</strong> (CNCF graduated) centers on <strong>istiod</strong>, which merges configuration, CA, and discovery into one process; Envoy sidecars (or ambient ztunnel/hbone on supported versions) enforce VirtualServices, DestinationRules, and security APIs. Istio fits teams that want rich traffic shaping, multi-cluster federation, and a large extension ecosystem—at the cost of control-plane and sidecar resource overhead.</p>
+          <p><strong>Linkerd</strong> (CNCF graduated) optimizes for minimal moving parts: a compact control plane and a Rust micro-proxy per pod. Configuration surface is smaller; install and upgrades are often faster for clusters that mainly need mTLS, golden metrics, and basic retries without Istio’s full policy matrix.</p>
+          <p>From a <strong>deployment</strong> perspective, both meshes ship as Helm charts or vendor bundles on EKS, GKE, and AKS. Rollout is namespace-scoped: enable injection, validate PERMISSIVE mTLS, then tighten to STRICT. Progressive delivery tools (Flagger, Argo Rollouts with mesh traffic splitting) depend on mesh APIs for percentage-based routes independent of replica counts.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>In a microservices architecture with dozens of services, consistently implementing retries, timeouts, circuit breaking, TLS, and metrics collection in every service's application code is error-prone and creates language-specific implementation variation. A service mesh externalises these cross-cutting concerns to the infrastructure layer. The application code becomes simpler (just make HTTP calls), and all resilience patterns, security policies, and observability are consistently applied across every service by the mesh without developer involvement. This is particularly valuable in organisations where different services are written in different languages.</p>
+          <p>Microservices multiply TLS, retries, timeouts, and metrics code across languages and repositories. Libraries drift; on-call inherits inconsistent behavior. A mesh pushes those policies to the platform: certify identities via SPIFFE, encrypt east-west traffic, emit RED metrics per hop, and enforce timeouts at the proxy—so application teams ship features while platform engineers own the connectivity contract.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Organisations with strict zero-trust security requirements needing mTLS between all services without modifying application code in each service.</li>
-            <li>Teams using canary deployments and needing fine-grained traffic percentage control independent of pod replica count.</li>
-            <li>Microservices architectures where consistent resilience patterns (retries, circuit breaking, timeouts) are needed across services in multiple languages.</li>
+            <li>Zero-trust mandates for encrypted, authenticated east-west traffic without per-language TLS clients.</li>
+            <li>Canary, blue/green, or fault-injection campaigns needing weight-based routing beyond Kubernetes Service endpoints.</li>
+            <li>Heterogeneous runtimes (Java, Go, Node, legacy) that must share identical resilience and observability defaults.</li>
+            <li>Platform teams ready to operate mesh upgrades, CA rotation, and proxy sync health alongside the cluster itself.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Small clusters with few services — the operational complexity of running and maintaining a service mesh exceeds the benefit for clusters with fewer than 10-20 services.</li>
-            <li>Teams without Kubernetes/networking expertise to troubleshoot mesh configuration issues — mesh-related failures can be very difficult to debug without deep understanding of Envoy configuration and xDS protocol.</li>
+            <li><strong>Tiny estates:</strong> Fewer than roughly a dozen services rarely justify mesh control planes, proxy RAM, and training cost.</li>
+            <li><strong>Latency-bound chains:</strong> Multi-hop sidecar mTLS can add milliseconds per call; measure before meshing deep graphs.</li>
+            <li><strong>Thin platform skills:</strong> Misconfigured VirtualServices or PeerAuthentication policies fail silently; debugging needs Envoy/xDS literacy.</li>
+            <li><strong>Non-Kubernetes primary:</strong> VMs or serverless may be better served by API gateways or service connect products unless you standardize on Kubernetes first.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Install istiod or the Linkerd control plane in a dedicated namespace, label target namespaces for sidecar injection, then layer VirtualServices (Istio) or ServiceProfiles (Linkerd) for traffic policy. The fallback block shows Istio canary routing plus strict mTLS—patterns Linkerd expresses with ServerAuthorizations and traffic splits.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    istiod["istiod control plane"]
-    subgraph pod["Pod"]
+    cp["Mesh control plane&lt;br/&gt;(istiod or linkerd-destination)"]
+    subgraph pod["Pod with injection"]
         app["Application"]
-        envoy["Envoy sidecar"]
-        app --- envoy
+        proxy["Envoy / linkerd-proxy"]
+        app --- proxy
     end
-    istiod -->|config + certs| envoy</div>
+    cp -->|certs + xDS| proxy
+    proxy -->|mTLS east-west| peer["Peer service proxy"]</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
               <pre class="architecture-diagram__canvas"><code>ISTIO ARCHITECTURE:
@@ -222,7 +226,7 @@ AUTHORIZATION POLICY (service-level firewall):
           methods: ["POST"]
           paths: ["/api/v1/checkout"]</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Service mesh: istiod distributes policy and mTLS certificates to Envoy sidecars that mediate all pod traffic.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Mesh control plane issues identities and policy to in-pod proxies that terminate mTLS and enforce routing on every east-west hop.</figcaption>
           </figure>
 
           <h2 id="pros-and-cons">Pros and cons</h2>
@@ -230,61 +234,70 @@ AUTHORIZATION POLICY (service-level firewall):
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Zero-code mTLS: mutual TLS between all services is enabled by configuration without modifying a single line of application code — critical for organisations with many services in different languages.</li>
-                <li>Uniform observability: every service pair automatically emits request rate, error rate, and latency metrics, enabling service topology maps and golden signal dashboards without application instrumentation.</li>
-                <li>Fine-grained traffic control: traffic can be split by percentage, header, source service, or any combination — enabling canary deployments, A/B tests, and shadow traffic without application changes.</li>
+                <li>Platform-wide mTLS and SPIFFE identities without recompiling each microservice.</li>
+                <li>Consistent retries, timeouts, and outlier detection at the proxy—uniform across languages.</li>
+                <li>Traffic split APIs decouple canary percentage from pod replica math.</li>
+                <li>Automatic RED metrics and trace propagation for service graphs (Kiali, Linkerd Viz, Grafana dashboards).</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Significant operational complexity: Istio has a steep learning curve; misconfigured VirtualServices cause silent traffic drops; debugging requires understanding Envoy xDS configuration and mesh-specific tooling (istioctl).</li>
-                <li>Per-pod latency overhead: Envoy sidecar adds 1-5ms of latency per request hop for mTLS termination and policy evaluation; for latency-sensitive services with many service-to-service calls, this compounds.</li>
-                <li>Resource overhead: each Envoy sidecar consumes ~50-100MB of memory and 100m CPU at rest; in a cluster with 1,000 pods this is a significant additional resource budget.</li>
+                <li>Another tier to upgrade, monitor, and back up (istiod / linkerd-identity) on the critical path.</li>
+                <li>Sidecar memory and CPU tax scales linearly with pod count; ambient modes reduce but change operational model.</li>
+                <li>Policy mistakes (wrong port, subset labels) drop traffic with little application logging.</li>
+                <li>Vendor and API sprawl: Istio’s surface is large; Linkerd is narrower but less feature-rich for L7 routing.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Adopt Istio incrementally rather than cluster-wide from day one. Enable sidecar injection namespace by namespace, starting with a non-critical namespace. Run in <strong>PERMISSIVE</strong> mTLS mode initially (accept both mTLS and plain text), validate that all service communication is working, then switch to <strong>STRICT</strong> mode (reject plain text) after confirming all services have sidecars and are communicating with mTLS. The permissive → strict progression surfaces any services that were communicating without TLS before the mode switch.</p>
-          <p>For debugging mesh issues, use <code>istioctl proxy-status</code> to check that all proxies are in sync with the control plane, <code>istioctl analyze</code> to detect configuration issues, and <code>kubectl debug -it &lt;pod&gt; --image=curlimages/curl</code> to test direct service connectivity from within the mesh. Kiali provides a visual topology map of service communication with error rate overlays — essential for diagnosing which service-to-service edge is causing failures.</p>
+          <p><strong>Istio deployment:</strong> Install via <code>istioctl install</code> or the official Helm chart; pin a supported minor version to your Kubernetes release. Run istiod with ≥3 replicas, anti-affinity, and a PDB. Enable injection on one non-production namespace first; validate with <code>istioctl proxy-status</code>. Adopt revision-based upgrades if you need canary control planes during mesh version changes.</p>
+          <p><strong>Linkerd deployment:</strong> Use the Linkerd CLI or Helm to install CRDs, control plane, and viz extension; verify proxies with <code>linkerd check</code>. Inject with the <code>linkerd.io/inject: enabled</code> annotation or namespace label. Upgrades are typically CLI-driven and faster, but still require staging and proxy version skew checks.</p>
+          <p><strong>Shared rollout pattern:</strong> Start PeerAuthentication / mesh TLS in PERMISSIVE mode, confirm all workloads have proxies (or ambient enrollment), then move to STRICT. Pair with GitOps so VirtualServices and authorization policies are reviewed like application code. Keep egress and ingress gateways explicit—do not rely on implicit default routes for external dependencies.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Protocol mismatch</strong>: VirtualService configured for HTTP routing but traffic is gRPC or TCP; routing rules silently do not apply; service receives all traffic to stable rather than the intended canary split.</li>
-            <li><strong>Certificate rotation lag</strong>: istiod unavailable during certificate rotation (24-hour default); proxies cannot renew certificates; STRICT mTLS causes all service communication to fail cluster-wide until istiod recovers.</li>
-            <li><strong>Misconfigured authorization policies</strong>: AuthorizationPolicy with incorrect service account principal silently drops all traffic to a service; application gets no response with no application-level error logged — the rejection happens at the proxy.</li>
+            <li><strong>HTTP vs gRPC routing:</strong> VirtualService HTTP blocks ignore gRPC; canary weights never apply to RPC traffic.</li>
+            <li><strong>Control plane outage during rotation:</strong> istiod downtime blocks cert renewal; STRICT mode freezes east-west calls.</li>
+            <li><strong>AuthorizationPolicy typos:</strong> Wrong service account principals yield 403s at the proxy with empty app logs.</li>
+            <li><strong>Uninjected batch jobs:</strong> CronJobs without injection bypass mTLS and break STRICT namespaces that expect encrypted peers.</li>
+            <li><strong>Revision skew:</strong> Mixed proxy versions after partial upgrade cause xDS reject loops and flaky routes.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is the team's Kubernetes expertise sufficient to operate and debug mesh configuration?</li>
-            <li>Is the latency and resource overhead acceptable for the workload characteristics?</li>
-            <li>Is sidecar injection being adopted incrementally rather than all-at-once?</li>
-            <li>Is mTLS mode starting as PERMISSIVE and transitioning to STRICT after validation?</li>
-            <li>Is Kiali or equivalent mesh topology visualisation deployed?</li>
-            <li>Is istiod running with multiple replicas and a PodDisruptionBudget?</li>
+            <li>Is Istio’s feature depth justified versus Linkerd’s simplicity for this cluster size?</li>
+            <li>Are control plane pods HA, backed up, and monitored like etcd-tier components?</li>
+            <li>Is injection (or ambient enrollment) rolled namespace-by-namespace with rollback labels?</li>
+            <li>Does mTLS graduate PERMISSIVE → STRICT only after an inventory of uninjected callers?</li>
+            <li>Are progressive delivery tools wired to mesh traffic APIs with SLO-based promotion gates?</li>
+            <li>Is there a runbook for proxy sync, cert expiry, and emergency STRICT bypass (break-glass only)?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Zero-trust service authentication</strong>: Financial services organisation must meet regulatory requirement that all internal service-to-service communication is encrypted and authenticated; Istio strict mTLS enforced across all production namespaces; compliance audit shows cryptographic service identity for every request without application code changes.</li>
-            <li><strong>Canary deployment infrastructure</strong>: Flagger uses Istio VirtualService to progressively shift traffic to canary; precise weight control (5%, 10%, 20%) is possible with any number of replicas; traffic analysis uses Istio-generated Prometheus metrics for the canary analysis templates.</li>
-            <li><strong>Service-level circuit breaking</strong>: Downstream service begins returning errors; Istio outlierDetection ejects the failing backend from load balancing pool; upstream service error rate drops while circuit is open; on-call notified by alert before cascading failure occurs.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>FieldOps</strong> enables Istio STRICT mTLS in production after a two-namespace pilot; auditors trace SPIFFE IDs per call without service redeploys.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> runs Linkerd on a 40-service fleet; platform upgrades the control plane in staging, runs <code>linkerd check</code>, then promotes the same chart version to production over a maintenance window.</li>
+            <li><strong>Case study —</strong> <strong>eBay</strong> and <strong>Skyscanner</strong> have published mesh adoption stories for mTLS and progressive delivery at scale—useful reference points for upgrade and governance models.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="container-orchestration.html">Container Orchestration</a> — Service mesh runs on Kubernetes as an infrastructure layer.</li>
-            <li><a href="canary-releases.html">Canary Releases</a> — Service mesh provides traffic management for canary deployments.</li>
-            <li><a href="../security/zero-trust-architecture.html">Zero Trust Architecture</a> — mTLS from service mesh implements zero-trust service identity.</li>
+            <li><a href="container-orchestration.html">Container Orchestration</a> — Schedules pods and Services that mesh data planes inject alongside.</li>
+            <li><a href="canary-releases.html">Canary Releases</a> — VirtualService weights and destination rules for percentage-based promotion with observability per subset.</li>
+            <li><a href="progressive-delivery.html">Progressive Delivery</a> — Argo Rollouts and Flagger often delegate traffic split to mesh APIs documented by Istio and Linkerd.</li>
+            <li><a href="../observability/distributed-tracing.html">Distributed Tracing</a> — Golden signals and traces exported from mesh sidecars complement application metrics during rollouts.</li>
+            <li><a href="../security/zero-trust-architecture.html">Zero Trust Architecture</a> — Workload identity and mTLS between services without shared network trust assumptions.</li>
+            <li><a href="release-strategies.html">Release Strategies</a> — When mesh-assisted splitting is worth the control-plane and latency cost versus ingress-only weights.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://istio.io/latest/docs/" target="_blank" rel="noopener noreferrer">Istio Documentation</a></li>
-            <li><a href="https://linkerd.io/2.14/overview/" target="_blank" rel="noopener noreferrer">Linkerd Documentation</a></li>
-            <li><a href="https://kiali.io/docs/" target="_blank" rel="noopener noreferrer">Kiali — Service Mesh Topology</a></li>
+            <li><a href="https://istio.io/latest/docs/setup/install/" target="_blank" rel="noopener noreferrer">Istio — Installation and upgrades</a></li>
+            <li><a href="https://linkerd.io/2/tasks/install/" target="_blank" rel="noopener noreferrer">Linkerd — Install tasks</a></li>
+            <li><a href="https://istio.io/latest/docs/ops/deployment/deployment-models/" target="_blank" rel="noopener noreferrer">Istio — Deployment models</a></li>
+            <li><a href="https://kiali.io/docs/" target="_blank" rel="noopener noreferrer">Kiali — Mesh topology and health</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Rollback Strategies — SA References</title>
-  <meta name="description" content="Detecting and recovering from failed deployments quickly and safely.">
+  <meta name="description" content="Rollback strategies: automated canary abort, immutable artifact revert, feature-flag mitigation, and schema-aware recovery.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,104 +99,129 @@
             <span class="badge badge--primary">Deployment & Delivery</span>
           </div>
           <h1 class="article-header__title">Rollback Strategies</h1>
-          <p class="article-header__desc">Detecting and recovering from failed deployments quickly and safely.</p>
+          <p class="article-header__desc">Rollback strategies are rehearsed reverse paths for failed releases—SRE-style automated canary rollback, artifact redeploy, and flag kill switches aligned with schema compatibility.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: Kubernetes rollout undo plus feature-flag kill switch while database remains on backward-compatible schema.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p><strong>Rollback strategies</strong> are planned ways to reverse or mitigate a bad production change—returning traffic to a known-good application version, disabling risky behavior, or stopping promotion before full exposure. The Google SRE workbook treats rollback as a first-class outcome of <a href="https://sre.google/workbook/canarying-releases/" rel="noopener noreferrer" target="_blank">canarying releases</a>: analysis failures should trigger automated traffic reversion without waiting for a human to notice a dashboard.</p>
+          <p>Rollbacks operate at multiple layers. <strong>Artifact rollback</strong> redeploys a prior container image, Lambda version, or Helm release revision. <strong>Traffic rollback</strong> shifts load back to a stable pool (blue-green switch, canary weight to zero, Kubernetes <code>rollout undo</code>). <strong>Behavioral rollback</strong> flips <a href="feature-flags.html">feature flags</a> off while binaries remain unchanged—often the fastest mitigation. <strong>Data rollback</strong> is constrained: schemas upgraded under expand/contract may allow application revert, but destructive data migrations require forward fixes or restore from backup—not a simple deploy undo.</p>
+          <p>Effective rollback design assumes partial failure: a canary at 20% should revert 20% without corrupting state shared with the stable 80%.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Every delivery system needs a rehearsed reverse path. Rollbacks limit customer impact and reduce pressure during incidents.</p>
+          <p>Every delivery system will ship defects despite tests. Rollback capability converts “incident duration” from hours of forward debugging into minutes of reversion plus root-cause analysis. SRE practice pairs rollbacks with error budgets: automated abort when SLIs regress protects users and preserves budget for deliberate risk-taking elsewhere.</p>
+          <p>Without rehearsed rollback—retained artifacts, documented commands, compatibility with N−1 schema—teams hesitate to deploy, or they freeze production during incidents while debating whether undo is safe.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>All production deploy pipelines.</li>
-            <li>Schema changes with forward-only data migrations.</li>
-            <li>Canary releases with automatic promotion/rollback.</li>
+            <li>Every production pipeline should define what “undo” means before the first deploy of a service.</li>
+            <li>Canary and progressive delivery setups where metric gates trigger automatic rollback hooks.</li>
+            <li>Changes guarded by ops feature flags where flag-off is the tier-zero response.</li>
+            <li>Schema migrations that maintain at least one version of backward-compatible application and database state.</li>
+            <li>Security incidents requiring immediate reversion to a patched or last-known-good baseline.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Irreversible data migrations without backups — plan forward fix instead.</li>
-            <li>Rolling back without understanding security patches.</li>
+            <li>Irreversible data destruction without restorable backups—plan forward migration or repair jobs instead of binary rollback fantasies.</li>
+            <li>Rolling back past mandatory security patches without assessing vulnerability exposure.</li>
+            <li>State formats written only by the new version that old binaries cannot read—compatibility must be designed in advance.</li>
+            <li>Using rollback as a substitute for fixing flaky automation that false-triggers aborts.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Observability compares canary to stable; breach triggers controller rollback or alerts an operator. Feature flags and traffic routers provide parallel fast paths.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    burn["SLO / metric burn"]
-    manual["Manual incident decision"]
+    burn["SLO / error budget burn"]
+    analysis["Canary analysis fail"]
+    auto["Automated traffic revert"]
+    manual["Operator: rollout undo / helm rollback"]
     flag["Feature flag off"]
-    auto["Automated rollback"]
-    helm["Helm / redeploy previous"]
+    stable["Stable revision"]
     burn --> auto
-    manual --> helm
-    flag --> auto</div>
+    analysis --> auto
+    manual --> stable
+    flag --> stable
+    auto --> stable</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>ROLLBACK TRIGGERS:
+              <pre class="architecture-diagram__canvas"><code>ROLLBACK LAYERS (fastest first):
 
-  Metrics/SLO burn --> auto rollback
-  Manual IC decision --> helm rollback / redeploy
-  Flag off --> instant mitigation</code></pre>
+  1. Feature flag OFF          — seconds, same binary
+  2. Traffic shift to stable   — seconds–minutes
+  3. Redeploy previous artifact — minutes (pipeline + health checks)
+  4. Schema/data                — often forward-only; expand/contract required</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Rollback triggers: automated responses on SLO burn, manual helm rollback, or instant mitigation via feature flags.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Rollback paths: automated analysis failure, error-budget burn, manual undo, and instant feature-flag mitigation converge on stable traffic.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Shortens incident duration.</li>
-            <li>Increases release confidence.</li>
-            <li>Automatable with clear signals.</li>
-            <li>Pairs with immutable artifacts.</li>
+                <li>Shortens user-visible incident time when detection and reversion are automated.</li>
+                <li>Increases release confidence—teams ship more often when undo is boring.</li>
+                <li>Composable with immutable artifacts: previous tags are always addressable.</li>
+                <li>Separates mitigation (rollback) from remediation (fix forward), clarifying incident roles.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Schema rollback complexity.</li>
-            <li>State divergence after partial rollout.</li>
-            <li>False-positive auto rollbacks.</li>
-            <li>Cache inconsistencies post-rollback.</li>
+                <li>Database state often cannot follow binary rollback without expand/contract discipline.</li>
+                <li>Partial rollouts leave mixed versions—caches, queues, and sessions may be inconsistent briefly.</li>
+                <li>False-positive automation rolls back healthy changes and erodes trust in gates.</li>
+                <li>Rollback without communication leaves support teams explaining behavior flips customers never saw announced.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Keep previous container image and manifest versions addressable. Automate rollback on SLO burn during canary; document manual approval for prod.</p>
-          <p>Warm caches after rollback; verify background jobs compatibility.</p>
+          <p>Retain immutable artifact digests and manifest revisions for at least the SLO lookback window plus one release cycle. Pin Helm chart versions and record release numbers; <code>helm rollback</code> and Kubernetes <code>kubectl rollout undo</code> should be tested quarterly in non-production. Automate canary abort when error rate exceeds baseline by a defined margin for N consecutive intervals—mirror SRE workbook guidance on statistical comparison.</p>
+          <p>Coordinate with <a href="database-migrations.html">database migrations</a>: deploy N+1 application only after expand steps land; never roll application to N−1 while schema is N+1-only. After traffic rollback, warm caches and verify async consumers handle messages produced by both versions during the overlap window.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>No artifact retention</strong>.</li>
-            <li><strong>Rollback script untested</strong>.</li>
-            <li><strong>DB ahead of app</strong> incompatibility.</li>
-            <li><strong>Forward-only config</strong> breaks old version.</li>
+            <li><strong>No retained artifacts:</strong> Registry GC deleted the last good image; undo is a rebuild, not a redeploy.</li>
+            <li><strong>Untested rollback:</strong> Runbook exists but last successful undo was never exercised; commands fail under pressure.</li>
+            <li><strong>Schema ahead of app:</strong> New NOT NULL column without default; old pods crash-loop after revert.</li>
+            <li><strong>Config-only forward changes:</strong> New required environment variable breaks previous chart revision.</li>
+            <li><strong>Cache poisoning:</strong> New version wrote cache entries old version cannot interpret.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Previous image tagged and retained?</li>
-            <li>Automated rollback criteria defined?</li>
-            <li>Runbook for manual rollback?</li>
-            <li>Schema backward compatible one version?</li>
-            <li>Post-rollback validation tests?</li>
-            <li>Comms template ready?</li>
+            <li>Is the previous production image or artifact tag retained and deployable in one command?</li>
+            <li>Are automated rollback criteria tied to baseline-relative SLIs, not static thresholds only?</li>
+            <li>Does a written runbook cover flag-off, traffic shift, and artifact revert—in that preference order?</li>
+            <li>Will schema and application remain compatible if only the app is rolled back one version?</li>
+            <li>Are post-rollback validation checks automated (smoke tests, synthetic probes)?</li>
+            <li>Is there a customer-facing comms template when behavior reverts during business hours?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>K8s</strong>: <code>kubectl rollout undo</code> on failed readiness.</li>
-            <li><strong>Serverless</strong>: alias traffic shift back.</li>
-            <li><strong>Mobile</strong>: force upgrade only as last resort.</li>
+            <li><strong>Illustrative scenario —</strong> Meridian Commerce’s payment service canary trips error-rate analysis; Argo Rollouts sets canary weight to zero and restores 100% stable traffic while an ops toggle disables the new fraud scorer—total mitigation under two minutes.</li>
+            <li><strong>Illustrative scenario —</strong> Northwind Logistics runs <code>kubectl rollout undo</code> after readiness failures on a bad container digest; PostgreSQL stayed on expand-phase schema so N−1 pods still start cleanly.</li>
+            <li><strong>Case study —</strong> The <a href="https://sre.google/workbook/canarying-releases/" rel="noopener noreferrer" target="_blank">Google SRE Workbook</a> canarying chapter documents automated rollback tied to metric regression during staged releases.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="canary-releases.html">Canary Releases</a> — Automated rollback hooks.</li>
-            <li><a href="blue-green-deployment.html">Blue-Green Deployment</a> — Instant traffic switch back.</li>
-            <li><a href="database-migrations.html">Database Migrations</a> — Schema compatibility.</li>
+            <li><a href="canary-releases.html">Canary Releases</a> — Primary trigger for automated rollback hooks.</li>
+            <li><a href="blue-green-deployment.html">Blue-Green Deployment</a> — Instant traffic switch back to the idle pool.</li>
+            <li><a href="feature-flags.html">Feature Flags</a> — Fastest behavioral rollback layer.</li>
+            <li><a href="database-migrations.html">Database Migrations</a> — Determines whether application rollback is safe.</li>
+            <li><a href="progressive-delivery.html">Progressive Delivery</a> — Umbrella practice embedding rollback in the promotion loop.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://sre.google/workbook/canarying-releases/" target="_blank" rel="noopener noreferrer">Google SRE Workbook — Canarying</a></li>
-            <li><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#rolling-back-a-deployment" target="_blank" rel="noopener noreferrer">Kubernetes rollout rollback</a></li>
-            <li><a href="https://spinnaker.io/docs/guides/user/canary/" target="_blank" rel="noopener noreferrer">Spinnaker canary concepts</a></li>
+            <li><a href="https://sre.google/workbook/canarying-releases/" rel="noopener noreferrer" target="_blank">Google SRE Workbook — Canarying releases</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#rolling-back-a-deployment" rel="noopener noreferrer" target="_blank">Kubernetes — Rolling back a Deployment</a></li>
+            <li><a href="https://spinnaker.io/docs/guides/user/canary/" rel="noopener noreferrer" target="_blank">Spinnaker — Canary analysis</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">

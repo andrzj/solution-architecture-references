@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Rolling Deployments — SA References</title>
-  <meta name="description" content="Incrementally replacing instances to reduce blast radius during releases.">
+  <meta name="description" content="Rolling deployments: Kubernetes RollingUpdate strategy, maxSurge and maxUnavailable, readiness gates, graceful shutdown, PodDisruptionBudgets, and when rolling beats blue-green or canary.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,101 +99,162 @@
             <span class="badge badge--primary">Deployment & Delivery</span>
           </div>
           <h1 class="article-header__title">Rolling Deployments</h1>
-          <p class="article-header__desc">Incrementally replacing instances to reduce blast radius during releases.</p>
+          <p class="article-header__desc">Incrementally replace application instances while keeping capacity online: the default Kubernetes Deployment strategy, its tuning knobs, and the backward-compatibility constraints that make or break a roll.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: Kubernetes Deployment with maxUnavailable=0, maxSurge=25% rolls pods while Service endpoints update.</p>
+          <p>A <strong>rolling deployment</strong> replaces running instances with a new version in small waves rather than stopping the entire fleet at once. The orchestrator starts new pods, waits until they pass health checks, removes old pods, and repeats until every replica runs the target version. On Kubernetes, <code>strategy.type: RollingUpdate</code> is the default on <code>Deployment</code> objects; <code>maxSurge</code> caps how many extra pods may exist during the roll, and <code>maxUnavailable</code> caps how many pods may be down—together they bound capacity and blast radius during the update.</p>
+          <p>A typical zero-downtime configuration sets <code>maxUnavailable: 0</code> and <code>maxSurge: 25%</code>: the cluster may temporarily run up to 125% of desired replicas while old pods drain. The Service endpoints controller adds new pods only after <code>readinessProbe</code> success and removes terminating pods after graceful shutdown. Unlike <a href="blue-green-deployment.html">blue-green</a>, there is no separate idle environment—old and new versions coexist for the duration of the rollout, which demands backward compatibility across the overlap window.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Big-bang restarts drop capacity. Rolling updates reduce blast radius while keeping the service available, assuming backward compatibility.</p>
+          <p>Big-bang restarts drop serving capacity to zero and force maintenance windows. Rolling updates keep a minimum healthy replica count online while newer code warms up, which matches how stateless horizontally scaled services are usually operated. The pattern is cheap in infrastructure (no second full environment), familiar to platform teams, and built into every major orchestrator—not only Kubernetes but also ECS rolling task replacement, Azure App Service deployment slots in rolling mode, and similar VM-scale-set patterns.</p>
+          <p>The trade-off is deliberate: rolling is the right default for routine, backward-compatible changes, but it does not provide instant full rollback or fine-grained traffic percentages. Teams that outgrow naked rolling—needing metric-gated promotion or instant switchback—layer <a href="canary-releases.html">canary</a> or blue-green on top via Argo Rollouts or external load balancers.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Stateless horizontally scaled services.</li>
-            <li>Compatible schema and API versions.</li>
-            <li>Default Kubernetes Deployment strategy.</li>
+            <li>Stateless services behind a load balancer or Kubernetes Service where extra replicas can absorb surge during replacement.</li>
+            <li>Changes that remain backward compatible for at least one release (API schema, message formats, database reads/writes) while two binary versions run together.</li>
+            <li>Routine application and configuration deploys where downtime is unacceptable but deployment risk is moderate and covered by pre-production tests.</li>
+            <li>Platforms where rolling is the default and operational runbooks already assume mixed-version windows (standard Kubernetes, many PaaS offerings).</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Breaking changes without dual support.</li>
-            <li>Stateful systems without orchestrated migration.</li>
-            <li>When instant rollback switch is required — prefer blue/green.</li>
+            <li>Breaking API or schema changes without dual-write or expand-contract migrations—mixed versions will corrupt data or fail requests; prefer <a href="blue-green-deployment.html">blue-green</a> with a hard cutover.</li>
+            <li>Stateful single-replica workloads where <code>maxUnavailable: 0</code> cannot be satisfied without doubling capacity elsewhere.</li>
+            <li>Releases that require instant, complete rollback of all traffic in seconds—rolling back a Deployment is another roll forward to the previous revision, which takes as long as the original rollout.</li>
+            <li>High-risk changes where only a small percentage of traffic should see the new build first—use <a href="canary-releases.html">canary</a> or Argo Rollouts instead of uncontrolled pod mixing.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Each wave creates new pods, gates on readiness, deregisters old pods from the Service, and honors termination grace so in-flight requests complete.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     vN["vN pods"]
-    gate["Health gate per wave"]
+    gate["Readiness gate"]
     vN1["vN+1 pods"]
     vN --> gate --> vN1</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>ROLLING UPDATE:
+              <pre class="architecture-diagram__canvas"><code>KUBERNETES ROLLING UPDATE (zero downtime):
 
-  vN pods -----> gradually replace -----> vN+1 pods
-         \       health gate each      /
-          +--- min available maintained</code></pre>
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: api
+  spec:
+    replicas: 20
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 25%          # up to 5 extra pods during roll
+        maxUnavailable: 0      # never drop below 20 ready endpoints
+    template:
+      spec:
+        terminationGracePeriodSeconds: 60
+        containers:
+        - name: api
+          readinessProbe:
+            httpGet: { path: /ready, port: 8080 }
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 15"]
+
+WAVE TIMELINE (replicas=4, maxSurge=1, maxUnavailable=0):
+
+  t0: [v1][v1][v1][v1]           all old
+  t1: [v1][v1][v1][v1][v2*]     v2 starting
+  t2: [v1][v1][v1][v1][v2]      v2 ready → endpoints include v2
+  t3: [v1][v1][v1][v2]          one v1 terminated
+  … repeat until all v2
+
+  * readinessProbe must fail until dependencies warm
+
+ARGO ROLLOUTS (rolling as controlled steps):
+  When basic Deployment rolling is insufficient, a Rollout can use
+  canary or blueGreen strategies; for pure rolling, spec.strategy
+  still maps to ReplicaSet replacement with revisionHistoryLimit
+  for kubectl rollout undo.
+
+POD DISRUPTION BUDGET (protect voluntary drains):
+  minAvailable: 80%  # block node drains that would violate SLA</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Rolling update: replace pods in waves while maintaining minimum availability and checking health between steps.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Rolling update: replace pods in waves while readiness probes and PDBs keep minimum capacity and health gates between steps.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>No full outage window.</li>
-            <li>Built into orchestrators.</li>
-            <li>Simple mental model.</li>
-            <li>Works with autoscaling.</li>
+                <li>No planned outage window when <code>maxUnavailable</code> is tuned to preserve capacity.</li>
+                <li>First-class support in Kubernetes and most cloud runtimes—no extra controllers required for the baseline pattern.</li>
+                <li>Infrastructure cost stays at one replica set; unlike blue-green, you do not pay for a full duplicate environment during release.</li>
+                <li>Works naturally with horizontal pod autoscaling: new pods join the Service as they become ready.</li>
+                <li><code>kubectl rollout undo</code> (or CI rollback to a prior manifest revision) reverts to the last known-good ReplicaSet without rebuilding images.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Mixed versions during window.</li>
-            <li>Slow for large fleets.</li>
-            <li>Connection drain issues.</li>
-            <li>Hard to measure canary subset.</li>
+                <li>Two application versions run concurrently for minutes—schema, APIs, and feature flags must tolerate the overlap.</li>
+                <li>Large fleets roll slowly; a 500-replica service with conservative surge settings may take tens of minutes to complete.</li>
+                <li>Long-lived connections (WebSockets, SSE, gRPC streams) may survive on old pods until termination grace expires, complicating drain.</li>
+                <li>Error attribution is muddy during the roll unless metrics and traces carry version labels—you cannot isolate “canary” traffic without mesh or header routing.</li>
+                <li>Rollback is “roll forward” to the previous revision, not an instantaneous traffic switch like blue-green.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Configure readiness probes accurately; use preStop hooks for graceful shutdown. Set PodDisruptionBudgets.</p>
-          <p>Pair with metrics comparing old vs new pod labels during rollout.</p>
+          <p>Readiness probes must reflect real dependencies (database connectivity, cache reachability, feature-flag SDK init)—a probe that only checks <code>/healthz</code> on the process will admit pods before they can serve traffic. Pair <code>preStop</code> hooks with a sleep long enough for the load balancer or kube-proxy to stop sending new connections before <code>SIGTERM</code> handling begins; AWS ALB and many ingress controllers need several seconds of deregistration delay.</p>
+          <p>Set <code>progressDeadlineSeconds</code> so a stuck rollout fails visibly instead of leaving a permanent mix of versions. Define a <code>PodDisruptionBudget</code> so voluntary evictions (node upgrades, cluster autoscaler) cannot drain more replicas than the rollout math allows. During the roll, tag Prometheus metrics and traces with pod template hash or image tag so dashboards can compare error rates between old and new ReplicaSets.</p>
+          <p>Argo Rollouts can still use rolling semantics for low-risk changes while delegating high-risk releases to canary or blue-green strategies on the same <code>Rollout</code> resource—pick strategy per pipeline stage rather than per cluster.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Bad readiness</strong> routes traffic too early.</li>
-            <li><strong>No PDB</strong> drains all replicas.</li>
-            <li><strong>Long-lived connections</strong> never drain.</li>
-            <li><strong>Breaking API</strong> between versions.</li>
+            <li><strong>Premature readiness</strong>: Pods join Service endpoints before caches warm or connection pools fill; a traffic spike right after the wave starts causes elevated 5xx until JVM/CLR JIT or app caches catch up.</li>
+            <li><strong>PDB omitted during node drain</strong>: A cluster upgrade evicts too many pods at once; availability drops below SLO even though the Deployment spec looked correct.</li>
+            <li><strong>Insufficient termination grace</strong>: <code>terminationGracePeriodSeconds</code> too short for in-flight requests; clients see reset connections mid-roll.</li>
+            <li><strong>Breaking change under rolling</strong>: New pods write a schema the old pods cannot read (or vice versa); errors appear only on the overlap window and are blamed on “flaky deploys.”</li>
+            <li><strong>Progress deadline too generous</strong>: One bad replica blocks the entire rollout for hours with half old and half new versions—operators lack a clear failure signal.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Readiness reflects dependencies?</li>
-            <li>PDB defined?</li>
-            <li>PreStop sleep for LB deregistration?</li>
-            <li>Backward compatible one version?</li>
-            <li>Progress deadline set?</li>
-            <li>Monitor error rate during roll?</li>
+            <li>Does readiness verify downstream dependencies, not just process listen?</li>
+            <li>Is a PodDisruptionBudget defined for this Deployment?</li>
+            <li>Does <code>preStop</code> allow load-balancer deregistration before shutdown?</li>
+            <li>Will old and new versions remain compatible for the full expected rollout duration?</li>
+            <li>Is <code>progressDeadlineSeconds</code> set and alerting wired on stalled rollouts?</li>
+            <li>Are metrics and traces labeled by version or ReplicaSet during the roll?</li>
+            <li>Is <code>kubectl rollout undo</code> (or CI rollback) tested on a non-production cluster?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>API service</strong>: 50-pod cluster roll in 10 minutes.</li>
-            <li><strong>Workers</strong>: Rolling job deploy with queue pause.</li>
-            <li><strong>Istio</strong>: subset routing during partial roll.</li>
+            <li><strong>Illustrative scenario —</strong> A horizontally scaled REST API with 50 replicas deploys a backward-compatible bugfix weekly; <code>maxUnavailable: 0</code>, <code>maxSurge: 25%</code> completes in about ten minutes with no user-visible downtime.</li>
+            <li><strong>Illustrative scenario —</strong> Background workers consume from a queue; the team pauses autoscaling during roll, drains in-flight jobs via graceful shutdown, and resumes—rolling remains safe because work is idempotent.</li>
+            <li><strong>Case study —</strong> Kubernetes’ own documentation and countless production clusters use Deployment rolling updates as the default path; teams graduate to Argo Rollouts when they need automated analysis beyond native ReplicaSet replacement (<a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy" rel="noopener noreferrer" target="_blank">Deployment strategies</a>).</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="container-orchestration.html">Container Orchestration</a> — Platform primitives.</li>
-            <li><a href="../observability/health-checks.html">Health Checks</a> — Gates for rolls.</li>
-            <li><a href="progressive-delivery.html">Progressive Delivery</a> — When rolls are insufficient.</li>
+            <li><a href="release-strategies.html">Release Strategies</a> — When rolling fits among recreate, blue-green, and canary.</li>
+            <li><a href="blue-green-deployment.html">Blue-Green Deployment</a> — Instant full cutover and rollback without mixed-version overlap.</li>
+            <li><a href="canary-releases.html">Canary Releases</a> — Percentage-based promotion with metric gates.</li>
+            <li><a href="container-orchestration.html">Container Orchestration</a> — Platform primitives that implement rolling replacement.</li>
+            <li><a href="../observability/health-checks.html">Health Checks</a> — Readiness and liveness gates for each wave.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://kubernetes.io/docs/tutorials/kubernetes-basics/update-intro/" target="_blank" rel="noopener noreferrer">Kubernetes rolling updates tutorial</a></li>
-            <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/compute-comparison" target="_blank" rel="noopener noreferrer">Azure compute deployment patterns</a></li>
-            <li><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/" target="_blank" rel="noopener noreferrer">AWS — Kubernetes rolling updates</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy" rel="noopener noreferrer" target="_blank">Kubernetes Deployment strategies — RollingUpdate and Recreate</a></li>
+            <li><a href="https://kubernetes.io/docs/tutorials/kubernetes-basics/update-intro/" rel="noopener noreferrer" target="_blank">Kubernetes rolling updates tutorial</a></li>
+            <li><a href="https://martinfowler.com/bliki/BlueGreenDeployment.html" rel="noopener noreferrer" target="_blank">Blue-Green Deployment — Martin Fowler</a> — contrast with all-at-once environment switching.</li>
+            <li><a href="https://argoproj.github.io/argo-rollouts/features/rolling-update/" rel="noopener noreferrer" target="_blank">Argo Rollouts — Rolling Update</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">

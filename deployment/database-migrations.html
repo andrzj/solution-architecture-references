@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Database Migrations — SA References</title>
-  <meta name="description" content="Safe schema evolution strategies for zero-downtime database changes.">
+  <meta name="description" content="Database migrations for continuous delivery: expand/contract, backward-compatible DDL, online schema tools, and coordinated app rollout.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,105 +99,127 @@
             <span class="badge badge--primary">Deployment & Delivery</span>
           </div>
           <h1 class="article-header__title">Database Migrations</h1>
-          <p class="article-header__desc">Safe schema evolution strategies for zero-downtime database changes.</p>
+          <p class="article-header__desc">Database migrations evolve shared schemas without outage by pairing Fowler’s evolutionary database design with expand/contract steps and N/N+1 application compatibility.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
-          <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: add nullable column, dual-write, backfill job, switch reads, remove old column — each step deployable independently.</p>
+<h2 id="what-it-is">What it is</h2>
+          <p><strong>Database migrations</strong> are the controlled sequence of schema and data changes that keep a shared database compatible with continuously deploying applications. Martin Fowler’s <a href="https://martinfowler.com/articles/evodb.html" rel="noopener noreferrer" target="_blank">Evolutionary Database Design</a> treats the database as an integrated part of delivery: every migration must coexist with at least two application versions during rolling deploys, and destructive change is decomposed into reversible steps.</p>
+          <p>The dominant pattern is <strong>expand / contract</strong> (also called parallel change): <strong>expand</strong> adds new structures without breaking old code (nullable columns, new tables, indexes built concurrently); application changes dual-write or backfill; <strong>contract</strong> removes obsolete columns or tables only after all running code stops reading them. Renaming in place is avoided—add the new name, migrate data, drop the old name in a later deploy.</p>
+          <p>Tooling—Flyway, Liquibase, Sqitch, gh-ost, or database-native online DDL—implements the physical steps, but the architectural constraint is <strong>N/N+1 compatibility</strong>: version N of the app must run against schema S; version N+1 must run against S; only after N is gone may S contract.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Blocking DDL on large tables causes outages. Migration patterns align application deploys with schema changes safely across replicas.</p>
+          <p>Blocking DDL on large tables—full table rewrites, exclusive locks—can halt production traffic for minutes or hours. Coupling “deploy app” with “migrate database” in one atomic step forces big-bang releases and makes <a href="rollback-strategies.html">application rollback</a> unsafe when schema has moved forward. Evolutionary migrations align schema velocity with microservice and trunk-based cadences: small, reviewable steps each safe on their own.</p>
+          <p>Shared databases amplify the problem: one service’s migration can break a neighbor still on last week’s binary unless contracts and expand phases are coordinated.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Continuous delivery with shared databases.</li>
-            <li>Large tables where locks are unacceptable.</li>
-            <li>Multi-region databases with lag.</li>
+            <li>Continuous delivery against relational or strongly schema’d stores with rolling or blue-green application deploys.</li>
+            <li>Large tables where naive <code>ALTER</code> would lock writers or rebuild for hours.</li>
+            <li>Multi-region databases where replicas must apply compatible steps without diverging drift.</li>
+            <li>Zero-downtime column type changes, index additions, or table splits that cannot freeze traffic.</li>
+            <li>Organizations requiring auditable, versioned migration history per environment.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Empty dev databases — simple migrations suffice.</li>
-            <li>Skipping backups before destructive steps.</li>
+            <li>Disposable development databases where wipe-and-reseed is cheaper than multi-step expand.</li>
+            <li>Greenfield services with no production readers—simple forward migrations suffice until traffic exists.</li>
+            <li>Destructive changes without verified backups and a forward repair plan—rollback is not undo.</li>
+            <li>Skipping expand because “we will deploy app and schema together Friday”—that recreates outage risk.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Migrations run in CI/CD as reviewed artifacts; expand deploys precede or accompany application dual-write; backfill jobs run idempotently; contract deploys lag after traffic is fully on the new path.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    v1["v1 schema"]
-    expand["Expand&lt;br/&gt;add column"]
-    dual["Dual-write + backfill"]
-    contract["Contract&lt;br/&gt;drop old"]
-    v1 --> expand --> dual --> contract</div>
+    v1["App vN on schema S"]
+    expand["Expand: add column/table"]
+    dual["Dual-write + backfill job"]
+    switch["App vN+1 reads new"]
+    contract["Contract: drop legacy"]
+    v1 --> expand --> dual --> switch --> contract</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>EXPAND / CONTRACT:
+              <pre class="architecture-diagram__canvas"><code>EXPAND / CONTRACT TIMELINE:
 
-  v1 schema --> add column (expand)
-        |
-        v
-  dual-write + backfill
-        |
-        v
-  switch read --> drop old (contract)</code></pre>
+  Deploy 1 — expand schema (nullable new_col)
+  Deploy 2 — app vN+1 writes new_col + old_col
+  Job     — backfill new_col for historical rows (idempotent)
+  Deploy 3 — app reads new_col only (still tolerant of old)
+  Deploy 4 — contract: drop old_col after N pods gone
+
+  NEVER: RENAME COLUMN in one step during rolling deploy</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Expand/contract migrations: add compatible schema, backfill data, switch reads, then remove legacy structures.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Expand/contract migrations keep schema compatible across rolling application deploys before legacy structures are removed.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Avoids long table locks.</li>
-            <li>Supports rollback at each step.</li>
-            <li>Compatible with rolling deploys.</li>
-            <li>Reduces failed Friday deploys.</li>
+                <li>Avoids long exclusive locks by using online DDL tools and additive schema steps.</li>
+                <li>Enables application rollback to N while schema remains in expand phase.</li>
+                <li>Matches rolling deploy reality—old and new binaries coexist for a window.</li>
+                <li>Produces reviewable migration history and repeatable environment promotion.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>More deploy steps to coordinate.</li>
-            <li>Temporary data inconsistency if mis-ordered.</li>
-            <li>Tooling needed for backfills.</li>
-            <li>Complex with sharded databases.</li>
+                <li>More deploy steps and coordination between DBA, service, and batch owners.</li>
+                <li>Temporary dual-write complexity and risk of inconsistent rows if backfill fails silently.</li>
+                <li>Sharding and multi-region topologies multiply ordering constraints.</li>
+                <li>Contract phase is easy to defer—legacy columns linger as permanent debt.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Never rename in place — add new, migrate, drop old. Run migrations in CI with review; prefer backward-compatible app deploys.</p>
-          <p>Monitor replication lag during backfills; throttle jobs.</p>
+          <p>Author migrations in the same repo as the service when possible; run them in CI against representative data volumes. Prefer PostgreSQL <code>CREATE INDEX CONCURRENTLY</code>, MySQL gh-ost/pt-osc, or vendor online DDL for large tables. Backfills should be idempotent, throttled, and monitored for replication lag on followers.</p>
+          <p>Document the minimum application version required for each schema revision. Block contract migrations in automation until metrics show zero pods on N. Pair with feature flags when logical migration spans weeks—toggle read path after backfill completeness checks pass.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Non-backward-compatible deploy</strong> mid-migration.</li>
-            <li><strong>Full table rewrite</strong> on prod peak.</li>
-            <li><strong>Missing rollback</strong> for data backfill.</li>
-            <li><strong>Drift</strong> between regions.</li>
+            <li><strong>Big-bang DDL in peak:</strong> Table rewrite locks checkout for the duration.</li>
+            <li><strong>Deploy N+1 before expand:</strong> New code expects column that does not exist; crash loop.</li>
+            <li><strong>Non-idempotent backfill:</strong> Job rerun duplicates or corrupts data.</li>
+            <li><strong>Early contract:</strong> Dropped column still referenced by a forgotten batch job.</li>
+            <li><strong>Regional drift:</strong> Migration applied in primary region only; replicas serve inconsistent schema.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Expand/contract plan written?</li>
-            <li>App supports N and N+1 schema?</li>
-            <li>Backfill idempotent?</li>
-            <li>Replication lag monitored?</li>
-            <li>Backup before contract?</li>
-            <li>Migration timeouts configured?</li>
+            <li>Is there a written expand/contract plan with deploy ordering?</li>
+            <li>Can application versions N and N+1 both run against the current schema?</li>
+            <li>Are backfill jobs idempotent with lag and duration alerts?</li>
+            <li>Is contract gated on zero traffic from old application versions?</li>
+            <li>Was a backup or restore drill completed before destructive contract steps?</li>
+            <li>Do migration timeouts and lock timeouts match table size and maintenance windows?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Postgres</strong>: Concurrent index creation.</li>
-            <li><strong>MySQL</strong>: gh-ost for online ALTER.</li>
-            <li><strong>NoSQL</strong>: Lazy migration on read.</li>
+            <li><strong>Illustrative scenario —</strong> Meridian Commerce adds <code>tax_jurisdiction_code</code> nullable, dual-writes from checkout v2, backfills overnight, switches reads behind a flag, then drops legacy <code>tax_region</code> after canary completes.</li>
+            <li><strong>Illustrative scenario —</strong> Northwind Logistics uses gh-ost to add an index on a billion-row shipments table without blocking dispatch writers during rolling app deploys.</li>
+            <li><strong>Case study —</strong> Fowler and Sadalage’s <a href="https://martinfowler.com/articles/evodb.html" rel="noopener noreferrer" target="_blank">Evolutionary Database Design</a> article is the reference for parallel change and continuous schema integration with application delivery.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="rolling-deployments.html">Rolling Deployments</a> — App rollout coupling.</li>
-            <li><a href="rollback-strategies.html">Rollback Strategies</a> — When migrations fail.</li>
-            <li><a href="environment-management.html">Environment Management</a> — Per-env migration pipelines.</li>
+            <li><a href="rollback-strategies.html">Rollback Strategies</a> — Safe only when schema stays expand-compatible.</li>
+            <li><a href="rolling-deployments.html">Rolling Deployments</a> — Old and new pods share one schema during migration windows.</li>
+            <li><a href="feature-flags.html">Feature Flags</a> — Gate read-path switches after backfill validation.</li>
+            <li><a href="environment-management.html">Environment Management</a> — Per-environment migration pipelines and promotion gates.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.martinfowler.com/articles/evodb.html" target="_blank" rel="noopener noreferrer">Evolutionary Database Design</a></li>
-            <li><a href="https://flywaydb.org/documentation/" target="_blank" rel="noopener noreferrer">Flyway documentation</a></li>
-            <li><a href="https://github.com/github/gh-ost" target="_blank" rel="noopener noreferrer">gh-ost — online schema migrations</a></li>
+            <li><a href="https://martinfowler.com/articles/evodb.html" rel="noopener noreferrer" target="_blank">Martin Fowler — Evolutionary Database Design</a></li>
+            <li><a href="https://flywaydb.org/documentation/" rel="noopener noreferrer" target="_blank">Flyway documentation</a></li>
+            <li><a href="https://github.com/github/gh-ost" rel="noopener noreferrer" target="_blank">gh-ost — online schema migrations</a></li>
+            <li><a href="https://www.braintreepayments.com/blog/safe-operations-for-high-volume-postgresql/" rel="noopener noreferrer" target="_blank">Braintree — Safe operations for high-volume PostgreSQL</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
