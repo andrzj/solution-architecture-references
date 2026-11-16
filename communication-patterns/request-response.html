@@ -93,10 +93,12 @@
           <p><strong>Request-response</strong> is a synchronous communication pattern in which a caller sends a message and blocks until the callee returns a reply or the call fails with a timeout or error. The pattern appears everywhere HTTP exposes request/response semantics, in gRPC unary RPCs on HTTP/2, and in analogous RPC layers over WebSockets or TCP.</p>
           <p>Its defining property is <em>temporal coupling</em>: both peers must be available and reachable for the duration of the exchange. That coupling is a trade-off — simplicity and immediate feedback on one side, fragility under partial outages and long chains on the other. Enterprise Integration Patterns describes the same idea as a pair of <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/RequestReply.html" target="_blank" rel="noopener noreferrer">Request-Reply</a> channels (request channel plus reply channel); microservices.io treats synchronous RPC as the default integration style when you need an answer before proceeding.</p>
           <p>HTTP/1.1 typically reuses connections via keep-alive; HTTP/2 multiplexes many streams on one connection. gRPC adds typed contracts (Protocol Buffers), binary framing, and optional streaming modes while keeping unary RPC as the common request-response shape.</p>
+          <p>Despite async messaging adoption, synchronous request-response remains the default for user-visible reads and quick queries: the programming model is a question followed by an immediate answer, which maps cleanly to <code>await</code>, futures, and familiar HTTP client libraries.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Many operations are inherently interrogative: current price, permission to proceed, or whether a record exists. Async alternatives force the caller to manage correlation identifiers, out-of-band delivery, and completion detection, which buys little when the downstream answer is fast and the caller cannot continue without it.</p>
           <p>Request-response maps cleanly to language primitives (<code>await</code>, futures, blocking I/O), which keeps application code readable. On the web it also aligns with cacheable HTTP semantics, so CDNs and reverse proxies can serve read responses without hitting the origin when policy allows.</p>
+          <p>Async alternatives add correlation IDs, completion channels, and timeout watches that pay off when work is slow or fan-out is wide; for sub-100&nbsp;ms lookups where the caller cannot proceed without the payload, sync calls usually win on simplicity.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -181,6 +183,8 @@ Timeouts: Gateway→A = 500 ms
           <p>Pool HTTP connections per upstream host; HTTP/2 multiplexing reduces connection count but pools still matter for TLS and failover. Size pools from expected concurrency and typical call duration (Little’s Law: in-flight ≈ arrival rate × latency).</p>
           <p>Retry only idempotent operations or those protected by server-side deduplication. HTTP GET/HEAD are safe to retry on transport errors; PUT and DELETE are idempotent by definition; POST usually requires an <code>Idempotency-Key</code> or equivalent token so duplicate submits collapse to one effect. Use exponential backoff with jitter on transient failures (timeouts, connection resets, 503, 429) as described in the <a href="https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/" target="_blank" rel="noopener noreferrer">AWS Builders’ Library</a>.</p>
           <p>Wrap fragile dependencies with circuit breakers that open after sustained failure and probe in half-open state before fully closing again. Document AsyncAPI or OpenAPI contracts for public edges so clients know which status codes are retryable.</p>
+          <p>Size connect timeouts aggressively (often 100–200&nbsp;ms) so unreachable hosts fail fast, then bound the full call with a read or request timeout derived from the caller’s SLO. For chained calls, subtract each hop’s budget from the parent deadline rather than giving every leg an unrelated fixed limit.</p>
+          <p>When failure rates cross a rolling threshold (for example more than half of calls failing within a short window), open the circuit so callers fail immediately instead of saturating thread pools; after a sleep interval, allow trial traffic in half-open state before closing the circuit again.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -207,6 +211,7 @@ Timeouts: Gateway→A = 500 ms
           <ul>
             <li><strong>Illustrative scenario —</strong> A storefront BFF loads product detail and stock level with two parallel gRPC calls, then returns one JSON payload to the browser in a single synchronous page request.</li>
             <li><strong>Illustrative scenario —</strong> An API gateway validates access tokens via a synchronous introspection call and caches allow/deny decisions per token to avoid repeating the round trip on every request.</li>
+            <li><strong>Illustrative scenario —</strong> A latency-sensitive pricing screen issues unary gRPC calls over a warm HTTP/2 connection pool so each quote refresh stays inside a strict single-digit millisecond budget.</li>
             <li><strong>Case study —</strong> Stripe documents idempotency keys for payment APIs so clients can retry POSTs safely after transport failures without double-settling charges.</li>
           </ul>
 

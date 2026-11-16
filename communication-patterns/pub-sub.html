@@ -90,11 +90,12 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
+          <p>When a single business fact must trigger several independent reactions — reserve stock, notify the buyer, stream metrics, and run risk checks — pub/sub lets the producer emit once to a topic while each subscriber group consumes on its own schedule without the publisher tracking recipients.</p>
           <p><strong>Publish/subscribe (pub/sub)</strong> is an asynchronous messaging pattern in which <em>publishers</em> send messages to a named channel (often called a <em>topic</em>) without addressing individual receivers, and the messaging infrastructure delivers a copy to every active <em>subscription</em>. Producers and consumers are decoupled in space (no direct network address), time (subscribers may be offline while messages are retained), and cardinality (new subscribers can be added without changing the publisher).</p>
           <p>The pattern contrasts with point-to-point queues: a queued message is processed by exactly one competing consumer, whereas a published message is replicated to each subscriber group. Many production designs combine both — for example Amazon SNS fanning out to multiple Amazon SQS queues — so you get broadcast semantics at the topic and load-balanced workers behind each queue.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Microservices and event-driven systems need to broadcast state changes without wiring N point-to-point integrations every time a new consumer appears. Pub/sub inserts a broker between publishers and subscribers so producers emit facts once and infrastructure handles fan-out, buffering, and (when configured) persistence.</p>
+          <p>Microservices and event-driven systems need to broadcast state changes without wiring N point-to-point integrations every time a new consumer appears. Before brokers, producers often called each downstream over HTTP; every new listener meant producer changes, and a stalled callee could block the caller. Pub/sub inserts a broker between publishers and subscribers so producers emit facts once and infrastructure handles fan-out, buffering, and (when configured) persistence.</p>
           <p>That indirection supports independent deployment: teams subscribe to contracts (topic names and event schemas) instead of callee endpoints. Temporal decoupling follows when subscriptions are durable and the broker retains messages — subscribers catch up after maintenance or deploys instead of forcing synchronous availability.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -172,6 +173,8 @@ Publisher C ──┘    ├── Partition 0 (key hash 0–3)
           <p>Choose partition or ordering keys that spread load while grouping events that must stay ordered (for example all lifecycle events for one aggregate ID). Avoid low-cardinality keys that create hot shards.</p>
           <p>Distinguish durable subscriptions (Kafka consumer groups, Google Pub/Sub with ack deadlines) from ephemeral channels (Redis pub/sub, NATS core) where disconnected clients miss messages. Match durability to business impact.</p>
           <p>Apply server-side filters on metadata attributes where the broker supports them, and enforce consumer idempotency with stored processed-event IDs or natural keys.</p>
+          <p><strong>Push versus pull:</strong> Pull consumers (Kafka consumer groups, Google Pub/Sub pull) set their own pace, which makes backpressure explicit. Push targets (SNS HTTP endpoints, Redis pub/sub, WebSocket bridges) shrink delivery latency but can flood a slow handler unless you add rate limits and overflow handling. Favor pull for heavy processing pipelines; favor push for low-volume alerts where milliseconds matter.</p>
+          <p><strong>Partition keys:</strong> Hash on an aggregate identifier (for example <code>order_id</code>) when events for one entity must stay ordered, but avoid keys with only a handful of values that collapse traffic onto one shard.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -196,6 +199,8 @@ Publisher C ──┘    ├── Partition 0 (key hash 0–3)
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
             <li><strong>Illustrative scenario —</strong> A checkout service publishes <code>order.placed</code> once while inventory, billing, notification, and analytics each subscribe and process at independent rates.</li>
+            <li><strong>Illustrative scenario —</strong> A market-data feed publishes ticks to a partitioned topic keyed by <code>symbol</code>; trading algorithms and dashboards each maintain separate consumer groups with their own offset cursors.</li>
+            <li><strong>Illustrative scenario —</strong> Device telemetry lands on a durable topic with per-tenant subscriptions; a stream processor acks slowly while a real-time dashboard subscription tolerates gaps on an ephemeral channel.</li>
             <li><strong>Case study —</strong> LinkedIn’s original Kafka deployment used durable logs to fan activity and metrics events to many internal pipelines without point-to-point coupling.</li>
             <li><strong>Case study —</strong> Google Cloud Pub/Sub documents multi-subscriber delivery with independent ack deadlines and scaling pull workers for high-volume telemetry.</li>
           </ul>
