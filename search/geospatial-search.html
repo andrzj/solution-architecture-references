@@ -99,13 +99,14 @@
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
+
           <h2 id="what-it-is">What it is</h2>
-          <p>The two fundamental operations are <strong>proximity search</strong> ("find all restaurants within 5km of my location") and <strong>containment search</strong> ("find all orders shipped to addresses within the New York metro boundary polygon"). Elasticsearch supports both through the <code>geo_point</code> type (a single latitude/longitude coordinate) and the <code>geo_shape</code> type (GeoJSON geometries: points, linestrings, polygons, multi-polygons).</p>
-          <p>The query types are <code>geo_distance</code> (circle/radius filter), <code>geo_bounding_box</code> (rectangular filter), <code>geo_polygon</code> (arbitrary polygon filter), and <code>geo_shape</code> (spatial relationship queries: intersects, contains, disjoint).</p>
+          <p><strong>Geospatial search</strong> centers on <strong>proximity search</strong> ("find all restaurants within 5km of my location") and <strong>containment search</strong> ("find all orders shipped to addresses within the New York metro boundary polygon"). Elasticsearch supports both through the <code>geo_point</code> type (a single latitude/longitude coordinate) and the <code>geo_shape</code> type (GeoJSON geometries: points, linestrings, polygons, multi-polygons).</p>
+          <p>Common geo filters include <code>geo_distance</code> (circle/radius filter), <code>geo_bounding_box</code> (rectangular filter), <code>geo_polygon</code> (arbitrary polygon filter), and <code>geo_shape</code> (spatial relationship queries: intersects, contains, disjoint).</p>
           <p>At the aggregation layer, <strong>geo grid aggregations</strong> bucket documents into geographic grid cells: <code>geohash_grid</code> (variable-precision string encoding), <code>geotile_grid</code> (map tile coordinates at zoom level), and <code>hex_grid</code> (H3 hexagonal cells). These aggregations are used to build heatmaps and density visualisations on maps without transferring millions of individual coordinates to the client. For complex spatial operations (topology, routing, network analysis), <strong>PostGIS</strong> — the PostgreSQL spatial extension — provides a full SQL-based geospatial engine with support for hundreds of ST_ functions.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Geographic queries cannot be efficiently answered by standard B-tree indexes because geographic space is two-dimensional: a range query on latitude alone is meaningless without also constraining longitude. Geospatial indexes use <strong>space-partitioning data structures</strong> (R-trees in PostGIS, geohash Trie in Elasticsearch, BKD tree/Lucene PointValues in Elasticsearch 5+) that partition 2D space into indexed regions, enabling fast range lookups in both dimensions simultaneously. Without specialised geo indexing, a query like "find 1,000 nearest restaurants" would require computing the Haversine distance from the user's location to every restaurant in the database — O(n) rather than O(log n).</p>
+          <p>Standard B-tree indexes on a single axis cannot answer geographic proximity efficiently because space is two-dimensional: a range query on latitude alone is meaningless without also constraining longitude. Geospatial indexes use <strong>space-partitioning data structures</strong> (R-trees in PostGIS, geohash Trie in Elasticsearch, BKD tree/Lucene PointValues in Elasticsearch 5+) that partition 2D space into indexed regions, enabling fast range lookups in both dimensions simultaneously. Without specialised geo indexing, a query like "find 1,000 nearest restaurants" would require computing the Haversine distance from the user's location to every restaurant in the database — O(n) rather than O(log n).</p>
           <p>The proliferation of mobile devices created enormous demand for location-aware features: ride-hailing, food delivery, real estate, and local search all depend on sub-second geospatial queries over millions of points. Hierarchical spatial indexes like Google's <strong>S2</strong> (spherical geometry cells) and Uber's <strong>H3</strong> (hexagonal hierarchical index) were developed to serve this need at internet scale, providing cells at configurable resolutions from country-level (level 0) to meter-level (level 15) that can be used as pre-computed index keys in any standard key-value or columnar store.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -199,7 +200,7 @@ POSTGIS PATTERN:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>BKD-tree backed geo_point queries in Elasticsearch deliver sub-10ms proximity search over tens of millions of points.</li>
+                <li>BKD-backed <code>geo_point</code> queries in Elasticsearch and OpenSearch deliver millisecond proximity search over tens of millions of points.</li>
                 <li>Geo grid aggregations enable real-time map density visualisation without transferring raw coordinates to the client.</li>
                 <li>H3 indexing transforms geospatial proximity queries into standard equality/membership lookups, enabling use with any key-value store.</li>
                 <li>PostGIS provides a full suite of spatial operations (topology, projections, routing adjacency) beyond proximity search.</li>
@@ -219,7 +220,7 @@ POSTGIS PATTERN:
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For proximity search with ranking by distance, use the Elasticsearch <code>geo_distance</code> filter combined with a <code>_geo_distance</code> sort. This returns results sorted by ascending distance from the query point. For "find nearest K" queries, use <code>size: k</code> — Elasticsearch collects the K nearest documents using a priority queue without scanning all documents outside the filter radius. Always set a maximum radius to bound the filter cardinality; an unbounded distance filter degenerates to a full scan.</p>
+          <p>For distance-ranked “near me” results, use OpenSearch or Elasticsearch <code>geo_distance</code> filters combined with a <code>_geo_distance</code> sort. This returns results sorted by ascending distance from the query point. For "find nearest K" queries, use <code>size: k</code> — Elasticsearch collects the K nearest documents using a priority queue without scanning all documents outside the filter radius. Always set a maximum radius to bound the filter cardinality; an unbounded distance filter degenerates to a full scan.</p>
           <p>For filtering by arbitrary polygons (service areas, delivery zones), store polygon boundaries as <code>geo_shape</code> in a separate index and use a geo_shape query with <code>relation: intersects</code>.</p>
           <p>When building applications that need to serve both proximity queries and map visualisations at scale, consider pre-indexing H3 cell IDs at multiple resolutions alongside the raw coordinates. At resolution 8 (≈460m diameter hexagons), a 5km radius covering approximately 70 H3 cells can be queried with a simple terms filter, which is faster than a geo_distance computation at very high QPS. Uber, Airbnb, and other location-heavy platforms adopted H3 precisely for this reason: it turns a continuous 2D problem into a discrete set membership problem that scales horizontally. Libraries exist for all major languages to compute H3 cell IDs from lat/lon.</p>
 
@@ -244,9 +245,9 @@ POSTGIS PATTERN:
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Local business search</strong>: "restaurants near me" — geo_distance filter at 2km radius combined with full-text search on restaurant name and cuisine type, sorted by distance then rating.</li>
-            <li><strong>Delivery zone management</strong>: Geofencing — when a driver's GPS position crosses a GeoJSON polygon boundary stored in Elasticsearch, trigger an event to update order status.</li>
-            <li><strong>Ride-hailing demand heatmap</strong>: Real-time H3 hex grid aggregation of open ride requests displayed on a dispatcher dashboard; cells update every 10 seconds as requests are created and fulfilled.</li>
+            <li><strong>Illustrative scenario — local search:</strong> Two-kilometre <code>geo_distance</code> plus text on name and cuisine, sorted by distance then rating.</li>
+            <li><strong>Illustrative scenario — delivery geofence:</strong> GPS crossing a stored polygon triggers order state updates.</li>
+            <li><strong>Illustrative scenario — dispatch heatmap:</strong> H3 hex aggregations refresh open-request density on a control dashboard every few seconds.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -258,10 +259,12 @@ POSTGIS PATTERN:
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/geo-queries.html" target="_blank" rel="noopener noreferrer">Elasticsearch Geo Queries Reference</a></li>
-            <li><a href="https://h3geo.org/docs/" target="_blank" rel="noopener noreferrer">H3: Uber's Hexagonal Hierarchical Spatial Index</a></li>
-            <li><a href="https://postgis.net/docs/manual-3.3/" target="_blank" rel="noopener noreferrer">PostGIS 3.3 Documentation</a></li>
+            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/geo-queries.html" target="_blank" rel="noopener noreferrer">Elasticsearch geo queries</a></li>
+            <li><a href="https://opensearch.org/docs/latest/opensearch/geo-spatial/index/" target="_blank" rel="noopener noreferrer">OpenSearch geo-spatial search</a></li>
+            <li><a href="https://h3geo.org/docs/" target="_blank" rel="noopener noreferrer">H3 hierarchical spatial index</a></li>
+            <li><a href="https://postgis.net/docs/manual-3.3/" target="_blank" rel="noopener noreferrer">PostGIS documentation</a></li>
           </ul>
+        
         </div>
         <nav class="article-nav" aria-label="Article navigation">
           <a href="search-infrastructure.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Search Infrastructure</span></a>

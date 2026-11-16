@@ -99,12 +99,13 @@
           <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
+
           <h2 id="what-it-is">What it is</h2>
-          
+          <p><strong>Search infrastructure</strong> is how you run retrieval in production—cluster topology, shards, aliases, snapshots, and capacity for lexical plus vector fields on Elasticsearch, <strong>OpenSearch</strong>, <strong>Vespa</strong>, or hosted <strong>Algolia</strong>.</p>
           <p><strong>Index Lifecycle Management (ILM)</strong> is the Elasticsearch feature that automates the movement of indexes through storage tiers as they age and their query rate decreases. A time-series index (e.g., logs or events) starts on <strong>hot</strong> nodes (fast NVMe SSDs, high CPU) for real-time indexing and search, transitions to <strong>warm</strong> nodes (larger, cheaper SSDs) after 7 days for less-frequent queries, moves to <strong>cold</strong> nodes (bulk HDD or object-storage-backed) after 30 days, and is eventually deleted or snapshotted to S3. This tiered architecture can reduce search infrastructure costs by 60–80% compared to keeping all data on hot hardware.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Running a search engine at production scale is operationally more complex than most distributed systems because it combines the challenges of a database (durable storage, index consistency), a cache (heap-resident data structures), and a compute system (aggregation and ranking pipelines). Misjudging shard count is one of the most common mistakes: too few shards limits parallelism; too many shards wastes heap (each shard has a JVM overhead of ~1.5KB of heap per segment per node). The Elasticsearch guidance of targeting 10–50GB per shard, not exceeding 20 shards per GB of heap, and keeping total shard count below ~1,000 per node gives concrete sizing boundaries.</p>
+          <p>Production search fuses database durability, Lucene heap, and ranking CPU—operationally heavier than many distributed systems because it combines the challenges of a database (durable storage, index consistency), a cache (heap-resident data structures), and a compute system (aggregation and ranking pipelines). Misjudging shard count is one of the most common mistakes: too few shards limits parallelism; too many shards wastes heap (each shard has a JVM overhead of ~1.5KB of heap per segment per node). The Elasticsearch guidance of targeting 10–50GB per shard, not exceeding 20 shards per GB of heap, and keeping total shard count below ~1,000 per node gives concrete sizing boundaries.</p>
           <p>Index aliases are the operational mechanism that enables zero-downtime reindexing and schema migrations. An alias is a stable logical name that points to one or more physical indexes. When you need to change a field mapping (which requires a full reindex in Elasticsearch), you build the new index in the background, then atomically swap the alias from the old index to the new — applications see no interruption. Without alias-based indirection, any mapping change requires taking the search feature offline during reindex, which can take hours for large indexes.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -194,7 +195,7 @@ INDEX ALIAS PATTERN:
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Hot-warm-cold tiering reduces storage costs by 60–80% for time-series use cases.</li>
+                <li>Hot/warm/cold ILM tiering typically reduces time-series storage spend by large margins versus keeping all data on hot nodes.</li>
                 <li>Dedicated master nodes eliminate cluster instability from master elections during data node overload.</li>
                 <li>Index aliases enable zero-downtime schema migrations and reindexing.</li>
                 <li>ILM automates operational toil (rollover, merge, tier migration, deletion) that would otherwise require manual cron jobs.</li>
@@ -214,9 +215,9 @@ INDEX ALIAS PATTERN:
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>For shard sizing, use the rule of thumb: aim for 10–50GB per shard, and 1 primary shard per 2 CPU cores on hot nodes for write-heavy workloads. Use the <code>_cat/shards</code> API to audit current shard sizes. For a 500GB product index queried but rarely updated, 10 primary shards × 1 replica = 20 total shards is reasonable on a 3-node cluster. Set <code>index.refresh_interval: 30s</code> on hot write-heavy indexes (logs) to reduce indexing pressure; the default 1s refresh is only needed for near-real-time search use cases.</p>
+          <p>For shard sizing, aim for roughly 10–50GB per shard as a practical rule of thumb, and 1 primary shard per 2 CPU cores on hot nodes for write-heavy workloads. Use the <code>_cat/shards</code> API to audit current shard sizes. For a 500GB product index queried but rarely updated, 10 primary shards × 1 replica = 20 total shards is reasonable on a 3-node cluster. Set <code>index.refresh_interval: 30s</code> on hot write-heavy indexes (logs) to reduce indexing pressure; the default 1s refresh is only needed for near-real-time search use cases.</p>
           <p>Enable <code>_source: false</code> on fields not needed in response (computed fields, large blobs) to reduce storage footprint.</p>
-          <p>For heap sizing, follow the Elasticsearch recommendation: set JVM heap to no more than 50% of available RAM, and cap at 30–31GB to stay below the JVM compressed ordinary object pointer threshold. Above 32GB, pointer compression is disabled, which wastes memory and can crash the node under segment cache pressure. Monitor heap usage per node in Kibana's Stack Monitoring; sustained heap above 75% indicates the node is under-provisioned. Snapshot to S3/GCS regularly — Elasticsearch snapshots are incremental and cheap, and they are your only defence against accidental index deletion or hardware failure.</p>
+          <p>When <strong>OpenSearch k-NN</strong> or <strong>FAISS</strong> graphs sit beside Lucene, budget vector RAM explicitly. For JVM heap sizing, follow the Elasticsearch recommendation: set JVM heap to no more than 50% of available RAM, and cap at 30–31GB to stay below the JVM compressed ordinary object pointer threshold. Above 32GB, pointer compression is disabled, which wastes memory and can crash the node under segment cache pressure. Monitor heap usage per node in Kibana's Stack Monitoring; sustained heap above 75% indicates the node is under-provisioned. Snapshot to S3/GCS regularly — Elasticsearch snapshots are incremental and cheap, and they are your only defence against accidental index deletion or hardware failure.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -240,9 +241,9 @@ INDEX ALIAS PATTERN:
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Application log search (ELK)</strong>: Daily rollover ILM policy on log indexes; hot (7 days, NVMe) → warm (30 days, SSD) → cold (90 days, searchable snapshot) → delete.</li>
-            <li><strong>E-commerce product index</strong>: 3-shard primary index on hot nodes with alias; zero-downtime reindex performed monthly when product schema evolves.</li>
-            <li><strong>Multi-tenant SaaS search</strong>: One index per tenant with tenant-specific ILM policies; coordinator nodes protect data nodes from large tenants' scatter-gather overhead.</li>
+            <li><strong>Illustrative scenario — ELK logs:</strong> Daily ILM rollover: hot NVMe week, warm SSD month, cold snapshot quarter, delete.</li>
+            <li><strong>Illustrative scenario — product catalog:</strong> Three-shard index behind an alias; monthly zero-downtime reindex on mapping changes.</li>
+            <li><strong>Illustrative scenario — multi-tenant SaaS:</strong> Per-tenant indexes with ILM; coordinators isolate scatter-gather from heavy tenants.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -255,9 +256,11 @@ INDEX ALIAS PATTERN:
           <h2 id="further-reading">Further reading</h2>
           <ul>
             <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/size-your-shards.html" target="_blank" rel="noopener noreferrer">Elasticsearch: Size your shards</a></li>
+            <li><a href="https://opensearch.org/docs/latest/search-plugins/knn/index/" target="_blank" rel="noopener noreferrer">OpenSearch k-NN plugin</a></li>
             <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/index-lifecycle-management.html" target="_blank" rel="noopener noreferrer">Elasticsearch Index Lifecycle Management</a></li>
-            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/data-tiers.html" target="_blank" rel="noopener noreferrer">Elasticsearch Data Tiers (hot/warm/cold/frozen)</a></li>
+            <li><a href="https://www.algolia.com/doc/guides/scaling/infrastructure/classic/pricing-provisioning-and-monitoring-guide/" target="_blank" rel="noopener noreferrer">Algolia — infrastructure and scaling guide</a></li>
           </ul>
+        
         </div>
         <nav class="article-nav" aria-label="Article navigation">
           <a href="search-relevance-tuning.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Search Relevance Tuning</span></a>

@@ -100,13 +100,14 @@
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
+
           <h2 id="what-it-is">What it is</h2>
-          <p>Product search for “noise cancelling headphones under $200” needs exact token hits for SKUs and prices plus semantic matching for paraphrases — hybrid retrieval runs BM25 and vector kNN in parallel, then fuses ranks so neither signal dominates.</p>
-          <p>Fused hybrid rankings consistently beat either method alone on mixed navigational and intent-based queries in standard IR benchmarks.</p>
-          <p>The core challenge is <strong>score normalisation and fusion</strong>: BM25 scores are unbounded positive floats based on term frequency statistics, while cosine similarity scores are in [-1, 1]. Directly summing them is meaningless. Two principal fusion strategies avoid this: <strong>Reciprocal Rank Fusion (RRF)</strong> uses only the ranks of documents (not raw scores), making it robust to score scale differences and requiring no per-query calibration. <strong>Linear score normalisation</strong> scales both score distributions to [0, 1] using min-max normalisation and then computes a weighted sum — faster to query, but sensitive to score distribution changes and requires careful alpha weight tuning.</p>
+          <p><strong>Hybrid search</strong> runs BM25 and vector kNN in parallel—product search for “noise cancelling headphones under $200” needs SKU tokens and semantic paraphrases—then fuses ranks so neither signal dominates.</p>
+          <p>On BEIR-style benchmarks and in production, fused hybrid rankings beat either retrieval leg when queries mix navigational tokens and paraphrased intent.</p>
+          <p>The central design problem is <strong>score normalisation and fusion</strong>: BM25 scores are unbounded positive floats based on term frequency statistics, while cosine similarity scores are in [-1, 1]. Directly summing them is meaningless. Two principal fusion strategies avoid this: <strong>Reciprocal Rank Fusion (RRF)</strong> uses only the ranks of documents (not raw scores), making it robust to score scale differences and requiring no per-query calibration. <strong>Linear score normalisation</strong> scales both score distributions to [0, 1] using min-max normalisation and then computes a weighted sum — faster to query, but sensitive to score distribution changes and requires careful alpha weight tuning.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>As vector search became mainstream in 2023–2024, practitioners discovered that pure dense retrieval often underperformed BM25 on short navigational queries and searches involving rare or highly specific terms. An internal name like "ProjectAurora" has no semantic neighbours — it is a keyword-lookup problem. Hybrid search emerged as the pragmatic answer: use semantic search as the primary retrieval path for intent-based queries and BM25 as a safety net for exact-match recall, then fuse the ranked lists. Benchmarks on the BEIR dataset consistently show hybrid search at parity with or superior to the best single-method baseline.</p>
+          <p>As dense retrieval spread, teams saw pure vector search underperform BM25 on short navigational queries and searches involving rare or highly specific terms. An internal name like "ProjectAurora" has no semantic neighbours — it is a keyword-lookup problem. Hybrid search emerged as the pragmatic answer: use semantic search as the primary retrieval path for intent-based queries and BM25 as a safety net for exact-match recall, then fuse the ranked lists. Benchmarks on the BEIR dataset consistently show hybrid search at parity with or superior to the best single-method baseline.</p>
           <p>In RAG pipelines, hybrid search is particularly valuable: LLMs are sensitive to the quality of retrieved context, and missing a highly relevant chunk because of vocabulary mismatch causes hallucination or incorrect answers. The marginal infrastructure cost of running both retrieval paths in parallel is justified by the reduction in retrieval failures for diverse query types.</p>
 
           <h2 id="when-to-use">When to use</h2>
@@ -182,7 +183,7 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Consistently outperforms single-method retrieval across diverse query types on BEIR and MS MARCO benchmarks.</li>
+                <li>Blends recall on heterogeneous query mixes versus BM25-only or vector-only baselines on BEIR- and MS MARCO-style sets.</li>
                 <li>RRF requires no hyper-parameter tuning beyond k (default 60 works well in practice).</li>
                 <li>Provides a graceful degradation path: if the vector index is unavailable, BM25 results still serve users.</li>
                 <li>Incremental adoption: BM25 infrastructure already exists; add the vector path alongside it.</li>
@@ -202,7 +203,7 @@
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Start with RRF over linear interpolation unless you have judgment lists to tune alpha. RRF's rank-based approach is robust by design: adding a new result from one retrieval path will nudge but not dramatically shift the other path's results. Use the native Elasticsearch RRF retriever (8.9+) or the equivalent in OpenSearch to avoid building the fusion logic in application code. If you are not on Elasticsearch, implement RRF in the search service layer: retrieve top-100 from each path, merge, compute RRF scores, and return the top-K.</p>
+          <p>Default to RRF unless judgment lists exist to tune α; dense legs often use OpenSearch k-NN, Vespa tensors, or FAISS behind the same API. RRF's rank-based fusion resists scale mismatch between BM25 and cosine scores. Prefer native RRF in Elasticsearch (8.9+) and OpenSearch, or Vespa hybrid profiles, before bespoke merge code; Algolia neural ranking offers a hosted variant. Otherwise retrieve top-100 per path in the service tier, merge ranks, and return top-<em>K</em>.</p>
           <p>Run both retrieval paths in parallel, not sequentially. A sequential implementation doubles latency; a parallel implementation with a shared timeout (e.g., 200ms) returns the results of whichever path responds fastest and merges them with available results from the slower path. For RAG use cases, retrieve a larger candidate pool from hybrid search (top-50) and pass to a cross-encoder reranker to produce the final top-10 context chunks — this three-stage pipeline (hybrid ANN → reranker → LLM) reliably outperforms any two-stage variant on RAG benchmarks.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
@@ -226,9 +227,9 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Enterprise document search</strong>: Queries for "ProjectAurora budget" need BM25 for the exact project name and semantic search for "budget" conceptually matching financial documents.</li>
-            <li><strong>E-commerce search</strong>: "running shoes Nike Air Max" benefits from BM25 for the exact brand/model name and semantic for "running shoes" matching related categories.</li>
-            <li><strong>Medical knowledge base RAG</strong>: Clinician query "management of type 2 diabetes in elderly patients" retrieves both keyword-matched clinical guidelines and semantically related treatment protocols.</li>
+            <li><strong>Illustrative scenario — enterprise documents:</strong> A project codename plus “budget” needs BM25 on the code and semantic recall on financial prose.</li>
+            <li><strong>Illustrative scenario — ecommerce:</strong> Brand and model tokens match lexically while category intent expands via embeddings.</li>
+            <li><strong>Illustrative scenario — clinical RAG:</strong> Clinician free text retrieves keyword-matched guidelines and semantically related protocols.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
@@ -240,10 +241,12 @@
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://arxiv.org/abs/2009.01207" target="_blank" rel="noopener noreferrer">Pretrained Transformers for Text Ranking: BERT and Beyond (Lin et al.)</a></li>
-            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/rrf.html" target="_blank" rel="noopener noreferrer">Elasticsearch Reciprocal Rank Fusion (RRF) Retriever</a></li>
-            <li><a href="https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf" target="_blank" rel="noopener noreferrer">Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods (Cormack et al.)</a></li>
+            <li><a href="https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf" target="_blank" rel="noopener noreferrer">Reciprocal Rank Fusion (Cormack et al.)</a></li>
+            <li><a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/rrf.html" target="_blank" rel="noopener noreferrer">Elasticsearch RRF retriever</a></li>
+            <li><a href="https://opensearch.org/docs/latest/search-plugins/knn/index/" target="_blank" rel="noopener noreferrer">OpenSearch k-NN (dense leg)</a></li>
+            <li><a href="https://doc.vespa.ai/en/hybrid-search.html" target="_blank" rel="noopener noreferrer">Vespa — hybrid search</a></li>
           </ul>
+        
         </div>
         <nav class="article-nav" aria-label="Article navigation">
           <a href="semantic-search.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Semantic Search</span></a>
