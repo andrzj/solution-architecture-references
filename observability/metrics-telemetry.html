@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Metrics & Telemetry — SA References</title>
-  <meta name="description" content="Collecting and shipping telemetry data at scale with minimal overhead.">
+  <meta name="description" content="Metrics telemetry pipelines: instrumentation, pull vs push export, cardinality control, exemplars tied to W3C trace IDs, and SLO-oriented aggregation at scale.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,106 +99,141 @@
             <span class="badge badge--primary">Observability & Operations</span>
           </div>
           <h1 class="article-header__title">Metrics & Telemetry</h1>
-          <p class="article-header__desc">Collecting and shipping telemetry data at scale with minimal overhead.</p>
-          <div class="article-header__meta"><span>⏱ 10 min read</span></div>
+          <p class="article-header__desc">The metrics telemetry pipeline — instrumentation, collection, aggregation, and export to time-series backends — with exemplars linking histograms to W3C Trace Context trace IDs.</p>
+          <div class="article-header__meta"><span>⏱ 11 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Example: a service exposes <code>http_requests_total</code> and latency histograms; Prometheus scrapes every 15s; recording rules pre-aggregate SLO burn rates.</p>
+          <p><strong>Metrics telemetry</strong> is the end-to-end path from instrumented code to durable time-series storage: applications emit numeric signals (counters, gauges, histograms), collectors aggregate and ship them to backends, and operators query them for dashboards, alerting, and autoscaling.</p>
+          <p>Instrumentation typically exposes the <strong>golden signals</strong> — request rate, errors, duration, and saturation (RED for request-driven services, USE for resources). Histograms capture latency distributions; counters accumulate monotonically for <code>rate()</code> queries; gauges represent point-in-time values such as queue depth or connection pool usage.</p>
+          <p>Two dominant collection models coexist. <strong>Pull-based scraping</strong> (for example Prometheus scraping <code>/metrics</code> on an interval) keeps applications simple and centralises scrape configuration, but struggles behind NAT and requires network reachability from the scraper. <strong>Push-based export</strong> (OpenTelemetry OTLP metrics, Prometheus remote write, StatsD agents) suits ephemeral workloads, serverless, and multi-tenant clusters where pull targets change constantly.</p>
+          <p><strong>Exemplars</strong> attach a reference sample to a histogram bucket — often the <code>trace_id</code> from an active <a href="distributed-tracing.html">distributed trace</a>. That identifier is the same 128-bit value carried in the W3C <code>traceparent</code> header, so a spike on a latency histogram can pivot directly into the trace that experienced the slow request. Without exemplars, aggregate metrics show that p99 increased but not which request to investigate.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Logs are too heavy for fleet-wide health views. Metrics enable dashboards, alerting, and autoscaling with predictable cost when cardinality is controlled.</p>
+          <p>Logs are too voluminous and too unstructured for fleet-wide health views at millisecond resolution. Metrics compress behaviour into numbers that TSDBs can store and query cheaply for months or years. The telemetry layer exists because raw application output is not enough: teams need consistent naming, controlled cardinality, batching, retry semantics, and backend-specific export so that every service speaks a common language to SRE dashboards and SLO burn alerts.</p>
+          <p>As OpenTelemetry unifies traces, metrics, and logs, the metrics pipeline increasingly shares collectors and resource attributes (<code>service.name</code>, environment, version) with tracing — enabling correlated investigation without duplicate instrumentation silos.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>SLO monitoring and capacity dashboards.</li>
-            <li>Autoscaling signals (CPU, queue depth, custom KPI).</li>
-            <li>Comparing canary vs stable during deploys.</li>
+            <li>SLO and error-budget monitoring — SLIs are almost always metric queries over request success and latency histograms.</li>
+            <li>Capacity planning and autoscaling — CPU, memory, queue depth, and custom business KPIs as control signals.</li>
+            <li>Deploy verification — compare canary vs stable on error rate and latency percentiles during progressive delivery.</li>
+            <li>Cross-signal correlation — exemplars on histograms linked to W3C trace IDs for “metric spike → specific trace” workflows.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>High-cardinality identifiers (user ids) as labels — destroys TSDB.</li>
-            <li>Replacing traces for deep debugging — use both.</li>
+            <li>Per-request debugging detail — metrics cannot replace traces or structured logs; they aggregate away individual request context.</li>
+            <li>High-cardinality dimensions — using user IDs, order IDs, or raw URL paths as metric labels will explode TSDB cardinality and cost.</li>
+            <li>Long-form audit evidence — metrics are not an audit trail; retain events or logs for compliance records.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Services instrument with OpenTelemetry SDKs or Prometheus client libraries, export via OTLP or scrape endpoints, pass through a collector for batching and enrichment, and land in a TSDB queried by Grafana or similar tools.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
-    app["App /metrics"]
-    coll["Collector&lt;br/&gt;scrape or remote write"]
-    tsdb["TSDB"]
-    viz["Grafana / alerts"]
-    app --> coll --> tsdb --> viz</div>
+    app["Instrumented services"]
+    coll["Collector&lt;br/&gt;batch / relabel"]
+    tsdb["Time-series DB"]
+    viz["Dashboards / alerts"]
+  app -->|OTLP or scrape| coll --> tsdb --> viz
+  app -.->|exemplar trace_id| tsdb</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>TELEMETRY PATH:
+              <pre class="architecture-diagram__canvas"><code>METRICS TELEMETRY PATH:
 
-  App /metrics endpoint
-        ^
-        | scrape or remote write
-  [Collector] --> [TSDB] --> Grafana / alerts</code></pre>
+  App (OTel SDK or /metrics)
+        |  OTLP push or Prometheus scrape
+        v
+  Collector (batch, cardinality limits, remote write)
+        v
+  TSDB (Prometheus / Mimir / Cortex / cloud vendor)
+        v
+  Grafana — dashboards, recording rules, alertmanager
+
+EXEMPLAR ON HISTOGRAM (links to W3C trace_id):
+  http_server_duration_bucket{le="0.5"} 42
+  # exemplar: trace_id=4bf92f3577b34da6a3ce929d0e0e4736
+  # (same ID as traceparent segment in W3C Trace Context)
+
+RECORDING RULES (pre-aggregate SLIs):
+  - job:slo_errors:ratio5m
+  - job:slo_latency:p99_5m</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Telemetry path: applications expose metrics collected into a time-series database for dashboards and alerting.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Metrics flow from instrumentation through a collector to a TSDB; exemplars store W3C-compatible trace IDs on histogram buckets for drill-down.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Efficient aggregation at scale.</li>
-            <li>Mature alerting ecosystems.</li>
-            <li>Great for golden signals (latency, traffic, errors, saturation).</li>
-            <li>Enables horizontal autoscaling.</li>
+                <li>Predictable storage cost when label cardinality is governed — numbers compress better than logs or full traces.</li>
+                <li>Mature alerting ecosystems (recording rules, multi-window burn rates) built on metric queries.</li>
+                <li>Native fit for autoscaling and capacity dashboards across large fleets.</li>
+                <li>Exemplars bridge aggregates and traces without sampling every request into long-term trace storage.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Cardinality explosions.</li>
-            <li>Histogram bucket design mistakes.</li>
-            <li>Pull model NAT challenges.</li>
-            <li>Metric naming sprawl.</li>
+                <li>Cardinality mistakes are expensive to unwind — bad label design can degrade an entire TSDB cluster.</li>
+                <li>Histogram bucket design is permanent for historical data — wrong buckets distort SLO percentile calculations.</li>
+                <li>Pull scraping across dynamic networks requires service discovery discipline and security boundaries.</li>
+                <li>Metric naming sprawl without conventions makes cross-team dashboards inconsistent.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Follow RED/USE methods; cap label cardinality; use exemplars to link traces. Run recording rules for expensive queries.</p>
-          <p>Instrument client and server sides; export process metrics (GC, thread pools).</p>
+          <p>Standardise metric names and labels (Prometheus naming conventions or OpenTelemetry semantic conventions). Cap label cardinality in code review — prefer bounded enums (<code>status_code</code>, <code>route_template</code>) over raw paths. Run <strong>recording rules</strong> or equivalent for expensive SLO queries so alert evaluation stays fast.</p>
+          <p>Enable <strong>exemplars</strong> on latency histograms where the SDK supports them; ensure the trace pipeline uses W3C Trace Context so exemplar trace IDs match what trace backends index. Instrument both client and server sides of RPC calls so blind spots do not hide downstream latency. Export process runtime metrics (GC, thread pools, event loop lag) alongside application RED metrics.</p>
+          <p>For Kubernetes, a common pattern is a node-level or cluster-level OpenTelemetry Collector receiving OTLP from pods and remote-writing to a central TSDB, avoiding per-pod scrape config churn.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>unbounded label values</strong>.</li>
-            <li><strong>Missing _total counters</strong> breaking rate().</li>
-            <li><strong>Scrape timeout</strong> during GC pauses.</li>
-            <li><strong>Dual write</strong> to multiple systems unsynchronized.</li>
+            <li><strong>Unbounded label values</strong> — dynamic IDs as labels multiply series count until queries timeout and storage costs spike.</li>
+            <li><strong>Missing <code>_total</code> on counters</strong> — breaks <code>rate()</code> and SLO error-ratio recording rules.</li>
+            <li><strong>Scrape timeouts during GC pauses</strong> — marks targets down and triggers false alerts; tune timeouts and use push export for jittery runtimes.</li>
+            <li><strong>Dual-write without alignment</strong> — sending the same metrics to two systems with different label sets makes dashboards disagree during incidents.</li>
+            <li><strong>Exemplars without trace correlation</strong> — exemplars help only when trace IDs follow W3C format and trace backends retain matching spans.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Golden signals instrumented?</li>
-            <li>Label cardinality reviewed?</li>
-            <li>Recording rules for SLIs?</li>
-            <li>Dashboards per service owner?</li>
-            <li>Retention matches incident needs?</li>
-            <li>Alert routes on SLO burn?</li>
+            <li>Are RED or USE golden signals instrumented on every production service?</li>
+            <li>Is label cardinality reviewed in design and code review?</li>
+            <li>Do recording rules pre-compute SLI queries used in alerts?</li>
+            <li>Are exemplars enabled on latency histograms with W3C-compatible trace IDs?</li>
+            <li>Is retention aligned with incident investigation and compliance needs?</li>
+            <li>Do alert routes tie to SLO burn policies, not static thresholds alone?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Microservices</strong>: Prometheus federation per cluster.</li>
-            <li><strong>Serverless</strong>: CloudWatch EMF for Lambda durations.</li>
-            <li><strong>Mobile backend</strong>: Custom business KPI metrics per feature flag.</li>
+            <li><strong>Illustrative scenario — regional latency regression</strong>: A deploy raises p99 on checkout; the Grafana heatmap shows the spike; clicking an exemplar opens the trace whose <code>traceparent</code> matches the exemplar ID, revealing a new downstream timeout.</li>
+            <li><strong>Case study — Prometheus at SoundCloud</strong>: Early Prometheus adoption demonstrated pull-based scraping plus label discipline as a template for cloud-native metrics at scale.</li>
+            <li><strong>Illustrative scenario — federation per cluster</strong>: Edge clusters remote-write aggregated metrics to a global TSDB; regional dashboards stay local; global SLOs query the central store.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="metrics-and-monitoring.html">Metrics and Monitoring</a> — Types and methodologies.</li>
-            <li><a href="opentelemetry.html">OpenTelemetry</a> — Unified instrumentation.</li>
-            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — Turning metrics into SLOs.</li>
+            <li><a href="metrics-and-monitoring.html">Metrics and Monitoring</a> — Metric types, RED/USE, and query patterns.</li>
+            <li><a href="opentelemetry.html">OpenTelemetry</a> — Unified OTLP export for metrics, traces, and logs.</li>
+            <li><a href="distributed-tracing.html">Distributed Tracing</a> — W3C Trace Context propagation for exemplar and log correlation.</li>
+            <li><a href="slos-and-error-budgets.html">SLOs and Error Budgets</a> — Turning telemetry into reliability targets.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://prometheus.io/docs/practices/naming/" target="_blank" rel="noopener noreferrer">Prometheus metric naming</a></li>
+            <li><a href="https://prometheus.io/docs/practices/naming/" target="_blank" rel="noopener noreferrer">Prometheus — Metric and label naming</a></li>
             <li><a href="https://sre.google/sre-book/monitoring-distributed-systems/" target="_blank" rel="noopener noreferrer">Google SRE — Monitoring Distributed Systems</a></li>
-            <li><a href="https://opentelemetry.io/docs/specs/otel/metrics/" target="_blank" rel="noopener noreferrer">OpenTelemetry Metrics</a></li>
+            <li><a href="https://opentelemetry.io/docs/specs/otel/metrics/" target="_blank" rel="noopener noreferrer">OpenTelemetry Metrics specification</a></li>
+            <li><a href="https://www.w3.org/TR/trace-context/" target="_blank" rel="noopener noreferrer">W3C Trace Context (trace IDs used in exemplars)</a></li>
           </ul>
         </div>
-                <nav class="article-nav" aria-label="Article navigation">
-          <a href="metrics-and-monitoring.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Metrics &amp;amp; Monitoring</span></a>
+        <nav class="article-nav" aria-label="Article navigation">
+          <a href="metrics-and-monitoring.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Metrics &amp; Monitoring</span></a>
           <a href="distributed-tracing.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Distributed Tracing</span></a>
         </nav>
       </div>
