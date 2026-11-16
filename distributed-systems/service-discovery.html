@@ -103,7 +103,7 @@
           <h2 id="what-it-is">What it is</h2>
           <p><strong>Service discovery</strong> maintains a live directory from service name (and optional metadata) to network locations of healthy instances. Producers <strong>register</strong> on startup; the registry <strong>deregisters</strong> on graceful shutdown or failed health checks; consumers <strong>resolve</strong> names before opening connections.</p>
           <p>Patterns fall into <strong>client-side</strong> discovery (the caller queries Eureka/Consul, caches endpoints, load-balances in-process—Netflix Ribbon style) and <strong>server-side</strong> discovery (the caller hits a stable virtual IP or DNS name; a load balancer or kube-proxy chooses the backend). Kubernetes <code>Service</code> objects plus CoreDNS are the canonical managed-platform version; Consul couples DNS, HTTP, and Connect sidecars with <a href="gossip-protocols.html">Serf gossip</a> for failure awareness.</p>
-          <p>FleetCart’s checkout pods scale on Kubernetes; the payment client resolves <code>payment.fleetcart.svc.cluster.local</code> while Nomad jobs in the warehouse VPC might still register into Consul with HTTP health checks—same problem, different control planes.</p>
+          <p>Checkout pods might scale on Kubernetes while warehouse jobs on another orchestrator register into a shared Consul catalog—clients resolve logical service names to healthy endpoints regardless of which control plane launched the instance.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Microservice and container schedulers recycle IP addresses continuously. Static config files and manual load-balancer edits cannot keep pace with rolling deploys, autoscaling, and multi-version canaries. Discovery automates that mapping and ties it to health so traffic does not land on processes still starting or already drained.</p>
@@ -186,7 +186,7 @@
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p><strong>Consul:</strong> Agents register local services; servers replicate catalog via Raft; Serf propagates node health. DNS (<code>.service.consul</code>) offers L4-friendly discovery; Connect injects Envoy for L7 policies. Tag prepared queries for nearest healthy payment instance.</p>
-          <p><strong>Kubernetes:</strong> <code>Endpoints</code>/<code>EndpointSlice</code> objects track ready Pods; kube-proxy or CNI datapaths program rules. Use <code>readinessProbe</code> before marking ready; <code>preStop</code> sleeps while Endpoint removal propagates. Headless services expose per-Pod A records for stateful systems co-located with FleetCart’s Cassandra chart.</p>
+          <p><strong>Kubernetes:</strong> <code>Endpoints</code>/<code>EndpointSlice</code> objects track ready Pods; kube-proxy or CNI datapaths program rules. Use <code>readinessProbe</code> before marking ready; <code>preStop</code> sleeps while Endpoint removal propagates. Headless services expose per-Pod A records for stateful workloads while ClusterIP fronts stateless HTTP.</p>
           <p><strong>Eureka pattern:</strong> Registry replicates in AP style; clients refresh on a schedule and apply client-side load balancing—acceptable when brief staleness is tolerated and the registry avoids strong global consistency costs.</p>
           <p><strong>Graceful deploy:</strong> Register only after dependencies connect; deregister before SIGKILL; align <code>terminationGracePeriodSeconds</code> with longest in-flight checkout RPC.</p>
 
@@ -209,7 +209,7 @@
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario — FleetCart checkout on Kubernetes:</strong> Payment Deployment scales; EndpointSlices update; checkout sidecar resolves ClusterIP; Istio xDS pushes new endpoints with mTLS before old Pods terminate.</li>
+            <li><strong>Illustrative scenario — RideRelay checkout on Kubernetes:</strong> Payment Deployment scales; EndpointSlices update; checkout sidecar resolves ClusterIP; Istio xDS pushes new endpoints with mTLS before old Pods terminate.</li>
             <li><strong>Case study —</strong> Netflix Eureka + Ribbon (client-side) at scale—with cache refresh trade-offs.</li>
             <li><strong>Case study —</strong> HashiCorp Consul on Nomad with HTTP/TCP health checks for warehouse services.</li>
             <li>AWS Cloud Map + App Mesh for ECS tasks discovering upstream gRPC hosts.</li>

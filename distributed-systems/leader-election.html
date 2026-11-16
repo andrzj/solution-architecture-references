@@ -168,19 +168,19 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Simplifies coordination — followers defer to a single authoritative node.</li>
-                <li>Reduces inter-node communication compared to fully decentralised coordination.</li>
-                <li>ZooKeeper and etcd provide battle-tested, off-the-shelf leader election primitives.</li>
-                <li>Fencing tokens provide safety even when the old leader has not yet realised it has been replaced.</li>
+                <li>Establishes a single serialization point per shard or cluster—clients and followers know where to send writes.</li>
+                <li>Consensus-backed election (Raft terms, ZAB epochs) ties leadership to replicated logs so promotion and replication advance together.</li>
+                <li>Off-the-shelf recipes on etcd, Consul, and ZooKeeper avoid home-grown failure detectors for most control-plane workloads.</li>
+                <li>Fencing tokens and lease APIs let downstream storage reject stale leaders without trusting network heartbeats alone.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Leader is a single point of failure for writes; follower promotion takes time (seconds to tens of seconds).</li>
-                <li>Split-brain risk: a slow or partitioned leader may believe it is still the leader and continue writing.</li>
-                <li>Extra infrastructure dependency if using ZooKeeper or etcd for election.</li>
-                <li>Bully algorithm is simple but generates O(n²) messages in large clusters.</li>
+                <li>Write throughput for one logical partition caps at one leader’s capacity until you shard leadership.</li>
+                <li>Failover windows—election, log catch-up, client redirect—add seconds of write unavailability unless you dual-route reads carefully.</li>
+                <li>TTL-only leadership without fencing invites zombie writers after GC pauses or partitions (Kleppmann’s critique).</li>
+                <li>Ring-election heuristics (bully, ring) trade simplicity for chatty O(n²) traffic unsuited to large fleets.</li>
               </ul>
             </div>
           </div>
@@ -194,21 +194,22 @@
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Split-brain without fencing:</strong> network partition causes a new leader to be elected while the old leader is still running, both accepting writes.</li>
-            <li><strong>False failure detection:</strong> a slow or GC-paused leader is incorrectly declared dead, triggering an unnecessary election and disrupting in-flight operations.</li>
-            <li><strong>Thundering herd:</strong> all nodes detect leader failure simultaneously and spam election messages, delaying new leader selection.</li>
-            <li><strong>TTL too short:</strong> frequent re-elections under load due to heartbeat timeouts caused by CPU saturation or GC pauses.</li>
-            <li><strong>TTL too long:</strong> slow failover when the leader genuinely fails, causing extended unavailability.</li>
+            <li><strong>Stale leader on minority partition:</strong> the old primary keeps serving until storage fencing or client quorum checks reject it—otherwise divergent logs accumulate.</li>
+            <li><strong>Split vote loops:</strong> symmetric election timeouts in Raft leave a term without a winner until randomized backoff breaks the tie.</li>
+            <li><strong>Premature step-down:</strong> a single dropped heartbeat triggers election while the leader is still healthy, causing needless leadership churn.</li>
+            <li><strong>Quorum loss:</strong> too many replicas down at once; no candidate can gather majority votes and the control plane freezes.</li>
+            <li><strong>Unsafe membership change:</strong> overlapping majorities during voter reconfiguration admit two leaders with valid-looking terms.</li>
+            <li><strong>Lease without token check:</strong> Redis/etcd lease expires during a long STW GC; the holder resumes work unaware a peer took over.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Are fencing tokens (epoch numbers) implemented to prevent split-brain writes?</li>
-            <li>Is the election timeout tuned relative to your network latency and GC pause budget?</li>
-            <li>Does your storage layer validate fencing tokens before accepting writes?</li>
-            <li>Is there a runbook for scenarios where no leader can be elected (quorum loss)?</li>
-            <li>Have you tested leader election under network partitions and GC pauses?</li>
-            <li>Is there monitoring for leader changes and election frequency?</li>
+            <li>Is leadership per shard or global—and does each shard have an independent election path?</li>
+            <li>Does correctness demand consensus election, or is an efficiency lease acceptable if duplicates are idempotent?</li>
+            <li>Do guarded resources enforce monotonic fencing tokens (terms, epochs) on every mutating call?</li>
+            <li>Are heartbeat and election timeouts validated against measured WAN RTT and JVM pause p99?</li>
+            <li>Is there an operator runbook for quorum loss and forced step-down without manual split-brain?</li>
+            <li>Do metrics and logs expose current leader identity, term, and election rate with alerts on flapping?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -221,9 +222,11 @@
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — Raft embeds leader election as part of the consensus protocol.</li>
-            <li><a href="distributed-locking.html">Distributed Locking</a> — leader election is implemented using a distributed lock that only one node holds.</li>
-            <li><a href="split-brain.html">Split Brain Problem</a> — the central hazard that leader election and fencing tokens are designed to prevent.</li>
+            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — election is Raft’s bootstrap; committed logs depend on the same quorum math.</li>
+            <li><a href="distributed-locking.html">Distributed Locking</a> — many stacks implement “who is leader” as a held lock or lease with a fencing counter.</li>
+            <li><a href="split-brain.html">Split Brain Problem</a> — dual primaries are what safe election and fencing aim to prevent.</li>
+            <li><a href="quorum-patterns.html">Quorum Reads &amp; Writes</a> — majority overlap blocks minority partitions from electing writable primaries in some designs.</li>
+            <li><a href="distributed-coordination.html">Distributed Coordination</a> — etcd, Consul, and ZooKeeper package election atop replicated state machines.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>

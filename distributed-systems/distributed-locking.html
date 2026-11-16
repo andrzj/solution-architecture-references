@@ -123,6 +123,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The safe pattern treats the lock service as a <strong>token issuer</strong>, not the sole arbiter of exclusivity. A client acquires a unique value or monotonic token, performs work, and attaches that token to writes against the guarded resource. If the client outlives its TTL, a rival acquires a higher token; storage rejects the stale writer even when its local lock handle still looks valid—Kleppmann’s fencing story applied to Redis, etcd, or Chubby-style backends.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">sequenceDiagram
     participant A as Client A
@@ -169,18 +170,19 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Redis single-node lock is simple, low-latency, and sufficient for use cases that can tolerate rare duplicates (efficiency locks, not correctness locks).</li>
-                <li>ZooKeeper-based locks backed by consensus are strongly consistent and safe.</li>
-                <li>Automatic TTL expiry prevents indefinite lock holding by crashed clients.</li>
+                <li>Expresses cross-host exclusion without pushing every service through one database transaction coordinator.</li>
+                <li>Single-node Redis <code>SET NX PX</code> is fast for cron deduplication and cache warmers where overlap wastes work but does not corrupt state.</li>
+                <li>Consensus leases (etcd, ZooKeeper sessions) inherit linearisable grant/revoke semantics suitable for metadata and small critical sections.</li>
+                <li>TTL expiry bounds how long a crashed holder blocks peers without manual operator intervention.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Redis Redlock is unsafe for correctness-critical locking — clock drift, GC pauses, and network delays can cause two clients to believe they hold the lock simultaneously.</li>
-                <li>Any TTL-based lock has a window where the holder's TTL expires but it has not yet stopped executing.</li>
-                <li>ZooKeeper-based locks add infrastructure complexity and latency.</li>
-                <li>Distributed locks are a frequent source of hard-to-diagnose bugs and production incidents.</li>
+                <li>TTL locks remain unsafe for mutable shared resources unless fencing tokens are enforced at the storage layer.</li>
+                <li>Redlock and multi-master Redis variants do not create linearisable locks under pause and clock skew—only probabilistic exclusion.</li>
+                <li>Hot lock names become coordination choke points; retries amplify latency across the fleet.</li>
+                <li>Mis-released locks (wrong token in Lua delete) or missing extend logic are a common source of silent double execution.</li>
               </ul>
             </div>
           </div>
@@ -195,21 +197,22 @@
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>GC pause longer than TTL:</strong> JVM garbage collector pauses for longer than the lock TTL; lock expires, another client acquires it; original holder resumes and proceeds with stale assumption of ownership.</li>
-            <li><strong>Clock jump:</strong> system clock steps forward (NTP correction or VM migration), causing TTL to expire prematurely from the lock server's perspective.</li>
-            <li><strong>Network partition:</strong> lock holder loses connectivity to lock service; service expires the lock and grants it to another client; holder regains connectivity unaware the lock is gone.</li>
-            <li><strong>Releasing another client's lock:</strong> client fails to validate the lock token before deleting, removing a lock it does not own.</li>
-            <li><strong>Lock contention storm:</strong> many clients polling for the same lock creating thundering-herd load on the lock service.</li>
+            <li><strong>Pause vs TTL:</strong> STW GC or long I/O freeze exceeds lease duration; a second acquirer proceeds while the first still runs critical code.</li>
+            <li><strong>Extend-after-expiry:</strong> heartbeat renews a lock the server already granted to someone else because extend did not check token ownership atomically.</li>
+            <li><strong>Fencing bypass:</strong> storage accepts writes without comparing tokens—dual holders corrupt rows despite a “correct” lock service.</li>
+            <li><strong>Partitioned lock client:</strong> holder cannot renew but continues locally; rivals win on the server and both sides mutate external APIs.</li>
+            <li><strong>Thundering herd on unlock:</strong> hundreds of clients spin on the same key after expiry, saturating Redis or etcd.</li>
+            <li><strong>Orphan lock after crash:</strong> TTL too long blocks progress; TTL too short causes churn—neither extreme is free.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is this an efficiency lock (duplicate work is wasteful but tolerable) or a correctness lock (duplicates cause data corruption)?</li>
-            <li>Does the guarded resource support fencing tokens to provide a correctness backstop?</li>
-            <li>Is the TTL set to safely exceed the worst-case critical section duration (including GC pauses)?</li>
-            <li>Is lock release atomic and conditional on token ownership?</li>
-            <li>Have you considered optimistic concurrency (CAS/ETags) as a simpler alternative?</li>
-            <li>Is there monitoring for lock acquisition failures and lock contention?</li>
+            <li>Could a unique constraint, conditional update, or serialisable transaction replace the lock entirely?</li>
+            <li>If you must lock, is the guard an efficiency or correctness problem—and does the backend match?</li>
+            <li>Does every downstream writer validate monotonic fencing tokens on mutate?</li>
+            <li>Is TTL sized above p99 critical-section time <em>plus</em> GC and clock-skew headroom—and is extend implemented safely?</li>
+            <li>Are acquire, extend, and release implemented with compare-and-delete scripts, not naive <code>DEL</code>?</li>
+            <li>Do metrics track hold time, wait time, failed acquires, and token rejections at storage?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -222,9 +225,11 @@
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="leader-election.html">Leader Election</a> — leader election is a specialised form of distributed locking for designating a primary node.</li>
-            <li><a href="split-brain.html">Split Brain Problem</a> — what happens when a distributed lock fails to prevent concurrent primaries.</li>
-            <li><a href="distributed-coordination.html">Distributed Coordination</a> — ZooKeeper and etcd provide consensus-backed primitives for safe distributed locking.</li>
+            <li><a href="leader-election.html">Leader Election</a> — long-lived leadership is often “who holds the coordination lock with the highest epoch.”</li>
+            <li><a href="split-brain.html">Split Brain Problem</a> — the outcome when locks or leases fail to exclude a second active writer.</li>
+            <li><a href="clock-synchronization.html">Clock Synchronization</a> — TTL locks inherit wall-clock assumptions Kleppmann warns about.</li>
+            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — safest locks sit on the same Raft log that elects leaders.</li>
+            <li><a href="distributed-coordination.html">Distributed Coordination</a> — session, lease, and election APIs from etcd and Consul.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>

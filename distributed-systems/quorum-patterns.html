@@ -109,20 +109,22 @@
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Leaderless replication systems (Cassandra, DynamoDB, Riak) where no single primary handles all writes.</li>
-            <li>When you need tunable consistency to trade off read vs. write latency.</li>
-            <li>When you can tolerate some staleness (eventual consistency) but want an option for strong reads.</li>
-            <li>High-availability scenarios where majority consensus is preferred over strict unanimity.</li>
+            <li>Key-value or wide-column stores without a central write leader—any replica may coordinate an operation.</li>
+            <li>Per-request consistency knobs matter: flash reads at <code>ONE</code>, financial slices at <code>QUORUM</code> on the same cluster.</li>
+            <li>Multi-datacenter presence where <code>LOCAL_QUORUM</code> bounds WAN write latency while accepting eventual cross-DC visibility.</li>
+            <li>Workloads that pair quorums with version vectors or read repair instead of a single serial log.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Strict serialisability with concurrent writes requires coordinator-based approaches (e.g., Raft), not just quorums.</li>
-            <li>Sloppy quorums must be avoided when strong consistency is mandatory — they trade consistency for availability.</li>
-            <li>Very small clusters (N=2) make quorum configurations degenerate.</li>
+            <li>You need global serializable transactions across many keys—Raft/etcd or Spanner-class ordering fits better.</li>
+            <li>Regulatory or product rules forbid sloppy quorums and hinted handoff windows on mutable data.</li>
+            <li>Replication factor <code>N=2</code> leaves no meaningful majority headroom for fault tolerance.</li>
+            <li>Concurrent writers on the same key without merge semantics—quorums alone will not linearize them.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Clients talk to a coordinator that hashes the key to its replica set. Writes collect <code>W</code> acknowledgements; reads gather <code>R</code> responses and may run read repair when versions disagree. The overlap rule <code>W+R&gt;N</code> guarantees at least one replica saw the latest write for well-formed single-writer timelines; hinted handoff extends availability when preferred nodes are down at the cost of temporary overlap loss.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     C["Client write"] --> CO["Coordinator"]
@@ -165,19 +167,19 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Tunable consistency — operators choose the right W/R trade-off per use case.</li>
-                <li>No single point of failure — any node can coordinate reads and writes.</li>
-                <li>Read repair and anti-entropy converge replicas without coordinator overhead.</li>
-                <li>Sloppy quorums dramatically increase write availability during partial failures.</li>
+                <li>Dial availability vs latency per table or bucket without redeploying binaries.</li>
+                <li>Horizontal write paths—no single leader bottleneck per partition ring.</li>
+                <li>Read repair and Merkle anti-entropy heal lagging replicas without a global log tailer.</li>
+                <li>Sloppy quorums plus hints keep accepting writes when home replicas are unreachable during incidents.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>W+R &gt; N does not guarantee linearisability with concurrent writes — only strong eventual consistency.</li>
-                <li>Sloppy quorums sacrifice the freshness guarantee of strict quorums.</li>
-                <li>Read repair adds read latency (waiting for all R replicas before responding).</li>
-                <li>Anti-entropy background processes add network and disk I/O overhead.</li>
+                <li>Overlap math does not serialize conflicting writers—siblings and LWW risks remain.</li>
+                <li>Hint backlog after mass failure can overwhelm nodes during recovery storms.</li>
+                <li>Higher <code>R</code> and synchronous repair inflate read tail latency.</li>
+                <li>Operators must reason about per-query consistency—mis-set CLs are a common outage root cause.</li>
               </ul>
             </div>
           </div>
@@ -192,19 +194,22 @@
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Stale reads despite W+R &gt; N:</strong> clock skew or concurrent writes can produce read results that appear stale even with quorum configuration — quorum guarantees overlap, not linearisability.</li>
-            <li><strong>Hinted handoff storm:</strong> if many nodes go offline simultaneously, a large backlog of hinted handoffs accumulates; when nodes recover they can be overwhelmed by replaying all hints.</li>
-            <li><strong>Anti-entropy neglect:</strong> skipping regular repair operations leads to replica divergence, especially after node replacements or network partitions.</li>
-            <li><strong>Tombstone accumulation in Cassandra:</strong> deletes create tombstones that must be collected via compaction within the <code>gc_grace_seconds</code> window; missed repair lets ghost data resurface after tombstone expiry.</li>
+            <li><strong>CL mismatch:</strong> writers at <code>ONE</code>, readers at <code>QUORUM</code>—overlap assumptions fail because writes never reached a quorum.</li>
+            <li><strong>Concurrent sibling reads:</strong> two writers on the same key return incomparable version vectors despite <code>W+R&gt;N</code>.</li>
+            <li><strong>Hint replay overload:</strong> recovering racks ingest years of hints in minutes and starve foreground traffic.</li>
+            <li><strong>Skipped repair:</strong> replaced nodes diverge silently until a rare read discovers missing columns.</li>
+            <li><strong>Tombstone resurrection:</strong> delete markers expire on unrepaired replicas; deleted rows reappear in customer APIs.</li>
+            <li><strong>LOCAL_QUORUM surprises:</strong> cross-DC readers see pre-promotion values until gossip and repair catch up.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>What are your consistency requirements — eventual, strong eventual, or linearisable?</li>
-            <li>What is your replication factor N? Are W and R values tuned appropriately?</li>
-            <li>Is sloppy quorum acceptable, or do you need strict quorum overlap at all times?</li>
-            <li>Is read repair enabled? Synchronous or background? What is the latency impact?</li>
-            <li>Is anti-entropy repair scheduled and monitored? What is the repair interval?</li>
+            <li>For each entity class, document allowed consistency level and whether siblings are acceptable.</li>
+            <li>Does <code>W+R&gt;N</code> hold for every production read/write pair, including analytics paths?</li>
+            <li>Are sloppy quorums and hints disabled where strict overlap is mandatory?</li>
+            <li>Is read repair synchronous, async, or disabled—and what p99 read latency does each imply?</li>
+            <li>Are Merkle or full <code>repair</code> jobs scheduled, monitored, and sized for ring growth?</li>
+            <li>When concurrent writes conflict, do version vectors or LWW rules match product expectations?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
@@ -217,9 +222,11 @@
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="vector-clocks.html">Vector Clocks</a> — used during quorum reads to identify and resolve divergent replica versions.</li>
-            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — Raft/Paxos use quorum-based voting internally to achieve linearisable consensus.</li>
-            <li><a href="../foundations/cap-theorem.html">CAP Theorem</a> — quorum configuration determines where a system sits in the CA/AP spectrum during partition.</li>
+            <li><a href="vector-clocks.html">Vector Clocks</a> — compare replica versions returned by quorum reads.</li>
+            <li><a href="split-brain.html">Split Brain Problem</a> — quorums reduce but do not always eliminate dual-writer scenarios.</li>
+            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — leader-majority commit is the linearizable cousin of tunable <code>W</code>/<code>R</code>.</li>
+            <li><a href="gossip-protocols.html">Gossip Protocols</a> — membership and failure hints underpin coordinator routing.</li>
+            <li><a href="../foundations/cap-theorem.html">CAP Theorem</a> — <code>W</code>/<code>R</code> choices express AP vs CP posture during partition.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>

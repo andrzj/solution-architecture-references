@@ -120,6 +120,7 @@
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Prevention stacks layers: majority quorums on the write path stop an isolated minority from committing; fencing tokens on shared storage block zombie primaries that never received the demotion signal; optional witnesses break ties in two-node layouts. Recovery is harder—once divergent writes land on non-commutative fields, operators merge manually or restore from backups. The diagram shows the classic HA pair plus replica that splits when the link to node A fails.</p>
                     <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
                       <div class="architecture-diagram__render mermaid">flowchart TB
     P["Primary A"] <-->|replication| R1["Replica B"]
@@ -157,19 +158,21 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Prevention strategies</h3>
               <ul>
-                <li><strong>Quorum writes:</strong> require W &gt; N/2 acknowledgements; minority partition cannot form quorum.</li>
-                <li><strong>Fencing tokens:</strong> storage rejects writes with stale epoch numbers even if old primary is still running.</li>
-                <li><strong>External arbitrator (witness):</strong> third node or service acts as tiebreaker; minority without access to arbitrator cannot elect primary.</li>
-                <li><strong>STONITH (Shoot The Other Node In The Head):</strong> uses out-of-band power management to forcibly terminate the suspected failed node before promoting a new primary.</li>
+                <li><strong>Majority commit barriers:</strong> Raft and similar protocols refuse new entries unless a quorum acknowledges—minority sides cannot advance the durable log.</li>
+                <li><strong>Resource-side fencing:</strong> SCSI reservations, block-device epochs, and database primary guards reject writes below the latest seen term.</li>
+                <li><strong>Witness nodes:</strong> lightweight third voters let two data nodes still form an internal majority without storing full datasets.</li>
+                <li><strong>STONITH / forced power-off:</strong> cluster managers terminate the old node on an out-of-band path before promotion.</li>
+                <li><strong>AP with explicit merge:</strong> when availability dominates, version vectors and operator merge tools trade prevention for detectable conflict.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Recovery challenges</h3>
               <ul>
-                <li>Conflicting writes on non-commutative data (balance updates, inventory counts) cannot be auto-merged.</li>
-                <li>Last-write-wins resolution causes silent data loss.</li>
-                <li>Reconciliation may require manual intervention and data auditing.</li>
-                <li>Users may have acted on stale data visible during the split, creating external side effects that cannot be undone.</li>
+                <li>Financial, inventory, and identity fields rarely commute—automatic union merges are unsafe.</li>
+                <li>LWW timestamps hide losers after heal unless applications retain full version history.</li>
+                <li>Clients may have issued irreversible side effects (payments, shipments) on data the other primary also mutated.</li>
+                <li>Rejoining a divergent primary requires truncate-or-replica decisions that downtime-sensitive teams resist.</li>
+                <li>Flapping partitions repeat promotion cycles and amplify operator fatigue.</li>
               </ul>
             </div>
           </div>
@@ -184,35 +187,39 @@
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Under-replication before partition:</strong> replica lag means the minority partition had a more up-to-date node, causing the promoted majority-side primary to start from an older state.</li>
-            <li><strong>STONITH failure:</strong> STONITH command fails (network to IPMI controller is also down), leaving the cluster unable to safely promote a new primary.</li>
-            <li><strong>Flapping partition:</strong> partition heals and re-occurs rapidly, causing repeated leadership changes and log corruption.</li>
-            <li><strong>Application-level split brain:</strong> load balancer routes requests to both the old primary and the new primary during transition; application layer does not detect the ambiguity.</li>
+            <li><strong>Sticky load balancers:</strong> VIP health checks lag; traffic hits an old primary after failover completes at the database layer.</li>
+            <li><strong>Asymmetric partitions:</strong> node A reaches the witness; node B cannot—B demotes while A still believes it is writable.</li>
+            <li><strong>Read-your-writes on stale primary:</strong> applications read from a demoted node that has not yet stopped serving SELECT traffic.</li>
+            <li><strong>Two-node without witness:</strong> each side declares itself primary when the link drops.</li>
+            <li><strong>STONITH unavailable:</strong> shared management network fails; promotion stalls in “fence pending” while incidents extend.</li>
+            <li><strong>Sloppy quorum overlap:</strong> leaderless stores temporarily place hints outside the home replica set, widening divergent branches after heal.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Can the system tolerate temporary unavailability during a partition, or does it need to remain available on both sides?</li>
-            <li>Are write quorum requirements configured to prevent minority partitions from accepting writes?</li>
-            <li>Are fencing tokens used at the storage layer to reject stale-primary writes?</li>
-            <li>Is there a runbook for manual conflict resolution when automatic reconciliation is impossible?</li>
-            <li>Has the partition recovery procedure been tested in a chaos engineering exercise?</li>
-            <li>Is STONITH or equivalent forceful node termination available for correctness-critical systems?</li>
+            <li>During partition, is the product goal CP (refuse writes on minority) or AP (serve both sides with merge rules)?</li>
+            <li>Do write paths require overlapping majorities that intersect across read and write replica sets?</li>
+            <li>Does every shared resource validate fencing tokens or primary epoch before mutating?</li>
+            <li>For two-node clusters, is there a witness or STONITH path documented and tested?</li>
+            <li>Do load balancers and connection pools drain old primaries before DNS/VIP flips complete?</li>
+            <li>Is there a rehearsed runbook for irreconcilable divergent rows—including customer communication?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li>MongoDB replica set during a data centre network outage — majority partition elects new primary, minority becomes read-only.</li>
-            <li>Elasticsearch cluster healing — detecting and rolling back divergent shards after a split.</li>
-            <li>PostgreSQL with Patroni — uses DCS (etcd/Consul) quorum; old primary demotes itself when it loses DCS connectivity.</li>
-            <li>Redis Sentinel failover — majority of sentinels required to authorise promotion of a replica.</li>
+            <li><strong>Case study —</strong> MongoDB replica sets demote a minority partition during inter–data centre link loss; majority elects a new primary with rollback of uncommitted tail on the isolated side.</li>
+            <li><strong>Case study —</strong> Patroni-managed PostgreSQL demotes when DCS sessions expire; old primary enters recovery-only mode until operators reconcile.</li>
+            <li><strong>Case study —</strong> Redis Sentinel promotes only after a quorum of sentinels agree the master is subjectively down.</li>
+            <li><strong>Illustrative scenario — Northwind ledger HA:</strong> A WAN blip isolates the former primary; witness-backed fencing blocks its writes while the majority side accepts payments; finance replays disputed rows from audit exports after heal.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="leader-election.html">Leader Election</a> — split brain is the primary hazard that leader election algorithms must prevent.</li>
-            <li><a href="distributed-locking.html">Distributed Locking</a> — fencing tokens (from the lock service) prevent old primaries from writing after re-election.</li>
-            <li><a href="quorum-patterns.html">Quorum Reads &amp; Writes</a> — the primary technical mechanism for preventing split brain writes.</li>
+            <li><a href="leader-election.html">Leader Election</a> — unsafe promotion is how split brain begins in leader-based systems.</li>
+            <li><a href="distributed-locking.html">Distributed Locking</a> — fencing tokens issued with locks close the zombie-writer window.</li>
+            <li><a href="quorum-patterns.html">Quorum Reads &amp; Writes</a> — <code>W+R&gt;N</code> overlap limits solitary writers but is not a full split-brain cure alone.</li>
+            <li><a href="consensus-algorithms.html">Consensus Algorithms</a> — majority commit is the CP alternative to dual primaries.</li>
+            <li><a href="vector-clocks.html">Vector Clocks</a> — surfacing siblings when AP designs accept concurrent primaries.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
