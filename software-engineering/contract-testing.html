@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Contract Testing — SA References</title>
-  <meta name="description" content="Consumer-driven contract testing with Pact for microservice API compatibility.">
+  <meta name="description" content="Contract testing (Pact, consumer-driven contracts) checks provider behaviour against what consumers need—broker, verification, and can-i-deploy gates for independent deploys.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,27 +99,35 @@
             <span class="badge badge--primary">Software Engineering</span>
           </div>
           <h1 class="article-header__title">Contract Testing</h1>
-          <p class="article-header__desc">Consumer-driven contract testing with Pact for microservice API compatibility.</p>
+          <p class="article-header__desc">Consumer-driven contracts (Pact) verify API compatibility without full integration stacks—publish pacts, verify providers, gate deploys with can-i-deploy.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Provider-driven contract testing validates OpenAPI/AsyncAPI specs against implementation (Dredd, Schemathesis).</p>
+          <p><strong>Contract testing</strong> verifies that a service provider’s behaviour matches what its consumers depend on, without standing up every dependent system in one integration environment. A contract records the requests, responses, or message shapes a consumer actually uses; tests run on the consumer against a mock and on the provider against recorded interactions or a published spec.</p>
+          <p><strong>Consumer-driven</strong> contracts (Pact is the common toolchain) let consumers publish examples; providers replay them in CI. <strong>Provider-driven</strong> approaches anchor on OpenAPI or AsyncAPI and tools such as Schemathesis or Dredd. Bi-directional setups compare consumer pacts to provider OpenAPI in a broker. See also <a href="../api-design/contract-testing.html">API Design — Contract Testing</a> for API-focused detail.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Integration environments for dozens of microservices do not scale; contract tests give fast feedback on breaking API changes.</p>
-          <p>Independent deployability requires a safety net shorter than full e2e.</p>
+          <p>Microservices deploy independently; full-stack integration environments do not scale to dozens of teams and versions. Ian Robinson’s consumer-driven contracts essay (Martin Fowler’s site) and Thoughtworks’ promotion of the technique address a specific question: <em>Will this provider version break a consumer already in production?</em> Pact’s broker and <code>can-i-deploy</code> gate answer that in seconds per service.</p>
+          <p>Contract tests complement—not replace—unit and integration tests. They excel at boundary compatibility; they do not prove end-to-end workflows or performance.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Microservices with many internal REST or message contracts.</li>
-            <li>Teams practicing continuous deployment with separate pipelines.</li>
+            <li>Internal REST, GraphQL, or message APIs with multiple consuming teams.</li>
+            <li>Continuous deployment pipelines where provider and consumer release on different cadences.</li>
+            <li>Organisations willing to run a Pact Broker (or PactFlow) and provider verification jobs.</li>
+            <li>APIs already described in OpenAPI where provider-driven verification adds a safety net.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Monolith with internal calls only — in-process tests suffice.</li>
-            <li>Contracts without provider verification in CI — false confidence.</li>
+            <li>Monoliths where all callers ship in one artifact—in-process tests suffice.</li>
+            <li>Prototypes without stable interfaces or external consumers.</li>
+            <li>Teams that publish consumer pacts but never verify on the provider—false confidence.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Consumers publish contracts; providers verify against the broker before deploy promotion.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     consumer["Consumer tests&lt;br/&gt;generate pact"]
@@ -138,56 +146,78 @@
         ▼
   Deploy gate on compatibility</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Pact flow: consumer-driven contracts publish to a broker; providers verify compatibility before deployment.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Consumer CI publishes pacts; provider CI verifies against the broker; deploy pipelines call can-i-deploy before promotion.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Detects breaking changes before deploy.</li>
-            <li>Documents API usage as executable contracts.</li>
+                <li>Fast feedback on breaking API changes before integration environments catch them.</li>
+                <li>Documents what consumers actually use—not the entire provider surface.</li>
+                <li>Enables independent deployment when paired with broker gates.</li>
+                <li>Reduces need for multi-team shared staging for every PR.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Broker and discipline overhead.</li>
-            <li>Does not test full system behavior or performance.</li>
+                <li>Broker, provider states, and CI wiring add operational overhead.</li>
+                <li>Requires adoption on both sides of each boundary.</li>
+                <li>Covers exercised interactions only—untested routes can still break.</li>
+                <li>Provider state setup for data-heavy interactions is tedious to maintain.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Version contracts with semver; use can-i-deploy gates. See also <a href="../api-design/contract-testing.html">API Design — Contract Testing</a> for API specifics.</p>
-          <p>Combine with smoke e2e for critical journeys only.</p>
+          <p><strong>Use matchers, not literals.</strong> Pact contracts should express types and formats (<code>like</code>, <code>term</code>, regex) rather than ephemeral values so harmless data changes do not fail verification.</p>
+          <p><strong>Provider verification in CI.</strong> Every main-branch build of the provider should fetch relevant consumer pacts from the broker and fail on mismatch. Publish verification results back to the broker.</p>
+          <p><strong>can-i-deploy.</strong> Before promoting a version to production, ask the broker whether that provider build is compatible with consumer versions already deployed—wire this as a required pipeline stage.</p>
+          <p><strong>Versioning and retention.</strong> Tag pacts with consumer version (git SHA or semver); prune obsolete pacts so stale contracts do not block providers unnecessarily.</p>
+          <p><strong>Smoke E2E.</strong> Keep a handful of journey tests for irreducible cross-service risk; let contracts handle pairwise compatibility.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Stale pacts:</strong> Consumer deleted tests but pact remains — enforce broker retention policies.</li>
-            <li><strong>Over-mocking:</strong> Contract passes but semantic behavior wrong — add selective integration tests.</li>
+            <li><strong>Exact-value contracts:</strong> Brittle pacts break on valid provider responses.</li>
+            <li><strong>Stale broker entries:</strong> Deleted consumer tests leave orphan pacts—enforce retention policies.</li>
+            <li><strong>Missing provider states:</strong> Verification fails because setup data does not match interaction preconditions.</li>
+            <li><strong>Contracts without provider job:</strong> Consumers green while providers ship breaking changes.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Is provider verification mandatory on main branch?</li>
-            <li>Are contracts published on every consumer PR?</li>
+            <li>Do consumer tests publish pacts on every relevant PR?</li>
+            <li>Is provider verification mandatory on main before deploy?</li>
+            <li>Are matchers used instead of hard-coded field values?</li>
+            <li>Does CI call <code>can-i-deploy</code> (or equivalent) per environment?</li>
+            <li>Are provider state handlers documented and owned by the provider team?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Checkout + inventory:</strong> Pact broker blocks deploy when response field removed.</li>
+            <li><strong>Illustrative scenario —</strong> Checkout calls inventory over HTTP: consumer pact asserts response shape; provider verification fails when a field is removed; deploy blocked until fixed or coordinated.</li>
+            <li><strong>Illustrative scenario —</strong> An event publisher and two subscribers use message pacts; broker shows which consumer versions each provider build satisfies.</li>
+            <li><strong>Case study —</strong> <a href="https://docs.pact.io/" target="_blank" rel="noopener noreferrer">Pact documentation</a> describes broker workflows, provider verification, and <code>can-i-deploy</code>.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="integration-testing.html">Integration Testing</a> — Complementary middle layer.</li>
-            <li><a href="../api-design/openapi.html">OpenAPI</a> — Provider-driven contracts.</li>
-            <li><a href="../communication-patterns/transactional-outbox.html">Transactional Outbox</a> — Reliable events.</li>
+            <li><a href="integration-testing.html">Integration Testing</a> — in-process and container tests for a single service.</li>
+            <li><a href="test-pyramids.html">Test Pyramids</a> — contracts as the middle layer between unit and E2E.</li>
+            <li><a href="../api-design/openapi.html">OpenAPI</a> — provider-driven contract source.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.pact.io/" target="_blank" rel="noopener noreferrer">Pact Documentation</a></li>
-            <li><a href="https://microservices.io/patterns/communication-style/pact.html" target="_blank" rel="noopener noreferrer">Pact — microservices.io</a></li>
-            <li><a href="https://martinfowler.com/tags/application%20architecture.html" target="_blank" rel="noopener noreferrer">Martin Fowler — application architecture</a></li>
+            <li><a href="https://docs.pact.io/" target="_blank" rel="noopener noreferrer">Pact documentation</a></li>
+            <li><a href="https://martinfowler.com/articles/consumerDrivenContracts.html" target="_blank" rel="noopener noreferrer">Consumer-Driven Contracts — Martin Fowler / Ian Robinson</a></li>
+            <li><a href="https://martinfowler.com/bliki/ContractTest.html" target="_blank" rel="noopener noreferrer">Contract Test — Martin Fowler</a></li>
+            <li><a href="https://www.thoughtworks.com/radar/techniques/consumer-driven-contracts" target="_blank" rel="noopener noreferrer">Consumer-driven contracts — Thoughtworks Technology Radar</a></li>
           </ul>
-        </div>
-                <nav class="article-nav" aria-label="Article navigation">
+
+        <nav class="article-nav" aria-label="Article navigation">
           <a href="integration-testing.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Integration Testing</span></a>
           <a href="dependency-management.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Dependency Management</span></a>
         </nav>
