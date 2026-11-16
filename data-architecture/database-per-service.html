@@ -110,6 +110,7 @@
           <p>A single shared database is the fastest path to a distributed monolith: teams couple through foreign keys and ad hoc joins, schema migrations require release trains, and one expensive report query slows every consumer. Giving each service its own store makes the persistence boundary match the deployment boundary, which is what independent teams and <a href="polyglot-persistence.html">polyglot persistence</a> require in practice.</p>
           <p>The trade-off is intentional: you lose cross-database ACID transactions and single-query reporting, and you gain autonomy, clearer ownership, and the ability to scale or replace one service’s store without destabilizing neighbors.</p>
           <p>Sam Newman’s <em>Building Microservices</em> frames the pattern as non-negotiable once services claim independent lifecycles: shared persistence reintroduces the same deployment coupling microservices were meant to escape, even when teams rename schemas instead of tables.</p>
+          <p>Reporting joins belong in the warehouse fed by Debezium, not in cross-database views that break when one team migrates a column type on their release schedule.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -192,6 +193,14 @@
           <p>For multi-step business flows—place order, reserve stock, capture payment—use the <a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">saga</a> pattern with explicit compensating commands and user-visible intermediate states (pending versus confirmed). Register event schemas so consumers detect incompatible changes before production deploys.</p>
           <p>Instrument ownership at the connection layer: application credentials should reach only one service’s schema, secrets managers should tag which deployment owns each DSN, and CI should fail builds that import another team’s repository layer. Platform teams can offer managed Postgres or document clusters per tenant, but the encapsulation rule stays at the service API, not at “we promise not to query your tables.”</p>
           <p>For customer-facing aggregates that stitch peer data, publish SLIs on fan-out latency and partial failure rates. A BFF that hydrates twenty microservices per page is a symptom that a read model or cached projection is missing—not permission to open SQL ports between databases.</p>
+          <p><strong>Integration paths:</strong> sagas and outbox events replace cross-database joins; analytics consumers read Debezium streams or domain-published exports, not live JDBC across services. Postgres per service still needs connection pool sizing per instance—hundreds of micro-databases multiply backup, patch, and secret-rotation toil unless platform automation standardises them.</p>
+          <p><strong>When to soften the rule:</strong> shared read replicas fed only by CDC for reporting are still separate consumption stores, not shared writable OLTP. Document the exception list; every shared database reintroduces deployment coupling DDIA warns about in distributed transactions.</p>
+          <p><strong>Backup and restore:</strong> per-service RPO/RTO multiply with service count—platform teams provide automated backup agents and restore drills, not wiki pages. Cross-service reports stitch via warehouse, not live federated queries at runtime.</p>
+          <p><strong>Schema migration:</strong> services own migrations; coordinated releases use feature flags and expand-contract patterns without ALTER on peer databases. Saga compensations reverse business state, not foreign keys in another schema.</p>
+          <p>Detection: growing JDBC connection strings in configuration repos listing multiple hosts per service signals creeping coupling—archive reviews should flag them.</p>
+          <p>Disaster recovery drills must restore one service database without requiring peer schemas—shared restore playbooks reintroduce coupling during outages.</p>
+          <p>Platform teams can standardise backup agents, connection pooling sidecars, and migration tooling per engine without sharing database instances—automation reduces per-service ops toil while preserving logical isolation.</p>
+          <p>TempDB or scratch schemas inside one service remain that service’s problem; exporting scratch data to peers is still integration, not an excuse for shared ownership.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -234,6 +243,7 @@
             <li><a href="https://microservices.io/patterns/data/saga.html" rel="noopener noreferrer" target="_blank">Chris Richardson — Saga (microservices.io)</a></li>
             <li><a href="https://martinfowler.com/bliki/CQRS.html" rel="noopener noreferrer" target="_blank">Martin Fowler — CQRS</a></li>
             <li><a href="https://dataintensive.net/" rel="noopener noreferrer" target="_blank">Martin Kleppmann — <em>Designing Data-Intensive Applications</em> (transactions, stream processing, data integration)</a></li>
+            <li><a href="https://debezium.io/documentation/reference/stable/index.html" rel="noopener noreferrer" target="_blank">Debezium documentation</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

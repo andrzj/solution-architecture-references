@@ -110,6 +110,7 @@
           <p>Relational row stores treat each insert as index maintenance across multiple B-trees; million-points-per-second telemetry turns compaction and WAL pressure into operational incidents. Ad hoc <code>GROUP BY time_bucket</code> over billions of rows without chunking, compression, and retention policies yields unpredictable dashboard latency.</p>
           <p>TSDBs encode lifecycle as product features: roll raw data to coarser resolutions, drop chunks past legal retention, compress cold segments, and answer “last hour” vs “last year” with different physical paths. That separation matches Fowler’s polyglot persistence story—metrics are not orders—and keeps OLTP schemas free of append-only noise.</p>
           <p>Columnar and log-structured layouts exploit temporal locality: successive timestamps for the same series compress with delta and gorilla-style encodings, and chunk boundaries make eviction predictable. Dashboards that scan only the last hour touch hot chunks on fast media while year-over-year trends read hour-resolution rollups that would require painful ad hoc resampling in a general-purpose row store.</p>
+          <p>Alerting paths should not depend on TSDB durability beyond their retention window—route pages from short-retention metrics, investigations from longer archives. Mixing business events into metric labels confuses SRE dashboards with product analytics; separate metric namespaces when cardinality and retention differ.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -206,6 +207,14 @@
           <p>On TimescaleDB, set chunk intervals to match query windows, enable compression with segment-by columns that match filters, and schedule continuous aggregate refresh policies in infrastructure-as-code. For DIY Cassandra telemetry, pair time bucketing in the partition key with Cassandra’s time-ordered clustering guidance to avoid wide partitions.</p>
           <p>Influx line protocol batches are far more efficient than per-point JSON posts. A single measurement line carries tag sets, field key-value pairs, and optional epoch timestamps—for example <code>cpu_usage,host=web-01,env=prod usage_percent=72.4,load_avg=2.1</code>. Ship thousands of points per HTTP write and monitor unique tag combinations per measurement; practical guidance from Influx schema documentation treats six-digit tag cardinality as a red flag worthy of architecture review.</p>
           <p>For Timescale compression, segmenting by host or region before ordering by descending time routinely yields order-of-magnitude space reductions on numeric telemetry. Chain continuous aggregates so a one-minute view feeds an hourly view, each with explicit refresh policies and lag alerts on the job that keeps dashboards honest about freshness.</p>
+          <p><strong>Retention vs resolution:</strong> Prometheus-style pull metrics suit service monitoring with built-in downsampling; long-retention analytics often lands in object-storage-backed TSDBs or warehouse facts. DDIA’s batch/stream processing chapters apply when rollups are derived jobs—document whether chart points are raw samples or aggregated minutes.</p>
+          <p><strong>Cardinality control:</strong> unbounded label sets (user id on every metric) explode memory—Prometheus naming docs warn against high-cardinality labels. Define cardinality budgets and drop rules before production agents ship.</p>
+          <p><strong>Backfill and gaps:</strong> late-arriving points need out-of-order ingestion policies—some TSDBs reject, some reorder within windows. Document whether dashboards show gaps or interpolated lines when agents fail.</p>
+          <p><strong>Dual use:</strong> Prometheus for alerting, warehouse or Iceberg for long forensic retention is common—do not treat Prometheus as infinite archive. Influx line protocol versus SQL interfaces affect who operates the store (SRE vs analysts).</p>
+          <p>Postgres+Timescale suits moderate telemetry co-located with app data; dedicated TSDBs win when ingest rate exceeds single-node vertical scale after compression tuning.</p>
+          <p>Runbooks should state whether gaps in charts mean missing data or zero signal—operators otherwise chase false incidents.</p>
+          <p>Downsampling policies should be documented per metric class—SRE latency histograms and business KPIs rarely belong on the same retention curve.</p>
+          <p>Remote write failures from Prometheus to long-term storage should alert before the local retention window expires and data is gone. Test restore from long-term archives annually, not only short-term blocks.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -249,7 +258,7 @@
             <li><a href="https://prometheus.io/docs/practices/naming/" target="_blank" rel="noopener noreferrer">Prometheus Metric and Label Naming</a></li>
             <li><a href="https://docs.influxdata.com/influxdb/v2/write-data/best-practices/schema-design/" target="_blank" rel="noopener noreferrer">InfluxDB Schema Design Best Practices</a></li>
             <li><a href="https://docs.timescale.com/use-timescale/latest/compression/" target="_blank" rel="noopener noreferrer">TimescaleDB Compression</a></li>
-            <li><a href="https://cassandra.apache.org/doc/stable/cassandra/developing/data_modeling.html" target="_blank" rel="noopener noreferrer">Apache Cassandra — Data Modeling</a></li>
+            <li><a href="https://cassandra.apache.org/doc/latest/" target="_blank" rel="noopener noreferrer">Apache Cassandra — Data Modeling</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">

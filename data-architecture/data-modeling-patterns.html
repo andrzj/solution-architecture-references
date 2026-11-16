@@ -107,6 +107,7 @@
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Schemas encode assumptions about read and write shape. A catalog modeled as fifty nullable columns wastes space and indexing budget; EAV without pivot discipline turns filters into self-join nightmares. Trees stored only as <code>parent_id</code> make subtree reads expensive until you add nested sets, paths, or a graph sidecar. Telemetry stuffed into generic relational tables hits B-tree write amplification long before business logic does.</p>
           <p>Patterns exist so teams can name these mismatches early and pick structures whose hot paths are first-class in the storage engine—GIN containment on JSONB, range scans on nested-set boundaries, partition-local time ordering in Cassandra—rather than reimplementing traversal and compression in application code. Fowler’s data-model guidance and Kleppmann’s comparison of storage engines both stress that there is no universal winner, only fit to measured access patterns.</p>
+          <p>Data Vault hubs are integration concerns; Kimball dimensions are consumption concerns—document which layer each pattern serves so architects do not vault every OLTP table by reflex.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -114,7 +115,7 @@
             <li><strong>Nested set or materialized path</strong> when read-heavy subtree queries dominate and reparenting is rare—or use <code>ltree</code> as a compromise with path-prefix reads and localized updates.</li>
             <li><strong>JSONB hybrid</strong> when a stable core of columns needs indexes and constraints, while extension attributes vary by tenant or category; pair with GIN and explicit validation in app or JSON Schema checks.</li>
             <li><strong>EAV</strong> only for genuinely user-defined attribute dictionaries with extreme sparsity; plan pivot views or search indexes if filters must stay SQL-friendly.</li>
-            <li><strong>Wide-column time ordering</strong> when ingest is append-mostly per entity and queries are “latest N” or “range for device X,” following Cassandra’s <a href="https://cassandra.apache.org/doc/stable/cassandra/developing/data_modeling.html" target="_blank" rel="noopener noreferrer">query-first modeling</a> rules.</li>
+            <li><strong>Wide-column time ordering</strong> when ingest is append-mostly per entity and queries are “latest N” or “range for device X,” following Cassandra’s <a href="https://cassandra.apache.org/doc/latest/" target="_blank" rel="noopener noreferrer">query-first modeling</a> rules.</li>
             <li><strong>Document embedding</strong> when MongoDB’s one-to-few pattern holds: children are always read with the parent and seldom updated independently.</li>
             <li><strong>Single Table Inheritance (STI)</strong> when subtypes share most columns and row volume stays moderate; use discriminators and partial indexes rather than nullable swamps without discipline.</li>
             <li><strong>Class Table Inheritance (CTI)</strong> when each subtype has many dedicated columns and you want typed child tables with joins only when specialization is queried.</li>
@@ -222,6 +223,13 @@
           <p>Start hierarchy work with <strong>adjacency list + constraints</strong> (<code>CHECK (parent_id &lt;&gt; id)</code>, optional closure detection in migrations). Add <a href="https://www.postgresql.org/docs/current/ltree.html" target="_blank" rel="noopener noreferrer"><code>ltree</code></a> when prefix subtree reads appear in SLIs; refresh paths in the same transaction as <code>parent_id</code> updates. Reserve nested sets for read-mostly taxonomies with measured recursive-CTE pain.</p>
           <p>For polymorphic products or multi-type entities, document the choice among STI, CTI, and JSONB in an ADR; CTI fits fixed per-type columns, JSONB fits tenant-specific facets with GIN on containment keys you actually filter. In MongoDB, follow the manual’s one-to-few versus one-to-many guidance: reference when children have independent lifecycles or high cardinality.</p>
           <p>Cassandra tables should be designed from stated queries, not ER diagrams—define partition width targets (for example monthly buckets per device) before production ingest. Pair JSONB producers with <a href="data-contracts.html">data contracts</a> or JSON Schema validation at the write boundary so analytics and search consumers do not parse ambiguous blobs.</p>
+          <p><strong>Vault and ensemble:</strong> <a href="https://www.datavaultalliance.com/" rel="noopener noreferrer" target="_blank">Data Vault 2.0</a> hubs, links, and satellites decouple integration history from presentation marts—useful when many sources feed one enterprise warehouse with auditable loads. Kimball still owns consumption-layer stars; vault sits between bronze integration and department facts when regulatory lineage demands satellite historization.</p>
+          <p><strong>MongoDB and Postgres:</strong> MongoDB embedding suits one-to-few containment; references suit unbounded children. Postgres JSONB fits variable attributes when relational integrity on core keys still matters—index with GIN only on queried paths; see MongoDB and Postgres docs for opposite trade-offs on schema flexibility versus join guarantees.</p>
+          <p><strong>Bounded contexts:</strong> each microservice schema reflects its ubiquitous language—shared databases across contexts force compromises on nullable columns meant for unrelated features. Read models for reporting may denormalise via events without collapsing write schemas.</p>
+          <p><strong>Migration discipline:</strong> expand-contract migrations add nullable columns before backfill and enforce—vault and kimball marts evolve on different cadences, linked by integration keys, not one shared ER diagram.</p>
+          <p>Anti-pattern: mirroring the entire OLTP schema into analytics nightly when only five entities matter—model what queries need, not what the application stored historically.</p>
+          <p>Architecture decision records should name rejected patterns (shared tables, universal JSON blobs) alongside the chosen one so new hires do not reopen settled debates.</p>
+          <p>Load tests should use production-shaped skew—uniform test data hides hot partitions in wide-column designs. Document partition key cardinality before go-live.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -267,9 +275,11 @@
             <li><a href="https://martinfowler.com/bliki/PolyglotPersistence.html" target="_blank" rel="noopener noreferrer">Polyglot Persistence — Martin Fowler</a></li>
             <li><a href="https://martinfowler.com/eaaCatalog/activeRecord.html" target="_blank" rel="noopener noreferrer">Patterns of Enterprise Application Architecture (data mapping context) — Martin Fowler</a></li>
             <li><a href="https://www.mongodb.com/docs/manual/core/data-model-design/" target="_blank" rel="noopener noreferrer">MongoDB Data Model Design</a></li>
-            <li><a href="https://cassandra.apache.org/doc/stable/cassandra/developing/data_modeling.html" target="_blank" rel="noopener noreferrer">Apache Cassandra — Data Modeling</a></li>
+            <li><a href="https://cassandra.apache.org/doc/latest/" target="_blank" rel="noopener noreferrer">Apache Cassandra — Data Modeling</a></li>
             <li><a href="https://microservices.io/patterns/data/database-per-service.html" target="_blank" rel="noopener noreferrer">Database per Service — microservices.io</a></li>
             <li><a href="https://www.postgresql.org/docs/current/ltree.html" target="_blank" rel="noopener noreferrer">PostgreSQL <code>ltree</code> Extension</a></li>
+            <li><a href="https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/" rel="noopener noreferrer" target="_blank">Kimball Group — dimensional modeling techniques</a></li>
+            <li><a href="https://www.datavaultalliance.com/" rel="noopener noreferrer" target="_blank">Data Vault 2.0 — overview</a></li>
           </ul>
         </div>
         <nav class="article-nav" aria-label="Article navigation">
