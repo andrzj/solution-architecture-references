@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Disaster Recovery Patterns — SA References</title>
-  <meta name="description" content="Disaster recovery patterns: RTO/RPO definitions, the 4 DR strategies (backup-restore, pilot light, warm standby, multi-site active-active), data replication, DR testing, and AWS DRS.">
+  <meta name="description" content="Disaster recovery patterns: RTO and RPO, backup through active-active strategies, cross-region replication, testing runbooks, and choosing DR investment from business impact.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -104,31 +104,35 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p><strong>Recovery Point Objective (RPO)</strong> is the maximum acceptable amount of data loss measured in time — if RPO is 1 hour and a disaster strikes at 14:00, the system must be restorable to its 13:00 state with no more than 1 hour of transaction loss. These two metrics are the primary inputs to DR strategy selection: lower RTO and RPO require more expensive, always-hot standby infrastructure; higher tolerance enables simpler, cheaper backup-based approaches.</p>
-          <p>AWS defines four DR strategies along a cost-vs-recovery-speed spectrum. <strong>Backup and Restore</strong> (RTO: hours, RPO: hours) stores backups in S3 and restores from scratch; cheapest option (~$50–200/month for backup storage). <strong>Pilot Light</strong> (RTO: 10–60 min, RPO: minutes) keeps a minimal version of the environment running in the DR region — just the database replication and core networking, with compute scaled to zero; cost ~$200–500/month. <strong>Warm Standby</strong> (RTO: minutes, RPO: seconds) runs a scaled-down but fully functional version of the system in the DR region; cost ~$500–3,000/month.</p>
-          <p><strong>Multi-Site Active-Active</strong> (RTO: near-zero, RPO: near-zero) runs full capacity in both regions simultaneously with traffic split between them; cost: 2× normal infrastructure.</p>
+          <p><strong>Disaster recovery (DR)</strong> is the set of processes, infrastructure, and runbooks that restore applications and data after a major failure—regional cloud outage, datacenter loss, ransomware, or a bad deployment that cannot be rolled back in place. Architects express recovery goals with two metrics: <strong>Recovery Time Objective (RTO)</strong>, the maximum acceptable downtime before service is restored, and <strong>Recovery Point Objective (RPO)</strong>, the maximum acceptable data loss, usually described as how far back in time a consistent restore point must exist.</p>
+          <p>If leadership sets RPO to one hour and an incident occurs at 14:00, operations must be able to restore the system to at least a consistent state as of 13:00. Tighter RTO and RPO generally require more replicated data, pre-provisioned capacity, and automated failover; looser targets allow cheaper backup-and-restore designs. Business stakeholders own the numbers; engineering owns whether the architecture and testing actually meet them.</p>
+          <p>Hyperscalers and enterprise frameworks describe the same cost-versus-speed spectrum under different names. The AWS disaster-recovery whitepaper frames four patterns: <strong>backup and restore</strong>, <strong>pilot light</strong>, <strong>warm standby</strong>, and <strong>multi-site active-active</strong>. Azure’s Business Continuity and Disaster Recovery (BCDR) guidance maps similar tiers to paired regions and recovery orchestration. The choice is not “which product” but which tier of standby capacity and automation matches the agreed RTO and RPO for each workload tier.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Regional AWS failures occur — us-east-1 had a significant disruption in December 2021, and smaller AZ-level failures occur several times per year. Without a DR strategy, a regional failure means total service outage until AWS restores the region. For organisations with revenue-generating applications, the financial impact of downtime can be enormous: Amazon's own estimate of $220,000/minute for their systems implies that a 2-hour outage costs $26M. More relevant: a 4-hour outage for an e-commerce platform with $1M/day GMV costs $165K in direct revenue loss plus customer trust damage.</p>
-          <p>The cost of warm standby DR ($1,000/month) is negligible compared to a single outage event.</p>
-          <p>DR strategy selection requires honesty about the business impact of downtime. Many organisations claim an RTO of "15 minutes" without building or testing the infrastructure required to achieve it. The technical requirement for 15-minute RTO is a Warm Standby with pre-provisioned compute in the DR region, automated health checks triggering DNS failover, and a runbook that has been tested in a GameDay exercise within the last 90 days. "We have backups in S3" does not deliver 15-minute RTO — it delivers 4–12 hour RTO depending on database size and restore automation maturity.</p>
+          <p>Cloud regions and availability zones are highly reliable, but they are not immune to large-scale failures, misconfigurations, or dependency outages. A workload deployed in a single region with backups only in that region can remain unavailable until the region recovers or until engineers rebuild elsewhere from snapshots—a timeline that often exceeds what customers or regulators tolerate.</p>
+          <p>DR exists so recovery is a rehearsed engineering outcome, not improvisation during an incident. The AWS Well-Architected Reliability pillar expects you to define recovery objectives per workload, use multiple locations where the business requires it, and test recovery before you need it. Google’s SRE practice treats failure as inevitable and invests in runbooks, game days, and measurable recovery time rather than assuming uptime from a single site.</p>
+          <p>Mismatch between stated RTO/RPO and built infrastructure is a common governance gap. Backups in object storage support restore-after-loss but do not by themselves deliver minute-level RTO; that requires warm capacity, health-checked routing, and promotion paths that teams have exercised under realistic conditions.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Backup and Restore:</strong> Internal tools, development environments, non-revenue-critical applications, or systems where hours of downtime and data loss are acceptable; budget-constrained projects with regulated data retention requirements.</li>
-            <li><strong>Pilot Light:</strong> Small to mid-size applications where RTO of 30–60 minutes is acceptable and the cost of full standby is unjustified; database-heavy applications where data replication (Aurora Global Database, DynamoDB Global Tables) is the primary DR investment.</li>
-            <li><strong>Warm Standby:</strong> Production applications with business-critical data where 15-minute RTO and near-zero RPO are required; regulated industries (financial services, healthcare) with formal DR requirements.</li>
-            <li><strong>Multi-Site Active-Active:</strong> Global applications where any regional latency is unacceptable, or where business continuity requirements mandate zero downtime (critical payments infrastructure, real-time systems); organisations already operating in multiple regions for latency reasons.</li>
+            <li>The organisation has classified workloads by business impact and assigned RTO/RPO targets that leadership has signed off—not informal “we’ll fix it quickly” assumptions.</li>
+            <li>Revenue, safety, or regulatory obligations require geographic separation between production and recovery sites.</li>
+            <li>You need a documented DR strategy per tier (backup/restore through active-active) so platform and application teams provision the right level of replication and standby compute.</li>
+            <li>Audit or certification requires evidence of tested recovery, not only backup retention policies.</li>
+            <li>Multi-region or multi-AZ placement is already on the roadmap for latency or capacity, and DR can align with that topology instead of bolt-on standby later.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Active-Active for stateful monoliths:</strong> Active-active requires distributed, conflict-resolution-aware data management — forcing a monolithic application with a single-primary database into active-active creates data conflicts and split-brain risks that are worse than a clean failover.</li>
-            <li><strong>Pilot Light without automated failover:</strong> A Pilot Light strategy where failover requires manual DNS changes and scaling operations does not deliver its advertised RTO in a real disaster where the on-call engineer is under stress at 3 AM.</li>
-            <li><strong>Multi-site active-active for low-traffic applications:</strong> Paying 2× infrastructure costs for an internal application with 50 users and $50K annual revenue is rarely justifiable; match DR investment to business impact.</li>
+            <li><strong>One-size DR for every system:</strong> Running full active-active for internal sandboxes wastes budget; tier DR investment to business impact per application.</li>
+            <li><strong>Active-active without data design:</strong> Multi-writer active-active for a single-primary relational monolith invites split-brain and conflicting writes; redesign data ownership or choose active-passive failover instead.</li>
+            <li><strong>Pilot light without automation:</strong> A minimal standby region that depends on manual DNS edits and ad-hoc scaling at 03:00 will miss RTO even if the architecture diagram looks correct.</li>
+            <li><strong>DR documentation only:</strong> Runbooks that have never been executed in a controlled test do not qualify as a DR capability under Well-Architected or most audit frameworks.</li>
+            <li><strong>Backups as the sole control:</strong> Backups satisfy retention and legal hold but do not replace failover architecture when RTO is measured in minutes.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>The four DR patterns trade monthly standby cost against how quickly traffic and data can resume after primary site loss. Architects usually map tier-1 workloads to warm standby or active-active, tier-2 to pilot light or warm standby, and non-critical estates to backup and restore.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart LR
     subgraph strategies["DR strategies"]
@@ -177,69 +181,74 @@ Warm Standby Architecture (AWS)
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Cloud DR is dramatically cheaper than traditional data centre DR — warm standby at $1,000/month vs $100K+ for a co-located secondary data centre.</li>
-                <li>Aurora Global Database replication achieves typical RPO of under 1 second across regions with no application changes.</li>
-                <li>Infrastructure-as-Code (CDK/Terraform) enables identical environment provisioning in DR region with version-controlled runbooks.</li>
-                <li>AWS Elastic Disaster Recovery (DRS) automates block-level replication and failover orchestration for lift-and-shift DR scenarios.</li>
-                <li>DR testing can be automated as part of quarterly GameDay exercises without customer impact using read-only chaos simulations.</li>
+                <li>Public cloud DR avoids capital expenditure on duplicate physical datacenters; you pay for standby capacity and replication as operational cost aligned to tier.</li>
+                <li>Managed database global replication and object-store cross-region replication shorten RPO for many workloads without application rewrites.</li>
+                <li>Infrastructure as code lets you provision matching stacks in a recovery region from the same modules and pipelines as production.</li>
+                <li>Block-level replication services support lift-and-shift estates that were not born cloud-native.</li>
+                <li>Controlled failure injection and game days validate recovery without waiting for a real regional outage.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Untested DR plans fail at the worst possible time; organisations that document RTO/RPO without running DR tests create false confidence.</li>
-                <li>Active-active requires conflict resolution strategy for writes in both regions — eventually consistent or last-write-wins semantics are application concerns the platform cannot solve automatically.</li>
-                <li>Cross-region data transfer costs for database replication are ongoing ($0.02/GB) and can be significant for high-write workloads.</li>
-                <li>Warm standby database promotion time for Aurora Global Database (1–2 minutes) and DNS propagation (30–60 seconds) are lower bounds on achievable RTO that are often underestimated.</li>
-                <li>DR environments drift from production over time without automated drift detection (Config Rules, Terraform plan CI).</li>
+                <li>Untested DR creates false confidence; documentation alone does not reduce downtime when failover is first attempted under incident pressure.</li>
+                <li>Multi-site active-active shifts complexity to data consistency, conflict resolution, and observability across regions.</li>
+                <li>Ongoing cross-region replication and standby compute increase monthly spend and must be governed like production capacity.</li>
+                <li>Achievable RTO includes detection time, human approval, DNS caching, database promotion, and scale-out—each step adds minutes that slide decks often omit.</li>
+                <li>Passive DR environments drift from production unless drift detection and periodic rehearsed failover keep them aligned.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>DR runbooks must be executable by any engineer on the on-call rotation, not just the architect who designed the system. Document every manual step with exact CLI commands, console URLs, and expected output. Automate what can be automated: Aurora Global Database promotion is a single API call (<code>PromoteReadReplicaDBCluster</code>); ECS service scaling is a single API call; Route 53 record updates are a single API call. Build a "break glass" Lambda or Step Functions state machine that executes all failover steps in sequence and sends status updates to an incident Slack channel.</p>
-          <p>The ideal failover is triggered by a single command and completes in under 5 minutes without manual intervention.</p>
-          <p>DR testing cadence should be quarterly at a minimum for Tier 1 applications. A DR test should simulate the actual failure: terminate all instances in the primary region (or suspend Route 53 health checks), verify the DR environment serves traffic correctly, validate data integrity, and measure the actual RTO achieved. Document the measured RTO vs the target RTO, and update the runbook for any gaps discovered. For GameDay testing: use AWS FIS (Fault Injection Simulator) to inject region-level failures in a controlled environment without customer impact.</p>
-          <p>Require each application team to pass a DR GameDay before receiving a production-readiness certification.</p>
+          <p>Start from business-classified tiers: document RTO/RPO per workload in an architecture decision record or service catalog, then map each tier to one of the four DR patterns. Use the same tagging and account boundaries as your landing zone so recovery regions, backup vaults, and networking attachments are discoverable during an incident.</p>
+          <p>Replicate data and configuration artifacts across region boundaries—database replicas or managed global stores, cross-region backup copies, secrets and parameters, container images, and IaC state. Keep failover records on global DNS or anycast front ends at low TTL during steady state so cutover does not wait on client cache expiry.</p>
+          <p>Automate the repeatable steps: health-check-driven routing changes, managed database failover or promotion APIs, and scale-out of standby compute. Chain them in a workflow with explicit status output to the incident channel. Reserve manual steps for judgment calls (confirming primary is truly lost, halting split-brain writes) and document those steps so any on-call engineer can execute them.</p>
+          <p>Test recovery on a cadence proportional to tier: tier-1 workloads should run game days that measure achieved RTO and RPO against targets; lower tiers need at least periodic restore drills. Capture gaps in the runbook and fix drift before the next review cycle.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Undocumented DR strategy:</strong> Leadership believes RTO is "1 hour" based on a conversation 2 years ago; no runbook exists; no test has been run; the actual RTO when needed is 8+ hours; run a DR test immediately to establish a baseline.</li>
-            <li><strong>Database not replicated to DR region:</strong> Backups are in S3 Standard in us-east-1 (the same region that failed); restoring from a backup in the failed region requires the region to be functional; always replicate backups and snapshots cross-region.</li>
-            <li><strong>Secrets not available in DR region:</strong> Application fails to start in DR region because Secrets Manager secrets are not replicated; use Secrets Manager cross-region replication or store secrets in both regions; test the DR environment boots successfully quarterly.</li>
-            <li><strong>DNS TTL too high:</strong> Route 53 failover occurs but DNS record TTL is 300 seconds (5 minutes); downstream clients cache the old IP for up to 5 minutes after failover; set TTL to 30–60 seconds for failover records at all times, not just during incidents.</li>
-            <li><strong>Application state not DR-aware:</strong> In-memory session state stored in a single-region ElastiCache cluster is lost on regional failover; use DynamoDB or Elasticache Global Datastore for session state that must survive regional failures.</li>
+            <li><strong>Undocumented DR strategy:</strong> Leadership remembers an informal RTO from a past workshop while no runbook or test exists; the first real failover exposes hours of unplanned work.</li>
+            <li><strong>Backups colocated with primary:</strong> Snapshots and backup vaults that exist only in the failed region cannot be restored until that region or a copy elsewhere is reachable.</li>
+            <li><strong>Secrets and config missing in DR:</strong> Standby compute starts but applications fail because credentials, feature flags, or license keys were never replicated or parameterized for the recovery site.</li>
+            <li><strong>DNS TTL too high:</strong> Routing flips at the edge while clients continue hitting the failed endpoint until cached records expire.</li>
+            <li><strong>Stateful tiers not DR-aware:</strong> Session, cache, or queue state living in a single region is lost on failover even when the database recovers cleanly.</li>
+            <li><strong>Untested promotion under load:</strong> Replication lag spikes during primary stress; failover is invoked without checking lag and RPO is silently violated.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Have business stakeholders formally agreed on RTO and RPO targets, documented in the system's architecture decision record?</li>
-            <li>Are database backups and snapshots replicated cross-region to the DR target region?</li>
-            <li>Has the DR runbook been tested end-to-end in the last 90 days, with actual RTO and RPO measured and documented?</li>
-            <li>Is the DR environment provisioned from the same IaC code as production, with automated drift detection?</li>
-            <li>Are Secrets Manager secrets and Parameter Store parameters replicated to the DR region?</li>
-            <li>Is the failover process automated to the point where any on-call engineer can execute it in under 15 minutes, including DNS cutover and database promotion?</li>
+            <li>Have business stakeholders formally agreed on RTO and RPO per workload and recorded them where auditors and on-call engineers can find them?</li>
+            <li>Are backups and continuous replication copies stored in a recovery region separate from the primary?</li>
+            <li>Has end-to-end failover or restore been executed recently, with measured RTO and RPO compared to targets?</li>
+            <li>Is the recovery environment defined in the same IaC and deployment pipelines as production, with drift detection?</li>
+            <li>Are secrets, images, and non-database dependencies available in the recovery region before you need them?</li>
+            <li>Can on-call staff execute the documented failover path without tribal knowledge from a single architect?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Financial services platform (Warm Standby):</strong> Regulatory requirement of RTO ≤ 15 minutes; Aurora Global Database replicates with 1-second lag; ECS warm standby with 2 tasks; quarterly GameDay confirms 6-minute measured RTO; $2,400/month DR cost vs $500K fine for regulatory non-compliance.</li>
-            <li><strong>E-commerce checkout (Active-Active):</strong> Revenue impact of any downtime is $5K/minute; checkout service deployed in us-east-1 and eu-west-1 with DynamoDB Global Tables for cart data; Route 53 latency routing splits traffic between regions; any region failure results in 100% traffic to the healthy region within 30 seconds; zero-downtime failover validated monthly.</li>
-            <li><strong>Internal analytics platform (Backup/Restore):</strong> 4-hour RTO and 24-hour RPO accepted by business; daily Aurora snapshots cross-replicated to us-west-2; restore runbook documents 3-hour restoration process; $80/month DR cost for a non-revenue-critical system.</li>
+            <li><strong>Illustrative scenario —</strong> A regulated payments platform uses warm standby in a paired region: globally replicated relational data, a small always-on compute footprint in the recovery site, and quarterly game days that time promotion plus DNS cutover against a fifteen-minute RTO target.</li>
+            <li><strong>Illustrative scenario —</strong> A customer-facing API accepts backup-and-restore for a reporting subdomain but uses pilot light for the order API: replicated data and networking in a second region, with automation to scale application tiers when health checks fail in the primary region.</li>
+            <li><strong>Case study —</strong> Netflix and other large streamers have published multi-region active architectures with automated traffic steering when a region degrades; the pattern trades cost for near-continuous availability during regional failure.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="cloud-networking.html">Cloud Networking</a> — Route 53 failover routing and multi-region networking underpin all cloud DR strategies.</li>
-            <li><a href="../reliability/index.html">Reliability &amp; Resilience</a> — DR is one pillar of broader reliability engineering; circuit breakers and bulkheads address intra-region failures.</li>
-            <li><a href="landing-zones.html">Landing Zones</a> — DR accounts and VPCs are part of the multi-account landing zone structure.</li>
+            <li><a href="active-passive.html">Active-Passive Architecture</a> — Primary/standby failover is the most common way to implement warm standby and pilot-light DR tiers.</li>
+            <li><a href="active-active.html">Active-Active Architecture</a> — Multi-site active-active is the highest tier on the DR spectrum when RTO near zero justifies duplicate capacity.</li>
+            <li><a href="cloud-networking.html">Cloud Networking</a> — Failover routing, private connectivity, and cross-region networking underpin every DR design.</li>
+            <li><a href="landing-zones.html">Cloud Landing Zones</a> — Separate accounts or subscriptions for production and recovery simplify blast radius and audit evidence.</li>
+            <li><a href="../reliability/index.html">Reliability &amp; Resilience</a> — DR complements intra-region resilience patterns such as bulkheads and graceful degradation.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/whitepapers/latest/disaster-recovery-workloads-on-aws/disaster-recovery-options-in-the-cloud.html" target="_blank" rel="noopener noreferrer">Disaster Recovery Options in the Cloud — AWS Whitepaper</a></li>
-            <li><a href="https://aws.amazon.com/blogs/architecture/tag/disaster-recovery/" target="_blank" rel="noopener noreferrer">Disaster Recovery — AWS Architecture Blog</a></li>
-            <li><a href="https://docs.aws.amazon.com/drs/latest/userguide/what-is-drs.html" target="_blank" rel="noopener noreferrer">AWS Elastic Disaster Recovery — User Guide</a></li>
+            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected Framework — Reliability Pillar</a></li>
+            <li><a href="https://docs.aws.amazon.com/whitepapers/latest/disaster-recovery-workloads-on-aws/disaster-recovery-options-in-the-cloud.html" target="_blank" rel="noopener noreferrer">Disaster Recovery of Workloads on AWS — DR Options in the Cloud</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/well-architected/reliability/disaster-recovery" target="_blank" rel="noopener noreferrer">Disaster Recovery — Azure Well-Architected Framework</a></li>
+            <li><a href="https://sre.google/sre-book/managing-incidents/" target="_blank" rel="noopener noreferrer">Google SRE Book — Managing Incidents</a></li>
+            <li><a href="https://docs.aws.amazon.com/drs/latest/userguide/what-is-drs.html" target="_blank" rel="noopener noreferrer">What Is AWS Elastic Disaster Recovery? — AWS Documentation</a></li>
           </ul>
 
         </div>

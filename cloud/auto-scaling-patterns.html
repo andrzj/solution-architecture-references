@@ -104,32 +104,35 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
+          <p><strong>Auto-scaling patterns</strong> are the recurring ways platforms add or remove compute—VMs, containers, or functions—in response to demand signals. Patterns include horizontal replica scaling, vertical sizing adjustments, cluster node provisioning, event-driven scale-to-zero, warm pools for fast scale-out, and predictive pre-warming before known traffic peaks.</p>
           <p>In cloud and Kubernetes environments, this operates across three dimensions: <strong>Horizontal Pod Autoscaler (HPA)</strong> scales the number of pod replicas within a Deployment or StatefulSet based on CPU utilisation, custom metrics, or external metrics; <strong>Vertical Pod Autoscaler (VPA)</strong> adjusts the CPU and memory requests/limits of individual pods based on historical usage patterns; and <strong>Cluster Autoscaler (CA)</strong> adds or removes EC2/GCE/Azure VM nodes from the cluster node group when pods cannot be scheduled due to resource constraints or when nodes are underutilised.</p>
           <p><strong>KEDA (Kubernetes Event-Driven Autoscaling)</strong> extends the HPA model to scale based on external event sources: SQS queue depth, Kafka consumer group lag, Azure Service Bus message count, Prometheus metrics, or any custom external scaler. KEDA can scale deployments to zero replicas when there are no events to process and from zero to N replicas when events arrive — enabling serverless-like cost efficiency for event-driven workloads running on Kubernetes. The combination of HPA, VPA (for recommendations), CA, and KEDA covers the full range of scaling patterns for container workloads.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Manual scaling — provisioning for peak load — wastes money 90% of the time when traffic is below peak. Provisioning for average load causes service degradation or outages during traffic spikes. Auto-scaling resolves this tension by making capacity a function of actual demand. For cloud workloads, the cost model is consumption-based, so idle compute directly increases bills.</p>
-          <p>For microservices architectures with dozens of services, manually determining and adjusting replica counts would require constant engineering attention. Auto-scaling makes capacity management declarative: engineers specify the desired utilisation targets, and the scaling system continuously maintains them.</p>
-          <p>Predictive scaling extends reactive auto-scaling by using historical traffic patterns (time-of-day seasonality, day-of-week patterns) to pre-provision capacity before load arrives. This addresses the reactive lag problem: a traffic spike that takes 2 minutes to trigger a scale-out event and another 3 minutes for new instances to become healthy may still cause degraded service for the first 5 minutes. AWS Application Auto Scaling's <strong>predictive scaling</strong> uses ML to generate a scaling forecast and issues scale-out actions 5–10 minutes before predicted load increases.</p>
+          <p>Provisioning every service for peak load leaves capacity idle most hours; provisioning only for average load invites saturation when demand spikes. Auto-scaling ties fleet size to measured demand so you pay for what you use while preserving headroom policies you declare upfront. On consumption-priced clouds, that directly affects the bill.</p>
+          <p>Dozens of microservices make manual replica tuning unsustainable—each team would chase different metrics on a different cadence. Declarative autoscalers (HPA, cluster autoscaler, EC2 Auto Scaling groups) encode target utilization or queue depth once and reconcile continuously.</p>
+          <p>Reactive scaling always lags reality: metrics must cross thresholds, new instances must boot, health checks must pass, and load balancers must register targets. Patterns such as <strong>warm pools</strong>, <strong>predictive scaling</strong> (documented for EC2 Auto Scaling in AWS), and conservative scale-down stabilization windows exist specifically to shrink that gap without manual on-call firefighting.</p>
+          <p>Event-driven workloads add another dimension: capacity should track queue lag or partition throughput, not CPU alone. KEDA and cloud-native metric adapters connect external signals to the same control loop so batch consumers and stream processors scale with backlog, including to zero when work is absent.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Applications with variable, unpredictable traffic (consumer-facing APIs, e-commerce, media streaming) where over-provisioning for peak would waste significant resources.</li>
-            <li>Event-driven workloads (queue consumers, stream processors) where the workload volume is directly proportional to queue depth or topic lag — KEDA is purpose-built for this.</li>
-            <li>Kubernetes workloads where pod resource requests are miscalibrated — VPA can observe actual usage and recommend right-sized requests without manual tuning.</li>
-            <li>Batch workloads that burst periodically — autoscaling nodes in (Cluster Autoscaler) during job runs and scaling back to zero eliminates idle node costs between batch windows.</li>
-            <li>Multi-tenant SaaS platforms where each tenant workload may independently spike and needs isolated scaling without affecting other tenants.</li>
+            <li>Your service traffic varies by hour, season, or campaign and you would otherwise over-provision fleets for rare peaks on consumption-priced compute.</li>
+            <li>Backlog depth or stream lag is a better capacity signal than CPU, and you can drive replica count from queues or topics (for example with KEDA scalers documented at <a href="https://keda.sh/docs/latest/scalers/" target="_blank" rel="noopener noreferrer">keda.sh</a>).</li>
+            <li>Kubernetes pods carry CPU and memory <code>requests</code> so Horizontal Pod Autoscaler can compare utilization to targets, as described in the <a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/" target="_blank" rel="noopener noreferrer">Kubernetes HPA task documentation</a>.</li>
+            <li>Batch or ML jobs create pending pods that should trigger cluster node scale-out via the <a href="https://kubernetes.io/docs/concepts/cluster-administration/cluster-autoscaling/" target="_blank" rel="noopener noreferrer">cluster autoscaler</a> model, then release nodes when the queue is empty.</li>
+            <li>You have measured scale-out latency and downstream limits (connection pools, partner quotas) and can cap maximum replicas without breaching SLOs.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Stateful workloads with slow startup:</strong> Databases, Kafka brokers, and Elasticsearch nodes have multi-minute startup and data rebalancing processes that make reactive horizontal scaling impractical; scale these vertically or use pre-provisioned warm replicas.</li>
-            <li><strong>In-place auto-scaling VPA with production pods:</strong> VPA in "Auto" mode evicts pods to apply new resource requests, causing brief disruptions; use VPA in "Recommend" mode for read-only right-sizing guidance without evictions.</li>
-            <li><strong>Very short-duration spikes (sub-30-second):</strong> EC2 ASG or Kubernetes node provisioning takes 2–5 minutes; HPA pod scheduling takes 30–90 seconds; if your spike is shorter than your scale-out latency, pre-provisioned capacity or serverless is a better fit.</li>
-            <li><strong>When startup initialisation is expensive:</strong> Services that require 5+ minutes of data loading or cache warming on startup may not benefit from reactive scaling; use warm pools or pre-scaled deployments during predictable events.</li>
+            <li>Data stores with long bootstrap or rebalance times should scale vertically or use fixed warm replicas instead of elastic replica counts that trigger costly cluster resharding.</li>
+            <li>Vertical Pod Autoscaler in auto-evict mode disrupts running pods; prefer recommendation mode for production unless you accept planned restarts during maintenance windows.</li>
+            <li>Traffic spikes shorter than your measured provision-and-health-check window need pre-warmed capacity, serverless, or over-provisioning because reactive autoscalers cannot add healthy endpoints in time.</li>
+            <li>Applications that warm large in-memory caches or load models on startup need warm pools, predictable pre-scale, or fewer, larger instances instead of aggressive scale-to-zero.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Kubernetes estates usually stack metric collection, pod-level autoscalers, and node provisioning; VM fleets combine load-balancer metrics with Auto Scaling groups, warm pools, and mixed on-demand/Spot capacity. The diagram below shows the Kubernetes control loop; EC2 patterns in the text fallback mirror the same signal → policy → capacity chain described in <a href="autoscaling.html">Auto-Scaling Deep Dive</a>.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     metrics["External metrics API&lt;br/&gt;custom + Prometheus"]
@@ -188,74 +191,79 @@ EC2 Auto Scaling Group Patterns
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-                <li>Eliminates idle compute cost — resources scale down when demand falls, directly reducing cloud bills.</li>
-                <li>Provides resilience against traffic spikes without manual on-call intervention at 3 AM.</li>
-                <li>KEDA scale-to-zero eliminates idle cost entirely for event-driven workloads with infrequent bursts.</li>
-                <li>VPA recommendations expose over- and under-provisioned pods, improving resource efficiency cluster-wide.</li>
-                <li>Target tracking policies are self-correcting — no need to tune step scaling thresholds as workload character changes.</li>
+                <li>Declarative policies reconcile capacity with live metrics, which ties cloud spend to demand on platforms that bill by the hour or second.</li>
+                <li>Target-tracking scaling on CPU, request count, or custom metrics reduces manual paging when traffic shifts overnight or during promotions.</li>
+                <li>Event-driven scalers can idle replicas between bursts, which suits queue consumers and sporadic ETL without always-on fleets.</li>
+                <li>Rightsizing signals from VPA or cloud advisor tooling highlight pods or VMs allocated well above measured use.</li>
+                <li>Predictive and warm-pool options documented for EC2 Auto Scaling shorten the gap between threshold breach and healthy endpoints.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-                <li>Scale-out latency (30 s to 5 min depending on layer) can cause degraded performance during sharp traffic spikes before new capacity becomes ready.</li>
-                <li>HPA and VPA cannot be used simultaneously on the same resource without conflict — HPA manages replicas, VPA manages requests; running both in Auto mode causes oscillation.</li>
-                <li>Aggressive scale-in policies can cause service disruption if pod drain periods are too short or PodDisruptionBudgets are misconfigured.</li>
-                <li>Cold start problem with KEDA scale-from-zero: the first events after a scale-to-zero period experience higher latency while pods initialise.</li>
-                <li>Cluster Autoscaler node removal decisions are complex with mixed workloads; misconfigured pod affinity can prevent scale-in even when nodes are underutilised.</li>
+                <li>Every layer—pod schedule, node launch, load-balancer registration—adds latency, so sharp ramps can saturate before new capacity serves traffic.</li>
+                <li>Combining replica scaling with in-place request changes on the same workload can oscillate unless modes and stabilization windows are chosen deliberately.</li>
+                <li>Scale-in without PodDisruptionBudgets, graceful termination, or drain hooks drops in-flight work during node consolidation.</li>
+                <li>Scale-from-zero paths pay a cold-start tax on the first events after idle periods, which may violate latency SLOs without a minimum floor.</li>
+                <li>Cluster autoscaler scale-in can stall when pods use local volumes, strict affinity, or system workloads that resist eviction.</li>
               </ul>
             </div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
           <p>For HPA, start with CPU-based scaling using <code>targetCPUUtilizationPercentage: 60</code> — 60% gives headroom for scale-out latency before saturation. For more responsive scaling, use custom metrics via Prometheus Adapter to expose application-level metrics (active connections, request queue depth) to the HPA. Configure <code>behavior.scaleDown.stabilizationWindowSeconds: 300</code> to prevent flapping — this prevents immediate scale-in after a traffic burst subsides. Set <code>minReplicas: 2</code> for any production workload to maintain redundancy; never scale to 1 replica for services that must survive a node failure.</p>
-          <p>For KEDA, install via Helm (<code>helm install keda kedacore/keda</code>) and define a <code>ScaledObject</code> pointing at your SQS queue with <code>targetValue: 10</code> (messages per pod). Set <code>minReplicaCount: 0</code> for true scale-to-zero and <code>cooldownPeriod: 300</code> to avoid rapid scaling cycles. For the <strong>warm pool pattern</strong> on EC2 Auto Scaling: configure a Warm Pool with <code>MinSize: 2</code> and state <code>Stopped</code> — instances are pre-initialised and can join the fleet in 30–60 seconds rather than 3–5 minutes. Combine with Lifecycle Hooks to run application warm-up scripts (cache loading, JVM JIT compilation) before the instance enters service.</p>
+          <p>For KEDA, install the operator from documented Helm or manifest paths and define a <code>ScaledObject</code> whose trigger matches your event source (queue depth, Kafka lag, custom metrics). Set <code>minReplicaCount</code> to zero only when cold starts are acceptable; otherwise keep a small floor for latency-sensitive paths. Use <code>cooldownPeriod</code> and scale-down stabilization so bursty traffic does not oscillate replica counts.</p>
+          <p>On VM fleets, EC2 Auto Scaling warm pools (see AWS warm pool documentation) hold pre-initialized instances that enter service faster than cold launches—useful when application boot or JVM warmup dominates scale-out latency. Lifecycle hooks let you run health and warmup checks before an instance receives traffic. Mixed On-Demand and Spot instance policies documented for Auto Scaling groups can shift burst capacity to interruptible pricing when jobs tolerate eviction.</p>
+          <p>Load-test autoscaling policies against realistic ramp shapes: step tests expose threshold tuning problems; soak tests expose memory leaks that defeat scale-in. Document maximum replica counts and downstream limits (database connections, partner rate limits) so HPA cannot scale the app tier into an outage.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>HPA thrashing:</strong> Scale-out triggers, new pods start (increasing available CPU), HPA scales in immediately — configure a stabilization window to prevent oscillation between scales.</li>
-            <li><strong>Cluster Autoscaler unable to scale in:</strong> Pods without PodDisruptionBudgets, pods with local storage, or pods with strict node affinity prevent node draining; review CA logs for "node cannot be removed" reasons.</li>
-            <li><strong>Missing resource requests:</strong> HPA uses CPU utilisation relative to <code>requests</code> — pods without CPU requests report 0% utilisation and HPA never scales; every pod must have resource requests defined.</li>
-            <li><strong>Scale-out with downstream bottleneck:</strong> App tier scales out but database connection pool is exhausted — adding more pods amplifies downstream pressure; implement connection pooling (PgBouncer) before enabling aggressive HPA.</li>
-            <li><strong>Cooldown period too short:</strong> EC2 ASG default 300 s cooldown; reducing it for faster scale-in can cause instances to terminate before in-flight requests complete — respect connection draining time.</li>
+            <li><strong>Replica flapping:</strong> Aggressive scale-down immediately after scale-up when averages dip; fix with HPA <code>behavior</code> stabilization windows documented in the Kubernetes autoscaling API.</li>
+            <li><strong>Blocked node consolidation:</strong> Cluster autoscaler cannot drain nodes when pods lack disruption budgets, use <code>emptyDir</code> you treat as durable, or pin to specific hosts—inspect autoscaler events for unschedulable or non-evictable pods.</li>
+            <li><strong>Phantom low utilization:</strong> Missing CPU <code>requests</code> makes utilization metrics meaningless, so HPA never scales; set requests to expected steady-state load before enabling autoscaling.</li>
+            <li><strong>Downstream overload:</strong> More replicas multiply connections, API calls, or partition consumers and exhaust databases or brokers; pool or throttle before raising <code>maxReplicas</code>.</li>
+            <li><strong>Premature instance termination:</strong> ASG scale-in or spot interruption outpaces connection draining; align lifecycle hooks and grace periods with measured client timeout budgets.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Do all pods have CPU and memory resource requests defined (required for HPA to function correctly)?</li>
-            <li>Is there a PodDisruptionBudget ensuring minimum available replicas during node draining?</li>
-            <li>Is your scale-out latency (pod start time) acceptable for your traffic spike profile?</li>
-            <li>Have you configured a scale-down stabilisation window to prevent flapping?</li>
-            <li>For KEDA scale-to-zero workloads, is the cold-start latency acceptable for the first message after an idle period?</li>
-            <li>Does your database or downstream dependency support the maximum concurrency that could result from a full scale-out event?</li>
+            <li>Do production workloads declare CPU and memory requests that reflect steady-state load rather than cluster defaults?</li>
+            <li>Is a PodDisruptionBudget or equivalent guard in place so scale-in and node drains never violate minimum availability?</li>
+            <li>Have you load-tested the path from metric breach to healthy endpoint serving traffic and recorded that latency?</li>
+            <li>Are scale-down stabilization and cooldown settings tuned so bursty traffic does not oscillate replica counts?</li>
+            <li>If you scale to zero, did you measure cold-start latency against the SLO for the first request after idle?</li>
+            <li>Does every downstream system tolerate the concurrency implied by your configured maximum scale-out width?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>E-commerce Black Friday traffic:</strong> HPA scales the API tier from 10 to 80 pods in 4 minutes driven by ALB request count metric; predictive scaling pre-provisions 40 pods 15 minutes before midnight based on prior-year traffic pattern, eliminating the initial degradation window.</li>
-            <li><strong>SQS-backed order processor:</strong> KEDA ScaledObject scales worker pods from 0 to 50 based on SQS queue depth; during quiet periods (midnight–6 AM) scale is zero, reducing cluster cost by 40% during those hours.</li>
-            <li><strong>ML inference service:</strong> GPU node group uses Cluster Autoscaler; during model evaluation sprints, 20 GPU nodes spin up within 10 minutes driven by pending pod pressure, then scale back to 0 when jobs complete, costing $0 for compute between sprint cycles.</li>
+            <li><strong>Illustrative scenario —</strong> A retail API tier scales horizontally on request-rate metrics during a seasonal peak; predictive scaling adds capacity minutes before the spike using prior-year traffic curves, avoiding the first minutes of saturation.</li>
+            <li><strong>Illustrative scenario —</strong> Queue-backed order workers use event-driven autoscaling from zero to dozens of replicas based on backlog depth, idling overnight when no messages arrive.</li>
+            <li><strong>Illustrative scenario —</strong> A batch ML evaluation job schedules GPU nodes only while pods are pending; nodes terminate when the job queue drains so the cluster pays nothing between sprint windows.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="cloud-cost-optimization.html">Cloud Cost Optimization</a> — autoscale-in and scale-to-zero are primary cost levers enabled by cloud-native design.</li>
-            <li><a href="serverless-architecture.html">Serverless Architecture</a> — the extreme form of scale-to-zero, where FaaS handles all scaling automatically.</li>
-            <li><a href="../scalability/index.html">Scalability &amp; Performance</a> — broader patterns for horizontal and vertical scaling across system components.</li>
-            <li><a href="cloud-native-design.html">Cloud-Native Design Principles</a> — statelessness is the prerequisite for effective horizontal autoscaling.</li>
+            <li><a href="autoscaling.html">Auto-Scaling Deep Dive</a> — Policy tuning, cooldowns, custom metrics, and load-test validation.</li>
+            <li><a href="cloud-cost-optimization.html">Cloud Cost Optimization</a> — Autoscale-in and scale-to-zero as primary cost levers.</li>
+            <li><a href="serverless-architecture.html">Serverless Architecture</a> — Provider-managed scale-to-zero without fleet management.</li>
+            <li><a href="../scalability/index.html">Scalability &amp; Performance</a> — Horizontal and vertical scaling across system components.</li>
+            <li><a href="cloud-native-design.html">Cloud-Native Design Principles</a> — Stateless processes that make horizontal autoscaling safe.</li>
           </ul>
 
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://keda.sh/docs/latest/concepts/" target="_blank" rel="noopener noreferrer">KEDA Concepts and Architecture</a></li>
-            <li><a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/" target="_blank" rel="noopener noreferrer">Horizontal Pod Autoscaling — Kubernetes Docs</a></li>
-            <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/predictive-scaling-overview.html" target="_blank" rel="noopener noreferrer">Predictive Scaling for Amazon EC2 Auto Scaling</a></li>
+            <li><a href="https://keda.sh/docs/latest/concepts/scaling-deployments/" target="_blank" rel="noopener noreferrer">Scale Kubernetes Deployments — KEDA documentation</a></li>
+            <li><a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/" target="_blank" rel="noopener noreferrer">Horizontal Pod Autoscaling — Kubernetes documentation</a></li>
+            <li><a href="https://kubernetes.io/docs/concepts/cluster-administration/cluster-autoscaling/" target="_blank" rel="noopener noreferrer">Cluster autoscaling — Kubernetes documentation</a></li>
+            <li><a href="https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-warm-pools.html" target="_blank" rel="noopener noreferrer">Warm pools for Amazon EC2 Auto Scaling — AWS documentation</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/aks/cluster-autoscaler" target="_blank" rel="noopener noreferrer">Enable the cluster autoscaler on AKS — Azure documentation</a></li>
           </ul>
 
         </div>
         <nav class="article-nav" aria-label="Article navigation">
-          <a href="shared-responsibility-model.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Shared Responsibility Model</span></a>
-          <a href="cloud-storage-patterns.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Cloud Storage Patterns</span></a>
+          <a href="cloud-networking.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Cloud Networking</span></a>
+          <a href="autoscaling.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Auto-Scaling Deep Dive</span></a>
         </nav>
       </div>
       <aside class="article-aside">

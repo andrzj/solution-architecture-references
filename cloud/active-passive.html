@@ -104,23 +104,34 @@
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>It is the most common enterprise DR pattern: cheaper than active-active while still meeting RTO targets measured in minutes when warm standby and rehearsed runbooks are in place.</p>
+          <p><strong>Active-passive</strong> (primary/standby) routes production traffic through one active region or site while a secondary site remains on standby—scaled down, idle, or serving only health checks—until failover. The passive site receives replicated data and often a minimal runnable stack so promotion, scale-out, and DNS or global accelerator cutover can meet agreed RTO without funding full active-active capacity in every region.</p>
+          <p>On the standard cloud DR spectrum, active-passive covers <strong>pilot light</strong> (core data and networking replicated, compute provisioned on demand) and <strong>warm standby</strong> (always-on but smaller compute in the recovery region). Both keep a single write path in steady state, which simplifies consistency compared with multi-writer active-active.</p>
+          <p>Active-passive is the default enterprise pattern for tier-1 databases and business APIs: one clear primary writer, asynchronous or managed synchronous replication to the standby, and automated or rehearsed steps to invert roles when the primary is unhealthy.</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Organisations need better RTO than backup-and-restore but cannot justify full duplicate capacity in every region.</p>
-          <p>Regulators often require a geographically separated recovery site even when daily traffic is concentrated in one region.</p>
+          <p>Many organisations need recovery in minutes, not hours, but cannot justify doubling production compute in multiple regions for every application. Active-passive buys down RTO relative to backup-and-restore by keeping replication hot and optionally keeping application tiers warm at reduced scale.</p>
+          <p>Regulators and customer contracts often require a geographically separated recovery capability even when daily traffic concentrates in one region. Azure BCDR guidance and AWS disaster-recovery materials both describe paired regions and standby topologies as standard ways to meet those expectations without mandatory multi-writer designs.</p>
+          <p>Google’s SRE material emphasizes measurable recovery: active-passive works when replication lag, promotion time, and DNS behavior are instrumented and tested—not when standby exists only on a diagram.</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Business-critical apps with RTO of 5–60 minutes and RPO of seconds to minutes.</li>
-            <li>Database-heavy systems where Aurora Global Database or cross-region read replica promotion is the primary DR investment.</li>
-            <li>Teams with rehearsed failover runbooks and DNS or Global Accelerator health-checked routing.</li>
+            <li>Workloads with business-agreed RTO from several minutes to roughly an hour and RPO from seconds to a few minutes, backed by replication rather than periodic snapshots alone.</li>
+            <li>Database-centric systems where managed global databases or cross-region read replicas provide a promotion path the team has practiced.</li>
+            <li>Applications with a single primary write region today that need geographic DR without redesigning for concurrent multi-region writes.</li>
+            <li>Teams willing to run quarterly or more frequent failover drills that include DNS flip, database promotion, and scale-out of the passive stack.</li>
+            <li>Cost-sensitive tier-1 services that must beat backup/restore RTO but do not qualify for full active-active spend.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Passive region never tested — failover fails at 3 AM because credentials, secrets, or scaling scripts are stale.</li>
-            <li>Active-passive masquerading as active-active (both regions get writes) without conflict handling.</li>
+            <li><strong>Never-tested standby:</strong> A passive region that has not booted successfully since provisioning will fail failover when secrets, AMIs, or scaling policies are stale.</li>
+            <li><strong>Covert dual-write:</strong> Sending production writes to both regions without conflict handling is active-active in disguise and inherits split-brain risk.</li>
+            <li><strong>Sub-minute RTO without automation:</strong> Manual runbooks alone rarely meet aggressive targets; automate health-checked routing and promotion where leadership demands near-continuous uptime.</li>
+            <li><strong>Replication lag above RPO:</strong> Async replication that routinely lags beyond the agreed RPO makes failover a controlled data-loss event, not recovery within policy.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Global DNS or anycast health-checks the primary region, replicates data asynchronously or through a managed global store, and on failure promotes the standby database, scales passive compute, and shifts traffic to the recovery endpoint.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     dns["Route 53 / global accelerator&lt;br/&gt;health checks"]
@@ -153,49 +164,70 @@
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Lower cost than active-active while meeting moderate RTO.</li>
-            <li>Clear operational story: one primary writer simplifies consistency.</li>
-            <li>Failover drills can use passive region without customer traffic.</li>
+                <li>Lower steady-state cost than active-active while still supporting many tier-1 RTO targets when warm standby and automation are in place.</li>
+                <li>Single primary writer simplifies application logic and avoids multi-region write conflicts during normal operations.</li>
+                <li>Passive region can be exercised in drills without sharing production load, reducing risk during game days.</li>
+                <li>Fits naturally with managed database global replication and health-checked global traffic management products.</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>RTO includes detection, decision, DNS TTL, DB promotion, and scale-out — often underestimated.</li>
-            <li>Replication lag defines real RPO; async replication loses in-flight writes.</li>
-            <li>Passive resources still incur storage and minimal compute cost.</li>
+                <li>Failover duration includes detection, human confirmation, DNS caching, promotion, and scale-out—each step adds latency that slide decks often omit.</li>
+                <li>Asynchronous replication means real RPO equals replication lag at failover time; in-flight writes may be lost.</li>
+                <li>Standby storage, minimal compute, and cross-region replication incur ongoing cost even when the passive site serves no customer traffic.</li>
+                <li>State outside the database (queues, caches, ephemeral session stores) may not failover unless explicitly replicated or rebuilt.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Automate promotion steps where possible (Aurora global failover, ECS/Kubernetes scale policies triggered by runbook). Keep secrets and container images identical in both regions.</p>
-          <p>Measure replication lag continuously; alert when lag exceeds RPO budget. Run quarterly GameDays that execute full failover including DNS flip.</p>
+          <p>Provision the passive region from the same infrastructure-as-code modules and container artifacts as the primary so configuration drift is visible in plan/apply reviews. Replicate secrets, parameters, and images into the recovery region or resolve them from global stores at boot.</p>
+          <p>Instrument replication lag continuously and page when lag approaches the RPO budget. Automate promotion and scale where the platform supports it—managed global database failover, orchestrator scale policies triggered by runbooks—and keep human gates only where split-brain risk requires judgment.</p>
+          <p>Keep failover DNS or global accelerator records at low TTL in steady state. Document ordered steps: confirm primary failure, stop writes if needed, promote data, scale passive compute, shift traffic, validate synthetic checks, communicate status.</p>
+          <p>Run game days that execute the full sequence, measure achieved RTO/RPO, and feed gaps back into automation and documentation.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Promotion without validation:</strong> Standby promoted while replication was broken — data loss exceeds RPO.</li>
-            <li><strong>DNS stickiness:</strong> Clients cache old IP addresses; failover appears partial — lower TTL on failover records.</li>
+            <li><strong>Promotion while replication is broken:</strong> Failing over into a stale or disconnected replica violates RPO and may require manual reconciliation.</li>
+            <li><strong>DNS stickiness:</strong> Clients and intermediaries cache old endpoints after routing changes, causing partial outages until TTL expires.</li>
+            <li><strong>Under-scaled standby:</strong> Passive compute cannot reach primary capacity before autoscaling catches up, prolonging degradation after cutover.</li>
+            <li><strong>Missing peripheral state:</strong> Message backlogs, cache warmness, and search indexes in only the primary region delay full service restoration.</li>
+            <li><strong>Failback neglected:</strong> Teams restore primary later without a tested failback path, leaving asymmetric configuration for the next incident.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Has full failover been executed end-to-end in the last 90 days?</li>
-            <li>Is passive region infrastructure defined in IaC with the same modules as primary?</li>
-            <li>Are write dependencies (queues, caches) replicated or rebuilt during failover?</li>
+            <li>Has full failover—including DNS, promotion, and scale-out—been executed end-to-end within the review period leadership expects?</li>
+            <li>Is passive infrastructure defined in IaC with parity checks against primary?</li>
+            <li>Are queues, caches, and other write dependencies replicated, rebuildable, or explicitly accepted as RPO exceptions?</li>
+            <li>Do monitoring and paging fire on replication lag before lag exceeds RPO?</li>
+            <li>Can any qualified on-call engineer run the runbook without architect-only tribal knowledge?</li>
+            <li>Is failback documented and tested, not only failover to standby?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Billing service:</strong> Aurora Global Database with 1-second typical lag; passive ECS cluster at 25% capacity; failover runbook promotes replica and scales tasks in under 8 minutes.</li>
+            <li><strong>Illustrative scenario —</strong> A billing API runs in one region with a global database secondary and a passive Kubernetes cluster at reduced replica count; rehearsed failover promotes the database, scales the standby fleet, and shifts health-checked DNS within the agreed RTO window.</li>
+            <li><strong>Illustrative scenario —</strong> A B2B control plane uses pilot light in a paired region: networking and database replication always on, compute provisioned from IaC when regional health checks fail.</li>
+            <li><strong>Illustrative scenario —</strong> A healthcare workload keeps warm standby to satisfy geographic separation requirements while accepting async replication RPO documented in the compliance packet.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="disaster-recovery.html">Disaster Recovery Patterns</a> — DR strategy spectrum.</li>
-            <li><a href="active-active.html">Active-Active Architecture</a> — When standby is not enough.</li>
-            <li><a href="multi-region.html">Multi-Region Architecture</a> — Regional topology overview.</li>
+            <li><a href="disaster-recovery.html">Disaster Recovery Patterns</a> — Maps pilot light and warm standby to the four-pattern DR spectrum.</li>
+            <li><a href="active-active.html">Active-Active Architecture</a> — Next step when RTO and scale requirements exceed passive standby economics.</li>
+            <li><a href="multi-region.html">Multi-Region Architecture</a> — Regional pairing, sovereignty, and latency context for primary/standby placement.</li>
+            <li><a href="cloud-networking.html">Cloud Networking</a> — Private connectivity and DNS behavior during cutover.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
-            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database.html" target="_blank" rel="noopener noreferrer">Aurora Global Database</a></li>
-            <li><a href="https://sre.google/sre-book/being-on-call/" target="_blank" rel="noopener noreferrer">Google SRE — Being On-Call</a></li>
-            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html" target="_blank" rel="noopener noreferrer">AWS Well-Architected Framework</a></li>
+            <li><a href="https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html" target="_blank" rel="noopener noreferrer">Aurora Global Database for Disaster Recovery — AWS Documentation</a></li>
+            <li><a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/dns-failover-configuring.html" target="_blank" rel="noopener noreferrer">Configuring DNS Failover — Amazon Route 53 Developer Guide</a></li>
+            <li><a href="https://learn.microsoft.com/en-us/azure/reliability/cross-region-replication-azure" target="_blank" rel="noopener noreferrer">Cross-Region Replication in Azure — Microsoft Learn</a></li>
+            <li><a href="https://sre.google/sre-book/being-on-call/" target="_blank" rel="noopener noreferrer">Being On-Call — Google SRE Book</a></li>
+            <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/plan-for-disaster-recovery-dr.html" target="_blank" rel="noopener noreferrer">Plan for Disaster Recovery (DR) — AWS Well-Architected Reliability Pillar</a></li>
           </ul>
         </div>
                 <nav class="article-nav" aria-label="Article navigation">
