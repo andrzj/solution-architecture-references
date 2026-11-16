@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Integration Testing — SA References</title>
-  <meta name="description" content="Testing component interactions in isolation — contract tests, consumer-driven contracts.">
+  <meta name="description" content="Integration testing checks real collaborations—databases, HTTP, messaging—in the middle of the test pyramid, using containers and isolated CI dependencies.">
   <link rel="stylesheet" href="../assets/css/main.css">
   <script>
     (function() {
@@ -99,95 +99,124 @@
             <span class="badge badge--primary">Software Engineering</span>
           </div>
           <h1 class="article-header__title">Integration Testing</h1>
-          <p class="article-header__desc">Testing component interactions in isolation — contract tests, consumer-driven contracts.</p>
+          <p class="article-header__desc">Integration tests prove wiring with real databases, brokers, and HTTP—faster than E2E, broader than unit tests—usually with Testcontainers in CI.</p>
           <div class="article-header__meta"><span>⏱ 10 min read</span></div>
         </div>
         <div class="article-content">
           <h2 id="what-it-is">What it is</h2>
-          
-          <p>Effective integration tests use ephemeral databases, Testcontainers, or in-memory fakes — not shared staging environments that serialise teams.</p>
+          <p><strong>Integration testing</strong> verifies that components work together correctly—application code with a real database, HTTP client with a running process, message handler with a broker—without exercising the entire product through the UI. It sits in the middle of the <a href="test-pyramids.html">test pyramid</a>: slower and broader than unit tests, faster and more targeted than full end-to-end journeys.</p>
+          <p>Effective integration tests use ephemeral dependencies (Testcontainers, in-memory brokers, localstack-style emulators) so each pipeline run owns its infrastructure. They answer questions unit tests cannot: Did the migration match the ORM mapping? Does serialization round-trip across the wire? Will the consumer’s timeout break the provider’s thread pool?</p>
+
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Unit tests cannot catch SQL migration errors, misconfigured HTTP clients, or serializer mismatches.</p>
-          <p>Pure e2e tests are slow and flaky for debugging integration faults.</p>
+          <p>Unit tests isolate logic with doubles; they deliberately do not prove wiring, schema, network configuration, or permission boundaries. Pure E2E tests can catch those faults but at high cost—shared staging queues, flaky browsers, and slow feedback. Thoughtworks’ testing material recommends a strong integration layer so teams detect contract and persistence failures in minutes, not after a multi-service deploy.</p>
+          <p>Microservices and modular monoliths multiply integration surfaces. A disciplined middle layer reduces reliance on “everyone in one environment Friday afternoon.”</p>
+
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li>Repository and ORM code against real database engines in CI.</li>
-            <li>HTTP API tests against application process with test database.</li>
-            <li>Message handler tests with embedded broker (Kafka testcontainers).</li>
+            <li>Repository and ORM code against the same database engine used in production.</li>
+            <li>HTTP APIs bootstrapped in-process with a real test database or embedded server.</li>
+            <li>Message consumers and producers against embedded or containerised brokers (Kafka, RabbitMQ, SQS emulators).</li>
+            <li>Auth, caching, and middleware chains where order and configuration matter.</li>
+            <li>After unit TDD on domain logic—to prove modules collaborate correctly.</li>
           </ul>
+
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li>Duplicating every unit assertion at integration level — test boundaries, not logic twice.</li>
+            <li>Re-testing every branch already covered by fast unit tests—integrate at boundaries, not duplicate logic assertions.</li>
+            <li>Shared long-lived staging as the <em>only</em> integration path—serialises teams and hides data pollution issues.</li>
+            <li>Replacing <a href="contract-testing.html">contract tests</a> for cross-team API evolution—use both.</li>
           </ul>
+
           <h2 id="typical-architecture">Typical architecture</h2>
+          <p>Integration tests slot between isolated unit tests and a small E2E set.</p>
           <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
-    unit["Unit tests&lt;br/&gt;mocked collaborators"]
-    integ["Integration tests&lt;br/&gt;real DB / broker"]
-    e2e["Narrow E2E journeys"]
+    unit["Unit tests&lt;br/&gt;isolated logic"]
+    integ["Integration tests&lt;br/&gt;real DB / broker / HTTP"]
+    e2e["Few E2E journeys"]
     unit --> integ --> e2e</div>
             <details class="architecture-diagram__fallback">
               <summary>View text diagram</summary>
-              <pre class="architecture-diagram__canvas"><code>INTEGRATION TEST SCOPE
-────────────────────────────────────────────
-  Unit tests (mocked DB)
+              <pre class="architecture-diagram__canvas"><code>INTEGRATION LAYER
+────────────────────────────
+  Fast unit tests (mocks/doubles)
         ▼
-  Integration: App + real DB in container
+  App + real dependencies in CI containers
         ▼
-  Contract tests with providers/consumers
+  Optional contract tests at service edges
         ▼
-  Few e2e journeys</code></pre>
+  Narrow E2E smoke journeys</code></pre>
             </details>
-            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Integration test scope: fewer integration tests than units validate real wiring without full journey cost.</figcaption>
+            <figcaption id="typical-architecture-caption" class="architecture-diagram__caption">Integration tests validate real wiring and dependencies between fast unit tests and expensive end-to-end journeys.</figcaption>
           </figure>
+
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros">
               <h3>Pros</h3>
               <ul>
-            <li>Catches wiring and schema issues early.</li>
-            <li>Faster and stabler than full e2e.</li>
+                <li>Catches schema, protocol, and configuration errors units miss.</li>
+                <li>More stable and faster feedback than full-stack UI tests.</li>
+                <li>Runnable on every PR when dependencies are containerised.</li>
+                <li>Documents realistic deployment assumptions (ports, credentials, migrations).</li>
               </ul>
             </div>
             <div class="pros-cons__col pros-cons__col--cons">
               <h3>Cons</h3>
               <ul>
-            <li>Slower than unit tests; requires containers in CI.</li>
-            <li>Shared fixtures can create hidden coupling between tests.</li>
+                <li>Slower than unit tests; CI needs CPU for containers.</li>
+                <li>Fixture and seed data mistakes cause order-dependent failures.</li>
+                <li>Can become mini-E2E suites if scopes creep unchecked.</li>
+                <li>Requires discipline to reset state between tests.</li>
               </ul>
             </div>
           </div>
+
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Use Testcontainers or docker-compose in CI with health checks; parallelise by schema or database per test class.</p>
-          <p>Reset state with transactions or migrations per suite; avoid order-dependent tests.</p>
+          <p><strong>Testcontainers pattern.</strong> Spin up Postgres, Kafka, Redis, or cloud emulators per test class or suite; wait on health checks before assertions. Parallelise by using separate database schemas or containers per worker.</p>
+          <p><strong>State hygiene.</strong> Prefer transactional rollback, fresh schema per class, or truncation scripts—never assume execution order. Tag slow tests (<code>@Tag("integration")</code>) so developers run a fast subset locally.</p>
+          <p><strong>Scope one collaboration per test.</strong> When a failure appears, you should know which integration broke—avoid multi-hop journeys better suited to E2E or contract tests.</p>
+          <p><strong>CI resources.</strong> Cache container images, reuse Ryuk-disabled patterns only when you understand cleanup trade-offs, and cap parallelism to avoid Docker thrash on small runners.</p>
+
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Shared staging bottleneck:</strong> Teams queue for one env — containerise dependencies per pipeline.</li>
-            <li><strong>Dirty data:</strong> Tests pass alone, fail in suite — isolate data per test.</li>
+            <li><strong>Shared staging bottleneck:</strong> Teams queue for one environment—move dependencies into pipeline-isolated containers.</li>
+            <li><strong>Dirty data:</strong> Tests pass individually but fail in suite—isolate data per test method.</li>
+            <li><strong>Over-broad integration tests:</strong> Multi-service flows that belong in contract or E2E layers.</li>
+            <li><strong>No health gating:</strong> Flaky starts because tests race dependency readiness.</li>
           </ul>
+
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does CI spin up dependencies automatically without manual staging?</li>
-            <li>Are integration tests tagged so developers can run a fast subset locally?</li>
+            <li>Does CI provision dependencies automatically without manual staging?</li>
+            <li>Can developers run the integration subset locally with one command?</li>
+            <li>Is each test scoped to a single collaboration boundary?</li>
+            <li>Are fixtures isolated so order does not matter?</li>
+            <li>Do contract tests cover cross-team APIs this suite should not duplicate?</li>
           </ul>
+
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Order API:</strong> Testcontainers Postgres; RestAssured HTTP tests; 90s CI job parallel to unit job.</li>
+            <li><strong>Illustrative scenario —</strong> An order API: Spring Boot test slice with Testcontainers Postgres, HTTP client exercises create/read paths; runs parallel to the unit job in under two minutes.</li>
+            <li><strong>Illustrative scenario —</strong> A payment webhook consumer: embedded Kafka container, asserts idempotent handling when duplicate events arrive.</li>
+            <li><strong>Case study —</strong> <a href="https://testcontainers.com/" target="_blank" rel="noopener noreferrer">Testcontainers</a> is widely used to bring production-like dependencies into integration tests without shared staging.</li>
           </ul>
+
           <h2 id="related-patterns">Related patterns</h2>
           <ul>
-            <li><a href="contract-testing.html">Contract Testing</a> — Consumer-driven boundaries.</li>
-            <li><a href="test-pyramids.html">Test Pyramids</a> — Where integration tests fit.</li>
-            <li><a href="../deployment/environment-management.html">Environment Management</a> — Ephemeral env patterns.</li>
+            <li><a href="contract-testing.html">Contract Testing</a> — consumer-driven checks at service boundaries.</li>
+            <li><a href="test-pyramids.html">Test Pyramids</a> — where integration tests belong in the portfolio.</li>
+            <li><a href="../deployment/environment-management.html">Environment Management</a> — ephemeral environments for higher layers.</li>
           </ul>
+
           <h2 id="further-reading">Further reading</h2>
           <ul>
+            <li><a href="https://martinfowler.com/articles/practical-test-pyramid.html" target="_blank" rel="noopener noreferrer">The Practical Test Pyramid — Martin Fowler</a></li>
             <li><a href="https://testcontainers.com/" target="_blank" rel="noopener noreferrer">Testcontainers</a></li>
-            <li><a href="https://www.cypress.io/blog/2019/05/29/unit-testing-vs-integration-testing-vs-e2e-testing/" target="_blank" rel="noopener noreferrer">Cypress — Testing Types Overview</a></li>
-            <li><a href="https://martinfowler.com/tags/application%20architecture.html" target="_blank" rel="noopener noreferrer">Martin Fowler — application architecture</a></li>
+            <li><a href="https://www.thoughtworks.com/insights/blog/testing-strategies" target="_blank" rel="noopener noreferrer">Testing strategies — Thoughtworks</a></li>
           </ul>
-        </div>
-                <nav class="article-nav" aria-label="Article navigation">
+
+        <nav class="article-nav" aria-label="Article navigation">
           <a href="test-pyramids.html" class="article-nav__link article-nav__link--prev"><span class="article-nav__label">← Previous</span><span class="article-nav__title">Test Pyramids</span></a>
           <a href="contract-testing.html" class="article-nav__link article-nav__link--next"><span class="article-nav__label">Next →</span><span class="article-nav__title">Contract Testing</span></a>
         </nav>
