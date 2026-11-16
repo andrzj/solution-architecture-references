@@ -90,13 +90,13 @@
         <div class="article-content">
 
           <h2 id="what-it-is">What it is</h2>
-          <p>A <strong>correlation identifier</strong> is a unique token that marks one logical business operation across every hop—HTTP calls, queue messages, and batch jobs—so logs, metrics, and support tools can be filtered to a single story. EIP names this the <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/CorrelationIdentifier.html" rel="noopener noreferrer" target="_blank">Correlation Identifier</a> pattern for matching request–reply and scatter-gather pairs in messaging systems.</p>
-          <p>It complements, but is not identical to, distributed <strong>trace IDs</strong> carried in W3C <code>traceparent</code> or OpenTelemetry spans. Traces excel at latency trees and dependency graphs; correlation IDs excel at durable log search, audit trails, and async chains where full tracing is absent. Many teams carry both: correlation ID for operations grep, trace ID for APM.</p>
-          <p>CloudEvents and broker headers (Kafka, RabbitMQ, NATS) provide standard places to propagate the same identifier on event envelopes without overloading business payloads.</p>
+          <p>A <strong>correlation identifier</strong>—typically a UUID v4 generated at the system entry point—is a unique token that marks one logical business operation across every hop: HTTP calls, queue messages, scheduled jobs, and batch stages. When something fails anywhere in the chain, operators filter logs and traces by that single value to reconstruct the sequence across services, queues, and databases. Enterprise Integration Patterns names this the <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/CorrelationIdentifier.html" rel="noopener noreferrer" target="_blank">Correlation Identifier</a> pattern for matching request–reply and scatter-gather pairs in messaging systems.</p>
+          <p>It complements, but is not identical to, distributed <strong>trace IDs</strong> carried in W3C <code>traceparent</code> or OpenTelemetry spans. Traces excel at latency trees and dependency graphs; correlation IDs excel at durable log search, audit trails, and async chains where sampling or instrumentation gaps would otherwise break APM continuity. Many teams carry both: correlation ID for operations grep and support lookup, trace ID for APM flame graphs.</p>
+          <p>CloudEvents extensions and broker headers (Kafka, RabbitMQ, NATS, Amazon SQS message attributes) provide standard places to propagate the same identifier on event envelopes without overloading business payloads or coupling logs to domain field names.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>A single checkout or shipment flow may traverse many services, each writing its own logs. Without a shared key, incident response devolves into timestamp guessing and cross-referencing opaque internal IDs. One correlation value in structured logs makes the path reconstructable in seconds across ELK, Loki, or CloudWatch Logs Insights.</p>
-          <p>Async boundaries amplify the problem: a message published minutes or days after the originating HTTP request must still tie back to that request for support and compliance. Correlation identifiers bridge synchronous and asynchronous worlds when traces are incomplete or sampling drops spans.</p>
+          <p>A single checkout or shipment flow may traverse many services, each writing its own logs. Without a shared key, incident response devolves into timestamp guessing, stitching order IDs that only some teams index, and manual copy-paste across dashboards. One correlation value in structured logs makes the path reconstructable in seconds—a Kibana or Logs Insights query on <code>correlationId</code> returns every line that participated in the operation.</p>
+          <p>Async boundaries amplify the problem: a message published minutes or days after the originating HTTP request must still tie back to that request for support and compliance. Correlation identifiers bridge synchronous and asynchronous worlds when traces are incomplete, sampling drops spans, or batch workers lack OpenTelemetry SDKs.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -104,14 +104,15 @@
             <li><strong>Async and event-driven flows:</strong> Publishers embed the ID in message metadata so consumers log under the same key as the API that enqueued work.</li>
             <li><strong>Long-running processes:</strong> Identifiers started at user action time should appear in fulfilment, billing, and notification logs days later.</li>
             <li><strong>Fan-out / fan-in:</strong> Aggregators match branch replies to a parent operation using a single shared correlation value.</li>
-            <li><strong>Support and audit:</strong> Internal error surfaces and tooling expose the ID to agents without showing it in end-user UI.</li>
+            <li><strong>Support and audit:</strong> Internal error surfaces and tooling expose the ID to agents without showing it in end-user UI—support can paste one value into a log explorer instead of reconstructing timestamps.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Authorization:</strong> Correlation IDs are not secrets and must never gate access to data or APIs.</li>
-            <li><strong>Replacing trace strategy:</strong> Log correlation alone does not substitute for latency SLO analysis—keep OpenTelemetry or vendor APM where needed.</li>
-            <li><strong>Derived from PII:</strong> Do not encode emails or account numbers as IDs; use opaque UUIDs to avoid coupling and collision risk.</li>
+            <li><strong>Omitting in distributed systems:</strong> Even two-service estates benefit from request-scoped IDs; skipping them saves nothing meaningful and permanently complicates incident response.</li>
+            <li><strong>Authorization:</strong> Correlation IDs are not secrets and must never gate access to data or APIs—anyone who sees them may legitimately use them for log lookup.</li>
+            <li><strong>Replacing trace strategy:</strong> Log correlation alone does not substitute for latency SLO analysis—keep OpenTelemetry or vendor APM where dependency timing matters.</li>
+            <li><strong>Derived from PII:</strong> Do not encode emails or account numbers as IDs; use opaque UUIDs to avoid coupling, collision risk, and accidental PII export in log pipelines.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -169,36 +170,41 @@ Service B → Service C (HTTP)
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>At the <strong>entry point</strong>, read an incoming correlation header if present; otherwise generate a UUID v4. Bind it to framework context (MDC, <code>AsyncLocalStorage</code>, OpenTelemetry baggage) before any log line emits.</p>
-          <p>Standardise <strong>HTTP headers</strong> org-wide—commonly <code>X-Correlation-ID</code> or <code>X-Request-ID</code>—and document the choice in platform runbooks. Where OpenTelemetry is universal, also propagate W3C <code>traceparent</code> for APM; keep the business correlation ID stable across days-long workflows.</p>
-          <p>On <strong>async publish</strong>, place the correlation ID in envelope metadata (Kafka headers, RabbitMQ headers, NATS headers, CloudEvents extensions), not inside domain payload fields. Add <code>causationId</code> for the immediate parent message or HTTP request to reconstruct cause chains.</p>
-          <p>For <strong>scatter-gather</strong>, issue one parent correlation value and require every branch reply to echo it; aggregators key in-memory state on that value with a TTL matching the operation deadline.</p>
-          <p>Enforce <strong>structured logging</strong> with correlation ID as a mandatory top-level JSON field via linters or logging libraries.</p>
+          <p><strong>Generating IDs:</strong> At the API gateway, load balancer, or first service that owns the user action, read an incoming correlation header if the client or upstream already supplied one; otherwise mint a UUID v4 (<code>crypto.randomUUID()</code>, <code>uuid4()</code>, <code>UUID.randomUUID()</code>). Never derive IDs from order numbers or emails—opaque UUIDs avoid collisions and prevent PII coupling across log retention policies.</p>
+          <p><strong>HTTP propagation:</strong> Standardise one header org-wide—commonly <code>X-Correlation-ID</code> or <code>X-Request-ID</code>—and publish the name in platform runbooks. Middleware should bind the value to framework context (MDC, <code>AsyncLocalStorage</code>, OpenTelemetry baggage) before the first log line. Outbound HTTP clients and service meshes must forward the same value automatically; manual header wiring in application code is a common propagation gap.</p>
+          <p><strong>Async envelopes:</strong> On publish, place the correlation ID in message metadata (Kafka headers, RabbitMQ headers, NATS headers, SQS message attributes, CloudEvents extensions), not inside domain payload fields consumers must deserialize. Add <code>causationId</code> for the immediate parent command or HTTP request so operators can distinguish “same checkout” from “this specific inventory reservation caused the next message.”</p>
+          <p><strong>Correlation ID versus trace ID:</strong> A correlation ID often spans days-long business workflows; a trace ID typically spans one synchronous request tree under sampling rules managed by APM. Carry both when possible: grep logs by correlation ID, analyse latency by trace ID. When OpenTelemetry is universal, also propagate W3C <code>traceparent</code> (<code>00-&lt;trace-id&gt;-&lt;span-id&gt;-&lt;flags&gt;</code>) for interoperable span parenting across instrumented services.</p>
+          <p><strong>Scatter-gather:</strong> Issue one parent correlation value at fan-out and require every branch reply to echo it; aggregators key in-memory state on that value with a TTL matching the operation deadline and reject late replies that would attach to the wrong parent.</p>
+          <p><strong>Structured logging policy:</strong> Enforce JSON logs with <code>correlationId</code> as a mandatory top-level field via linters, shared logging libraries, or CI checks on sample log lines—plaintext logs without the field make centralized search useless.</p>
+          <p><strong>Support surfacing:</strong> Return correlation IDs in internal admin tools, support dashboards, and BFF error payloads for staff—not in customer-facing error copy where the token confuses users without helping them self-serve.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Dropped header:</strong> Middleware misses propagation on one service, orphaning all downstream logs.</li>
-            <li><strong>Regenerated per hop:</strong> Each service mints a new ID instead of forwarding the incoming value.</li>
-            <li><strong>Unstructured logs:</strong> Plaintext logs omit the field, so centralized search cannot filter.</li>
-            <li><strong>User-visible leakage:</strong> IDs in customer-facing errors confuse users without helping them; route IDs to internal tooling instead.</li>
+            <li><strong>Dropped header:</strong> Middleware misses propagation on one service, orphaning all downstream logs—fix with framework-level interceptors and contract tests that fail builds when outbound clients omit the header.</li>
+            <li><strong>Regenerated per hop:</strong> Each service mints a new ID instead of forwarding the incoming value; every hop becomes an island—read incoming headers first and generate only when absent.</li>
+            <li><strong>Header name fragmentation:</strong> Teams use <code>X-Correlation-ID</code>, <code>X-Request-ID</code>, and bespoke keys at boundaries; platform standards and gateway normalisation prevent silent drops at hand-offs.</li>
+            <li><strong>Unstructured logs:</strong> Plaintext logs omit the field, so centralized search cannot filter—enforce structured JSON with correlation ID as a top-level key.</li>
+            <li><strong>User-visible leakage:</strong> IDs in customer-facing errors confuse users without helping them; route IDs to internal tooling and support panels instead.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
           <ul class="checklist">
-            <li>Does every external entry point generate or accept a correlation identifier?</li>
-            <li>Is the header name standardized and published for all teams?</li>
-            <li>Do inbound middleware bind the ID before the first log statement?</li>
-            <li>Do outbound HTTP clients and message publishers forward the same value?</li>
-            <li>Are logs structured JSON with correlation ID at the top level?</li>
-            <li>Are causation identifiers used on async chains where cause matters?</li>
+            <li>Does every external entry point (gateway, event source, batch trigger) generate or accept a correlation identifier?</li>
+            <li>Is the header name standardized and published for all teams, with gateway normalisation for legacy aliases?</li>
+            <li>Do inbound middleware bind the ID before the first log statement in every service?</li>
+            <li>Do outbound HTTP clients, gRPC metadata, and message publishers forward the same value without manual per-call code?</li>
+            <li>Are logs structured JSON with correlation ID at the top level—not nested under <code>context</code> keys search products ignore?</li>
+            <li>Are causation identifiers used on async chains where cause-and-effect debugging matters?</li>
+            <li>When OpenTelemetry is deployed, does <code>traceparent</code> propagate alongside the business correlation ID?</li>
             <li>Are IDs exposed to support tooling but omitted from end-user error copy?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> Support at <strong>Meridian Commerce</strong> pulls the correlation ID from a payment error panel, searches connected services, and finds a tax adapter outage that was never retried.</li>
-            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> sends a delayed tracking email that shares the checkout correlation ID so warehouse, carrier, and notify logs stay aligned for audit.</li>
-            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> logs four carrier quote branches under one parent correlation value so ops can reconstruct scatter-gather timing without APM access.</li>
+            <li><strong>Illustrative scenario —</strong> Support at <strong>Meridian Commerce</strong> pulls the correlation ID from a payment error panel, searches twelve service indices in under two minutes, and finds a tax adapter HTTP&nbsp;503 that was never retried.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> sends a delayed tracking email that shares the checkout correlation ID so warehouse, carrier, and notification logs days later still align for audit.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>RideRelay</strong> logs four carrier quote branches under one parent correlation value so ops reconstruct scatter-gather timing from logs alone when APM sampling dropped spans.</li>
+            <li><strong>Case study —</strong> W3C Trace Context and OpenTelemetry baggage document interoperable propagation headers that many organisations pair with business correlation IDs for grep-friendly operations alongside standard traces.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

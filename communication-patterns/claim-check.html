@@ -94,22 +94,22 @@
           <p>The luggage analogy still fits: drop the bag at the counter (blob store), carry the ticket through the trip (queue or topic), and collect the bag at the destination (consumer fetch). Kafka, RabbitMQ, SQS, and NATS all benefit when default message size limits or memory pressure would otherwise block large binaries.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
-          <p>Brokers enforce practical size ceilings—SQS 256&nbsp;KB per message, Kafka often 1&nbsp;MB by default, RabbitMQ tolerates larger frames but punishes multi-megabyte bodies with memory and replication cost. Embedding PDFs, imagery, or model artifacts inline fails outright or harms neighbors on shared clusters.</p>
-          <p>Object storage is cheap at scale and built for large sequential reads. Claim check keeps the messaging tier responsible for routing and backpressure while bulk bytes live where throughput and retention policies belong.</p>
+          <p>Brokers enforce practical size ceilings—SQS caps bodies at 256&nbsp;KB, Kafka often defaults to 1&nbsp;MB per record, and RabbitMQ tolerates larger frames but punishes multi-megabyte bodies with memory pressure and slow replication on shared clusters. Scanned documents, imagery, audio, large JSON reports, and serialised model artifacts either fail publish outright or degrade every tenant on the cluster when inlined.</p>
+          <p>Object storage is cheap at scale and built for large sequential reads. Claim check keeps the messaging tier responsible for routing, ordering, and backpressure while bulk bytes live where throughput, encryption, and lifecycle policies belong—without forcing operators to raise broker heap or max-message-size knobs for a handful of fat payloads.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
-            <li><strong>Oversized payloads:</strong> Bodies would exceed broker limits or noticeably inflate broker RAM and replication bandwidth.</li>
-            <li><strong>Binary artifacts:</strong> Images, PDFs, media, and serialized model outputs are awkward to base64 inside JSON events.</li>
-            <li><strong>Shared large objects:</strong> Pub/sub fan-out references one stored object from many small messages instead of duplicating bytes per subscriber.</li>
-            <li><strong>Retention and audit:</strong> The object store becomes the durable archive; the message carries routing, correlation, and content-type metadata only.</li>
+            <li><strong>Oversized payloads:</strong> Bodies would exceed broker limits or stress cluster memory and replication bandwidth—typically anything consistently above ~64&nbsp;KB on managed queues or low single-digit megabytes on self-hosted brokers.</li>
+            <li><strong>Binary artifacts:</strong> Images, PDFs, media, and serialized model outputs are awkward to base64 inside JSON events and explode message size without delivering queryable structure in the broker.</li>
+            <li><strong>Shared large objects:</strong> Pub/sub fan-out references one stored object from many small messages instead of duplicating bytes per subscriber—a single customs PDF can back OCR, search, and archival consumers independently.</li>
+            <li><strong>Retention and audit:</strong> The object store becomes the durable archive; the message carries routing, correlation, content-type, and checksum metadata so compliance teams can list objects by prefix while operators replay routing decisions from broker logs.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
           <ul>
-            <li><strong>Tiny messages:</strong> Sub–10&nbsp;KB payloads pay an extra round trip without meaningful broker savings.</li>
-            <li><strong>Sub-millisecond paths:</strong> An additional object-store GET per message adds latency incompatible with tight realtime SLAs.</li>
-            <li><strong>Unreliable object lifecycle:</strong> If TTL or deletion races are unmanaged, consumers fetch missing objects and fail repeatedly.</li>
+            <li><strong>Tiny messages:</strong> Sub–10&nbsp;KB payloads pay an extra round trip, another failure domain, and IAM wiring without meaningful broker savings.</li>
+            <li><strong>Ultra-low-latency paths:</strong> An additional object-store GET per message adds tens of milliseconds—unacceptable when the pipeline targets sub-millisecond control loops or synchronous user responses.</li>
+            <li><strong>Unreliable object lifecycle:</strong> If TTL, compaction, or deletion races are unmanaged, consumers fetch missing objects and fail repeatedly; the claim check is only as dependable as the backing store and your delete-after-ACK discipline.</li>
           </ul>
 
           <h2 id="typical-architecture">Typical architecture</h2>
@@ -155,31 +155,34 @@ Consumer
           <h2 id="pros-and-cons">Pros and cons</h2>
           <div class="pros-cons">
             <div class="pros-cons__col pros-cons__col--pros"><h3>Pros</h3><ul>
-              <li>Brokers carry small control messages while payloads scale to object-store sizes.</li>
-              <li>Broker memory, replication, and network usage stay predictable under large artifacts.</li>
-              <li>One stored object can back many subscriber messages in fan-out topologies.</li>
-              <li>Object versioning and lifecycle rules provide durable audit and replay surfaces.</li>
+              <li>Removes practical broker size limits—payloads can grow to object-store scale without retuning cluster max-message settings.</li>
+              <li>Broker memory, replication, and network usage stay predictable because only kilobyte-scale envelopes traverse the bus.</li>
+              <li>One stored object can back many subscriber messages in fan-out topologies, amortising storage and upload cost.</li>
+              <li>Object versioning, encryption, and lifecycle rules provide a natural audit trail independent of broker retention.</li>
             </ul></div>
             <div class="pros-cons__col pros-cons__col--cons"><h3>Cons</h3><ul>
-              <li>Every consumer pays an extra object-store GET before processing begins.</li>
-              <li>The pipeline now depends on storage availability, IAM, and lifecycle automation.</li>
-              <li>Orphaned or expired objects break redelivery unless TTL and delete rules align with ACK semantics.</li>
-              <li>Leaked pre-signed URLs or loose bucket policies expose data if references are intercepted.</li>
+              <li>Every consumer pays an extra object-store GET before processing begins, adding latency and egress cost.</li>
+              <li>The pipeline now depends on storage availability, IAM, and lifecycle automation—another on-call surface.</li>
+              <li>Reference lifecycle management is error-prone: premature deletes break redelivery; delayed deletes inflate storage bills.</li>
+              <li>Intercepted references widen the security surface unless buckets are private, encryption is mandatory, and pre-signed TTLs are tight.</li>
             </ul></div>
           </div>
 
           <h2 id="implementation-notes">Implementation notes</h2>
-          <p>Choose between <strong>object keys plus IAM</strong> for in-account consumers and <strong>pre-signed URLs</strong> for cross-account or third-party fetchers. Pre-signed expiry must exceed worst-case queue lag plus processing time—often ten times p99 processing duration.</p>
-          <p>Include <strong>metadata</strong> in the broker message: content type, size, checksum, <a href="correlation-ids.html">correlation ID</a>, and optional CloudEvents attributes so observability does not require opening the blob. Kafka users may instead use the <a href="https://kafka.apache.org/documentation/#large_records" rel="noopener noreferrer" target="_blank">large-record</a> path only when cluster policy allows; claim check remains the portable default across SQS, RabbitMQ, and NATS.</p>
-          <p>Configure <strong>lifecycle rules</strong> on prefixes or tags, and delete objects only after successful broker ACK (or rely on TTL with DLQ handling for expired references). Pair upload plus publish with the <a href="transactional-outbox.html">transactional outbox</a> to avoid orphaned blobs when the producer crashes between PUT and publish.</p>
-          <p>Encrypt at rest (SSE-KMS or SSE-S3), deny public ACLs, and validate hashes after GET when tamper detection matters.</p>
+          <p><strong>Pre-signed URLs versus object keys:</strong> In-account consumers with stable IAM roles should carry bucket/key references and fetch with instance credentials—simpler rotation and no clock skew on URL expiry. Cross-account or third-party workers often need <strong>pre-signed URLs</strong> minted at publish time; set TTL to at least ten times worst-case queue lag plus p99 processing so slow consumers never see HTTP&nbsp;403 on fetch. Document which pattern each queue uses so security reviews do not mix permanent bucket access with short-lived URLs on the same topic.</p>
+          <p><strong>Broker envelope:</strong> Include content type, byte size, checksum (SHA-256 or ETag), <a href="correlation-ids.html">correlation ID</a>, optional <code>jobId</code>, and CloudEvents attributes in the small message so metrics and traces do not require opening the blob. Kafka clusters may enable <a href="https://kafka.apache.org/documentation/#large_records" rel="noopener noreferrer" target="_blank">large records</a> for in-cluster consumers, but claim check remains the portable default across SQS, RabbitMQ, Service Bus, and NATS when payloads leave the messaging estate.</p>
+          <p><strong>Lifecycle and TTL:</strong> Tag or prefix objects by pipeline stage and configure lifecycle rules (for example delete after seven days on <code>jobs/</code>). If consumers are healthy, processing finishes well inside the window; if a consumer is down longer than retention, treat broken references as DLQ cases with explicit alerting. Never delete objects during processing—delete only after successful broker ACK unless a compensating workflow guarantees idempotent re-fetch.</p>
+          <p><strong>Atomic publish:</strong> Pair PUT plus enqueue with the <a href="transactional-outbox.html">transactional outbox</a> or an idempotent two-phase worker so a crash between storage write and broker publish does not leave orphaned blobs. Schedule periodic orphan sweeps on untagged prefixes as a safety net.</p>
+          <p><strong>Security and integrity:</strong> Encrypt at rest (SSE-KMS or SSE-S3), block public ACLs, and validate checksums after GET when tamper detection matters. Treat claim-check messages as sensitive when URLs encode guessable object keys.</p>
+          <p><strong>Observability:</strong> Log storage key or URL hash, correlation ID, and outcome at publish, fetch, process, and delete so incident response can stitch broker traces to object-store access logs without pulling payload bytes into log pipelines.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
-            <li><strong>Expired pre-signed URL:</strong> Slow consumers hit HTTP 403 when URL lifetime is shorter than end-to-end latency.</li>
-            <li><strong>Premature delete:</strong> A consumer deletes the object before ACK, so redelivery cannot fetch the body again.</li>
-            <li><strong>Storage outage:</strong> S3 or Blob errors fail processing unless fetch retries with backoff and DLQ escalation.</li>
-            <li><strong>Orphan PUT:</strong> Payload lands in storage but no message publishes, leaving unreachable objects until garbage collection runs.</li>
+            <li><strong>Expired pre-signed URL:</strong> Slow consumers hit HTTP&nbsp;403 when URL lifetime is shorter than end-to-end latency—set TTL to at least 10× maximum expected processing time and monitor age-at-fetch metrics.</li>
+            <li><strong>Premature delete:</strong> A consumer deletes the object before ACK, so redelivery cannot fetch the body again; delete only after ACK or use versioned buckets when reprocessing is required.</li>
+            <li><strong>Storage outage:</strong> S3 or Blob errors fail processing unless fetch retries with exponential backoff, circuit breaking, and DLQ escalation after a bounded attempt count.</li>
+            <li><strong>Orphan PUT:</strong> Payload lands in storage but no message publishes, leaving unreachable objects until garbage collection runs—use outbox publish or compensating sweeps on stale prefixes.</li>
+            <li><strong>Partial fan-out failure:</strong> One subscriber deletes a shared object while others are still processing; coordinate delete authority or refcount objects when multiple consumer groups redeem the same check.</li>
           </ul>
 
           <h2 id="decision-checklist">Decision checklist</h2>
@@ -195,9 +198,10 @@ Consumer
 
           <h2 id="example-use-cases">Example use cases</h2>
           <ul>
-            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> stores multi-megabyte customs PDFs in object storage while SQS carries claim checks so OCR and search consumers fetch the same object key independently.</li>
-            <li><strong>Illustrative scenario —</strong> <strong>FieldOps</strong> upload workers store inspection photos in object storage, publish Kafka messages with references, and transcode workers write new keys for derivatives.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>Northwind Logistics</strong> stores multi-megabyte customs PDFs in object storage while SQS carries claim checks so OCR, search, and archival consumers fetch the same object key independently without tripling broker bandwidth.</li>
+            <li><strong>Illustrative scenario —</strong> <strong>FieldOps</strong> upload workers store raw inspection video in object storage, publish claim checks to Kafka, and transcoding workers produce derivative keys while correlation IDs tie upload logs to transcode completion.</li>
             <li><strong>Illustrative scenario —</strong> <strong>Meridian Commerce</strong> stores partner catalog dumps in one account, embeds pre-signed URLs in SNS notifications, and workers in another account fetch without permanent cross-account bucket credentials.</li>
+            <li><strong>Case study —</strong> Microsoft’s Azure Architecture Center documents claim-check combinations of Blob Storage plus Service Bus for large-payload integration—a common pattern for document and media handoffs in hybrid estates.</li>
           </ul>
 
           <h2 id="related-patterns">Related patterns</h2>

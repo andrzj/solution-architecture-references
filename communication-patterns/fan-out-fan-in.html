@@ -93,10 +93,12 @@
           <p><strong>Fan-out / fan-in</strong> (EIP <em>Scatter-Gather</em>, also called broadcast–aggregate) is a pattern where a coordinator dispatches the same logical request to multiple independent workers in parallel, then merges their responses—fully or partially—before returning a single outcome to the caller. EIP describes the fan-out as a broadcast and the fan-in as an aggregator that collects correlated replies.</p>
           <p>Synchronous implementations issue parallel HTTP or gRPC calls (or language-level tasks) and block until a deadline. Asynchronous implementations publish work to queues or topics—often with <a href="correlation-ids.html">correlation identifiers</a> on each branch—and collect replies on a dedicated reply channel, which suits long-running or decoupled workflows on Kafka, RabbitMQ, or NATS.</p>
           <p>End-to-end latency approaches the slowest branch (plus aggregation overhead) instead of the sum of serial calls, which is why BFF layers, quote engines, and search federators rely on the pattern.</p>
+          <p>In synchronous scatter-gather, the coordinator typically holds one connection or future per branch and cancels outstanding work when the deadline fires. In asynchronous scatter-gather, branches are messages or workflow steps and the aggregator waits on a correlation-scoped reply stream—better when branch runtime is measured in seconds or minutes rather than single-digit milliseconds.</p>
 
           <h2 id="why-it-exists">Why it exists</h2>
           <p>Real operations often need independent inputs from several systems: carrier pricing, fraud scores, inventory checks, or regional search indexes. Serial calls compound latency and let one straggler block the entire user journey. Fan-out/fan-in runs those dependencies concurrently and gives the aggregator explicit control over deadlines, partial results, and failure semantics.</p>
           <p>The same structure appears at different scales—from in-process parallel maps to AWS Step Functions Parallel states, Kubernetes indexed Jobs, and map–reduce stages—whenever work can be partitioned and results reduced.</p>
+          <p>Product teams often introduce the pattern where UX research shows a hard ceiling on page-load or quote latency: if five downstream calls each stay under 80&nbsp;ms, serial invocation blows a 300&nbsp;ms budget, while parallel invocation stays near the p95 of the slowest dependency once aggregation cost is kept small.</p>
 
           <h2 id="when-to-use">When to use</h2>
           <ul>
@@ -104,6 +106,7 @@
             <li><strong>Parallel enrichment:</strong> A composite API gathers geolocation, credit, fraud, and preference data from separate services before responding.</li>
             <li><strong>Page or API aggregation:</strong> A BFF or gateway loads product, stock, pricing, and recommendations concurrently for one screen or payload.</li>
             <li><strong>Embarrassingly parallel batch work:</strong> You shard a dataset, process shards independently, and merge statistics or indexes in a reduce step.</li>
+            <li><strong>Rules or policy checks:</strong> Independent evaluators (fraud, compliance, eligibility) run concurrently; the aggregator applies a quorum before releasing funds or data.</li>
           </ul>
 
           <h2 id="when-not-to-use">When not to use</h2>
@@ -115,6 +118,7 @@
 
           <h2 id="typical-architecture">Typical architecture</h2>
           <p>A coordinator issues N parallel invocations, each tagged with a shared correlation identifier. Results arrive on callbacks, futures, or reply messages. An aggregator accumulates them until all required branches finish or a global deadline expires, then merges, sorts, or filters into one response.</p>
+          <p>Partial-result policies belong in the aggregator, not in each worker: mark absent branches as timed out, surface per-branch error codes, and only return success when quorum rules pass. That keeps worker implementations simple while the caller still receives a predictable composite shape.</p>
 <figure class="architecture-diagram" role="group" aria-labelledby="typical-architecture-caption">
             <div class="architecture-diagram__render mermaid">flowchart TB
     coord["Coordinator"]
@@ -168,6 +172,7 @@
           <p>Document <strong>minimum viable responses</strong>: quote comparison may need any two carriers; four-engine fraud checks may require all four passes. Encode quorum rules in configuration, not magic constants.</p>
           <p>For <strong>async fan-out</strong>, publish branch tasks with a shared <a href="correlation-ids.html">correlation ID</a> and collect replies on a dedicated topic or inbox (RabbitMQ reply-to, Kafka reply topic, NATS request–reply). CloudEvents <code>subject</code> and extension attributes can carry correlation metadata for interoperable envelopes.</p>
           <p>In <strong>AWS Step Functions</strong>, Parallel state runs fixed branches; Map state fan-outs over an array when N is data-driven. For large N, stage work through a queue and aggregate incrementally instead of spawning unbounded inline branches.</p>
+          <p>Instrument each branch with the same parent trace or span ID so operators can tell whether tail latency came from one dependency, network contention, or aggregator saturation. Metrics on branches completed, timed out, and errored per parent request make SLO regressions visible before users complain.</p>
 
           <h2 id="common-failure-modes">Common failure modes</h2>
           <ul>
@@ -185,6 +190,7 @@
             <li>Is fan-out bounded when N is driven by user-supplied lists or catalog size?</li>
             <li>Does every branch response carry the same correlation identifier as the parent request?</li>
             <li>Is aggregator state evicted via TTL, completion callback, or explicit delete after timeout?</li>
+            <li>Are per-branch timeouts derived from the parent deadline rather than independent fixed values?</li>
           </ul>
 
           <h2 id="example-use-cases">Example use cases</h2>
